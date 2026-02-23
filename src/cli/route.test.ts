@@ -64,14 +64,9 @@ describe("tryRouteCli", () => {
   it("does not pass jsonMode for routed non-json commands", async () => {
     await expect(tryRouteCli(["node", "openclaw", "status"])).resolves.toBe(true);
 
-    expect(ensureConfigReadyMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        commandPath: ["status"],
-      }),
-    );
-    const firstCall = ensureConfigReadyMock.mock.calls[0]?.[0] as
-      | { jsonMode?: boolean }
-      | undefined;
-    expect(firstCall?.jsonMode).toBeUndefined();
+    expect(ensureConfigReadyMock).toHaveBeenCalledWith({
+      runtime: expect.any(Object),
+      commandPath: ["status"],
+    });
   });
 });
