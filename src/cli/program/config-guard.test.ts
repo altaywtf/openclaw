@@ -34,10 +34,10 @@ describe("ensureConfigReady", () => {
     return await import("./config-guard.js");
   }
 
-  async function runEnsureConfigReady(commandPath: string[]) {
+  async function runEnsureConfigReady(commandPath: string[], jsonMode = false) {
     const runtime = makeRuntime();
     const { ensureConfigReady } = await loadEnsureConfigReady();
-    await ensureConfigReady({ runtime: runtime as never, commandPath });
+    await ensureConfigReady({ runtime: runtime as never, commandPath, jsonMode });
     return runtime;
   }
 
@@ -99,5 +99,44 @@ describe("ensureConfigReady", () => {
     await ensureConfigReady({ runtime: runtimeB as never, commandPath: ["message"] });
 
     expect(loadAndMaybeMigrateDoctorConfigMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips doctor flow when explicitly requested", async () => {
+    await runEnsureConfigReady(["message"], true);
+    expect(loadAndMaybeMigrateDoctorConfigMock).not.toHaveBeenCalled();
+  });
+
+  it("prevents preflight stdout noise in jsonMode", async () => {
+    const stdoutWrites: string[] = [];
+    const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => {
+      stdoutWrites.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write);
+    loadAndMaybeMigrateDoctorConfigMock.mockImplementation(async () => {
+      process.stdout.write("Doctor warnings\n");
+    });
+    try {
+      await runEnsureConfigReady(["message"], true);
+      expect(stdoutWrites.join("")).not.toContain("Doctor warnings");
+    } finally {
+      writeSpy.mockRestore();
+    }
+  });
+
+  it("allows preflight stdout noise when not in jsonMode", async () => {
+    const stdoutWrites: string[] = [];
+    const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => {
+      stdoutWrites.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write);
+    loadAndMaybeMigrateDoctorConfigMock.mockImplementation(async () => {
+      process.stdout.write("Doctor warnings\n");
+    });
+    try {
+      await runEnsureConfigReady(["message"], false);
+      expect(stdoutWrites.join("")).toContain("Doctor warnings");
+    } finally {
+      writeSpy.mockRestore();
+    }
   });
 });
