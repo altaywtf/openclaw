@@ -246,6 +246,7 @@ export type CodexPluginConfig = {
     codeModeOnly?: boolean;
     loopDetectionPreToolUseRelay?: boolean;
     requestTimeoutMs?: number;
+    providerIds?: string[];
     approvalPolicy?: CodexAppServerApprovalPolicy;
     sandbox?: CodexAppServerSandboxMode;
     approvalsReviewer?: CodexAppServerApprovalsReviewer;

@@ -61,6 +61,7 @@ const codexAppServerExperimentalSchema = z
   })
   .strict();
 const codexAppServerRemoteWorkspaceRootSchema = z.string().trim().min(1);
+const codexAppServerProviderIdsSchema = z.array(z.string().trim().min(1)).min(1);
 const codexAppServerNetworkProxyDomainPermissionSchema = z.enum(["allow", "deny"]);
 const codexAppServerNetworkProxyUnixSocketPermissionSchema = z.enum(["allow", "none"]);
 const codexAppServerNetworkProxySchema = z
@@ -176,6 +177,7 @@ const codexPluginConfigSchema = z
         codeModeOnly: z.boolean().optional(),
         loopDetectionPreToolUseRelay: z.boolean().optional(),
         requestTimeoutMs: z.number().positive().optional(),
+        providerIds: codexAppServerProviderIdsSchema.optional(),
         approvalPolicy: codexAppServerApprovalPolicySchema.optional(),
         sandbox: codexAppServerSandboxSchema.optional(),
         approvalsReviewer: codexAppServerApprovalsReviewerSchema.optional(),

@@ -9,6 +9,7 @@ import type {
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { resolvePluginConfigObject } from "openclaw/plugin-sdk/plugin-config-runtime";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
+import { readCodexPluginConfig } from "./src/app-server/config-parsing.js";
 import { readCodexRuntimeModelId } from "./src/app-server/model-runtime.js";
 import { sessionBindingIdentity } from "./src/app-server/session-binding-record.js";
 import type { CodexAppServerBindingStore } from "./src/app-server/session-binding.js";
@@ -44,6 +45,23 @@ const CODEX_TOOL_POLICY_SAFE_DENY_NAMES = [
   "video_generate",
   "tts",
 ] as const;
+function normalizeCodexHarnessProviderIds(providerIds: Iterable<string>): Set<string> {
+  return new Set(
+    [...providerIds].map((id) => id.trim().toLowerCase()).filter((id) => id.length > 0),
+  );
+}
+
+function resolveCodexHarnessProviderIdsFromPluginConfig(
+  pluginConfig: unknown,
+): Set<string> | undefined {
+  const providerIds = readCodexPluginConfig(pluginConfig).appServer?.providerIds;
+  if (!providerIds) {
+    return undefined;
+  }
+  const normalized = normalizeCodexHarnessProviderIds(providerIds);
+  return normalized.size > 0 ? normalized : undefined;
+}
+
 const CODEX_APP_SERVER_CONTEXT_ENGINE_HOST_CAPABILITIES = [
   "bootstrap",
   "assemble-before-prompt",
@@ -89,6 +107,9 @@ export function createCodexAppServerAgentHarness(
       id.trim().toLowerCase(),
     ),
   );
+  const staticProviderIds = options.providerIds
+    ? normalizeCodexHarnessProviderIds(options.providerIds)
+    : undefined;
   const sessionCatalogControlFactory = options.sessionCatalogControlFactory;
   const sessionRuntime = options.runtime;
   let modelCatalog:
@@ -203,6 +224,12 @@ export function createCodexAppServerAgentHarness(
       return await loadCodexEffectiveMcpCatalog(params, { bindingStore: options.bindingStore });
     },
     supports: (ctx) => {
+      const providerIds =
+        staticProviderIds ??
+        resolveCodexHarnessProviderIdsFromPluginConfig(
+          options.resolvePluginConfig?.() ?? options.pluginConfig,
+        ) ??
+        DEFAULT_CODEX_HARNESS_PROVIDER_IDS;
       const provider = ctx.provider.trim().toLowerCase();
       if (!providerIds.has(provider)) {
         return {

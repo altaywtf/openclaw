@@ -357,6 +357,16 @@ describe("Codex app-server config", () => {
     ).toStrictEqual({});
   });
 
+  it("accepts configured Codex app-server provider ids", () => {
+    expect(
+      readCodexPluginConfig({
+        appServer: {
+          providerIds: ["codex", "openai", "llm_proxy"],
+        },
+      }).appServer?.providerIds,
+    ).toStrictEqual(["codex", "openai", "llm_proxy"]);
+  });
+
   it("parses named native session discovery homes and rejects empty labels", () => {
     expect(
       readCodexPluginConfig({
