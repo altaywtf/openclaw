@@ -96,6 +96,59 @@ beforeEach(() => {
   });
 });
 
+async function runFastAutoProgressCase(params: {
+  verboseLevel?: "on" | "off";
+  sourceReplyDeliveryMode?: "message_tool_only";
+  includeChannelCallback?: boolean;
+  callbackResult?: boolean;
+  opts?: NonNullable<Parameters<typeof executeFollowupTurn>[0]["defaults"]["opts"]>;
+  payload?: ReplyPayload;
+}) {
+  const payload =
+    params.payload ??
+    ({
+      text: "💨Fast: auto-on",
+      channelData: { openclawProgressKind: "fast-mode-auto" },
+    } satisfies ReplyPayload);
+  const onChannelToolResult = vi.fn(() => params.callbackResult);
+  const onDurableToolResult = vi.fn(async () => {});
+  const turn = createTurn({
+    session: {
+      kind: "session",
+      key: "main",
+      current: () => ({
+        sessionId: "session",
+        updatedAt: 1,
+        verboseLevel: params.verboseLevel ?? "on",
+      }),
+      publish: () => undefined,
+      adopt: () => undefined,
+    },
+  });
+  turn.queued.run.sourceReplyDeliveryMode = params.sourceReplyDeliveryMode;
+  state.execute.mockImplementation(async (turnParams: AgentTurnParams) => {
+    await turnParams.opts?.onToolResult?.(payload);
+    return { runId: "run-1", outcome: { kind: "rejected", payload: { text: "done" } } };
+  });
+
+  const result = await executeFollowupTurn({
+    turn,
+    defaults: {
+      typing: createTypingController(),
+      typingMode: "never",
+      defaultModel: "claude",
+      opts: {
+        ...params.opts,
+        ...(params.includeChannelCallback === false ? {} : { onToolResult: onChannelToolResult }),
+      },
+    },
+    onToolResult: onDurableToolResult,
+    onCompactionNoticePayload: vi.fn(async () => {}),
+  });
+  await result.progress.drain();
+  return { onChannelToolResult, onDurableToolResult, payload };
+}
+
 describe("executeFollowupTurn", () => {
   it.each([false, true])(
     "records each source receipt without changing newer runner state (preflight: %s)",
@@ -501,6 +554,94 @@ describe("executeFollowupTurn", () => {
 
     expect(onToolStart).toHaveBeenCalledOnce();
     expect(onChannelToolResult).toHaveBeenCalledWith({ text: "📄 Web Fetch: working" });
+    expect(onDurableToolResult).not.toHaveBeenCalled();
+  });
+
+  it("keeps queued fast auto progress hidden at verbosity off", async () => {
+    const { onChannelToolResult, onDurableToolResult } = await runFastAutoProgressCase({
+      verboseLevel: "off",
+    });
+    expect(onChannelToolResult).not.toHaveBeenCalled();
+    expect(onDurableToolResult).not.toHaveBeenCalled();
+  });
+
+  it("routes queued visible fast auto progress through the channel once", async () => {
+    const payload = {
+      text: "💨Fast: auto-off(75s>=60s)",
+      channelData: { openclawProgressKind: "fast-mode-auto" },
+    } satisfies ReplyPayload;
+    const { onChannelToolResult, onDurableToolResult } = await runFastAutoProgressCase({
+      callbackResult: false,
+      payload,
+    });
+    expect(onChannelToolResult).toHaveBeenCalledOnce();
+    expect(onChannelToolResult).toHaveBeenCalledWith(payload);
+    expect(onDurableToolResult).not.toHaveBeenCalled();
+  });
+
+  it("requires source-suppression opt-in before a queued fast auto callback owns delivery", async () => {
+    const payload = {
+      text: "💨Fast: auto-off(75s>=60s)",
+      channelData: { openclawProgressKind: "fast-mode-auto" },
+    } satisfies ReplyPayload;
+    const { onChannelToolResult, onDurableToolResult } = await runFastAutoProgressCase({
+      callbackResult: false,
+      sourceReplyDeliveryMode: "message_tool_only",
+      opts: { suppressDefaultToolProgressMessages: true },
+      payload,
+    });
+    expect(onChannelToolResult).not.toHaveBeenCalled();
+    expect(onDurableToolResult).toHaveBeenCalledOnce();
+    expect(onDurableToolResult).toHaveBeenCalledWith(payload, { runId: "run-1" });
+  });
+
+  it("lets an opted-in queued fast auto callback own source-suppressed delivery", async () => {
+    const payload = {
+      text: "💨Fast: auto-off(75s>=60s)",
+      channelData: { openclawProgressKind: "fast-mode-auto" },
+    } satisfies ReplyPayload;
+    const { onChannelToolResult, onDurableToolResult } = await runFastAutoProgressCase({
+      callbackResult: false,
+      sourceReplyDeliveryMode: "message_tool_only",
+      opts: { allowProgressCallbacksWhenSourceDeliverySuppressed: true },
+      payload,
+    });
+    expect(onChannelToolResult).toHaveBeenCalledOnce();
+    expect(onChannelToolResult).toHaveBeenCalledWith(payload);
+    expect(onDurableToolResult).not.toHaveBeenCalled();
+  });
+
+  it("falls back once for queued forced fast auto progress without a channel callback", async () => {
+    const { onDurableToolResult, payload } = await runFastAutoProgressCase({
+      includeChannelCallback: false,
+      opts: { forceToolResultProgress: true },
+    });
+    expect(onDurableToolResult).toHaveBeenCalledOnce();
+    expect(onDurableToolResult).toHaveBeenCalledWith(payload, { runId: "run-1" });
+  });
+
+  it("routes queued hidden fast auto progress only to lifecycle callbacks", async () => {
+    const { onChannelToolResult, onDurableToolResult, payload } = await runFastAutoProgressCase({
+      verboseLevel: "off",
+      callbackResult: false,
+      opts: { allowToolLifecycleWhenProgressHidden: true },
+    });
+    expect(onChannelToolResult).toHaveBeenCalledOnce();
+    expect(onChannelToolResult).toHaveBeenCalledWith(payload);
+    expect(onDurableToolResult).not.toHaveBeenCalled();
+  });
+
+  it("suppresses queued fast auto callbacks when tool progress is disabled", async () => {
+    const { onChannelToolResult, onDurableToolResult } = await runFastAutoProgressCase({
+      verboseLevel: "off",
+      callbackResult: false,
+      opts: {
+        forceToolResultProgress: true,
+        suppressToolProgressMessages: true,
+        allowToolLifecycleWhenProgressHidden: true,
+      },
+    });
+    expect(onChannelToolResult).not.toHaveBeenCalled();
     expect(onDurableToolResult).not.toHaveBeenCalled();
   });
 
