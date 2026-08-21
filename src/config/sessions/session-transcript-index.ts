@@ -32,6 +32,7 @@ import {
   type TranscriptIndexEntry,
 } from "./session-transcript-projection-rebuild.js";
 import {
+  EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ,
   deleteSessionTranscriptProjectionBindingsInTransaction,
   readSessionTranscriptProjectionBindingInTransaction,
   readSessionTranscriptSourceGenerationInTransaction,
@@ -284,7 +285,7 @@ export function indexAppendedTranscriptEventInTransaction(
     applyForwardIndex(db, params, {
       activeEventCount: 0,
       activeMessageCount: 0,
-      indexedSeq: -1,
+      indexedSeq: EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ,
       leafEventId: null,
       needsRebuild: false,
     });
@@ -408,7 +409,7 @@ function markSessionTranscriptIndexDirtyInTransaction(db: DatabaseSync, sessionI
     {
       activeEventCount: watermark?.activeEventCount ?? 0,
       activeMessageCount: watermark?.activeMessageCount ?? 0,
-      indexedSeq: watermark?.indexedSeq ?? -1,
+      indexedSeq: watermark?.indexedSeq ?? EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ,
       leafEventId: watermark?.leafEventId ?? null,
       needsRebuild: true,
     },
@@ -571,7 +572,11 @@ export function listSessionsNeedingTranscriptIndexReconcile(db: DatabaseSync): s
       .where((eb) =>
         eb.or([
           eb(eb.fn.coalesce("st.needs_rebuild", eb.val(1)), "!=", 0),
-          eb("latest.seq", ">", eb.fn.coalesce("st.indexed_seq", eb.val(-1))),
+          eb(
+            "latest.seq",
+            ">",
+            eb.fn.coalesce("st.indexed_seq", eb.val(EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ)),
+          ),
           eb("active_binding.source_generation", "is", null),
           eb("active_binding.source_generation", "!=", eb.ref("source.generation")),
         ]),
@@ -636,7 +641,14 @@ export function listSessionsNeedingTranscriptProjectionReconcile(db: DatabaseSyn
           .where((eb) =>
             eb.or([
               eb(eb.fn.coalesce("display.needs_rebuild", eb.val(1)), "!=", 0),
-              eb("latest.seq", ">", eb.fn.coalesce("display.indexed_seq", eb.val(-1))),
+              eb(
+                "latest.seq",
+                ">",
+                eb.fn.coalesce(
+                  "display.indexed_seq",
+                  eb.val(EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ),
+                ),
+              ),
               eb("binding.source_generation", "is", null),
               eb("binding.source_generation", "!=", eb.ref("source.generation")),
               eb("binding.projection_generation", "!=", eb.ref("display.generation")),

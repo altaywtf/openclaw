@@ -13,7 +13,10 @@ import {
 import type { SessionTranscriptProjectionState } from "./session-transcript-index.js";
 import { SessionTranscriptProjectionUnavailableError } from "./session-transcript-projection-error.js";
 import { startSessionTranscriptIndexReconcile } from "./session-transcript-reconcile.js";
-import { readBoundSessionTranscriptSourceGenerationInTransaction } from "./session-transcript-source-generation.js";
+import {
+  EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ,
+  readBoundSessionTranscriptSourceGenerationInTransaction,
+} from "./session-transcript-source-generation.js";
 
 type ActiveTranscriptDatabase = Pick<
   OpenClawAgentKyselyDatabase,
@@ -33,7 +36,7 @@ export type CurrentTranscriptProjection = {
 const EMPTY_PROJECTION_STATE: SessionTranscriptProjectionState = {
   activeEventCount: 0,
   activeMessageCount: 0,
-  indexedSeq: -1,
+  indexedSeq: EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ,
   leafEventId: null,
   needsRebuild: false,
 };

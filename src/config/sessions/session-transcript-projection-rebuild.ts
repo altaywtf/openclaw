@@ -20,6 +20,7 @@ import {
   type PreparedSessionTranscriptDisplayRow,
 } from "./session-transcript-display.js";
 import {
+  EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ,
   deleteSessionTranscriptProjectionBindingsInTransaction,
   readSessionTranscriptProjectionBindingInTransaction,
   readSessionTranscriptSourceGenerationInTransaction,
@@ -218,7 +219,7 @@ export function buildSessionTranscriptProjection(params: {
     leafEventId: resolveVisibleTranscriptAppendParentId(events),
     sessionId: params.sessionId,
     sourceGeneration: params.sourceGeneration,
-    sourceIndexedSeq: params.rows.at(-1)?.seq ?? -1,
+    sourceIndexedSeq: params.rows.at(-1)?.seq ?? EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ,
     sourceTranscriptUpdatedAt: params.sourceTranscriptUpdatedAt,
   };
 }
@@ -408,7 +409,7 @@ export function claimPreparedSessionTranscriptProjectionInTransaction(
         .values({
           active_event_count: 0,
           active_message_count: 0,
-          indexed_seq: -1,
+          indexed_seq: EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ,
           leaf_event_id: null,
           needs_rebuild: 1,
           session_id: plan.sessionId,
@@ -418,7 +419,7 @@ export function claimPreparedSessionTranscriptProjectionInTransaction(
           conflict.column("session_id").doUpdateSet({
             active_event_count: 0,
             active_message_count: 0,
-            indexed_seq: -1,
+            indexed_seq: EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ,
             leaf_event_id: null,
             needs_rebuild: 1,
             updated_at: claimId,

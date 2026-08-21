@@ -21,7 +21,7 @@ type SourceGenerationDatabase = Pick<
   | "transcript_rewrite_watermarks"
 >;
 
-const EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ = -1;
+export const EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ = -1;
 
 type SessionTranscriptSourceGeneration = {
   generation: string;

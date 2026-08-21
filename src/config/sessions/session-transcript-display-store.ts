@@ -32,6 +32,7 @@ import {
   validateOpenClawAgentDisplayRowSchema,
 } from "../../state/openclaw-agent-display-row-schema.js";
 import {
+  EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ,
   deleteSessionTranscriptProjectionBindingsInTransaction,
   readSessionTranscriptSourceGenerationInTransaction,
   writeSessionTranscriptProjectionBindingInTransaction,
@@ -131,7 +132,7 @@ export function invalidateSessionTranscriptDisplayInTransaction(
   const generation = createDisplayGeneration();
   writeDisplayState(db, sessionId, {
     generation,
-    indexedSeq: state?.indexedSeq ?? -1,
+    indexedSeq: state?.indexedSeq ?? EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ,
     needsRebuild: true,
     rowCount: state?.rowCount ?? 0,
     updatedAt: Date.now(),

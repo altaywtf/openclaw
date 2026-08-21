@@ -27,6 +27,7 @@ import {
   writeDisplayState,
 } from "./session-transcript-display-store.js";
 import {
+  EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ,
   readBoundSessionTranscriptSourceGenerationInTransaction,
   readSessionTranscriptSourceGenerationInTransaction,
   writeSessionTranscriptProjectionBindingInTransaction,
@@ -90,7 +91,7 @@ export function claimSessionTranscriptDisplayInTransaction(
   if (!state) {
     writeDisplayState(db, params.sessionId, {
       generation: params.generation,
-      indexedSeq: -1,
+      indexedSeq: EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ,
       needsRebuild: true,
       rowCount: 0,
       updatedAt: params.claimId,
