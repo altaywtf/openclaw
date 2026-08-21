@@ -76,8 +76,8 @@ function insertDisplayStateAndRow(database: DatabaseSync): void {
   database
     .prepare(
       `INSERT INTO session_transcript_display_row_sources
-         (session_id, row_id, relation, position, source_event_seq, semantics_version)
-       VALUES ('session-1', 'row-1', 'turn_boundary', 0, 0, 1)`,
+         (session_id, row_id, relation, position, source_event_seq, source_occurrence, semantics_version)
+       VALUES ('session-1', 'row-1', 'turn_boundary', 0, 0, 0, 1)`,
     )
     .run();
   database
@@ -90,8 +90,8 @@ function insertDisplayStateAndRow(database: DatabaseSync): void {
   database
     .prepare(
       `INSERT INTO session_transcript_display_carry
-         (session_id, kind, position, source_event_seq, carry_version)
-       VALUES ('session-1', 'heartbeat_boundary', 0, 0, 1)`,
+         (session_id, kind, position, source_event_seq, source_occurrence, carry_version)
+       VALUES ('session-1', 'heartbeat_boundary', 0, 0, 0, 1)`,
     )
     .run();
 }
@@ -252,8 +252,8 @@ describe("agent display-row schema", () => {
         database
           .prepare(
             `INSERT INTO session_transcript_display_row_sources
-               (session_id, row_id, relation, position, source_event_seq, semantics_version)
-             VALUES ('session-1', 'row-1', 'tts_supplement', 0, -1, 1)`,
+               (session_id, row_id, relation, position, source_event_seq, source_occurrence, semantics_version)
+             VALUES ('session-1', 'row-1', 'tts_supplement', 0, -1, 0, 1)`,
           )
           .run(),
       ).toThrow(/source_event_seq/u);
@@ -261,11 +261,20 @@ describe("agent display-row schema", () => {
         database
           .prepare(
             `INSERT INTO session_transcript_display_carry
-               (session_id, kind, position, source_event_seq, related_event_seq, carry_version)
-             VALUES ('session-1', 'message_tool', 0, 0, -1, 1)`,
+               (session_id, kind, position, source_event_seq, source_occurrence, related_event_seq, carry_version)
+             VALUES ('session-1', 'message_tool', 0, 0, 0, -1, 1)`,
           )
           .run(),
       ).toThrow(/related_event_seq/u);
+      expect(() =>
+        database
+          .prepare(
+            `INSERT INTO session_transcript_display_carry
+               (session_id, kind, position, source_event_seq, source_occurrence, carry_version)
+             VALUES ('session-1', 'message_tool', 0, 0, -1, 1)`,
+          )
+          .run(),
+      ).toThrow(/source_occurrence/u);
     } finally {
       database.close();
     }

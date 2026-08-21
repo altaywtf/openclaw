@@ -684,6 +684,7 @@ CREATE TABLE IF NOT EXISTS session_transcript_display_row_sources (
   relation TEXT NOT NULL CHECK (relation IN ('turn_boundary', 'message_tool_mirror', 'tts_supplement')),
   position INTEGER NOT NULL,
   source_event_seq INTEGER NOT NULL CHECK (source_event_seq >= 0),
+  source_occurrence INTEGER NOT NULL CHECK (source_occurrence >= 0),
   semantics_version INTEGER NOT NULL CHECK (semantics_version = 1),
   PRIMARY KEY (session_id, row_id, relation, position),
   FOREIGN KEY (session_id, row_id) REFERENCES session_transcript_display_rows(session_id, row_id) ON DELETE CASCADE,
@@ -722,6 +723,7 @@ CREATE TABLE IF NOT EXISTS session_transcript_display_carry (
   kind TEXT NOT NULL CHECK (kind IN ('heartbeat_boundary', 'stream_error', 'message_tool', 'tts_candidate', 'canvas_pending')),
   position INTEGER NOT NULL,
   source_event_seq INTEGER NOT NULL CHECK (source_event_seq >= 0),
+  source_occurrence INTEGER NOT NULL CHECK (source_occurrence >= 0),
   related_event_seq INTEGER CHECK (related_event_seq IS NULL OR related_event_seq >= 0),
   carry_version INTEGER NOT NULL CHECK (carry_version = 1),
   PRIMARY KEY (session_id, kind, position),
@@ -734,6 +736,7 @@ CREATE TABLE IF NOT EXISTS session_transcript_display_carry (
     (kind IN ('message_tool', 'canvas_pending') AND position BETWEEN 0 AND 15) OR
     (kind = 'tts_candidate' AND position BETWEEN 0 AND 63)
   ),
+  CHECK (source_occurrence = 0 OR kind = 'message_tool'),
   CHECK (related_event_seq IS NULL OR kind IN ('message_tool', 'canvas_pending'))
 ) STRICT;
 

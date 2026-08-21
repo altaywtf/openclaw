@@ -5,6 +5,7 @@ import {
   isHeartbeatUserMessage,
 } from "../../auto-reply/heartbeat-filter.js";
 import { HEARTBEAT_PROMPT } from "../../auto-reply/heartbeat.js";
+import { isOpenClawDeliveryMirrorAssistantMessage } from "../../shared/transcript-only-openclaw-assistant.js";
 import {
   isForwardedSessionsSend,
   isPureStreamError,
@@ -52,6 +53,7 @@ export type PreparedSessionTranscriptDisplaySource = {
   position: number;
   relation: SessionTranscriptDisplayRelation;
   sourceEventSeq: number;
+  sourceOccurrence: number;
 };
 export { type PreparedSessionTranscriptDisplayCanvas } from "./session-transcript-display-classification.js";
 export type PreparedSessionTranscriptDisplayCarry = {
@@ -59,6 +61,11 @@ export type PreparedSessionTranscriptDisplayCarry = {
   position: number;
   relatedEventSeq?: number;
   sourceEventSeq: number;
+  sourceOccurrence: number;
+};
+export type SessionTranscriptDisplaySourceReference = {
+  sourceEventSeq: number;
+  sourceOccurrence: number;
 };
 type PlannedSessionTranscriptDisplayRow = {
   canvases: PreparedSessionTranscriptDisplayCanvas[];
@@ -145,7 +152,7 @@ export type DisplayReducerEffects = {
   addRelation: (
     row: DisplayReducerRow,
     relation: SessionTranscriptDisplayRelation,
-    sourceEventSeqs: readonly number[],
+    sources: readonly SessionTranscriptDisplaySourceReference[],
   ) => void;
   appendRow: (kind: SessionTranscriptDisplayRowKind, sourceEventSeq: number) => DisplayReducerRow;
   beginSource: () => void;
@@ -185,9 +192,14 @@ function replaceCarry(
 function pushCarry(
   state: DisplayReducerState,
   kind: SessionTranscriptDisplayCarryKind,
-  entry: Omit<PreparedSessionTranscriptDisplayCarry, "kind" | "position">,
+  entry: Omit<PreparedSessionTranscriptDisplayCarry, "kind" | "position" | "sourceOccurrence"> & {
+    sourceOccurrence?: number;
+  },
 ): PreparedSessionTranscriptDisplayCarry | undefined {
-  const entries = [...carryEntries(state, kind), { ...entry, kind, position: 0 }];
+  const entries = [
+    ...carryEntries(state, kind),
+    { ...entry, kind, position: 0, sourceOccurrence: entry.sourceOccurrence ?? 0 },
+  ];
   const overflow = entries.length - DISPLAY_CARRY_LIMITS[kind];
   const dropped = overflow > 0 ? entries.splice(0, overflow)[0] : undefined;
   replaceCarry(state, kind, entries);
@@ -210,12 +222,8 @@ function messageToolCallForCarry(
   state: DisplayReducerState,
   entry: PreparedSessionTranscriptDisplayCarry,
 ): MessageToolCall | undefined {
-  const sameSourceBefore = carryEntries(state, "message_tool").filter(
-    (candidate) =>
-      candidate.position < entry.position && candidate.sourceEventSeq === entry.sourceEventSeq,
-  ).length;
   const message = eventMessage(state.readEvent(entry.sourceEventSeq));
-  return message ? readMessageToolCalls(message)[sameSourceBefore] : undefined;
+  return message ? readMessageToolCalls(message)[entry.sourceOccurrence] : undefined;
 }
 
 function attachPendingHeartbeat(
@@ -230,7 +238,9 @@ function attachPendingHeartbeat(
   if (!boundary) {
     return;
   }
-  state.effects.addRelation(row, "turn_boundary", [boundary.sourceEventSeq]);
+  state.effects.addRelation(row, "turn_boundary", [
+    { sourceEventSeq: boundary.sourceEventSeq, sourceOccurrence: 0 },
+  ]);
   clearCarry(state, "heartbeat_boundary");
 }
 
@@ -245,7 +255,10 @@ function flushMessageToolMirrors(
     state.effects.addRelation(
       anchor,
       "message_tool_mirror",
-      chosen.map((entry) => entry.sourceEventSeq),
+      chosen.map((entry) => ({
+        sourceEventSeq: entry.sourceEventSeq,
+        sourceOccurrence: entry.sourceOccurrence,
+      })),
     );
   }
   if (selected) {
@@ -292,7 +305,7 @@ function handleDeliveryMirror(
   message: Record<string, unknown>,
   row: DisplayReducerRow,
 ): boolean {
-  if (!readRecord(message.openclawDeliveryMirror)) {
+  if (!isOpenClawDeliveryMirrorAssistantMessage(message)) {
     return false;
   }
   const text = readMessageText(message)?.trim();
@@ -424,16 +437,18 @@ export function reduceSessionTranscriptDisplaySource(
   if (calls.length > 0) {
     const row = state.effects.appendRow("opaque", source.seq);
     attachPendingHeartbeat(state, row, role);
-    calls.forEach(() => {
-      pushCarry(state, "message_tool", { sourceEventSeq: source.seq });
-    });
+    for (const sourceOccurrence of calls.keys()) {
+      pushCarry(state, "message_tool", { sourceEventSeq: source.seq, sourceOccurrence });
+    }
     return;
   }
   const ttsMarker = readTtsMarker(message);
   if (ttsMarker && isTtsSupplement(message)) {
     const target = findTtsTarget(state, ttsMarker);
     if (target) {
-      state.effects.addRelation(target, "tts_supplement", [source.seq]);
+      state.effects.addRelation(target, "tts_supplement", [
+        { sourceEventSeq: source.seq, sourceOccurrence: 0 },
+      ]);
       return;
     }
     const row = state.effects.appendRow("opaque", source.seq);
@@ -460,7 +475,7 @@ export function reduceSessionTranscriptDisplaySource(
   }
   const result = readMessageToolResult(message);
   const suppressed = isSuppressedControlReply(message);
-  const deliveryMirror = readRecord(message.openclawDeliveryMirror) !== undefined;
+  const deliveryMirror = isOpenClawDeliveryMirrorAssistantMessage(message);
   let row: DisplayReducerRow | undefined;
   if (result) {
     row = state.effects.appendRow("opaque", source.seq);
@@ -559,24 +574,26 @@ function createPreparedDisplayEffects(rows: DisplayReducerRow[]): DisplayReducer
         revise(row, true);
       }
     },
-    addRelation: (row, relation, sourceEventSeqs) => {
+    addRelation: (row, relation, sources) => {
       const existing = new Set(
         row.semanticSources
           .filter((source) => source.relation === relation)
-          .map((source) => source.sourceEventSeq),
+          .map((source) => `${source.sourceEventSeq}:${source.sourceOccurrence}`),
       );
       const limit = relation === "turn_boundary" ? 1 : 16;
       let changed = false;
-      for (const sourceEventSeq of sourceEventSeqs) {
-        if (existing.has(sourceEventSeq) || existing.size >= limit) {
+      for (const source of sources) {
+        const key = `${source.sourceEventSeq}:${source.sourceOccurrence}`;
+        if (existing.has(key) || existing.size >= limit) {
           continue;
         }
         row.semanticSources.push({
           position: existing.size,
           relation,
-          sourceEventSeq,
+          sourceEventSeq: source.sourceEventSeq,
+          sourceOccurrence: source.sourceOccurrence,
         });
-        existing.add(sourceEventSeq);
+        existing.add(key);
         changed = true;
       }
       if (changed) {

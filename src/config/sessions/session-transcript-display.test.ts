@@ -553,6 +553,21 @@ describe("SQLite transcript display rows", () => {
         )
         .all(scope.sessionId),
     ).toEqual([{ relation: "tts_supplement", source_event_seq: 2 }]);
+    expect(
+      database()
+        .db.prepare(
+          "SELECT kind, position, source_event_seq, source_occurrence, related_event_seq FROM session_transcript_display_carry WHERE session_id = ?",
+        )
+        .all(scope.sessionId),
+    ).toEqual([
+      {
+        kind: "tts_candidate",
+        position: 0,
+        related_event_seq: null,
+        source_event_seq: 1,
+        source_occurrence: 0,
+      },
+    ]);
   });
 
   it("publishes an empty ready generation after clearing a transcript", async () => {

@@ -54,21 +54,27 @@ export function readDisplaySnapshot(scope: DatabaseScope, sessionId: string) {
   const sources = (
     db
       .prepare(
-        "SELECT row_id, relation, position, source_event_seq FROM session_transcript_display_row_sources WHERE session_id = ? ORDER BY row_id, relation, position",
+        "SELECT row_id, relation, position, source_event_seq, source_occurrence FROM session_transcript_display_row_sources WHERE session_id = ? ORDER BY row_id, relation, position",
       )
       .all(sessionId) as Array<{
       position: number;
       relation: string;
       row_id: string;
       source_event_seq: number;
+      source_occurrence: number;
     }>
   )
-    .map((source) => ({
-      displayOrdinal: ordinalByRowId.get(source.row_id),
-      position: source.position,
-      relation: source.relation,
-      sourceEventSeq: source.source_event_seq,
-    }))
+    .map((source) => {
+      const result = {
+        displayOrdinal: ordinalByRowId.get(source.row_id),
+        position: source.position,
+        relation: source.relation,
+        sourceEventSeq: source.source_event_seq,
+      };
+      return source.source_occurrence === 0
+        ? result
+        : Object.assign(result, { sourceOccurrence: source.source_occurrence });
+    })
     .toSorted(
       (left, right) =>
         (left.displayOrdinal ?? -1) - (right.displayOrdinal ?? -1) ||
@@ -110,7 +116,7 @@ export function readDisplaySnapshot(scope: DatabaseScope, sessionId: string) {
     );
   const carry = db
     .prepare(
-      "SELECT kind, position, source_event_seq, related_event_seq FROM session_transcript_display_carry WHERE session_id = ? ORDER BY kind, position",
+      "SELECT kind, position, source_event_seq, source_occurrence, related_event_seq FROM session_transcript_display_carry WHERE session_id = ? ORDER BY kind, position",
     )
     .all(sessionId)
     .map((entry) => {
@@ -119,13 +125,17 @@ export function readDisplaySnapshot(scope: DatabaseScope, sessionId: string) {
         position: number;
         related_event_seq: number | null;
         source_event_seq: number;
+        source_occurrence: number;
       };
-      return {
+      const result = {
         kind: carryRow.kind,
         position: carryRow.position,
         relatedEventSeq: carryRow.related_event_seq,
         sourceEventSeq: carryRow.source_event_seq,
       };
+      return carryRow.source_occurrence === 0
+        ? result
+        : Object.assign(result, { sourceOccurrence: carryRow.source_occurrence });
     });
   return { canvases, carry, rows, sources };
 }
@@ -155,12 +165,17 @@ function normalizeDisplayPlan(plan: PreparedSessionTranscriptDisplayProjection) 
           left.displayOrdinal - right.displayOrdinal || left.position - right.position,
       ),
     carry: plan.carry
-      .map((entry) => ({
-        kind: entry.kind,
-        position: entry.position,
-        relatedEventSeq: entry.relatedEventSeq ?? null,
-        sourceEventSeq: entry.sourceEventSeq,
-      }))
+      .map((entry) => {
+        const result = {
+          kind: entry.kind,
+          position: entry.position,
+          relatedEventSeq: entry.relatedEventSeq ?? null,
+          sourceEventSeq: entry.sourceEventSeq,
+        };
+        return entry.sourceOccurrence === 0
+          ? result
+          : Object.assign(result, { sourceOccurrence: entry.sourceOccurrence });
+      })
       .toSorted(
         (left, right) => left.kind.localeCompare(right.kind) || left.position - right.position,
       ),
@@ -172,12 +187,17 @@ function normalizeDisplayPlan(plan: PreparedSessionTranscriptDisplayProjection) 
     })),
     sources: plan.rows
       .flatMap((entry) =>
-        entry.semanticSources.map((source) => ({
-          displayOrdinal: entry.displayOrdinal,
-          position: source.position,
-          relation: source.relation,
-          sourceEventSeq: source.sourceEventSeq,
-        })),
+        entry.semanticSources.map((source) => {
+          const result = {
+            displayOrdinal: entry.displayOrdinal,
+            position: source.position,
+            relation: source.relation,
+            sourceEventSeq: source.sourceEventSeq,
+          };
+          return source.sourceOccurrence === 0
+            ? result
+            : Object.assign(result, { sourceOccurrence: source.sourceOccurrence });
+        }),
       )
       .toSorted(
         (left, right) =>

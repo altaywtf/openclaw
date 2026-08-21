@@ -396,7 +396,9 @@ describe("canonical session transcript projection", () => {
         message("delivery-a", {
           role: "assistant",
           content: "Reply A",
+          model: "delivery-mirror",
           openclawDeliveryMirror: { kind: "channel-final" },
+          provider: "openclaw",
         }),
         message("flush-b", { role: "assistant", content: "NO_REPLY" }),
       ],
@@ -411,11 +413,62 @@ describe("canonical session transcript projection", () => {
         message("delivery-other", {
           role: "assistant",
           content: "Different reply",
+          model: "delivery-mirror",
           openclawDeliveryMirror: { kind: "channel-final" },
+          provider: "openclaw",
         }),
         message("unmatched-flush", { role: "assistant", content: "NO_REPLY" }),
       ],
       NEGATIVE_DISPLAY_EXPECTED_PREFIXES.unmatchedDeliveryMirror,
+    );
+
+    await expectIncrementalDisplayParity(
+      "lookalike-message-mirror",
+      [
+        call("call-lookalike", "Expected reply"),
+        result("call-lookalike"),
+        message("lookalike-delivery", {
+          role: "assistant",
+          content: "Expected reply",
+          openclawDeliveryMirror: { kind: "channel-final" },
+        }),
+        message("lookalike-flush", { role: "assistant", content: "NO_REPLY" }),
+      ],
+      NEGATIVE_DISPLAY_EXPECTED_PREFIXES.unmatchedDeliveryMirror,
+    );
+
+    await expectIncrementalDisplayParity(
+      "same-source-message-mirror",
+      [
+        message("multi-call", {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: "same-source-a",
+              name: "message",
+              arguments: { action: "send", message: "Reply A" },
+            },
+            {
+              type: "toolCall",
+              id: "same-source-b",
+              name: "message",
+              arguments: { action: "send", message: "Reply B" },
+            },
+          ],
+        }),
+        result("same-source-a"),
+        result("same-source-b"),
+        message("same-source-delivery-a", {
+          role: "assistant",
+          content: "Reply A",
+          model: "delivery-mirror",
+          openclawDeliveryMirror: { kind: "channel-final" },
+          provider: "openclaw",
+        }),
+        message("same-source-flush-b", { role: "assistant", content: "NO_REPLY" }),
+      ],
+      NEGATIVE_DISPLAY_EXPECTED_PREFIXES.sameSourceMessageMirror,
     );
   });
 
@@ -443,6 +496,32 @@ describe("canonical session transcript projection", () => {
         message("forwarded-result", {
           role: "toolResult",
           toolCallId: "forwarded-call",
+          toolName: "message",
+          result: { ok: true },
+        }),
+        message("forwarded-flush", { role: "assistant", content: "NO_REPLY" }),
+      ],
+      NEGATIVE_DISPLAY_EXPECTED_PREFIXES.forwardedMessageTool,
+    );
+
+    await expectIncrementalDisplayParity(
+      "normalized-forwarded-message-tool",
+      [
+        message("forwarded-call", {
+          role: "assistant",
+          provenance: { kind: "inter_session", sourceTool: " sessions_send " },
+          content: [
+            {
+              type: "toolCall",
+              id: "normalized-forwarded-call",
+              name: "message",
+              arguments: { action: "send", message: "Forwarded send" },
+            },
+          ],
+        }),
+        message("forwarded-result", {
+          role: "toolResult",
+          toolCallId: "normalized-forwarded-call",
           toolName: "message",
           result: { ok: true },
         }),
@@ -541,18 +620,10 @@ describe("canonical session transcript projection", () => {
       message: { role: "assistant", content: `answer ${seq}` },
       type: "message",
     }));
-    const result = await expectIncrementalDisplayParity(
+    await expectIncrementalDisplayParity(
       "tts-carry-cap",
       assistantEvents,
       expectedTtsCarryCapPrefixes(65),
-    );
-    expect(result.carry.filter((entry) => entry.kind === "tts_candidate")).toEqual(
-      Array.from({ length: 64 }, (_, position) => ({
-        kind: "tts_candidate",
-        position,
-        relatedEventSeq: null,
-        sourceEventSeq: position + 1,
-      })),
     );
 
     const canvas = prepareSessionTranscriptDisplayProjection([
@@ -605,14 +676,11 @@ describe("canonical session transcript projection", () => {
       },
       type: "message",
     }));
-    const streamCarry = (
-      await expectIncrementalDisplayParity(
-        "stream-carry-cap",
-        streamEvents,
-        expectedStreamCarryCapPrefixes(9),
-      )
-    ).carry.filter((entry) => entry.kind === "stream_error");
-    expect(streamCarry.map((entry) => entry.sourceEventSeq)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    await expectIncrementalDisplayParity(
+      "stream-carry-cap",
+      streamEvents,
+      expectedStreamCarryCapPrefixes(9),
+    );
 
     const messageEvents = Array.from({ length: 17 }, (_, seq) => ({
       id: `message-${seq}`,
@@ -629,18 +697,13 @@ describe("canonical session transcript projection", () => {
       },
       type: "message",
     }));
-    const messageCarry = (
-      await expectIncrementalDisplayParity(
-        "message-carry-cap",
-        messageEvents,
-        expectedMessageCarryCapPrefixes(17),
-      )
-    ).carry.filter((entry) => entry.kind === "message_tool");
-    expect(messageCarry.map((entry) => entry.sourceEventSeq)).toEqual(
-      Array.from({ length: 16 }, (_, index) => index + 1),
+    await expectIncrementalDisplayParity(
+      "message-carry-cap",
+      messageEvents,
+      expectedMessageCarryCapPrefixes(17),
     );
 
-    const heartbeatProjection = await expectIncrementalDisplayParity(
+    await expectIncrementalDisplayParity(
       "heartbeat-carry-cap",
       [
         {
@@ -656,20 +719,6 @@ describe("canonical session transcript projection", () => {
       ],
       expectedHeartbeatCarryCapPrefixes(),
     );
-    const heartbeatCarry = heartbeatProjection.carry.filter(
-      (entry) => entry.kind === "heartbeat_boundary",
-    );
-    expect(heartbeatCarry).toEqual([
-      {
-        kind: "heartbeat_boundary",
-        position: 0,
-        relatedEventSeq: null,
-        sourceEventSeq: 1,
-      },
-    ]);
-    expect(heartbeatProjection.rows).toEqual([
-      { display_ordinal: 0, kind: "opaque", revision: 1, source_event_seq: 0 },
-    ]);
 
     const canvasEvents = [
       {
@@ -696,18 +745,10 @@ describe("canonical session transcript projection", () => {
         type: "message",
       })),
     ];
-    const canvasProjection = await expectIncrementalDisplayParity(
+    await expectIncrementalDisplayParity(
       "canvas-carry-cap",
       canvasEvents,
       expectedCanvasCarryCapPrefixes(17),
-    );
-    expect(
-      canvasProjection.carry
-        .filter((entry) => entry.kind === "canvas_pending")
-        .map((entry) => entry.sourceEventSeq),
-    ).toEqual(Array.from({ length: 16 }, (_, index) => index + 2));
-    expect(canvasProjection.canvases.map((entry) => entry.sourceEventSeq)).toEqual(
-      Array.from({ length: 16 }, (_, index) => index + 2),
     );
   });
 
@@ -726,6 +767,7 @@ describe("canonical session transcript projection", () => {
     `/__openclaw__/canvas/documents/cv_test/${Array.from({ length: 17 }, () => "x").join("/")}`,
     "/__openclaw__/canvas/documents/cv_test/path\\name.html",
     "/__openclaw__/canvas/documents/cv_test/%00index.html",
+    "/__openclaw__/canvas/documents/cv_test/%C2%80index.html",
     "/__openclaw__/canvas/documents/cv_test/name%3Avalue",
     canvasUrlWithLength(2049),
   ])("rejects unsafe persisted canvas URL %s", (url) => {

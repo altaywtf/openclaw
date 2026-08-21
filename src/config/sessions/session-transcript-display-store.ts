@@ -179,7 +179,7 @@ function readDisplayReducerCarry(
     db,
     getDisplayKysely(db)
       .selectFrom(SESSION_TRANSCRIPT_DISPLAY_CARRY_TABLE)
-      .select(["kind", "position", "related_event_seq", "source_event_seq"])
+      .select(["kind", "position", "related_event_seq", "source_event_seq", "source_occurrence"])
       .where("session_id", "=", sessionId)
       .orderBy("kind")
       .orderBy("position"),
@@ -188,6 +188,7 @@ function readDisplayReducerCarry(
       kind: parseDisplayCarryKind(row.kind),
       position: row.position,
       sourceEventSeq: row.source_event_seq,
+      sourceOccurrence: row.source_occurrence,
     };
     if (row.related_event_seq !== null) {
       entry.relatedEventSeq = row.related_event_seq;
@@ -219,6 +220,7 @@ export function writeDisplayReducerCarry(
         related_event_seq: entry.relatedEventSeq ?? null,
         session_id: sessionId,
         source_event_seq: entry.sourceEventSeq,
+        source_occurrence: entry.sourceOccurrence,
       })),
     ),
   );
@@ -387,26 +389,29 @@ function createDatabaseDisplayEffects(
         writeCanvases(row, current);
       }
     },
-    addRelation: (row, relation, sourceEventSeqs) => {
+    addRelation: (row, relation, sourceReferences) => {
       const existing = executeSqliteQuerySync(
         db,
         kysely
           .selectFrom(SESSION_TRANSCRIPT_DISPLAY_ROW_SOURCES_TABLE)
-          .select(["position", "source_event_seq"])
+          .select(["position", "source_event_seq", "source_occurrence"])
           .where("session_id", "=", sessionId)
           .where("row_id", "=", row.rowId)
           .where("relation", "=", relation)
           .orderBy("position"),
       ).rows;
-      const sources = new Set(existing.map((entry) => entry.source_event_seq));
+      const sources = new Set(
+        existing.map((entry) => `${entry.source_event_seq}:${entry.source_occurrence}`),
+      );
       const limit = relation === "turn_boundary" ? 1 : 16;
-      const added: number[] = [];
-      for (const sourceEventSeq of sourceEventSeqs) {
-        if (sources.has(sourceEventSeq) || sources.size >= limit) {
+      const added: Array<(typeof sourceReferences)[number]> = [];
+      for (const source of sourceReferences) {
+        const key = `${source.sourceEventSeq}:${source.sourceOccurrence}`;
+        if (sources.has(key) || sources.size >= limit) {
           continue;
         }
-        added.push(sourceEventSeq);
-        sources.add(sourceEventSeq);
+        added.push(source);
+        sources.add(key);
       }
       if (added.length === 0) {
         return;
@@ -414,13 +419,14 @@ function createDatabaseDisplayEffects(
       executeSqliteQuerySync(
         db,
         kysely.insertInto(SESSION_TRANSCRIPT_DISPLAY_ROW_SOURCES_TABLE).values(
-          added.map((sourceEventSeq, offset) => ({
+          added.map((source, offset) => ({
             position: existing.length + offset,
             relation,
             row_id: row.rowId,
             semantics_version: SESSION_TRANSCRIPT_DISPLAY_SEMANTICS_VERSION,
             session_id: sessionId,
-            source_event_seq: sourceEventSeq,
+            source_event_seq: source.sourceEventSeq,
+            source_occurrence: source.sourceOccurrence,
           })),
         ),
       );

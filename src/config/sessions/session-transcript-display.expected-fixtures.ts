@@ -12,12 +12,14 @@ function expectedSnapshot(
     position: number;
     relatedEventSeq: number | null;
     sourceEventSeq: number;
+    sourceOccurrence?: number;
   }> = [],
   sources: Array<{
     displayOrdinal: number;
     position: number;
     relation: string;
     sourceEventSeq: number;
+    sourceOccurrence?: number;
   }> = [],
   canvases: Array<{
     boardWidgetName: string | null;
@@ -153,6 +155,87 @@ export function expectedCanvasCarryCapPrefixes(count: number) {
 }
 
 export const NEGATIVE_DISPLAY_EXPECTED_PREFIXES = {
+  sameSourceMessageMirror: [
+    expectedSnapshot(
+      [{ display_ordinal: 0, kind: "opaque", revision: 1, source_event_seq: 0 }],
+      [
+        { kind: "message_tool", position: 0, relatedEventSeq: null, sourceEventSeq: 0 },
+        {
+          kind: "message_tool",
+          position: 1,
+          relatedEventSeq: null,
+          sourceEventSeq: 0,
+          sourceOccurrence: 1,
+        },
+      ],
+    ),
+    expectedSnapshot(expectedRows(2, "opaque"), [
+      { kind: "message_tool", position: 0, relatedEventSeq: 1, sourceEventSeq: 0 },
+      {
+        kind: "message_tool",
+        position: 1,
+        relatedEventSeq: null,
+        sourceEventSeq: 0,
+        sourceOccurrence: 1,
+      },
+    ]),
+    expectedSnapshot(expectedRows(3, "opaque"), [
+      { kind: "message_tool", position: 0, relatedEventSeq: 1, sourceEventSeq: 0 },
+      {
+        kind: "message_tool",
+        position: 1,
+        relatedEventSeq: 2,
+        sourceEventSeq: 0,
+        sourceOccurrence: 1,
+      },
+    ]),
+    expectedSnapshot(
+      [
+        ...expectedRows(3, "opaque"),
+        { display_ordinal: 3, kind: "assistant", revision: 1, source_event_seq: 3 },
+      ],
+      [
+        {
+          kind: "message_tool",
+          position: 0,
+          relatedEventSeq: 2,
+          sourceEventSeq: 0,
+          sourceOccurrence: 1,
+        },
+      ],
+      [
+        {
+          displayOrdinal: 3,
+          position: 0,
+          relation: "message_tool_mirror",
+          sourceEventSeq: 0,
+        },
+      ],
+    ),
+    expectedSnapshot(
+      [
+        ...expectedRows(3, "opaque"),
+        { display_ordinal: 3, kind: "assistant", revision: 1, source_event_seq: 3 },
+        { display_ordinal: 4, kind: "assistant", revision: 1, source_event_seq: 4 },
+      ],
+      [],
+      [
+        {
+          displayOrdinal: 3,
+          position: 0,
+          relation: "message_tool_mirror",
+          sourceEventSeq: 0,
+        },
+        {
+          displayOrdinal: 4,
+          position: 0,
+          relation: "message_tool_mirror",
+          sourceEventSeq: 0,
+          sourceOccurrence: 1,
+        },
+      ],
+    ),
+  ],
   selectiveMessageMirror: [
     expectedSnapshot(
       [{ display_ordinal: 0, kind: "opaque", revision: 1, source_event_seq: 0 }],

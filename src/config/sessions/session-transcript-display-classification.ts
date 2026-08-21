@@ -4,6 +4,7 @@ import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { STREAM_ERROR_FALLBACK_TEXT } from "../../agents/stream-message-shared.js";
 import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../../auto-reply/tokens.js";
 import { extractCanvasFromDetails, extractCanvasFromText } from "../../chat/canvas-render.js";
+import { normalizeInputProvenance } from "../../sessions/input-provenance.js";
 
 export type PreparedSessionTranscriptDisplayCanvas = {
   boardWidgetName?: string;
@@ -239,7 +240,7 @@ export function readMessageToolResult(message: Record<string, unknown>): {
 }
 
 export function isForwardedSessionsSend(message: Record<string, unknown>): boolean {
-  const provenance = readRecord(message.provenance);
+  const provenance = normalizeInputProvenance(message.provenance);
   return provenance?.kind === "inter_session" && provenance.sourceTool === "sessions_send";
 }
 
@@ -372,7 +373,7 @@ function canonicalCanvasUrl(value: unknown): string | undefined {
         part.includes("\\") ||
         Array.from(part).some((char) => {
           const code = char.charCodeAt(0);
-          return code < 0x20 || code === 0x7f;
+          return code < 0x20 || (code >= 0x7f && code <= 0x9f);
         })
       ) {
         return undefined;

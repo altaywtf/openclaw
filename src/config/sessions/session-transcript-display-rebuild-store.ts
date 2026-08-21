@@ -187,6 +187,7 @@ export function appendSessionTranscriptDisplayChunkInTransaction(
         semantics_version: SESSION_TRANSCRIPT_DISPLAY_SEMANTICS_VERSION,
         session_id: params.sessionId,
         source_event_seq: source.sourceEventSeq,
+        source_occurrence: source.sourceOccurrence,
       })),
     );
     if (semanticSources.length > 0) {
