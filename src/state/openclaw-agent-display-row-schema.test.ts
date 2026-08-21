@@ -17,6 +17,12 @@ import {
   SESSION_TRANSCRIPT_DISPLAY_STATE_TABLE,
 } from "./openclaw-agent-display-row-schema.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "./openclaw-agent-schema.js";
+import {
+  AGENT_SCHEMA_WITHOUT_TRANSCRIPT_PROJECTION_BINDINGS_SQL,
+  ensureOpenClawAgentTranscriptProjectionBindingSchema,
+  SESSION_TRANSCRIPT_PROJECTION_BINDINGS_OWNER_INDEX,
+  SESSION_TRANSCRIPT_PROJECTION_BINDINGS_TABLE,
+} from "./openclaw-agent-transcript-projection-binding-schema.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
@@ -392,6 +398,170 @@ describe("agent display-row schema", () => {
       expect(
         database.prepare("SELECT COUNT(*) AS count FROM session_transcript_display_state").get(),
       ).toEqual({ count: expectedStateRows });
+      expect(database.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+describe("agent transcript projection binding schema", () => {
+  it("creates the complete lazy group atomically without changing schema version metadata", () => {
+    const stateDir = tempDirs.make("openclaw-projection-binding-schema-");
+    const database = openOpenClawAgentDatabase({
+      agentId: "main",
+      env: { OPENCLAW_STATE_DIR: stateDir },
+    });
+    const versionBefore = database.db.prepare("PRAGMA user_version").get();
+    const metadataBefore = database.db
+      .prepare("SELECT schema_version, updated_at FROM schema_meta WHERE meta_key = 'primary'")
+      .get();
+
+    expect(tableExists(database.db, SESSION_TRANSCRIPT_PROJECTION_BINDINGS_TABLE)).toBe(false);
+    ensureOpenClawAgentTranscriptProjectionBindingSchema(database.db);
+
+    expect(tableExists(database.db, SESSION_TRANSCRIPT_PROJECTION_BINDINGS_TABLE)).toBe(true);
+    expect(
+      database.db
+        .prepare("SELECT name FROM sqlite_schema WHERE type = 'index' AND name = ?")
+        .get(SESSION_TRANSCRIPT_PROJECTION_BINDINGS_OWNER_INDEX),
+    ).toEqual({ name: SESSION_TRANSCRIPT_PROJECTION_BINDINGS_OWNER_INDEX });
+    expect(database.db.prepare("PRAGMA user_version").get()).toEqual(versionBefore);
+    expect(
+      database.db
+        .prepare("SELECT schema_version, updated_at FROM schema_meta WHERE meta_key = 'primary'")
+        .get(),
+    ).toEqual(metadataBefore);
+  });
+
+  it("does not retain a lazy ensure rolled back by its caller", () => {
+    const database = new DatabaseSync(":memory:");
+    try {
+      database.exec(AGENT_SCHEMA_WITHOUT_TRANSCRIPT_PROJECTION_BINDINGS_SQL);
+      database.exec("BEGIN IMMEDIATE;");
+      ensureOpenClawAgentTranscriptProjectionBindingSchema(database);
+      database.exec("ROLLBACK;");
+
+      expect(tableExists(database, SESSION_TRANSCRIPT_PROJECTION_BINDINGS_TABLE)).toBe(false);
+      ensureOpenClawAgentTranscriptProjectionBindingSchema(database);
+      expect(tableExists(database, SESSION_TRANSCRIPT_PROJECTION_BINDINGS_TABLE)).toBe(true);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("revalidates DDL drift on an already validated live handle", () => {
+    const database = new DatabaseSync(":memory:");
+    try {
+      database.exec(AGENT_SCHEMA_WITHOUT_TRANSCRIPT_PROJECTION_BINDINGS_SQL);
+      ensureOpenClawAgentTranscriptProjectionBindingSchema(database);
+      database.exec(`DROP INDEX ${SESSION_TRANSCRIPT_PROJECTION_BINDINGS_OWNER_INDEX};`);
+
+      expect(() => ensureOpenClawAgentTranscriptProjectionBindingSchema(database)).toThrow(
+        /partially present|idx_agent_transcript_projection_bindings_owner|schema/u,
+      );
+    } finally {
+      database.close();
+    }
+  });
+
+  it.each([
+    {
+      damage: `DROP INDEX ${SESSION_TRANSCRIPT_PROJECTION_BINDINGS_OWNER_INDEX};`,
+      name: "missing owner index",
+    },
+    {
+      damage: `
+        DROP INDEX ${SESSION_TRANSCRIPT_PROJECTION_BINDINGS_OWNER_INDEX};
+        DROP TABLE ${SESSION_TRANSCRIPT_PROJECTION_BINDINGS_TABLE};
+        CREATE TABLE ${SESSION_TRANSCRIPT_PROJECTION_BINDINGS_TABLE} (
+          session_id TEXT NOT NULL,
+          projection TEXT NOT NULL,
+          projection_generation TEXT,
+          source_generation TEXT NOT NULL
+        ) STRICT;
+        CREATE UNIQUE INDEX ${SESSION_TRANSCRIPT_PROJECTION_BINDINGS_OWNER_INDEX}
+          ON ${SESSION_TRANSCRIPT_PROJECTION_BINDINGS_TABLE}(session_id, projection);
+      `,
+      name: "missing session-window foreign key",
+    },
+    {
+      damage: `
+        DROP INDEX ${SESSION_TRANSCRIPT_PROJECTION_BINDINGS_OWNER_INDEX};
+        CREATE INDEX ${SESSION_TRANSCRIPT_PROJECTION_BINDINGS_OWNER_INDEX}
+          ON ${SESSION_TRANSCRIPT_PROJECTION_BINDINGS_TABLE}(projection, session_id);
+      `,
+      name: "drifted owner index",
+    },
+  ])("rejects a $name instead of completing the present group", ({ damage }) => {
+    const database = new DatabaseSync(":memory:");
+    try {
+      database.exec(OPENCLAW_AGENT_SCHEMA_SQL);
+      database.exec(damage);
+      expect(() => ensureOpenClawAgentTranscriptProjectionBindingSchema(database)).toThrow(
+        /projection binding|schema|idx_agent_transcript_projection_bindings_owner/u,
+      );
+    } finally {
+      database.close();
+    }
+  });
+
+  it("keeps a complete populated group compatible with the prior schema contract", () => {
+    const database = createDisplayDatabase();
+    try {
+      database
+        .prepare(
+          `INSERT INTO ${SESSION_TRANSCRIPT_PROJECTION_BINDINGS_TABLE}
+             (session_id, projection, projection_generation, source_generation)
+           VALUES ('session-1', 'display', 'display-1', 'source-1')`,
+        )
+        .run();
+      expect(() =>
+        assertSqliteSchemaContains(
+          database,
+          "previous agent schema",
+          AGENT_SCHEMA_WITHOUT_TRANSCRIPT_PROJECTION_BINDINGS_SQL,
+        ),
+      ).not.toThrow();
+    } finally {
+      database.close();
+    }
+  });
+
+  it("revalidates a damaged present group after physical reopen", () => {
+    const stateDir = tempDirs.make("openclaw-projection-binding-reopen-");
+    const options = { agentId: "main", env: { OPENCLAW_STATE_DIR: stateDir } };
+    const initial = openOpenClawAgentDatabase(options);
+    const databasePath = initial.path;
+    ensureOpenClawAgentTranscriptProjectionBindingSchema(initial.db);
+    closeOpenClawAgentDatabasesForTest();
+
+    const damaged = new DatabaseSync(databasePath);
+    damaged.exec(`DROP INDEX ${SESSION_TRANSCRIPT_PROJECTION_BINDINGS_OWNER_INDEX};`);
+    damaged.close();
+
+    expect(() => openOpenClawAgentDatabase(options)).toThrow(
+      /idx_agent_transcript_projection_bindings_owner|schema/u,
+    );
+  });
+
+  it("cascades bindings with their session window", () => {
+    const database = createDisplayDatabase();
+    try {
+      database
+        .prepare(
+          `INSERT INTO ${SESSION_TRANSCRIPT_PROJECTION_BINDINGS_TABLE}
+             (session_id, projection, projection_generation, source_generation)
+           VALUES ('session-1', 'active', NULL, 'source-1')`,
+        )
+        .run();
+      database.exec("DELETE FROM session_windows WHERE session_id = 'session-1';");
+
+      expect(
+        database
+          .prepare(`SELECT COUNT(*) AS count FROM ${SESSION_TRANSCRIPT_PROJECTION_BINDINGS_TABLE}`)
+          .get(),
+      ).toEqual({ count: 0 });
       expect(database.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     } finally {
       database.close();

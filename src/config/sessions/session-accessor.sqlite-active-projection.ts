@@ -13,6 +13,7 @@ import {
 import type { SessionTranscriptProjectionState } from "./session-transcript-index.js";
 import { SessionTranscriptProjectionUnavailableError } from "./session-transcript-projection-error.js";
 import { startSessionTranscriptIndexReconcile } from "./session-transcript-reconcile.js";
+import { readBoundSessionTranscriptSourceGenerationInTransaction } from "./session-transcript-source-generation.js";
 
 type ActiveTranscriptDatabase = Pick<
   OpenClawAgentKyselyDatabase,
@@ -98,10 +99,17 @@ export function withCurrentProjectionSnapshot<T>(
           value: read({ database, resolved, state: EMPTY_PROJECTION_STATE }),
         };
       }
+      const source = readBoundSessionTranscriptSourceGenerationInTransaction(
+        database.db,
+        resolved.sessionId,
+        { projection: "active" },
+      );
       if (
+        source &&
         snapshot.state &&
         !snapshot.state.needsRebuild &&
-        snapshot.state.indexedSeq === snapshot.latestSeq
+        snapshot.state.indexedSeq === snapshot.latestSeq &&
+        snapshot.latestSeq === source.indexedSeq
       ) {
         return {
           kind: "value" as const,

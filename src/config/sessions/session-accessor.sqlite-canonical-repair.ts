@@ -23,7 +23,6 @@ import {
 } from "./session-accessor.sqlite-scope.js";
 import { bindSessionWindowEntryProjection } from "./session-accessor.sqlite-session-row.js";
 import { parseSessionEntryJson } from "./session-accessor.sqlite-status.js";
-import { ensureTranscriptGenerationInTransaction } from "./session-accessor.sqlite-transcript-state.js";
 import { canonicalSessionKeyMigrationRequiredError } from "./session-canonical-key.js";
 import { invalidateExistingSessionTranscriptDisplayInTransaction } from "./session-transcript-display.js";
 import {
@@ -34,6 +33,11 @@ import {
   startSessionTranscriptDisplayReconcile,
   startSessionTranscriptIndexReconcile,
 } from "./session-transcript-reconcile.js";
+import {
+  ensureSessionTranscriptSourceGenerationInTransaction,
+  readSessionTranscriptSourceGenerationInTransaction,
+  replaceSessionTranscriptSourceGenerationInTransaction,
+} from "./session-transcript-source-generation.js";
 import { normalizeStoreSessionKey } from "./store-entry.js";
 import type { SessionEntry } from "./types.js";
 
@@ -167,16 +171,15 @@ export async function ensureSqliteTranscriptGenerationsForCanonicalRepair(
           ),
         ]);
         const db = getSessionKysely(database.db);
-        const eventSessionIds = executeSqliteQuerySync(
+        const windowSessionIds = executeSqliteQuerySync(
           database.db,
           db
-            .selectFrom("transcript_events")
+            .selectFrom("session_windows")
             .select("session_id")
-            .where("session_id", "in", sessionIds)
-            .groupBy("session_id"),
+            .where("session_id", "in", sessionIds),
         ).rows;
-        for (const row of eventSessionIds) {
-          ensureTranscriptGenerationInTransaction(database, row.session_id);
+        for (const row of windowSessionIds) {
+          ensureSessionTranscriptSourceGenerationInTransaction(database, row.session_id);
         }
       }, toDatabaseOptions(group.resolved));
     });
@@ -529,13 +532,10 @@ function copySqliteSessionGenerationRows(params: {
       .selectAll()
       .where("session_id", "=", params.sessionId),
   ).rows;
-  const rewriteWatermarks = executeSqliteQuerySync(
+  const sourceGeneration = readSessionTranscriptSourceGenerationInTransaction(
     params.source.db,
-    sourceDb
-      .selectFrom("transcript_rewrite_watermarks")
-      .selectAll()
-      .where("session_id", "=", params.sessionId),
-  ).rows;
+    params.sessionId,
+  );
   const trajectoryEvents = executeSqliteQuerySync(
     params.source.db,
     sourceDb
@@ -554,16 +554,18 @@ function copySqliteSessionGenerationRows(params: {
     !params.sourceWindowPresent &&
     transcriptEvents.length === 0 &&
     transcriptIdentities.length === 0 &&
-    rewriteWatermarks.length === 0 &&
+    sourceGeneration === undefined &&
     trajectoryEvents.length === 0 &&
     parentStreamEvents.length === 0
   ) {
     return false;
   }
+  if (params.sourceWindowPresent && !sourceGeneration) {
+    throw new Error(`Canonical transcript source ${params.sessionId} has no generation`);
+  }
   for (const table of [
     "transcript_event_identities",
     "transcript_events",
-    "transcript_rewrite_watermarks",
     "trajectory_runtime_events",
     "acp_parent_stream_events",
   ] as const) {
@@ -584,12 +586,7 @@ function copySqliteSessionGenerationRows(params: {
       destinationDb.insertInto("transcript_event_identities").values(row),
     );
   }
-  for (const row of rewriteWatermarks) {
-    executeSqliteQuerySync(
-      params.destination.db,
-      destinationDb.insertInto("transcript_rewrite_watermarks").values(row),
-    );
-  }
+  replaceSessionTranscriptSourceGenerationInTransaction(params.destination, params.sessionId);
   for (const row of trajectoryEvents) {
     executeSqliteQuerySync(
       params.destination.db,

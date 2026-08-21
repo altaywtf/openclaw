@@ -3,6 +3,7 @@
 // this module owns the query path and schedules the shared reconcile owner
 // when doctor imports or out-of-band writes leave derived rows behind.
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
+import { ensureOpenClawAgentTranscriptProjectionBindingSchema } from "../../state/openclaw-agent-transcript-projection-binding-schema.js";
 import { truncateUtf16Safe } from "../../utils.js";
 import { resolveSqliteTargetFromSessionStorePath } from "./session-sqlite-target.js";
 import { listSessionsNeedingTranscriptIndexReconcile } from "./session-transcript-index.js";
@@ -63,6 +64,7 @@ export function searchSessionTranscripts(params: {
     ...(databasePath ? { path: databasePath } : {}),
   };
   const database = openOpenClawAgentDatabase(databaseOptions);
+  ensureOpenClawAgentTranscriptProjectionBindingSchema(database.db);
   const dirtySessions = listSessionsNeedingTranscriptIndexReconcile(database.db);
   if (dirtySessions.length > 0) {
     startSessionTranscriptIndexReconcile(databaseOptions);
@@ -87,6 +89,13 @@ export function searchSessionTranscripts(params: {
       bm25(session_transcript_fts) AS rank
     FROM session_transcript_fts
     JOIN session_windows ON session_windows.session_id = session_transcript_fts.session_id
+    JOIN transcript_rewrite_watermarks AS source
+      ON source.session_id = session_transcript_fts.session_id
+    JOIN session_transcript_projection_bindings AS binding
+      ON binding.session_id = session_transcript_fts.session_id
+      AND binding.projection = 'active'
+      AND binding.projection_generation IS NULL
+      AND binding.source_generation = source.generation
     WHERE session_transcript_fts MATCH ?${whereSession}
       AND session_transcript_fts.session_id NOT IN (
         SELECT session_id FROM session_transcript_index_state WHERE needs_rebuild != 0

@@ -272,6 +272,26 @@ describe("SQLite transcript display rows", () => {
     expect(readRows()).toEqual(secondRows);
   });
 
+  it("resets a ready display when its source-generation binding is stale", async () => {
+    await appendPlainPair();
+    const ready = readState();
+    database()
+      .db.prepare(
+        `UPDATE session_transcript_projection_bindings
+         SET source_generation = 'stale-source'
+         WHERE session_id = ? AND projection = 'display'`,
+      )
+      .run(scope.sessionId);
+
+    expect(
+      readPage({
+        expectedGeneration: ready.generation,
+        fromOrdinal: 0,
+        limit: 10,
+      }),
+    ).toEqual({ generation: ready.generation, kind: "reset" });
+  });
+
   it("rotates on a boundary and publishes one dense rebuilt generation", async () => {
     await appendPlainPair();
     const before = readState();

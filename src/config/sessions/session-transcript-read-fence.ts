@@ -3,6 +3,7 @@ import { executeSqliteQueryTakeFirstSync } from "../../infra/kysely-sync.js";
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { getSessionKysely } from "./session-accessor.sqlite-scope.js";
+import { readBoundSessionTranscriptSourceGenerationInTransaction } from "./session-transcript-source-generation.js";
 
 const transcriptReadFenceStorage = new AsyncLocalStorage<UserTurnTranscriptAdmissionReceipt>();
 
@@ -59,6 +60,15 @@ export function resolveSqliteSessionTranscriptReadFence(params: {
   if (params.sessionKey !== undefined && params.sessionKey !== receipt.sessionKey) {
     throw new SessionTranscriptReadFenceError(
       "Current-turn transcript admission belongs to a different session key",
+    );
+  }
+  if (
+    !readBoundSessionTranscriptSourceGenerationInTransaction(params.database.db, params.sessionId, {
+      projection: "active",
+    })
+  ) {
+    throw new SessionTranscriptReadFenceError(
+      `Current-turn transcript admission projection changed: ${receipt.entryId}`,
     );
   }
   const db = getSessionKysely(params.database.db);

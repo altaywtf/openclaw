@@ -345,8 +345,7 @@ function migrateSessionTranscriptGenerations(db: DatabaseSync, previousVersion: 
   db.prepare(
     `INSERT OR IGNORE INTO transcript_rewrite_watermarks (session_id, generation, updated_at)
      SELECT session_id, lower(hex(randomblob(16))), ?
-     FROM transcript_events
-     GROUP BY session_id`,
+     FROM session_windows`,
   ).run(Date.now());
 }
 

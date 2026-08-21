@@ -15,12 +15,14 @@ import {
 } from "../../infra/kysely-sync.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
 import { ensureOpenClawAgentDisplayRowSchema } from "../../state/openclaw-agent-display-row-schema.js";
+import { ensureOpenClawAgentTranscriptProjectionBindingSchema } from "../../state/openclaw-agent-transcript-projection-binding-schema.js";
 import {
   appendEligibleSessionTranscriptDisplayRowInTransaction,
   hasTranscriptMessage,
   invalidateExistingSessionTranscriptDisplayInTransaction,
   invalidateSessionTranscriptDisplayInTransaction,
   isSessionTranscriptDisplayBoundary,
+  readSessionTranscriptDisplayState,
   shouldProjectActiveEvent,
 } from "./session-transcript-display.js";
 import {
@@ -30,13 +32,21 @@ import {
   type TranscriptIndexEntry,
 } from "./session-transcript-projection-rebuild.js";
 import {
+  deleteSessionTranscriptProjectionBindingsInTransaction,
+  readSessionTranscriptProjectionBindingInTransaction,
+  readSessionTranscriptSourceGenerationInTransaction,
+  sessionTranscriptProjectionBindingMatches,
+  writeSessionTranscriptProjectionBindingInTransaction,
+} from "./session-transcript-source-generation.js";
+import {
   isCanonicalSessionTranscriptEntry,
   isSessionTranscriptLeafControl,
   isSessionTranscriptSideAppendEntry,
   parseSessionTranscriptTreeEntry,
 } from "./transcript-tree.js";
 
-const SQLITE_TABLE_EXISTS_SQL = "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?";
+const SQLITE_TABLE_EXISTS_SQL =
+  "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?";
 
 type TranscriptIndexDatabase = Omit<
   Pick<
@@ -44,8 +54,10 @@ type TranscriptIndexDatabase = Omit<
     | "session_windows"
     | "session_transcript_active_events"
     | "session_transcript_display_state"
+    | "session_transcript_projection_bindings"
     | "session_transcript_fts"
     | "session_transcript_index_state"
+    | "transcript_rewrite_watermarks"
     | "transcript_events"
   >,
   "session_transcript_fts"
@@ -100,20 +112,40 @@ function readSessionTranscriptProjectionState(
 }
 
 export function sessionTranscriptIndexNeedsReconcile(db: DatabaseSync, sessionId: string): boolean {
-  const latest = executeSqliteQueryTakeFirstSync(
-    db,
-    getIndexKysely(db)
-      .selectFrom("transcript_events")
-      .select("seq")
-      .where("session_id", "=", sessionId)
-      .orderBy("seq", "desc")
-      .limit(1),
-  );
-  if (!latest) {
+  const source = readSessionTranscriptSourceGenerationInTransaction(db, sessionId);
+  if (!source || source.indexedSeq < 0) {
     return false;
   }
   const state = readSessionTranscriptProjectionState(db, sessionId);
-  return !state || state.needsRebuild || state.indexedSeq !== latest.seq;
+  return (
+    !state ||
+    state.needsRebuild ||
+    state.indexedSeq !== source.indexedSeq ||
+    !sessionTranscriptProjectionBindingMatches(
+      readSessionTranscriptProjectionBindingInTransaction(db, sessionId, "active"),
+      source.generation,
+    )
+  );
+}
+
+export function sessionTranscriptDisplayNeedsReconcile(
+  db: DatabaseSync,
+  sessionId: string,
+): boolean {
+  const source = readSessionTranscriptSourceGenerationInTransaction(db, sessionId);
+  const state = readSessionTranscriptDisplayState(db, sessionId);
+  if (!source || !state) {
+    return false;
+  }
+  return (
+    state.needsRebuild ||
+    state.indexedSeq !== source.indexedSeq ||
+    !sessionTranscriptProjectionBindingMatches(
+      readSessionTranscriptProjectionBindingInTransaction(db, sessionId, "display"),
+      source.generation,
+      state.generation,
+    )
+  );
 }
 
 function writeWatermark(
@@ -146,6 +178,15 @@ function writeWatermark(
         }),
       ),
   );
+  const source = readSessionTranscriptSourceGenerationInTransaction(db, sessionId);
+  if (!source) {
+    throw new Error(`Transcript source generation is missing for ${sessionId}`);
+  }
+  writeSessionTranscriptProjectionBindingInTransaction(db, sessionId, {
+    projection: "active",
+    projectionGeneration: null,
+    sourceGeneration: source.generation,
+  });
 }
 
 function insertActiveEventRow(
@@ -175,6 +216,7 @@ function deleteActiveEventRows(db: DatabaseSync, sessionId: string): void {
       .deleteFrom("session_transcript_active_events")
       .where("session_id", "=", sessionId),
   );
+  deleteSessionTranscriptProjectionBindingsInTransaction(db, sessionId, "active");
 }
 
 function insertFtsRow(db: DatabaseSync, sessionId: string, entry: TranscriptIndexEntry): void {
@@ -399,10 +441,15 @@ function rebuildSessionTranscriptIndexInTransaction(
   sessionId: string,
   rows: readonly SessionTranscriptProjectionSourceRow[],
 ): void {
+  const source = readSessionTranscriptSourceGenerationInTransaction(db, sessionId);
+  if (!source) {
+    throw new Error(`Transcript source generation is missing for ${sessionId}`);
+  }
   const projection = buildSessionTranscriptProjection({
     includeDisplayRows: false,
     rows,
     sessionId,
+    sourceGeneration: source.generation,
     sourceTranscriptUpdatedAt: null,
   });
   deleteFtsRows(db, sessionId);
@@ -479,11 +526,12 @@ function hasTranscriptRows(db: DatabaseSync): boolean {
   );
 }
 
-/** Lists sessions whose active and FTS projections lag canonical transcript rows. */
+/** Lists sessions whose active and FTS projection is not bound to the current source. */
 export function listSessionsNeedingTranscriptIndexReconcile(db: DatabaseSync): string[] {
   if (!hasTranscriptRows(db)) {
     return [];
   }
+  ensureOpenClawAgentTranscriptProjectionBindingSchema(db);
   const rows = executeSqliteQuerySync(
     db,
     getIndexKysely(db)
@@ -509,11 +557,23 @@ export function listSessionsNeedingTranscriptIndexReconcile(db: DatabaseSync): s
         "st.session_id",
         "session_windows.session_id",
       )
+      .leftJoin(
+        "transcript_rewrite_watermarks as source",
+        "source.session_id",
+        "session_windows.session_id",
+      )
+      .leftJoin("session_transcript_projection_bindings as active_binding", (join) =>
+        join
+          .onRef("active_binding.session_id", "=", "session_windows.session_id")
+          .on("active_binding.projection", "=", "active"),
+      )
       .select("session_windows.session_id")
       .where((eb) =>
         eb.or([
           eb(eb.fn.coalesce("st.needs_rebuild", eb.val(1)), "!=", 0),
           eb("latest.seq", ">", eb.fn.coalesce("st.indexed_seq", eb.val(-1))),
+          eb("active_binding.source_generation", "is", null),
+          eb("active_binding.source_generation", "!=", eb.ref("source.generation")),
         ]),
       )
       .orderBy("session_windows.session_id"),
@@ -534,6 +594,7 @@ export function listSessionsNeedingTranscriptProjectionReconcile(db: DatabaseSyn
     return [];
   }
   ensureOpenClawAgentDisplayRowSchema(db);
+  ensureOpenClawAgentTranscriptProjectionBindingSchema(db);
   const kysely = getIndexKysely(db);
   const rows = transcriptRowsPresent
     ? executeSqliteQuerySync(
@@ -561,34 +622,65 @@ export function listSessionsNeedingTranscriptProjectionReconcile(db: DatabaseSyn
             "display.session_id",
             "session_windows.session_id",
           )
+          .leftJoin(
+            "transcript_rewrite_watermarks as source",
+            "source.session_id",
+            "session_windows.session_id",
+          )
+          .leftJoin("session_transcript_projection_bindings as binding", (join) =>
+            join
+              .onRef("binding.session_id", "=", "session_windows.session_id")
+              .on("binding.projection", "=", "display"),
+          )
           .select("session_windows.session_id")
           .where((eb) =>
             eb.or([
               eb(eb.fn.coalesce("display.needs_rebuild", eb.val(1)), "!=", 0),
               eb("latest.seq", ">", eb.fn.coalesce("display.indexed_seq", eb.val(-1))),
+              eb("binding.source_generation", "is", null),
+              eb("binding.source_generation", "!=", eb.ref("source.generation")),
+              eb("binding.projection_generation", "!=", eb.ref("display.generation")),
             ]),
           )
-          // The transcript PK makes the correlated latest-row lookup one index seek per session.
-          // Grouping transcript_events here made every healthy search rescan the entire history.
           .orderBy("session_windows.session_id"),
       ).rows
     : [];
-  const emptyDirtyRows = executeSqliteQuerySync(
+  const displayDirtyRows = executeSqliteQuerySync(
     db,
     kysely
-      .selectFrom("session_transcript_display_state")
-      .select("session_id")
-      .where("needs_rebuild", "!=", 0),
+      .selectFrom("session_transcript_display_state as display")
+      .innerJoin(
+        "transcript_rewrite_watermarks as source",
+        "source.session_id",
+        "display.session_id",
+      )
+      .leftJoin("session_transcript_projection_bindings as binding", (join) =>
+        join
+          .onRef("binding.session_id", "=", "display.session_id")
+          .on("binding.projection", "=", "display"),
+      )
+      .select("display.session_id")
+      .where((eb) =>
+        eb.or([
+          eb("display.needs_rebuild", "!=", 0),
+          eb("binding.source_generation", "is", null),
+          eb("binding.source_generation", "!=", eb.ref("source.generation")),
+          eb("binding.projection_generation", "!=", eb.ref("display.generation")),
+        ]),
+      ),
   ).rows;
   return [
     ...new Set(
-      [...listSessionsNeedingTranscriptIndexReconcile(db), ...rows, ...emptyDirtyRows].flatMap(
-        (row) =>
-          typeof row === "string"
-            ? [row]
-            : typeof row.session_id === "string"
-              ? [row.session_id]
-              : [],
+      [
+        ...listSessionsNeedingTranscriptIndexReconcile(db),
+        ...rows,
+        ...displayDirtyRows,
+      ].flatMap((row) =>
+        typeof row === "string"
+          ? [row]
+          : typeof row.session_id === "string"
+            ? [row.session_id]
+            : [],
       ),
     ),
   ].toSorted();

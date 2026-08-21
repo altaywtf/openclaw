@@ -743,6 +743,21 @@ CREATE TABLE IF NOT EXISTS session_transcript_display_carry (
   CHECK (delivery_event_seq IS NULL OR kind = 'message_tool')
 ) STRICT;
 
+CREATE TABLE IF NOT EXISTS session_transcript_projection_bindings (
+  session_id TEXT NOT NULL,
+  projection TEXT NOT NULL CHECK (projection IN ('active', 'display')),
+  projection_generation TEXT,
+  source_generation TEXT NOT NULL,
+  FOREIGN KEY (session_id) REFERENCES session_windows(session_id) ON DELETE CASCADE,
+  CHECK (
+    (projection = 'active' AND projection_generation IS NULL) OR
+    (projection = 'display' AND projection_generation IS NOT NULL)
+  )
+) STRICT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_transcript_projection_bindings_owner
+  ON session_transcript_projection_bindings(session_id, projection);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS session_transcript_fts USING fts5(
   text,
   session_id UNINDEXED,

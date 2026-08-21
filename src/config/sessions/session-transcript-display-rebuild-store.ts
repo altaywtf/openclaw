@@ -30,6 +30,11 @@ import {
   writeDisplayReducerCarry,
   writeDisplayState,
 } from "./session-transcript-display-store.js";
+import {
+  readBoundSessionTranscriptSourceGenerationInTransaction,
+  readSessionTranscriptSourceGenerationInTransaction,
+  writeSessionTranscriptProjectionBindingInTransaction,
+} from "./session-transcript-source-generation.js";
 
 const SESSION_TRANSCRIPT_DISPLAY_PAGE_MAX_ROWS = 200;
 // Node's SQLite builds default to 32,766 variables per statement. Leave room for
@@ -257,7 +262,19 @@ export function finalizeSessionTranscriptDisplayInTransaction(
       .where("needs_rebuild", "!=", 0)
       .where("updated_at", "=", params.claimId),
   );
-  return result.numAffectedRows === 1n;
+  if (result.numAffectedRows !== 1n) {
+    return false;
+  }
+  const source = readSessionTranscriptSourceGenerationInTransaction(db, params.sessionId);
+  if (!source || source.indexedSeq !== params.sourceIndexedSeq) {
+    return false;
+  }
+  writeSessionTranscriptProjectionBindingInTransaction(db, params.sessionId, {
+    projection: "display",
+    projectionGeneration: params.generation,
+    sourceGeneration: source.generation,
+  });
+  return true;
 }
 
 function normalizeDisplayPageLimit(limit: number): number {
@@ -273,21 +290,18 @@ function readSessionTranscriptDisplayRowsSnapshot(
   params: SessionTranscriptDisplayReadParams,
 ): SessionTranscriptDisplayReadResult {
   const state = readSessionTranscriptDisplayState(db, sessionId);
-  const latest = executeSqliteQueryTakeFirstSync(
-    db,
-    getDisplayKysely(db)
-      .selectFrom("transcript_events")
-      .select("seq")
-      .where("session_id", "=", sessionId)
-      .orderBy("seq", "desc")
-      .limit(1),
-  );
-  const latestSeq = latest?.seq ?? -1;
+  const source = state
+    ? readBoundSessionTranscriptSourceGenerationInTransaction(db, sessionId, {
+        projection: "display",
+        projectionGeneration: state.generation,
+      })
+    : undefined;
   if (
+    !source ||
     !state ||
     state.generation !== params.expectedGeneration ||
     state.needsRebuild ||
-    state.indexedSeq !== latestSeq
+    state.indexedSeq !== source.indexedSeq
   ) {
     return { generation: state?.generation ?? null, kind: "reset" };
   }

@@ -25,6 +25,7 @@ export function projectionFixture(rows: SessionTranscriptProjectionSourceRow[]) 
   return buildSessionTranscriptProjection({
     rows,
     sessionId: "projection-session",
+    sourceGeneration: "test-source-generation",
     sourceTranscriptUpdatedAt: 42,
   });
 }

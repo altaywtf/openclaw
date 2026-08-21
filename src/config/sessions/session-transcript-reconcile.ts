@@ -42,6 +42,7 @@ import type {
   SessionTranscriptReconcileWorkerInput,
   SessionTranscriptReconcileWorkerMessage,
 } from "./session-transcript-reconcile.worker.js";
+import { ensureAllSessionTranscriptSourceGenerationsInTransaction } from "./session-transcript-source-generation.js";
 
 const log = createSubsystemLogger("sessions/transcript-index");
 const PROJECTION_WRITE_CHUNK_ROWS = 512;
@@ -272,6 +273,7 @@ async function reconcileSessionTranscriptProjections(
     databaseOptions,
     "sessions.transcript-index.preflight",
     (database) => {
+      ensureAllSessionTranscriptSourceGenerationsInTransaction(database);
       deleteOrphanedTranscriptIndexRowsInTransaction(database.db);
       return (
         (includeDisplayProjection

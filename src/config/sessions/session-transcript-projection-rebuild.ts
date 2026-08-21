@@ -20,6 +20,13 @@ import {
   type PreparedSessionTranscriptDisplayRow,
 } from "./session-transcript-display.js";
 import {
+  deleteSessionTranscriptProjectionBindingsInTransaction,
+  readSessionTranscriptProjectionBindingInTransaction,
+  readSessionTranscriptSourceGenerationInTransaction,
+  sessionTranscriptProjectionBindingMatches,
+  writeSessionTranscriptProjectionBindingInTransaction,
+} from "./session-transcript-source-generation.js";
+import {
   resolveVisibleTranscriptAppendParentId,
   selectVisibleTranscriptEventEntries,
 } from "./transcript-visible-events.js";
@@ -57,6 +64,7 @@ export type PreparedSessionTranscriptProjectionMetadata = {
   displayRowCount: number;
   leafEventId: string | null;
   sessionId: string;
+  sourceGeneration: string;
   sourceIndexedSeq: number;
   sourceTranscriptUpdatedAt: number | null;
 };
@@ -160,6 +168,7 @@ export function buildSessionTranscriptProjection(params: {
   includeDisplayRows?: boolean;
   rows: readonly SessionTranscriptProjectionSourceRow[];
   sessionId: string;
+  sourceGeneration: string;
   sourceTranscriptUpdatedAt: number | null;
 }): PreparedSessionTranscriptProjection {
   const now = Date.now();
@@ -208,6 +217,7 @@ export function buildSessionTranscriptProjection(params: {
     ftsRows,
     leafEventId: resolveVisibleTranscriptAppendParentId(events),
     sessionId: params.sessionId,
+    sourceGeneration: params.sourceGeneration,
     sourceIndexedSeq: params.rows.at(-1)?.seq ?? -1,
     sourceTranscriptUpdatedAt: params.sourceTranscriptUpdatedAt,
   };
@@ -241,7 +251,11 @@ export function prepareSessionTranscriptProjection(
       if (!session) {
         return undefined;
       }
-      const latestSeq = rows.at(-1)?.seq ?? -1;
+      const source = readSessionTranscriptSourceGenerationInTransaction(db, sessionId);
+      if (!source) {
+        return undefined;
+      }
+      const latestSeq = source.indexedSeq;
       const activeState = executeSqliteQueryTakeFirstSync(
         db,
         kysely
@@ -253,16 +267,32 @@ export function prepareSessionTranscriptProjection(
       const displayState = includeDisplayProjection
         ? readSessionTranscriptDisplayState(db, sessionId)
         : undefined;
+      const activeBinding = readSessionTranscriptProjectionBindingInTransaction(
+        db,
+        sessionId,
+        "active",
+      );
+      const displayBinding = includeDisplayProjection
+        ? readSessionTranscriptProjectionBindingInTransaction(db, sessionId, "display")
+        : undefined;
       const displayNeedsRebuild =
         includeDisplayProjection &&
-        (!displayState || displayState.needsRebuild || displayState.indexedSeq !== latestSeq);
+        (!displayState ||
+          displayState.needsRebuild ||
+          displayState.indexedSeq !== latestSeq ||
+          !sessionTranscriptProjectionBindingMatches(
+            displayBinding,
+            source.generation,
+            displayState.generation,
+          ));
 
       return buildSessionTranscriptProjection({
         activeNeedsRebuild:
           latestSeq >= 0 &&
           (!activeState ||
             activeState.needs_rebuild !== 0 ||
-            activeState.indexed_seq !== latestSeq),
+            activeState.indexed_seq !== latestSeq ||
+            !sessionTranscriptProjectionBindingMatches(activeBinding, source.generation)),
         displayGeneration: displayState?.generation ?? randomUUID().replaceAll("-", ""),
         displayNeedsRebuild,
         includeDisplayRows: includeDisplayProjection,
@@ -272,6 +302,7 @@ export function prepareSessionTranscriptProjection(
           seq: row.seq,
         })),
         sessionId,
+        sourceGeneration: source.generation,
         sourceTranscriptUpdatedAt: session.transcript_updated_at,
       });
     },
@@ -294,18 +325,11 @@ function sourceSnapshotMatches(
       .select("transcript_updated_at")
       .where("session_id", "=", plan.sessionId),
   );
-  const latest = executeSqliteQueryTakeFirstSync(
-    db,
-    kysely
-      .selectFrom("transcript_events")
-      .select("seq")
-      .where("session_id", "=", plan.sessionId)
-      .orderBy("seq", "desc")
-      .limit(1),
-  );
+  const source = readSessionTranscriptSourceGenerationInTransaction(db, plan.sessionId);
   return (
     session?.transcript_updated_at === plan.sourceTranscriptUpdatedAt &&
-    (latest?.seq ?? -1) === plan.sourceIndexedSeq
+    source?.generation === plan.sourceGeneration &&
+    source.indexedSeq === plan.sourceIndexedSeq
   );
 }
 
@@ -339,7 +363,13 @@ export function claimPreparedSessionTranscriptProjectionInTransaction(
   );
   const activeNeedsRebuild =
     plan.sourceIndexedSeq >= 0 &&
-    (!current || current.needs_rebuild !== 0 || current.indexed_seq !== plan.sourceIndexedSeq);
+    (!current ||
+      current.needs_rebuild !== 0 ||
+      current.indexed_seq !== plan.sourceIndexedSeq ||
+      !sessionTranscriptProjectionBindingMatches(
+        readSessionTranscriptProjectionBindingInTransaction(db, plan.sessionId, "active"),
+        plan.sourceGeneration,
+      ));
   if (
     activeNeedsRebuild !== plan.activeNeedsRebuild ||
     (!plan.activeNeedsRebuild && !plan.displayNeedsRebuild)
@@ -370,6 +400,7 @@ export function claimPreparedSessionTranscriptProjectionInTransaction(
     return false;
   }
   if (plan.activeNeedsRebuild) {
+    deleteSessionTranscriptProjectionBindingsInTransaction(db, plan.sessionId, "active");
     executeSqliteQuerySync(
       db,
       kysely
@@ -535,5 +566,13 @@ export function finalizePreparedSessionTranscriptProjectionInTransaction(
       .where("needs_rebuild", "!=", 0)
       .where("updated_at", "=", claimId),
   );
-  return result.numAffectedRows === 1n;
+  if (result.numAffectedRows !== 1n) {
+    return false;
+  }
+  writeSessionTranscriptProjectionBindingInTransaction(db, plan.sessionId, {
+    projection: "active",
+    projectionGeneration: null,
+    sourceGeneration: plan.sourceGeneration,
+  });
+  return true;
 }
