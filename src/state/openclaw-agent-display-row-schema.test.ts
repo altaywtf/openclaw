@@ -9,7 +9,10 @@ import {
 import {
   ensureOpenClawAgentDisplayRowSchema,
   AGENT_BASE_SCHEMA_SQL,
+  SESSION_TRANSCRIPT_DISPLAY_CANVAS_TABLE,
+  SESSION_TRANSCRIPT_DISPLAY_CARRY_TABLE,
   SESSION_TRANSCRIPT_DISPLAY_ROWS_TABLE,
+  SESSION_TRANSCRIPT_DISPLAY_ROW_SOURCES_TABLE,
   SESSION_TRANSCRIPT_DISPLAY_STATE_TABLE,
 } from "./openclaw-agent-display-row-schema.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "./openclaw-agent-schema.js";
@@ -70,6 +73,27 @@ function insertDisplayStateAndRow(database: DatabaseSync): void {
        VALUES ('session-1', 'row-1', 1, 1, 0, 0, 'opaque')`,
     )
     .run();
+  database
+    .prepare(
+      `INSERT INTO session_transcript_display_row_sources
+         (session_id, row_id, relation, position, source_event_seq, semantics_version)
+       VALUES ('session-1', 'row-1', 'turn_boundary', 0, 0, 1)`,
+    )
+    .run();
+  database
+    .prepare(
+      `INSERT INTO session_transcript_display_canvas
+         (session_id, row_id, position, canvas_version, source_event_seq, url)
+       VALUES ('session-1', 'row-1', 0, 1, 0, '/__openclaw__/canvas/documents/cv_test/index.html')`,
+    )
+    .run();
+  database
+    .prepare(
+      `INSERT INTO session_transcript_display_carry
+         (session_id, kind, position, source_event_seq, carry_version)
+       VALUES ('session-1', 'heartbeat_boundary', 0, 0, 1)`,
+    )
+    .run();
 }
 
 describe("agent display-row schema", () => {
@@ -86,6 +110,9 @@ describe("agent display-row schema", () => {
 
     expect(tableExists(database.db, SESSION_TRANSCRIPT_DISPLAY_STATE_TABLE)).toBe(false);
     expect(tableExists(database.db, SESSION_TRANSCRIPT_DISPLAY_ROWS_TABLE)).toBe(false);
+    expect(tableExists(database.db, SESSION_TRANSCRIPT_DISPLAY_ROW_SOURCES_TABLE)).toBe(false);
+    expect(tableExists(database.db, SESSION_TRANSCRIPT_DISPLAY_CANVAS_TABLE)).toBe(false);
+    expect(tableExists(database.db, SESSION_TRANSCRIPT_DISPLAY_CARRY_TABLE)).toBe(false);
 
     ensureOpenClawAgentDisplayRowSchema(database.db);
     ensureOpenClawAgentDisplayRowSchema(database.db);
@@ -99,6 +126,9 @@ describe("agent display-row schema", () => {
         )
         .all(),
     ).toEqual([
+      { name: SESSION_TRANSCRIPT_DISPLAY_CANVAS_TABLE, strict: 1 },
+      { name: SESSION_TRANSCRIPT_DISPLAY_CARRY_TABLE, strict: 1 },
+      { name: SESSION_TRANSCRIPT_DISPLAY_ROW_SOURCES_TABLE, strict: 1 },
       { name: SESSION_TRANSCRIPT_DISPLAY_ROWS_TABLE, strict: 1 },
       { name: SESSION_TRANSCRIPT_DISPLAY_STATE_TABLE, strict: 1 },
     ]);
@@ -108,6 +138,40 @@ describe("agent display-row schema", () => {
         .prepare("SELECT schema_version, updated_at FROM schema_meta WHERE meta_key = 'primary'")
         .get(),
     ).toEqual(metadataBefore);
+  });
+
+  it("lazily upgrades and reopens an exact foundation-only database", () => {
+    const database = new DatabaseSync(":memory:");
+    try {
+      const start = OPENCLAW_AGENT_SCHEMA_SQL.indexOf(
+        `CREATE TABLE IF NOT EXISTS ${SESSION_TRANSCRIPT_DISPLAY_STATE_TABLE} (`,
+      );
+      const semanticsStart = OPENCLAW_AGENT_SCHEMA_SQL.indexOf(
+        `CREATE TABLE IF NOT EXISTS ${SESSION_TRANSCRIPT_DISPLAY_ROW_SOURCES_TABLE} (`,
+        start,
+      );
+      database.exec(AGENT_BASE_SCHEMA_SQL);
+      database.exec(OPENCLAW_AGENT_SCHEMA_SQL.slice(start, semanticsStart));
+      const versionBefore = database.prepare("PRAGMA user_version").get();
+
+      ensureOpenClawAgentDisplayRowSchema(database);
+      expect(tableExists(database, SESSION_TRANSCRIPT_DISPLAY_ROW_SOURCES_TABLE)).toBe(true);
+      expect(tableExists(database, SESSION_TRANSCRIPT_DISPLAY_CANVAS_TABLE)).toBe(true);
+      expect(tableExists(database, SESSION_TRANSCRIPT_DISPLAY_CARRY_TABLE)).toBe(true);
+      expect(database.prepare("PRAGMA user_version").get()).toEqual(versionBefore);
+      expect(() => ensureOpenClawAgentDisplayRowSchema(database)).not.toThrow();
+
+      assertSqliteSchemaContains(
+        database,
+        "foundation reader schema",
+        `${AGENT_BASE_SCHEMA_SQL}${OPENCLAW_AGENT_SCHEMA_SQL.slice(
+          start,
+          semanticsStart,
+        )}`,
+      );
+    } finally {
+      database.close();
+    }
   });
 
   it("does not cache a schema ensure rolled back by its caller", () => {
@@ -136,6 +200,11 @@ describe("agent display-row schema", () => {
       name: "one missing index",
       damage: "DROP INDEX idx_agent_transcript_display_ordinal;",
       message: /idx_agent_transcript_display_ordinal|schema/u,
+    },
+    {
+      name: "one missing semantics table",
+      damage: `DROP TABLE ${SESSION_TRANSCRIPT_DISPLAY_CANVAS_TABLE};`,
+      message: /semantics schema is partially present/u,
     },
     {
       name: "a malformed row table",
@@ -199,6 +268,17 @@ describe("agent display-row schema", () => {
 
       expect(
         database.prepare("SELECT COUNT(*) AS count FROM session_transcript_display_rows").get(),
+      ).toEqual({ count: 0 });
+      expect(
+        database
+          .prepare("SELECT COUNT(*) AS count FROM session_transcript_display_row_sources")
+          .get(),
+      ).toEqual({ count: 0 });
+      expect(
+        database.prepare("SELECT COUNT(*) AS count FROM session_transcript_display_canvas").get(),
+      ).toEqual({ count: 0 });
+      expect(
+        database.prepare("SELECT COUNT(*) AS count FROM session_transcript_display_carry").get(),
       ).toEqual({ count: 0 });
       expect(
         database.prepare("SELECT COUNT(*) AS count FROM session_transcript_display_state").get(),

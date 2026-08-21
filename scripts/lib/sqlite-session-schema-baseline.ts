@@ -40,6 +40,9 @@ const TARGET_TABLES = new Set([
   "session_transcript_active_events",
   "session_transcript_display_state",
   "session_transcript_display_rows",
+  "session_transcript_display_row_sources",
+  "session_transcript_display_canvas",
+  "session_transcript_display_carry",
   "session_transcript_archives",
 ]);
 

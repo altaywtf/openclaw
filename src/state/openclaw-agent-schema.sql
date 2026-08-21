@@ -678,6 +678,65 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_transcript_display_ordinal
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_transcript_display_source
   ON session_transcript_display_rows(session_id, source_event_seq);
 
+CREATE TABLE IF NOT EXISTS session_transcript_display_row_sources (
+  session_id TEXT NOT NULL,
+  row_id TEXT NOT NULL,
+  relation TEXT NOT NULL CHECK (relation IN ('turn_boundary', 'message_tool_mirror', 'tts_supplement')),
+  position INTEGER NOT NULL,
+  source_event_seq INTEGER NOT NULL CHECK (source_event_seq >= 0),
+  semantics_version INTEGER NOT NULL CHECK (semantics_version = 1),
+  PRIMARY KEY (session_id, row_id, relation, position),
+  FOREIGN KEY (session_id, row_id) REFERENCES session_transcript_display_rows(session_id, row_id) ON DELETE CASCADE,
+  FOREIGN KEY (session_id, source_event_seq) REFERENCES transcript_events(session_id, seq) ON DELETE CASCADE,
+  CHECK (
+    (relation = 'turn_boundary' AND position = 0) OR
+    (relation IN ('message_tool_mirror', 'tts_supplement') AND position BETWEEN 0 AND 15)
+  )
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_agent_transcript_display_row_sources_source
+  ON session_transcript_display_row_sources(session_id, source_event_seq);
+
+CREATE TABLE IF NOT EXISTS session_transcript_display_canvas (
+  session_id TEXT NOT NULL,
+  row_id TEXT NOT NULL,
+  position INTEGER NOT NULL CHECK (position BETWEEN 0 AND 15),
+  canvas_version INTEGER NOT NULL CHECK (canvas_version = 1),
+  source_event_seq INTEGER NOT NULL CHECK (source_event_seq >= 0),
+  url TEXT NOT NULL CHECK (length(url) BETWEEN 1 AND 2048),
+  view_id TEXT CHECK (view_id IS NULL OR length(view_id) BETWEEN 1 AND 128),
+  title TEXT CHECK (title IS NULL OR length(title) BETWEEN 1 AND 256),
+  preferred_height INTEGER CHECK (preferred_height IS NULL OR preferred_height BETWEEN 160 AND 1200),
+  sandbox TEXT CHECK (sandbox IS NULL OR sandbox IN ('strict', 'scripts')),
+  board_widget_name TEXT CHECK (board_widget_name IS NULL OR length(board_widget_name) BETWEEN 1 AND 64),
+  PRIMARY KEY (session_id, row_id, position),
+  FOREIGN KEY (session_id, row_id) REFERENCES session_transcript_display_rows(session_id, row_id) ON DELETE CASCADE,
+  FOREIGN KEY (session_id, source_event_seq) REFERENCES transcript_events(session_id, seq) ON DELETE CASCADE
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_agent_transcript_display_canvas_source
+  ON session_transcript_display_canvas(session_id, source_event_seq);
+
+CREATE TABLE IF NOT EXISTS session_transcript_display_carry (
+  session_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('heartbeat_boundary', 'stream_error', 'message_tool', 'tts_candidate', 'canvas_pending')),
+  position INTEGER NOT NULL,
+  source_event_seq INTEGER NOT NULL CHECK (source_event_seq >= 0),
+  related_event_seq INTEGER,
+  carry_version INTEGER NOT NULL CHECK (carry_version = 1),
+  PRIMARY KEY (session_id, kind, position),
+  FOREIGN KEY (session_id) REFERENCES session_transcript_display_state(session_id) ON DELETE CASCADE,
+  FOREIGN KEY (session_id, source_event_seq) REFERENCES transcript_events(session_id, seq) ON DELETE CASCADE,
+  FOREIGN KEY (session_id, related_event_seq) REFERENCES transcript_events(session_id, seq) ON DELETE CASCADE,
+  CHECK (
+    (kind = 'heartbeat_boundary' AND position = 0) OR
+    (kind = 'stream_error' AND position BETWEEN 0 AND 7) OR
+    (kind IN ('message_tool', 'canvas_pending') AND position BETWEEN 0 AND 15) OR
+    (kind = 'tts_candidate' AND position BETWEEN 0 AND 63)
+  ),
+  CHECK (related_event_seq IS NULL OR kind IN ('message_tool', 'canvas_pending'))
+) STRICT;
+
 CREATE VIRTUAL TABLE IF NOT EXISTS session_transcript_fts USING fts5(
   text,
   session_id UNINDEXED,

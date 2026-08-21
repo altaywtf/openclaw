@@ -325,6 +325,38 @@ export interface SessionTranscriptArchives {
   session_key: string;
 }
 
+export interface SessionTranscriptDisplayCanvas {
+  board_widget_name: string | null;
+  canvas_version: number;
+  position: number;
+  preferred_height: number | null;
+  row_id: string;
+  sandbox: string | null;
+  session_id: string;
+  source_event_seq: number;
+  title: string | null;
+  url: string;
+  view_id: string | null;
+}
+
+export interface SessionTranscriptDisplayCarry {
+  carry_version: number;
+  kind: string;
+  position: number;
+  related_event_seq: number | null;
+  session_id: string;
+  source_event_seq: number;
+}
+
+export interface SessionTranscriptDisplayRowSources {
+  position: number;
+  relation: string;
+  row_id: string;
+  semantics_version: number;
+  session_id: string;
+  source_event_seq: number;
+}
+
 export interface SessionTranscriptDisplayRows {
   display_ordinal: number;
   kind: string;
@@ -525,6 +557,9 @@ export interface DB {
   session_suggestions: SessionSuggestions;
   session_transcript_active_events: SessionTranscriptActiveEvents;
   session_transcript_archives: SessionTranscriptArchives;
+  session_transcript_display_canvas: SessionTranscriptDisplayCanvas;
+  session_transcript_display_carry: SessionTranscriptDisplayCarry;
+  session_transcript_display_row_sources: SessionTranscriptDisplayRowSources;
   session_transcript_display_rows: SessionTranscriptDisplayRows;
   session_transcript_display_state: SessionTranscriptDisplayState;
   session_transcript_fts: SessionTranscriptFts;
