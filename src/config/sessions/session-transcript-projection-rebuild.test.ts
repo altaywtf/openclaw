@@ -10,7 +10,10 @@ import {
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { persistSessionTranscriptTurn, upsertSessionEntryCore } from "./session-accessor.js";
 import {
+  DELIVERY_CANVAS_EXPECTED_PREFIXES,
   NEGATIVE_DISPLAY_EXPECTED_PREFIXES,
+  dryRunMessageToolEvents,
+  dryRunMessageToolResultEvents,
   expectedCanvasCarryCapPrefixes,
   expectedHeartbeatCarryCapPrefixes,
   expectedMessageCarryCapPrefixes,
@@ -26,33 +29,17 @@ import {
   STATEFUL_DISPLAY_EXPECTED_PREFIXES,
   canvasUrlWithLength,
   plannedDisplaySnapshot,
+  projectionFixture as projection,
+  projectionRow as row,
   readDisplayRowIdentities,
   readDisplaySnapshot,
+  serializeDisplayTables,
 } from "./session-transcript-display.test-support.js";
-import {
-  buildSessionTranscriptProjection,
-  type SessionTranscriptProjectionSourceRow,
-} from "./session-transcript-projection-rebuild.js";
+import type { SessionTranscriptProjectionSourceRow } from "./session-transcript-projection-rebuild.js";
 import { reconcileSessionTranscriptDisplayProjection } from "./session-transcript-reconcile.js";
 
 const SESSION_ID = "projection-session";
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-
-function row(
-  seq: number,
-  event: Record<string, unknown>,
-  createdAt = seq * 1_000,
-): SessionTranscriptProjectionSourceRow {
-  return { createdAt, event, seq };
-}
-
-function projection(rows: SessionTranscriptProjectionSourceRow[]) {
-  return buildSessionTranscriptProjection({
-    rows,
-    sessionId: SESSION_ID,
-    sourceTranscriptUpdatedAt: 42,
-  });
-}
 
 describe("canonical session transcript projection", () => {
   let env: NodeJS.ProcessEnv;
@@ -345,17 +332,7 @@ describe("canonical session transcript projection", () => {
       STATEFUL_DISPLAY_EXPECTED_PREFIXES.canvas,
     );
 
-    const privacyDatabase = openOpenClawAgentDatabase({ agentId: scope.agentId, env }).db;
-    const serialized = [
-      "session_transcript_display_rows",
-      "session_transcript_display_row_sources",
-      "session_transcript_display_canvas",
-      "session_transcript_display_carry",
-      "session_transcript_display_state",
-    ]
-      .flatMap((table) => privacyDatabase.prepare(`SELECT * FROM ${table}`).all())
-      .map((value) => JSON.stringify(value))
-      .join("\n");
+    const serialized = serializeDisplayTables({ agentId: scope.agentId, env });
     expect(serialized).not.toContain("RAW_TOOL_CALL_SENTINEL");
     expect(serialized).not.toContain("RAW_TOOL_RESULT_SENTINEL");
     expect(serialized).not.toContain("RAW_CANVAS_RESULT_SENTINEL");
@@ -470,6 +447,44 @@ describe("canonical session transcript projection", () => {
       ],
       NEGATIVE_DISPLAY_EXPECTED_PREFIXES.sameSourceMessageMirror,
     );
+
+    await expectIncrementalDisplayParity(
+      "delivery-mirror-canvas",
+      [
+        message("canvas-target", { role: "assistant", content: "Initial assistant" }),
+        message("canvas-tool", {
+          role: "toolResult",
+          toolCallId: "canvas-call",
+          toolName: "canvas",
+          details: {
+            mcpAppPreview: {
+              kind: "canvas",
+              presentation: {
+                preferred_height: 1400,
+                sandbox: "scripts",
+                target: "assistant_message",
+                title: "Canvas title",
+              },
+              view: {
+                boardWidgetName: "status",
+                id: "cv_status",
+                url: "/__openclaw__/canvas/documents/cv_status/assets/status%20page.html",
+              },
+            },
+          },
+        }),
+        call("canvas-message-call", "Reply A"),
+        result("canvas-message-call"),
+        message("canvas-delivery", {
+          role: "assistant",
+          content: "Reply A",
+          model: "delivery-mirror",
+          openclawDeliveryMirror: { kind: "channel-final" },
+          provider: "openclaw",
+        }),
+      ],
+      DELIVERY_CANVAS_EXPECTED_PREFIXES,
+    );
   });
 
   it("keeps forwarded sends and settled negative transitions out of semantic carry", async () => {
@@ -528,6 +543,18 @@ describe("canonical session transcript projection", () => {
         message("forwarded-flush", { role: "assistant", content: "NO_REPLY" }),
       ],
       NEGATIVE_DISPLAY_EXPECTED_PREFIXES.forwardedMessageTool,
+    );
+
+    await expectIncrementalDisplayParity(
+      "dry-run-message-tool",
+      dryRunMessageToolEvents(),
+      NEGATIVE_DISPLAY_EXPECTED_PREFIXES.forwardedMessageTool,
+    );
+
+    await expectIncrementalDisplayParity(
+      "dry-run-message-tool-result",
+      dryRunMessageToolResultEvents(),
+      NEGATIVE_DISPLAY_EXPECTED_PREFIXES.dryRunResult,
     );
 
     await expectIncrementalDisplayParity(

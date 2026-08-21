@@ -3,12 +3,31 @@ import {
   prepareSessionTranscriptDisplayProjection,
   type PreparedSessionTranscriptDisplayProjection,
 } from "./session-transcript-display.js";
-import type { SessionTranscriptProjectionSourceRow } from "./session-transcript-projection-rebuild.js";
+import {
+  buildSessionTranscriptProjection,
+  type SessionTranscriptProjectionSourceRow,
+} from "./session-transcript-projection-rebuild.js";
 
 type DatabaseScope = {
   agentId: string;
   env: NodeJS.ProcessEnv;
 };
+
+export function projectionRow(
+  seq: number,
+  event: Record<string, unknown>,
+  createdAt = seq * 1_000,
+): SessionTranscriptProjectionSourceRow {
+  return { createdAt, event, seq };
+}
+
+export function projectionFixture(rows: SessionTranscriptProjectionSourceRow[]) {
+  return buildSessionTranscriptProjection({
+    rows,
+    sessionId: "projection-session",
+    sourceTranscriptUpdatedAt: 42,
+  });
+}
 
 export function canvasUrlWithLength(length: number): string {
   const prefix = "/__openclaw__/canvas/documents/cv/";
@@ -28,6 +47,20 @@ export function readDisplayRowIdentities(scope: DatabaseScope, sessionId: string
       "SELECT display_ordinal, row_id FROM session_transcript_display_rows WHERE session_id = ? ORDER BY display_ordinal",
     )
     .all(sessionId) as Array<{ display_ordinal: number; row_id: string }>;
+}
+
+export function serializeDisplayTables(scope: DatabaseScope): string {
+  const db = openOpenClawAgentDatabase(scope).db;
+  return [
+    "session_transcript_display_rows",
+    "session_transcript_display_row_sources",
+    "session_transcript_display_canvas",
+    "session_transcript_display_carry",
+    "session_transcript_display_state",
+  ]
+    .flatMap((table) => db.prepare(`SELECT * FROM ${table}`).all())
+    .map((value) => JSON.stringify(value))
+    .join("\n");
 }
 
 export function readDisplaySnapshot(scope: DatabaseScope, sessionId: string) {

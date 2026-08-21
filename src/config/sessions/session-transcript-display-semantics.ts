@@ -501,6 +501,10 @@ export function reduceSessionTranscriptDisplaySource(
   }
   if (row && deliveryMirror && handleDeliveryMirror(state, message, row)) {
     attachPendingHeartbeat(state, row, role);
+    if (row.kind === "assistant" && isRenderableAssistant(message)) {
+      movePendingCanvases(state, row);
+      pushCarry(state, "tts_candidate", { sourceEventSeq: source.seq });
+    }
     return;
   }
   if (suppressed) {
@@ -511,6 +515,8 @@ export function reduceSessionTranscriptDisplaySource(
       row = state.effects.appendRow("assistant", source.seq);
       flushMessageToolMirrors(state, row);
       attachPendingHeartbeat(state, row, role);
+    } else {
+      clearCarry(state, "message_tool");
     }
     return;
   }

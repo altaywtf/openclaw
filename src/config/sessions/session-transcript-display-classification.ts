@@ -177,11 +177,15 @@ export function readMessageToolCalls(message: Record<string, unknown>): MessageT
       return [];
     }
     const args = readToolArguments(record);
+    const deliveryStatus = [args.deliveryStatus, args.delivery_status, args.status].find(
+      (value): value is string => typeof value === "string" && Boolean(value.trim()),
+    );
     if (
       typeof args.action !== "string" ||
       args.action.trim().toLowerCase() !== "send" ||
       args.dryRun === true ||
-      args.dry_run === true
+      args.dry_run === true ||
+      deliveryStatus?.trim().toLowerCase() === "dry_run"
     ) {
       return [];
     }
@@ -228,6 +232,9 @@ export function readMessageToolResult(message: Record<string, unknown>): {
     (message.error != null && message.error !== false) ||
     serialized.some((value) => /"ok"\s*:\s*false/u.test(value ?? "")) ||
     serialized.some((value) => /"dry_?run"\s*:\s*true/iu.test(value ?? "")) ||
+    serialized.some((value) =>
+      /"(?:deliveryStatus|delivery_status|status)"\s*:\s*"dry_run"/iu.test(value ?? ""),
+    ) ||
     serialized.some((value) =>
       /"(?:delivered|status|messageId)"\s*:\s*(?:false|"skipped"|"suppressed")/iu.test(value ?? ""),
     );

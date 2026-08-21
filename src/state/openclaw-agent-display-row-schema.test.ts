@@ -1,3 +1,4 @@
+import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
@@ -141,7 +142,8 @@ describe("agent display-row schema", () => {
   });
 
   it("lazily upgrades and reopens an exact foundation-only database", () => {
-    const database = new DatabaseSync(":memory:");
+    const databasePath = path.join(tempDirs.make("openclaw-display-upgrade-"), "agent.sqlite");
+    let database = new DatabaseSync(databasePath);
     try {
       const start = OPENCLAW_AGENT_SCHEMA_SQL.indexOf(
         `CREATE TABLE IF NOT EXISTS ${SESSION_TRANSCRIPT_DISPLAY_STATE_TABLE} (`,
@@ -159,8 +161,10 @@ describe("agent display-row schema", () => {
       expect(tableExists(database, SESSION_TRANSCRIPT_DISPLAY_CANVAS_TABLE)).toBe(true);
       expect(tableExists(database, SESSION_TRANSCRIPT_DISPLAY_CARRY_TABLE)).toBe(true);
       expect(database.prepare("PRAGMA user_version").get()).toEqual(versionBefore);
+      database.close();
+      database = new DatabaseSync(databasePath);
       expect(() => ensureOpenClawAgentDisplayRowSchema(database)).not.toThrow();
-
+      expect(tableExists(database, SESSION_TRANSCRIPT_DISPLAY_ROW_SOURCES_TABLE)).toBe(true);
       assertSqliteSchemaContains(
         database,
         "foundation reader schema",
@@ -170,7 +174,9 @@ describe("agent display-row schema", () => {
         )}`,
       );
     } finally {
-      database.close();
+      if (database.isOpen) {
+        database.close();
+      }
     }
   });
 

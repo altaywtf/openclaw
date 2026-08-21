@@ -1,3 +1,5 @@
+import { STATEFUL_DISPLAY_EXPECTED_PREFIXES } from "./session-transcript-display.test-support.js";
+
 type ExpectedRow = {
   display_ordinal: number;
   kind: "assistant" | "opaque" | "user";
@@ -154,7 +156,89 @@ export function expectedCanvasCarryCapPrefixes(count: number) {
   });
 }
 
+export function dryRunMessageToolEvents(): Record<string, unknown>[] {
+  return [
+    {
+      id: "dry-run-call",
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "dry-run-call",
+            name: "message",
+            arguments: {
+              action: "send",
+              message: "Dry run",
+              status: "dry_run",
+            },
+          },
+        ],
+      },
+      type: "message",
+    },
+    {
+      id: "dry-run-result",
+      message: {
+        role: "toolResult",
+        toolCallId: "dry-run-call",
+        toolName: "message",
+        result: { ok: true },
+      },
+      type: "message",
+    },
+    {
+      id: "dry-run-flush",
+      message: { role: "assistant", content: "NO_REPLY" },
+      type: "message",
+    },
+  ];
+}
+
+export function dryRunMessageToolResultEvents(): Record<string, unknown>[] {
+  return [
+    {
+      id: "dry-result-call",
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "dry-result-call",
+            name: "message",
+            arguments: { action: "send", message: "Dry result" },
+          },
+        ],
+      },
+      type: "message",
+    },
+    {
+      id: "dry-result",
+      message: {
+        role: "toolResult",
+        toolCallId: "dry-result-call",
+        toolName: "message",
+        result: { status: "dry_run" },
+      },
+      type: "message",
+    },
+    {
+      id: "dry-result-flush",
+      message: { role: "assistant", content: "NO_REPLY" },
+      type: "message",
+    },
+  ];
+}
+
 export const NEGATIVE_DISPLAY_EXPECTED_PREFIXES = {
+  dryRunResult: [
+    expectedSnapshot(
+      [{ display_ordinal: 0, kind: "opaque", revision: 1, source_event_seq: 0 }],
+      expectedCarry("message_tool", [0]),
+    ),
+    expectedSnapshot(expectedRows(2, "opaque"), expectedCarry("message_tool", [0])),
+    expectedSnapshot(expectedRows(2, "opaque")),
+  ],
   sameSourceMessageMirror: [
     expectedSnapshot(
       [{ display_ordinal: 0, kind: "opaque", revision: 1, source_event_seq: 0 }],
@@ -202,6 +286,7 @@ export const NEGATIVE_DISPLAY_EXPECTED_PREFIXES = {
           sourceEventSeq: 0,
           sourceOccurrence: 1,
         },
+        ...expectedCarry("tts_candidate", [3]),
       ],
       [
         {
@@ -218,7 +303,7 @@ export const NEGATIVE_DISPLAY_EXPECTED_PREFIXES = {
         { display_ordinal: 3, kind: "assistant", revision: 1, source_event_seq: 3 },
         { display_ordinal: 4, kind: "assistant", revision: 1, source_event_seq: 4 },
       ],
-      [],
+      expectedCarry("tts_candidate", [3]),
       [
         {
           displayOrdinal: 3,
@@ -258,7 +343,7 @@ export const NEGATIVE_DISPLAY_EXPECTED_PREFIXES = {
         ...expectedRows(4, "opaque"),
         { display_ordinal: 4, kind: "assistant", revision: 1, source_event_seq: 4 },
       ],
-      expectedCarry("message_tool", [2], () => 3),
+      [...expectedCarry("message_tool", [2], () => 3), ...expectedCarry("tts_candidate", [4])],
       [
         {
           displayOrdinal: 4,
@@ -274,7 +359,7 @@ export const NEGATIVE_DISPLAY_EXPECTED_PREFIXES = {
         { display_ordinal: 4, kind: "assistant", revision: 1, source_event_seq: 4 },
         { display_ordinal: 5, kind: "assistant", revision: 1, source_event_seq: 5 },
       ],
-      [],
+      expectedCarry("tts_candidate", [4]),
       [
         {
           displayOrdinal: 4,
@@ -385,3 +470,68 @@ export const NEGATIVE_DISPLAY_EXPECTED_PREFIXES = {
     ),
   ],
 } as const;
+
+export const DELIVERY_CANVAS_EXPECTED_PREFIXES = [
+  STATEFUL_DISPLAY_EXPECTED_PREFIXES.canvas[0],
+  STATEFUL_DISPLAY_EXPECTED_PREFIXES.canvas[1],
+  expectedSnapshot(
+    [
+      { display_ordinal: 0, kind: "assistant", revision: 2, source_event_seq: 0 },
+      { display_ordinal: 1, kind: "opaque", revision: 1, source_event_seq: 1 },
+      { display_ordinal: 2, kind: "opaque", revision: 1, source_event_seq: 2 },
+    ],
+    [
+      {
+        kind: "canvas_pending",
+        position: 0,
+        relatedEventSeq: 0,
+        sourceEventSeq: 1,
+      },
+      { kind: "message_tool", position: 0, relatedEventSeq: null, sourceEventSeq: 2 },
+      ...expectedCarry("tts_candidate", [0]),
+    ],
+    [],
+    STATEFUL_DISPLAY_EXPECTED_PREFIXES.canvas[1].canvases.slice(),
+  ),
+  expectedSnapshot(
+    [
+      { display_ordinal: 0, kind: "assistant", revision: 2, source_event_seq: 0 },
+      { display_ordinal: 1, kind: "opaque", revision: 1, source_event_seq: 1 },
+      { display_ordinal: 2, kind: "opaque", revision: 1, source_event_seq: 2 },
+      { display_ordinal: 3, kind: "opaque", revision: 1, source_event_seq: 3 },
+    ],
+    [
+      {
+        kind: "canvas_pending",
+        position: 0,
+        relatedEventSeq: 0,
+        sourceEventSeq: 1,
+      },
+      { kind: "message_tool", position: 0, relatedEventSeq: 3, sourceEventSeq: 2 },
+      ...expectedCarry("tts_candidate", [0]),
+    ],
+    [],
+    STATEFUL_DISPLAY_EXPECTED_PREFIXES.canvas[1].canvases.slice(),
+  ),
+  expectedSnapshot(
+    [
+      { display_ordinal: 0, kind: "assistant", revision: 3, source_event_seq: 0 },
+      { display_ordinal: 1, kind: "opaque", revision: 1, source_event_seq: 1 },
+      { display_ordinal: 2, kind: "opaque", revision: 1, source_event_seq: 2 },
+      { display_ordinal: 3, kind: "opaque", revision: 1, source_event_seq: 3 },
+      { display_ordinal: 4, kind: "assistant", revision: 2, source_event_seq: 4 },
+    ],
+    expectedCarry("tts_candidate", [0, 4]),
+    [
+      {
+        displayOrdinal: 4,
+        position: 0,
+        relation: "message_tool_mirror",
+        sourceEventSeq: 2,
+      },
+    ],
+    STATEFUL_DISPLAY_EXPECTED_PREFIXES.canvas[2].canvases.map((canvas) =>
+      Object.assign({}, canvas, { displayOrdinal: 4 }),
+    ),
+  ),
+] as const;
