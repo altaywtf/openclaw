@@ -72,7 +72,15 @@ export function validateOpenClawAgentDisplayRowSchema(db: DatabaseSync): boolean
   }
   const statePresent = hasDisplayRowTable(db, SESSION_TRANSCRIPT_DISPLAY_STATE_TABLE);
   const rowsPresent = hasDisplayRowTable(db, SESSION_TRANSCRIPT_DISPLAY_ROWS_TABLE);
-  if (!statePresent && !rowsPresent) {
+  const semanticTables = [
+    SESSION_TRANSCRIPT_DISPLAY_ROW_SOURCES_TABLE,
+    SESSION_TRANSCRIPT_DISPLAY_CANVAS_TABLE,
+    SESSION_TRANSCRIPT_DISPLAY_CARRY_TABLE,
+  ];
+  const presentSemanticTables = semanticTables.filter((tableName) =>
+    hasDisplayRowTable(db, tableName),
+  );
+  if (!statePresent && !rowsPresent && presentSemanticTables.length === 0) {
     ABSENT_DATABASES.add(db);
     return false;
   }
@@ -84,14 +92,6 @@ export function validateOpenClawAgentDisplayRowSchema(db: DatabaseSync): boolean
     "OpenClaw agent display-row foundation schema",
     AGENT_DISPLAY_ROW_FOUNDATION_SCHEMA_SQL,
     DISPLAY_SCHEMA_COMPATIBILITY,
-  );
-  const semanticTables = [
-    SESSION_TRANSCRIPT_DISPLAY_ROW_SOURCES_TABLE,
-    SESSION_TRANSCRIPT_DISPLAY_CANVAS_TABLE,
-    SESSION_TRANSCRIPT_DISPLAY_CARRY_TABLE,
-  ];
-  const presentSemanticTables = semanticTables.filter((tableName) =>
-    hasDisplayRowTable(db, tableName),
   );
   if (presentSemanticTables.length === 0) {
     FOUNDATION_ONLY_DATABASES.add(db);

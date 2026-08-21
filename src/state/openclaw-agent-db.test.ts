@@ -4367,6 +4367,30 @@ describe("openclaw agent database", () => {
     );
   });
 
+  it("rejects a newer user version after a validated handle is physically reopened", () => {
+    const stateDir = createTempStateDir();
+    const env = { OPENCLAW_STATE_DIR: stateDir };
+    const databasePath = openOpenClawAgentDatabase({ agentId: "worker-1", env }).path;
+    expect(closeOpenClawAgentDatabaseByPath(databasePath)).toBe(true);
+
+    const { DatabaseSync } = requireNodeSqlite();
+    const future = new DatabaseSync(databasePath);
+    try {
+      future.exec(`PRAGMA user_version = ${OPENCLAW_AGENT_SCHEMA_VERSION + 1};`);
+    } finally {
+      future.close();
+    }
+
+    expect(() => openOpenClawAgentDatabase({ agentId: "worker-1", env })).toThrow(
+      expect.objectContaining({
+        name: "SqliteSchemaVersionError",
+        message: expect.stringContaining(
+          `newer schema version ${OPENCLAW_AGENT_SCHEMA_VERSION + 1}`,
+        ),
+      }),
+    );
+  });
+
   it.each([0, OPENCLAW_AGENT_SCHEMA_VERSION - 1])(
     "rechecks the media version guard at v%d after a validated handle is physically reopened",
     (version) => {

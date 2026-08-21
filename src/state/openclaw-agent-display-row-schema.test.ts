@@ -560,6 +560,39 @@ describe("agent transcript projection binding schema", () => {
     );
   });
 
+  it.each([
+    {
+      damage: `DROP TABLE ${SESSION_TRANSCRIPT_DISPLAY_ROWS_TABLE};`,
+      name: "partial display foundation",
+    },
+    {
+      damage: `
+        DROP TABLE ${SESSION_TRANSCRIPT_DISPLAY_ROWS_TABLE};
+        DROP TABLE ${SESSION_TRANSCRIPT_DISPLAY_STATE_TABLE};
+      `,
+      name: "orphaned display semantics",
+    },
+    {
+      damage: `DROP TABLE ${SESSION_TRANSCRIPT_DISPLAY_CANVAS_TABLE};`,
+      name: "partial display semantics",
+    },
+  ])("rejects a $name after physical reopen", ({ damage }) => {
+    const stateDir = tempDirs.make("openclaw-display-row-reopen-");
+    const options = { agentId: "main", env: { OPENCLAW_STATE_DIR: stateDir } };
+    const initial = openOpenClawAgentDatabase(options);
+    const databasePath = initial.path;
+    ensureOpenClawAgentDisplayRowSchema(initial.db);
+    expect(closeOpenClawAgentDatabaseByPath(databasePath)).toBe(true);
+
+    const damaged = new DatabaseSync(databasePath);
+    damaged.exec(damage);
+    damaged.close();
+
+    expect(() => openOpenClawAgentDatabase(options)).toThrow(
+      /display-row (?:semantics )?schema is partially present/u,
+    );
+  });
+
   it("cascades bindings with their session window", () => {
     const database = createDisplayDatabase();
     try {

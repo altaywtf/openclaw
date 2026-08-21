@@ -325,8 +325,8 @@ export function openOpenClawAgentDatabase(
       let maintenance: OpenClawAgentDatabase["walMaintenance"] | undefined;
       try {
         db.exec(`PRAGMA busy_timeout = ${OPENCLAW_SQLITE_BUSY_TIMEOUT_MS};`);
+        assertSupportedAgentSchemaVersion(db, pathname);
         if (!isValidatedReopen) {
-          assertSupportedAgentSchemaVersion(db, pathname);
           assertExistingAgentSchemaOwner(readExistingAgentSchemaMeta(db), agentId, pathname);
         }
         // Integrity is not process-stable: the file can be damaged while evicted.
