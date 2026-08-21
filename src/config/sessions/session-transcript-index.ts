@@ -34,6 +34,9 @@ import {
   isSessionTranscriptSideAppendEntry,
   parseSessionTranscriptTreeEntry,
 } from "./transcript-tree.js";
+
+const SQLITE_TABLE_EXISTS_SQL = "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?";
+
 type TranscriptIndexDatabase = Omit<
   Pick<
     OpenClawAgentKyselyDatabase,
@@ -465,23 +468,20 @@ export function reconcileSessionTranscriptIndexInTransaction(
  * that gained rows without index state (doctor imports), and watermarks
  * behind the newest row. Ordered for deterministic reconcile passes.
  */
-export function listSessionsNeedingTranscriptIndexReconcile(db: DatabaseSync): string[] {
-  const hasTranscriptRows = Boolean(
+function hasTranscriptRows(db: DatabaseSync): boolean {
+  return Boolean(
     db.prepare("SELECT 1 FROM transcript_events LIMIT 1").get(), // sqlite-allow-raw -- Avoid creating the lazy display group for an unused agent database.
   );
-  const hasDisplayStateTable = Boolean(
-    db
-      .prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?")
-      .get("session_transcript_display_state"), // sqlite-allow-raw -- Feature-local lazy-schema presence probe.
-  );
-  if (!hasTranscriptRows && !hasDisplayStateTable) {
+}
+
+/** Lists sessions whose active and FTS projections lag canonical transcript rows. */
+export function listSessionsNeedingTranscriptIndexReconcile(db: DatabaseSync): string[] {
+  if (!hasTranscriptRows(db)) {
     return [];
   }
-  ensureOpenClawAgentDisplayRowSchema(db);
-  const kysely = getIndexKysely(db);
   const rows = executeSqliteQuerySync(
     db,
-    kysely
+    getIndexKysely(db)
       .selectFrom("session_windows")
       .innerJoin("transcript_events as latest", (join) =>
         join
@@ -504,24 +504,70 @@ export function listSessionsNeedingTranscriptIndexReconcile(db: DatabaseSync): s
         "st.session_id",
         "session_windows.session_id",
       )
-      .leftJoin(
-        "session_transcript_display_state as display",
-        "display.session_id",
-        "session_windows.session_id",
-      )
       .select("session_windows.session_id")
       .where((eb) =>
         eb.or([
           eb(eb.fn.coalesce("st.needs_rebuild", eb.val(1)), "!=", 0),
           eb("latest.seq", ">", eb.fn.coalesce("st.indexed_seq", eb.val(-1))),
-          eb(eb.fn.coalesce("display.needs_rebuild", eb.val(1)), "!=", 0),
-          eb("latest.seq", ">", eb.fn.coalesce("display.indexed_seq", eb.val(-1))),
         ]),
       )
-      // The transcript PK makes the correlated latest-row lookup one index seek per session.
-      // Grouping transcript_events here made every healthy search rescan the entire history.
       .orderBy("session_windows.session_id"),
   ).rows;
+  return rows.flatMap((row) => (typeof row.session_id === "string" ? [row.session_id] : []));
+}
+
+/** Lists sessions whose active, FTS, or display projection requires repair. */
+export function listSessionsNeedingTranscriptProjectionReconcile(db: DatabaseSync): string[] {
+  const transcriptRowsPresent = hasTranscriptRows(db);
+  const hasDisplayStateTable = Boolean(
+    // sqlite-allow-raw -- Avoid installing the lazy display group solely to decide whether reconcile has work.
+    db
+      .prepare(/* sqlite-allow-raw */ SQLITE_TABLE_EXISTS_SQL)
+      .get("session_transcript_display_state"),
+  );
+  if (!transcriptRowsPresent && !hasDisplayStateTable) {
+    return [];
+  }
+  ensureOpenClawAgentDisplayRowSchema(db);
+  const kysely = getIndexKysely(db);
+  const rows = transcriptRowsPresent
+    ? executeSqliteQuerySync(
+        db,
+        kysely
+          .selectFrom("session_windows")
+          .innerJoin("transcript_events as latest", (join) =>
+            join
+              .onRef("latest.session_id", "=", "session_windows.session_id")
+              .on((eb) =>
+                eb(
+                  "latest.seq",
+                  "=",
+                  eb
+                    .selectFrom("transcript_events as candidate")
+                    .select("candidate.seq")
+                    .whereRef("candidate.session_id", "=", "session_windows.session_id")
+                    .orderBy("candidate.seq", "desc")
+                    .limit(1),
+                ),
+              ),
+          )
+          .leftJoin(
+            "session_transcript_display_state as display",
+            "display.session_id",
+            "session_windows.session_id",
+          )
+          .select("session_windows.session_id")
+          .where((eb) =>
+            eb.or([
+              eb(eb.fn.coalesce("display.needs_rebuild", eb.val(1)), "!=", 0),
+              eb("latest.seq", ">", eb.fn.coalesce("display.indexed_seq", eb.val(-1))),
+            ]),
+          )
+          // The transcript PK makes the correlated latest-row lookup one index seek per session.
+          // Grouping transcript_events here made every healthy search rescan the entire history.
+          .orderBy("session_windows.session_id"),
+      ).rows
+    : [];
   const emptyDirtyRows = executeSqliteQuerySync(
     db,
     kysely
@@ -531,8 +577,13 @@ export function listSessionsNeedingTranscriptIndexReconcile(db: DatabaseSync): s
   ).rows;
   return [
     ...new Set(
-      [...rows, ...emptyDirtyRows].flatMap((row) =>
-        typeof row.session_id === "string" ? [row.session_id] : [],
+      [...listSessionsNeedingTranscriptIndexReconcile(db), ...rows, ...emptyDirtyRows].flatMap(
+        (row) =>
+          typeof row === "string"
+            ? [row]
+            : typeof row.session_id === "string"
+              ? [row.session_id]
+              : [],
       ),
     ),
   ].toSorted();

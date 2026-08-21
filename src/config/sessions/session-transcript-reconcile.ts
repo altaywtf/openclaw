@@ -26,7 +26,7 @@ import {
 } from "./session-transcript-display.js";
 import {
   deleteOrphanedTranscriptIndexRowsInTransaction,
-  listSessionsNeedingTranscriptIndexReconcile,
+  listSessionsNeedingTranscriptProjectionReconcile,
   sessionTranscriptIndexNeedsReconcile,
 } from "./session-transcript-index.js";
 import {
@@ -257,7 +257,7 @@ export async function reconcileSessionTranscriptIndexes(
     "sessions.transcript-index.preflight",
     (database) => {
       deleteOrphanedTranscriptIndexRowsInTransaction(database.db);
-      return listSessionsNeedingTranscriptIndexReconcile(database.db).length > 0;
+      return listSessionsNeedingTranscriptProjectionReconcile(database.db).length > 0;
     },
   );
   if (!needsWorker) {

@@ -4,7 +4,7 @@ import {
   closeOpenClawAgentDatabaseByPath,
   openOpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
-import { listSessionsNeedingTranscriptIndexReconcile } from "./session-transcript-index.js";
+import { listSessionsNeedingTranscriptProjectionReconcile } from "./session-transcript-index.js";
 import {
   prepareSessionTranscriptProjection,
   type PreparedSessionTranscriptProjection,
@@ -198,7 +198,7 @@ async function run(): Promise<void> {
       path: reconcileInput.path,
     });
     const sessionIds = orderSessionIds(
-      listSessionsNeedingTranscriptIndexReconcile(database.db),
+      listSessionsNeedingTranscriptProjectionReconcile(database.db),
       reconcileInput.preferredSessionId,
     );
     for (const sessionId of sessionIds) {

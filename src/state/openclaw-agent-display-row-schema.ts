@@ -9,6 +9,7 @@ export const SESSION_TRANSCRIPT_DISPLAY_ROWS_TABLE = "session_transcript_display
 const DISPLAY_ROW_SCHEMA_START = `CREATE TABLE IF NOT EXISTS ${SESSION_TRANSCRIPT_DISPLAY_STATE_TABLE} (`;
 const DISPLAY_ROW_SCHEMA_END =
   "CREATE VIRTUAL TABLE IF NOT EXISTS session_transcript_fts USING fts5(";
+const SQLITE_TABLE_EXISTS_SQL = "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?";
 const ENSURED_DATABASES = new WeakSet<DatabaseSync>();
 
 function splitDisplayRowSchema(sql: string): {
@@ -33,7 +34,8 @@ export const AGENT_SCHEMA_WITHOUT_DISPLAY_ROWS_SQL = displayRowSchema.withoutDis
 
 function hasDisplayRowTable(db: DatabaseSync, tableName: string): boolean {
   return Boolean(
-    db.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?").get(tableName),
+    // Schema ownership must reject an incomplete lazy group before installing it.
+    db.prepare(/* sqlite-allow-raw */ SQLITE_TABLE_EXISTS_SQL).get(tableName),
   );
 }
 

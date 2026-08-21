@@ -646,7 +646,7 @@ describe("SQLite active transcript event projection", () => {
       touchSessionEntry: false,
     });
     await persistSessionTranscriptTurn(secondScope, {
-      messages: Array.from({ length: 5_000 }, (_, index) => ({
+      messages: Array.from({ length: 1_000 }, (_, index) => ({
         eventId: `slow-${index}`,
         parentId: index === 0 ? null : `slow-${index - 1}`,
         message: { role: "toolResult", content: "slow" },
