@@ -208,7 +208,8 @@ describe("canonical session transcript projection", () => {
         type: "message",
         message: {
           role: "assistant",
-          content: [{ type: "toolCall", name: "message", arguments: {} }],
+          content: "mirrored message",
+          openclawMessageToolMirror: {},
         },
       },
       expected: "opaque",
@@ -219,7 +220,7 @@ describe("canonical session transcript projection", () => {
         type: "message",
         message: {
           role: "assistant",
-          content: [{ type: "audio", data: "opaque" }],
+          content: "spoken supplement",
           openclawTtsSupplement: { spokenText: "hello" },
         },
       },
@@ -230,8 +231,8 @@ describe("canonical session transcript projection", () => {
       event: {
         type: "message",
         message: {
-          role: "toolResult",
-          content: [{ type: "text", text: "tool" }],
+          role: "assistant",
+          content: "canvas preview",
           details: { mcpAppPreview: { view: { id: "view-1" } } },
         },
       },
