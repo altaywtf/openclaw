@@ -9,6 +9,7 @@ import {
 import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
 import {
+  abandonSessionTranscriptDisplayClaimInTransaction,
   claimSessionTranscriptDisplayInTransaction,
   finalizeSessionTranscriptDisplayInTransaction,
   hasTranscriptMessage,
@@ -25,6 +26,7 @@ import {
   readSessionTranscriptProjectionBindingInTransaction,
   readSessionTranscriptSourceGenerationInTransaction,
   sessionTranscriptProjectionBindingMatches,
+  sessionTranscriptSourceGenerationMatchesInTransaction,
   writeSessionTranscriptProjectionBindingInTransaction,
 } from "./session-transcript-source-generation.js";
 import {
@@ -62,6 +64,7 @@ export type PreparedSessionTranscriptProjectionMetadata = {
   displayCarry: PreparedSessionTranscriptDisplayCarry[];
   displayGeneration: string;
   displayNeedsRebuild: boolean;
+  displayPreviousGeneration: string | null;
   displayRowCount: number;
   leafEventId: string | null;
   sessionId: string;
@@ -166,6 +169,7 @@ export function buildSessionTranscriptProjection(params: {
   activeNeedsRebuild?: boolean;
   displayGeneration?: string;
   displayNeedsRebuild?: boolean;
+  displayPreviousGeneration?: string | null;
   includeDisplayRows?: boolean;
   rows: readonly SessionTranscriptProjectionSourceRow[];
   sessionId: string;
@@ -213,6 +217,7 @@ export function buildSessionTranscriptProjection(params: {
     displayCarry: displayProjection.carry,
     displayGeneration: params.displayGeneration ?? randomUUID().replaceAll("-", ""),
     displayNeedsRebuild: params.displayNeedsRebuild ?? true,
+    displayPreviousGeneration: params.displayPreviousGeneration ?? null,
     displayRowCount: displayRows.length,
     displayRows,
     ftsRows,
@@ -286,6 +291,10 @@ export function prepareSessionTranscriptProjection(
             source.generation,
             displayState.generation,
           ));
+      const displayGeneration =
+        displayState && (!displayNeedsRebuild || displayState.needsRebuild)
+          ? displayState.generation
+          : randomUUID().replaceAll("-", "");
 
       return buildSessionTranscriptProjection({
         activeNeedsRebuild:
@@ -294,9 +303,10 @@ export function prepareSessionTranscriptProjection(
             activeState.needs_rebuild !== 0 ||
             activeState.indexed_seq !== latestSeq ||
             !sessionTranscriptProjectionBindingMatches(activeBinding, source.generation)),
-        displayGeneration: displayState?.generation ?? randomUUID().replaceAll("-", ""),
+        displayGeneration,
         displayNeedsRebuild,
         includeDisplayRows: includeDisplayProjection,
+        displayPreviousGeneration: displayState?.generation ?? null,
         rows: rows.map((row) => ({
           createdAt: row.created_at,
           event: JSON.parse(row.event_json) as Record<string, unknown>,
@@ -334,15 +344,31 @@ function sourceSnapshotMatches(
   );
 }
 
-function projectionClaimIsOwned(db: DatabaseSync, sessionId: string, claimId: number): boolean {
+function projectionClaimIsOwned(
+  db: DatabaseSync,
+  params: {
+    claimId: number;
+    sessionId: string;
+    sourceGeneration: string;
+    sourceIndexedSeq: number;
+  },
+): boolean {
   const row = executeSqliteQueryTakeFirstSync(
     db,
     getProjectionKysely(db)
       .selectFrom("session_transcript_index_state")
       .select(["needs_rebuild", "updated_at"])
-      .where("session_id", "=", sessionId),
+      .where("session_id", "=", params.sessionId),
   );
-  return row?.needs_rebuild !== 0 && row?.updated_at === claimId;
+  return Boolean(
+    row &&
+    row.needs_rebuild !== 0 &&
+    row.updated_at === params.claimId &&
+    sessionTranscriptSourceGenerationMatchesInTransaction(db, params.sessionId, {
+      generation: params.sourceGeneration,
+      indexedSeq: params.sourceIndexedSeq,
+    }),
+  );
 }
 
 /** Claims a prepared snapshot. Later chunks publish only while this claim remains current. */
@@ -379,14 +405,11 @@ export function claimPreparedSessionTranscriptProjectionInTransaction(
   }
   if (plan.displayNeedsRebuild) {
     const readiness = readSessionTranscriptDisplayRowsInTransaction(db, plan.sessionId, {
-      expectedGeneration: plan.displayGeneration,
+      expectedGeneration: plan.displayPreviousGeneration ?? plan.displayGeneration,
       fromOrdinal: 0,
       limit: 1,
     });
-    if (
-      readiness.kind === "ready" ||
-      (readiness.generation !== null && readiness.generation !== plan.displayGeneration)
-    ) {
+    if (readiness.kind === "ready" || readiness.generation !== plan.displayPreviousGeneration) {
       return false;
     }
   }
@@ -395,6 +418,7 @@ export function claimPreparedSessionTranscriptProjectionInTransaction(
     !claimSessionTranscriptDisplayInTransaction(db, {
       claimId,
       generation: plan.displayGeneration,
+      previousGeneration: plan.displayPreviousGeneration,
       sessionId: plan.sessionId,
     })
   ) {
@@ -430,12 +454,46 @@ export function claimPreparedSessionTranscriptProjectionInTransaction(
   return true;
 }
 
+export function abandonPreparedSessionTranscriptProjectionInTransaction(
+  db: DatabaseSync,
+  plan: PreparedSessionTranscriptProjectionMetadata,
+  claimId: number,
+): void {
+  if (plan.activeNeedsRebuild) {
+    const result = executeSqliteQuerySync(
+      db,
+      getProjectionKysely(db)
+        .updateTable("session_transcript_index_state")
+        .set({ updated_at: Date.now() })
+        .where("session_id", "=", plan.sessionId)
+        .where("needs_rebuild", "!=", 0)
+        .where("updated_at", "=", claimId),
+    );
+    if (result.numAffectedRows === 1n) {
+      deleteSessionTranscriptProjectionBindingsInTransaction(db, plan.sessionId, "active");
+    }
+  }
+  if (plan.displayNeedsRebuild) {
+    abandonSessionTranscriptDisplayClaimInTransaction(db, {
+      claimId,
+      generation: plan.displayGeneration,
+      sessionId: plan.sessionId,
+    });
+  }
+}
+
 /** Deletes old rows in bounded rowid batches while the prepared claim is current. */
 export function deletePreparedSessionTranscriptProjectionChunkInTransaction(
   db: DatabaseSync,
-  params: { claimId: number; maxRowsPerTable: number; sessionId: string },
+  params: {
+    claimId: number;
+    maxRowsPerTable: number;
+    sessionId: string;
+    sourceGeneration: string;
+    sourceIndexedSeq: number;
+  },
 ): ProjectionDeleteChunkResult {
-  if (!projectionClaimIsOwned(db, params.sessionId, params.claimId)) {
+  if (!projectionClaimIsOwned(db, params)) {
     return { hasMore: false, owned: false };
   }
   // Hidden rowid batching is the narrow SQLite primitive that keeps each
@@ -487,9 +545,11 @@ export function appendPreparedSessionTranscriptProjectionChunkInTransaction(
     claimId: number;
     ftsRows?: PreparedSessionTranscriptProjection["ftsRows"];
     sessionId: string;
+    sourceGeneration: string;
+    sourceIndexedSeq: number;
   },
 ): boolean {
-  if (!projectionClaimIsOwned(db, params.sessionId, params.claimId)) {
+  if (!projectionClaimIsOwned(db, params)) {
     return false;
   }
   const kysely = getProjectionKysely(db);
@@ -530,7 +590,13 @@ export function finalizePreparedSessionTranscriptProjectionInTransaction(
   claimId: number,
 ): boolean {
   if (
-    (plan.activeNeedsRebuild && !projectionClaimIsOwned(db, plan.sessionId, claimId)) ||
+    (plan.activeNeedsRebuild &&
+      !projectionClaimIsOwned(db, {
+        claimId,
+        sessionId: plan.sessionId,
+        sourceGeneration: plan.sourceGeneration,
+        sourceIndexedSeq: plan.sourceIndexedSeq,
+      })) ||
     !sourceSnapshotMatches(db, plan)
   ) {
     return false;
@@ -543,6 +609,7 @@ export function finalizePreparedSessionTranscriptProjectionInTransaction(
       generation: plan.displayGeneration,
       rowCount: plan.displayRowCount,
       sessionId: plan.sessionId,
+      sourceGeneration: plan.sourceGeneration,
       sourceIndexedSeq: plan.sourceIndexedSeq,
     })
   ) {

@@ -28,6 +28,7 @@ import {
 } from "./session-transcript-display.test-support.js";
 import type { SessionTranscriptProjectionSourceRow } from "./session-transcript-projection-rebuild.js";
 import { reconcileSessionTranscriptDisplayProjection } from "./session-transcript-reconcile.js";
+import { readSessionTranscriptSourceGenerationTokenInTransaction } from "./session-transcript-source-generation.js";
 
 const SESSION_ID = "projection-session";
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -93,10 +94,18 @@ describe("canonical session transcript projection", () => {
               "INSERT INTO transcript_events (session_id, seq, event_json, created_at) VALUES (?, ?, ?, ?)",
             )
             .run(sessionId, seq, JSON.stringify(event), seq + 1);
+          const sourceGeneration = readSessionTranscriptSourceGenerationTokenInTransaction(
+            database.db,
+            sessionId,
+          );
+          if (!sourceGeneration) {
+            throw new Error("expected transcript source generation");
+          }
           appendEligibleSessionTranscriptDisplayRowInTransaction(database.db, {
             event,
             seq,
             sessionId,
+            sourceGeneration,
           });
         },
         { agentId: scope.agentId, env },

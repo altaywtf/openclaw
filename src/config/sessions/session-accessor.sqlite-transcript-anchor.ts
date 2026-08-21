@@ -10,7 +10,7 @@ import {
   type ResolvedTranscriptScope,
 } from "./session-accessor.sqlite-scope.js";
 import { readMessageIdempotencyKey } from "./session-accessor.sqlite-transcript-store.js";
-import { readBoundSessionTranscriptSourceGenerationInTransaction } from "./session-transcript-source-generation.js";
+import { readCurrentSessionTranscriptActiveSourceInTransaction } from "./session-transcript-source-generation.js";
 import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
 
 /** Reads one active message identity from the caller's current SQLite transaction. */
@@ -21,10 +21,9 @@ export function readActiveTranscriptEntryAnchorInTransaction(params: {
   message?: unknown;
 }): TranscriptEntryAnchor | undefined {
   if (
-    !readBoundSessionTranscriptSourceGenerationInTransaction(
+    !readCurrentSessionTranscriptActiveSourceInTransaction(
       params.database.db,
       params.resolved.sessionId,
-      { projection: "active" },
     )
   ) {
     return undefined;

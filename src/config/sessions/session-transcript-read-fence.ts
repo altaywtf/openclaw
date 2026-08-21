@@ -3,7 +3,7 @@ import { executeSqliteQueryTakeFirstSync } from "../../infra/kysely-sync.js";
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { getSessionKysely } from "./session-accessor.sqlite-scope.js";
-import { readBoundSessionTranscriptSourceGenerationInTransaction } from "./session-transcript-source-generation.js";
+import { readCurrentSessionTranscriptActiveSourceInTransaction } from "./session-transcript-source-generation.js";
 
 const transcriptReadFenceStorage = new AsyncLocalStorage<UserTurnTranscriptAdmissionReceipt>();
 
@@ -63,9 +63,7 @@ export function resolveSqliteSessionTranscriptReadFence(params: {
     );
   }
   if (
-    !readBoundSessionTranscriptSourceGenerationInTransaction(params.database.db, params.sessionId, {
-      projection: "active",
-    })
+    !readCurrentSessionTranscriptActiveSourceInTransaction(params.database.db, params.sessionId)
   ) {
     throw new SessionTranscriptReadFenceError(
       `Current-turn transcript admission projection changed: ${receipt.entryId}`,

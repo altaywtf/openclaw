@@ -208,6 +208,24 @@ describe("searchSessionTranscripts", () => {
     expect(search("alpha").hits).toHaveLength(1);
   });
 
+  it("hides same-generation FTS rows until their frontier is current", async () => {
+    await appendUserMessage("session-1", "agent:main:main", "frontier guarded");
+    const { db, kysely } = agentKysely();
+    executeSqliteQuerySync(
+      db,
+      kysely
+        .updateTable("session_transcript_index_state")
+        .set({ indexed_seq: -1 })
+        .where("session_id", "=", "session-1"),
+    );
+
+    const lagging = search("frontier");
+    expect(lagging.indexing).toBe(true);
+    expect(lagging.hits).toEqual([]);
+    await waitForSearchReconcile("frontier");
+    expect(search("frontier").hits).toHaveLength(1);
+  });
+
   it("streams large searchable projections to the writer in bounded chunks", async () => {
     const scope = transcriptScope("session-1", "agent:main:main");
     const largeText = "x".repeat(140 * 1024);

@@ -31,6 +31,7 @@ import {
   sessionTranscriptIndexNeedsReconcile,
 } from "./session-transcript-index.js";
 import {
+  abandonPreparedSessionTranscriptProjectionInTransaction,
   appendPreparedSessionTranscriptProjectionChunkInTransaction,
   claimPreparedSessionTranscriptProjectionInTransaction,
   deletePreparedSessionTranscriptProjectionChunkInTransaction,
@@ -143,9 +144,11 @@ async function claimPreparedSessionTranscriptProjection(
         "sessions.transcript-index.delete-chunk",
         (database) =>
           deletePreparedSessionTranscriptProjectionChunkInTransaction(database.db, {
+            claimId,
             maxRowsPerTable: PROJECTION_WRITE_CHUNK_ROWS,
             sessionId: plan.sessionId,
-            claimId,
+            sourceGeneration: plan.sourceGeneration,
+            sourceIndexedSeq: plan.sourceIndexedSeq,
           }),
       );
     }
@@ -159,12 +162,15 @@ async function claimPreparedSessionTranscriptProjection(
             generation: plan.displayGeneration,
             maxRows: PROJECTION_WRITE_CHUNK_ROWS,
             sessionId: plan.sessionId,
+            sourceGeneration: plan.sourceGeneration,
+            sourceIndexedSeq: plan.sourceIndexedSeq,
           }),
       );
     }
     await yieldToGateway();
   }
   if (!deleteResult.owned || !displayDeleteResult.owned) {
+    await abandonPreparedProjection(databaseOptions, { claimId, plan });
     return undefined;
   }
   return { claimId, plan };
@@ -214,12 +220,16 @@ async function appendPreparedProjectionChunk(
           generation: active.plan.displayGeneration,
           rows: rows.displayRows,
           sessionId: active.plan.sessionId,
+          sourceGeneration: active.plan.sourceGeneration,
+          sourceIndexedSeq: active.plan.sourceIndexedSeq,
         });
       }
       return appendPreparedSessionTranscriptProjectionChunkInTransaction(database.db, {
         ...rows,
         claimId: active.claimId,
         sessionId: active.plan.sessionId,
+        sourceGeneration: active.plan.sourceGeneration,
+        sourceIndexedSeq: active.plan.sourceIndexedSeq,
       });
     },
   );
@@ -240,6 +250,19 @@ async function finalizePreparedProjection(
         active.plan,
         active.claimId,
       ),
+  );
+}
+
+async function abandonPreparedProjection(
+  databaseOptions: OpenClawAgentDatabaseOptions,
+  active: ActivePreparedProjection,
+): Promise<void> {
+  await runProjectionWrite(databaseOptions, "sessions.transcript-index.abandon", (database) =>
+    abandonPreparedSessionTranscriptProjectionInTransaction(
+      database.db,
+      active.plan,
+      active.claimId,
+    ),
   );
 }
 
@@ -311,6 +334,7 @@ async function reconcileSessionTranscriptProjections(
     let active: ActivePreparedProjection | undefined;
     let doneReceived = false;
     let reconciledSessions = 0;
+    let settling = false;
     let settled = false;
     const settle = (finish: () => void, terminate: boolean) => {
       if (settled) {
@@ -323,18 +347,37 @@ async function reconcileSessionTranscriptProjections(
       }
       finish();
     };
+    const fail = async (error: unknown, terminate: boolean) => {
+      if (settled || settling) {
+        return;
+      }
+      settling = true;
+      let failure = toStringifiedError(error);
+      const claimed = active;
+      active = undefined;
+      if (claimed) {
+        try {
+          await abandonPreparedProjection(databaseOptions, claimed);
+        } catch (abandonError) {
+          failure = new Error(
+            `${failure.message}; transcript projection claim abandonment failed: ${toStringifiedError(abandonError).message}`,
+          );
+        }
+      }
+      settle(() => reject(failure), terminate);
+    };
     const handleMessage = async (message: SessionTranscriptReconcileWorkerMessage) => {
+      if (settled || settling) {
+        return;
+      }
       if (message.type === "failed") {
-        settle(() => reject(new Error(message.error)), false);
+        await fail(new Error(message.error), false);
         return;
       }
       if (message.type === "done") {
         doneReceived = true;
         if (active) {
-          settle(
-            () => reject(new Error("session transcript reconcile worker ended mid-plan")),
-            true,
-          );
+          await fail(new Error("session transcript reconcile worker ended mid-plan"), true);
           return;
         }
         try {
@@ -344,7 +387,7 @@ async function reconcileSessionTranscriptProjections(
             (database) => deleteOrphanedTranscriptIndexRowsInTransaction(database.db),
           );
         } catch (error) {
-          settle(() => reject(toStringifiedError(error)), true);
+          await fail(error, true);
           return;
         }
         await workerExit;
@@ -364,7 +407,11 @@ async function reconcileSessionTranscriptProjections(
           throw new Error("session transcript reconcile worker sent a chunk for no active plan");
         }
         if (message.type === "plan-finish") {
-          const finalized = await finalizePreparedProjection(databaseOptions, active);
+          const claimed = active;
+          const finalized = await finalizePreparedProjection(databaseOptions, claimed);
+          if (!finalized) {
+            await abandonPreparedProjection(databaseOptions, claimed);
+          }
           active = undefined;
           if (finalized) {
             reconciledSessions += 1;
@@ -382,27 +429,25 @@ async function reconcileSessionTranscriptProjections(
               : { ftsRows: decodeFtsChunk(message.chunk) },
         );
         if (!owned) {
+          await abandonPreparedProjection(databaseOptions, active);
           active = undefined;
         }
         continueProjectionWorker(worker, owned);
       } catch (error) {
-        settle(() => reject(toStringifiedError(error)), true);
+        await fail(error, true);
       }
     };
     worker.on("message", (message: SessionTranscriptReconcileWorkerMessage) => {
       void handleMessage(message);
     });
     worker.once("error", (error) => {
-      settle(() => reject(toStringifiedError(error)), true);
+      void fail(error, true);
     });
     worker.once("exit", (code) => {
       if (doneReceived && code === 0) {
         return;
       }
-      settle(
-        () => reject(new Error(`session transcript reconcile worker exited with code ${code}`)),
-        false,
-      );
+      void fail(new Error(`session transcript reconcile worker exited with code ${code}`), false);
     });
   });
 }

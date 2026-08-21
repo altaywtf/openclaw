@@ -34,7 +34,8 @@ import {
 import {
   EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ,
   deleteSessionTranscriptProjectionBindingsInTransaction,
-  readSessionTranscriptSourceGenerationInTransaction,
+  readSessionTranscriptProjectionBindingInTransaction,
+  sessionTranscriptProjectionBindingMatches,
   writeSessionTranscriptProjectionBindingInTransaction,
 } from "./session-transcript-source-generation.js";
 
@@ -553,11 +554,22 @@ function createDatabaseDisplayEffects(
 /** Extends one ready display generation after active-path eligibility is already proven. */
 export function appendEligibleSessionTranscriptDisplayRowInTransaction(
   db: DatabaseSync,
-  params: { event: unknown; seq: number; sessionId: string },
+  params: { event: unknown; seq: number; sessionId: string; sourceGeneration: string },
 ): boolean {
   ensureOpenClawAgentDisplayRowSchema(db);
   const state = readSessionTranscriptDisplayState(db, params.sessionId);
   if (state?.needsRebuild) {
+    return true;
+  }
+  if (
+    state &&
+    !sessionTranscriptProjectionBindingMatches(
+      readSessionTranscriptProjectionBindingInTransaction(db, params.sessionId, "display"),
+      params.sourceGeneration,
+      state.generation,
+    )
+  ) {
+    invalidateSessionTranscriptDisplayInTransaction(db, params.sessionId);
     return true;
   }
   if (state && params.seq !== state.indexedSeq + 1) {
@@ -615,14 +627,10 @@ export function appendEligibleSessionTranscriptDisplayRowInTransaction(
     rowCount: effects.rowCount(),
     updatedAt: Date.now(),
   });
-  const source = readSessionTranscriptSourceGenerationInTransaction(db, params.sessionId);
-  if (!source || source.indexedSeq !== params.seq) {
-    throw new Error(`Transcript source generation changed while appending ${params.sessionId}`);
-  }
   writeSessionTranscriptProjectionBindingInTransaction(db, params.sessionId, {
     projection: "display",
     projectionGeneration: generation,
-    sourceGeneration: source.generation,
+    sourceGeneration: params.sourceGeneration,
   });
   return false;
 }

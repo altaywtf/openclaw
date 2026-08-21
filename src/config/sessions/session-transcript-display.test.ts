@@ -13,6 +13,8 @@ import {
 } from "./session-accessor.js";
 import { copySqliteSessionOwnedStateForCanonicalRepair } from "./session-accessor.sqlite-canonical-repair.js";
 import { importSqliteSessionRows } from "./session-accessor.sqlite-import.js";
+import { resolveSqliteTranscriptScope } from "./session-accessor.sqlite-scope.js";
+import { appendTranscriptEventInTransaction } from "./session-accessor.sqlite-transcript-store.js";
 import {
   replaceTranscriptEvents,
   rewriteTranscriptEventRowsExact,
@@ -29,6 +31,15 @@ import {
   readSessionTranscriptDisplayRowsInTransaction,
   readSessionTranscriptDisplayState,
 } from "./session-transcript-display.js";
+import {
+  plannedDisplaySnapshot,
+  readDisplaySnapshot,
+} from "./session-transcript-display.test-support.js";
+import {
+  claimPreparedSessionTranscriptProjectionInTransaction,
+  finalizePreparedSessionTranscriptProjectionInTransaction,
+  prepareSessionTranscriptProjection,
+} from "./session-transcript-projection-rebuild.js";
 import {
   reconcileSessionTranscriptDisplayProjection,
   waitForSessionTranscriptIndexReconcile,
@@ -107,6 +118,20 @@ describe("SQLite transcript display rows", () => {
           ORDER BY display_ordinal`,
       )
       .all(sessionId) as DisplayRow[];
+  }
+
+  function readSourceIdentity(sessionId = scope.sessionId) {
+    const db = database().db;
+    const generation = db
+      .prepare("SELECT generation FROM transcript_rewrite_watermarks WHERE session_id = ?")
+      .get(sessionId) as { generation: string };
+    const frontier = db
+      .prepare("SELECT MAX(seq) AS indexed_seq FROM transcript_events WHERE session_id = ?")
+      .get(sessionId) as { indexed_seq: number | null };
+    return {
+      sourceGeneration: generation.generation,
+      sourceIndexedSeq: frontier.indexed_seq ?? -1,
+    };
   }
 
   function trackDisplayGenerationWrites(sessionId: string): void {
@@ -438,6 +463,7 @@ describe("SQLite transcript display rows", () => {
         return { event: JSON.parse(source.event_json), seq: source.seq };
       });
     const plan = prepareSessionTranscriptDisplayProjection(sourceRows);
+    const source = readSourceIdentity();
     expect(plan.rows[0]?.semanticSources).toMatchObject([
       { relation: "tts_supplement", sourceEventSeq: 2 },
     ]);
@@ -454,6 +480,7 @@ describe("SQLite transcript display rows", () => {
           claimSessionTranscriptDisplayInTransaction(agentDatabase.db, {
             claimId: firstClaim,
             generation: firstGeneration,
+            previousGeneration: firstGeneration,
             sessionId: scope.sessionId,
           }),
         ).toBe(true);
@@ -464,6 +491,7 @@ describe("SQLite transcript display rows", () => {
             generation: firstGeneration,
             maxRows: 1,
             sessionId: scope.sessionId,
+            ...source,
           });
           expect(deleted.owned).toBe(true);
         } while (deleted.hasMore);
@@ -473,6 +501,7 @@ describe("SQLite transcript display rows", () => {
             generation: firstGeneration,
             rows: plan.rows.slice(0, 1),
             sessionId: scope.sessionId,
+            ...source,
           }),
         ).toBe(true);
       },
@@ -492,6 +521,7 @@ describe("SQLite transcript display rows", () => {
             generation: firstGeneration,
             rows: plan.rows.slice(1),
             sessionId: scope.sessionId,
+            ...source,
           }),
         ).toBe(false);
         expect(
@@ -501,7 +531,7 @@ describe("SQLite transcript display rows", () => {
             generation: firstGeneration,
             rowCount: plan.rows.length,
             sessionId: scope.sessionId,
-            sourceIndexedSeq: sourceRows.at(-1)?.seq ?? -1,
+            ...source,
           }),
         ).toBe(false);
       },
@@ -522,6 +552,7 @@ describe("SQLite transcript display rows", () => {
           claimSessionTranscriptDisplayInTransaction(agentDatabase.db, {
             claimId: retryClaim,
             generation: retryGeneration,
+            previousGeneration: retryGeneration,
             sessionId: scope.sessionId,
           }),
         ).toBe(true);
@@ -532,6 +563,7 @@ describe("SQLite transcript display rows", () => {
             generation: retryGeneration,
             maxRows: 1,
             sessionId: scope.sessionId,
+            ...source,
           });
         } while (deleted.hasMore);
         expect(
@@ -540,6 +572,7 @@ describe("SQLite transcript display rows", () => {
             generation: retryGeneration,
             rows: plan.rows,
             sessionId: scope.sessionId,
+            ...source,
           }),
         ).toBe(true);
         expect(
@@ -549,7 +582,7 @@ describe("SQLite transcript display rows", () => {
             generation: retryGeneration,
             rowCount: plan.rows.length,
             sessionId: scope.sessionId,
-            sourceIndexedSeq: sourceRows.at(-1)?.seq ?? -1,
+            ...source,
           }),
         ).toBe(true);
       },
@@ -588,6 +621,114 @@ describe("SQLite transcript display rows", () => {
         source_occurrence: 0,
       },
     ]);
+  });
+
+  it("rotates a lag rebuild identity in its claim before replacing rows", async () => {
+    await appendPlainPair();
+    const before = readState();
+    const beforeRows = readRows();
+    const resolved = resolveSqliteTranscriptScope(scope);
+    runOpenClawAgentWriteTransaction(
+      (agentDatabase) => {
+        expect(
+          appendTranscriptEventInTransaction(
+            agentDatabase,
+            resolved,
+            {
+              type: "message",
+              id: "lagged-assistant",
+              parentId: "assistant-1",
+              message: { role: "assistant", content: "lagged" },
+            },
+            { maintainDisplayProjection: false, scheduleProjectionReconcile: false },
+          ),
+        ).toBe(true);
+      },
+      { agentId: scope.agentId, env: scope.env },
+    );
+    const plan = prepareSessionTranscriptProjection(database().db, scope.sessionId);
+    expect(plan).toMatchObject({
+      activeNeedsRebuild: false,
+      displayNeedsRebuild: true,
+      displayPreviousGeneration: before.generation,
+    });
+    expect(plan?.displayGeneration).not.toBe(before.generation);
+
+    const claimId = -404;
+    runOpenClawAgentWriteTransaction(
+      (agentDatabase) => {
+        expect(
+          claimPreparedSessionTranscriptProjectionInTransaction(agentDatabase.db, plan!, claimId),
+        ).toBe(true);
+        expect(readSessionTranscriptDisplayState(agentDatabase.db, scope.sessionId)).toMatchObject({
+          generation: plan!.displayGeneration,
+          needsRebuild: true,
+          updatedAt: claimId,
+        });
+        expect(readRows()).toEqual(beforeRows);
+      },
+      { agentId: scope.agentId, env: scope.env },
+    );
+    expect(readPage({ expectedGeneration: before.generation, fromOrdinal: 0, limit: 10 })).toEqual({
+      generation: plan!.displayGeneration,
+      kind: "reset",
+    });
+
+    const source = {
+      sourceGeneration: plan!.sourceGeneration,
+      sourceIndexedSeq: plan!.sourceIndexedSeq,
+    };
+    runOpenClawAgentWriteTransaction(
+      (agentDatabase) => {
+        let deleted;
+        do {
+          deleted = deleteSessionTranscriptDisplayChunkInTransaction(agentDatabase.db, {
+            claimId,
+            generation: plan!.displayGeneration,
+            maxRows: 1,
+            sessionId: scope.sessionId,
+            ...source,
+          });
+          expect(deleted.owned).toBe(true);
+        } while (deleted.hasMore);
+        expect(
+          appendSessionTranscriptDisplayChunkInTransaction(agentDatabase.db, {
+            claimId,
+            generation: plan!.displayGeneration,
+            rows: plan!.displayRows,
+            sessionId: scope.sessionId,
+            ...source,
+          }),
+        ).toBe(true);
+        expect(
+          finalizePreparedSessionTranscriptProjectionInTransaction(
+            agentDatabase.db,
+            plan!,
+            claimId,
+          ),
+        ).toBe(true);
+      },
+      { agentId: scope.agentId, env: scope.env },
+    );
+
+    expect(
+      readDisplaySnapshot({ agentId: scope.agentId, env: scope.env }, scope.sessionId),
+    ).toEqual(
+      plannedDisplaySnapshot(
+        database()
+          .db.prepare(
+            "SELECT seq, event_json, created_at FROM transcript_events WHERE session_id = ? ORDER BY seq",
+          )
+          .all(scope.sessionId)
+          .map((entry) => {
+            const row = entry as { created_at: number; event_json: string; seq: number };
+            return { createdAt: row.created_at, event: JSON.parse(row.event_json), seq: row.seq };
+          }),
+      ),
+    );
+    expect(readRows().map((row) => row.display_ordinal)).toEqual(
+      readRows().map((_, index) => index),
+    );
   });
 
   it("publishes an empty ready generation after clearing a transcript", async () => {

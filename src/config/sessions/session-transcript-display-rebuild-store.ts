@@ -28,8 +28,9 @@ import {
 } from "./session-transcript-display-store.js";
 import {
   EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ,
+  deleteSessionTranscriptProjectionBindingsInTransaction,
   readBoundSessionTranscriptSourceGenerationInTransaction,
-  readSessionTranscriptSourceGenerationInTransaction,
+  sessionTranscriptSourceGenerationMatchesInTransaction,
   writeSessionTranscriptProjectionBindingInTransaction,
 } from "./session-transcript-source-generation.js";
 
@@ -84,11 +85,16 @@ export function claimSessionTranscriptDisplayInTransaction(
   params: {
     claimId: number;
     generation: string;
+    previousGeneration: string | null;
     sessionId: string;
   },
 ): boolean {
   const state = readSessionTranscriptDisplayState(db, params.sessionId);
   if (!state) {
+    if (params.previousGeneration !== null) {
+      return false;
+    }
+    deleteSessionTranscriptProjectionBindingsInTransaction(db, params.sessionId, "display");
     writeDisplayState(db, params.sessionId, {
       generation: params.generation,
       indexedSeq: EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ,
@@ -98,11 +104,13 @@ export function claimSessionTranscriptDisplayInTransaction(
     });
     return true;
   }
-  if (state.generation !== params.generation) {
+  if (state.generation !== params.previousGeneration) {
     return false;
   }
+  deleteSessionTranscriptProjectionBindingsInTransaction(db, params.sessionId, "display");
   writeDisplayState(db, params.sessionId, {
     ...state,
+    generation: params.generation,
     needsRebuild: true,
     updatedAt: params.claimId,
   });
@@ -111,14 +119,43 @@ export function claimSessionTranscriptDisplayInTransaction(
 
 function displayClaimIsOwned(
   db: DatabaseSync,
-  params: { claimId: number; generation: string; sessionId: string },
+  params: {
+    claimId: number;
+    generation: string;
+    sessionId: string;
+    sourceGeneration: string;
+    sourceIndexedSeq: number;
+  },
 ): boolean {
   const state = readSessionTranscriptDisplayState(db, params.sessionId);
   return Boolean(
     state?.needsRebuild &&
     state.generation === params.generation &&
-    state.updatedAt === params.claimId,
+    state.updatedAt === params.claimId &&
+    sessionTranscriptSourceGenerationMatchesInTransaction(db, params.sessionId, {
+      generation: params.sourceGeneration,
+      indexedSeq: params.sourceIndexedSeq,
+    }),
   );
+}
+
+export function abandonSessionTranscriptDisplayClaimInTransaction(
+  db: DatabaseSync,
+  params: { claimId: number; generation: string; sessionId: string },
+): void {
+  const result = executeSqliteQuerySync(
+    db,
+    getDisplayKysely(db)
+      .updateTable(SESSION_TRANSCRIPT_DISPLAY_STATE_TABLE)
+      .set({ updated_at: Date.now() })
+      .where("session_id", "=", params.sessionId)
+      .where("generation", "=", params.generation)
+      .where("needs_rebuild", "!=", 0)
+      .where("updated_at", "=", params.claimId),
+  );
+  if (result.numAffectedRows === 1n) {
+    deleteSessionTranscriptProjectionBindingsInTransaction(db, params.sessionId, "display");
+  }
 }
 
 export function deleteSessionTranscriptDisplayChunkInTransaction(
@@ -128,6 +165,8 @@ export function deleteSessionTranscriptDisplayChunkInTransaction(
     generation: string;
     maxRows: number;
     sessionId: string;
+    sourceGeneration: string;
+    sourceIndexedSeq: number;
   },
 ): DisplayDeleteChunkResult {
   if (!displayClaimIsOwned(db, params)) {
@@ -166,6 +205,8 @@ export function appendSessionTranscriptDisplayChunkInTransaction(
     generation: string;
     rows: readonly PreparedSessionTranscriptDisplayRow[];
     sessionId: string;
+    sourceGeneration: string;
+    sourceIndexedSeq: number;
   },
 ): boolean {
   if (!displayClaimIsOwned(db, params)) {
@@ -237,6 +278,7 @@ export function finalizeSessionTranscriptDisplayInTransaction(
     carry: readonly PreparedSessionTranscriptDisplayCarry[];
     rowCount: number;
     sessionId: string;
+    sourceGeneration: string;
     sourceIndexedSeq: number;
   },
 ): boolean {
@@ -262,14 +304,10 @@ export function finalizeSessionTranscriptDisplayInTransaction(
   if (result.numAffectedRows !== 1n) {
     return false;
   }
-  const source = readSessionTranscriptSourceGenerationInTransaction(db, params.sessionId);
-  if (!source || source.indexedSeq !== params.sourceIndexedSeq) {
-    return false;
-  }
   writeSessionTranscriptProjectionBindingInTransaction(db, params.sessionId, {
     projection: "display",
     projectionGeneration: params.generation,
-    sourceGeneration: source.generation,
+    sourceGeneration: params.sourceGeneration,
   });
   return true;
 }

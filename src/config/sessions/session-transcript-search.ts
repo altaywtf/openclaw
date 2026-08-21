@@ -96,10 +96,17 @@ export function searchSessionTranscripts(params: {
       AND binding.projection = 'active'
       AND binding.projection_generation IS NULL
       AND binding.source_generation = source.generation
-    WHERE session_transcript_fts MATCH ?${whereSession}
-      AND session_transcript_fts.session_id NOT IN (
-        SELECT session_id FROM session_transcript_index_state WHERE needs_rebuild != 0
+    JOIN session_transcript_index_state AS state
+      ON state.session_id = session_transcript_fts.session_id
+      AND state.needs_rebuild = 0
+      AND state.indexed_seq = (
+        SELECT latest.seq
+        FROM transcript_events AS latest
+        WHERE latest.session_id = session_transcript_fts.session_id
+        ORDER BY latest.seq DESC
+        LIMIT 1
       )
+    WHERE session_transcript_fts MATCH ?${whereSession}
     ORDER BY rank ASC, timestamp DESC, message_id ASC
     LIMIT ?
   `);

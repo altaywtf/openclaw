@@ -13,6 +13,7 @@ import {
   toDatabaseOptions,
 } from "./session-accessor.sqlite-scope.js";
 import { readTranscriptIdentityByEventId } from "./session-accessor.sqlite-transcript-store.js";
+import { readCurrentSessionTranscriptActiveSourceInTransaction } from "./session-transcript-source-generation.js";
 
 // Append results are public SDK contracts. Keep commit-only cursor metadata
 // attached to their object lifetime without changing the returned message shape.
@@ -39,19 +40,9 @@ export function rememberCommittedTranscriptMessageSequencesInTransaction(
     return;
   }
   const db = getNodeSqliteKysely<
-    Pick<
-      OpenClawAgentKyselyDatabase,
-      "session_transcript_active_events" | "session_transcript_index_state"
-    >
+    Pick<OpenClawAgentKyselyDatabase, "session_transcript_active_events">
   >(database.db);
-  const projection = executeSqliteQueryTakeFirstSync(
-    database.db,
-    db
-      .selectFrom("session_transcript_index_state")
-      .select("needs_rebuild")
-      .where("session_id", "=", sessionId),
-  );
-  if (projection?.needs_rebuild !== 0) {
+  if (!readCurrentSessionTranscriptActiveSourceInTransaction(database.db, sessionId)) {
     return;
   }
   for (const message of appendedMessages) {

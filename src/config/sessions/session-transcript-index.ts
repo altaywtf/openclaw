@@ -6,6 +6,7 @@
 // same transaction, anything ambiguous (leaf controls, branch switches)
 // marks the session dirty for its write or maintenance owner to rebuild from
 // the canonical visible-path resolver.
+import { randomInt } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { ColumnType } from "kysely";
 import {
@@ -26,9 +27,12 @@ import {
   shouldProjectActiveEvent,
 } from "./session-transcript-display.js";
 import {
+  appendPreparedSessionTranscriptProjectionChunkInTransaction,
   buildSessionTranscriptProjection,
+  claimPreparedSessionTranscriptProjectionInTransaction,
+  deletePreparedSessionTranscriptProjectionChunkInTransaction,
   extractTranscriptIndexEntry,
-  type SessionTranscriptProjectionSourceRow,
+  finalizePreparedSessionTranscriptProjectionInTransaction,
   type TranscriptIndexEntry,
 } from "./session-transcript-projection-rebuild.js";
 import {
@@ -36,6 +40,7 @@ import {
   deleteSessionTranscriptProjectionBindingsInTransaction,
   readSessionTranscriptProjectionBindingInTransaction,
   readSessionTranscriptSourceGenerationInTransaction,
+  readSessionTranscriptSourceGenerationTokenInTransaction,
   sessionTranscriptProjectionBindingMatches,
   writeSessionTranscriptProjectionBindingInTransaction,
 } from "./session-transcript-source-generation.js";
@@ -70,6 +75,9 @@ type TranscriptIndexDatabase = Omit<
     timestamp: ColumnType<string | null, number | string | null, number | string | null>;
   };
 };
+
+const SYNCHRONOUS_PROJECTION_CHUNK_ROWS = 512;
+const SYNCHRONOUS_PROJECTION_FTS_CHUNK_ROWS = 128;
 
 export type SessionTranscriptProjectionState = {
   activeEventCount: number;
@@ -154,6 +162,7 @@ function writeWatermark(
   sessionId: string,
   watermark: SessionTranscriptProjectionState,
   now: number,
+  sourceGeneration?: string,
 ): void {
   executeSqliteQuerySync(
     db,
@@ -179,15 +188,18 @@ function writeWatermark(
         }),
       ),
   );
-  const source = readSessionTranscriptSourceGenerationInTransaction(db, sessionId);
-  if (!source) {
-    throw new Error(`Transcript source generation is missing for ${sessionId}`);
+  if (watermark.needsRebuild) {
+    deleteSessionTranscriptProjectionBindingsInTransaction(db, sessionId, "active");
+  } else {
+    if (!sourceGeneration) {
+      throw new Error(`Transcript source generation is missing for ${sessionId}`);
+    }
+    writeSessionTranscriptProjectionBindingInTransaction(db, sessionId, {
+      projection: "active",
+      projectionGeneration: null,
+      sourceGeneration,
+    });
   }
-  writeSessionTranscriptProjectionBindingInTransaction(db, sessionId, {
-    projection: "active",
-    projectionGeneration: null,
-    sourceGeneration: source.generation,
-  });
 }
 
 function insertActiveEventRow(
@@ -274,6 +286,13 @@ export function indexAppendedTranscriptEventInTransaction(
   const existingDisplayInvalidated =
     params.maintainDisplayProjection === undefined &&
     invalidateExistingSessionTranscriptDisplayInTransaction(db, params.sessionId);
+  const sourceGeneration = readSessionTranscriptSourceGenerationTokenInTransaction(
+    db,
+    params.sessionId,
+  );
+  if (!sourceGeneration) {
+    throw new Error(`Transcript source generation is missing for ${params.sessionId}`);
+  }
   const watermark = readSessionTranscriptProjectionState(db, params.sessionId);
   if (!watermark) {
     if (params.seq !== 0) {
@@ -282,15 +301,23 @@ export function indexAppendedTranscriptEventInTransaction(
       invalidateDisplayProjectionForAppend(db, params);
       return true;
     }
-    applyForwardIndex(db, params, {
-      activeEventCount: 0,
-      activeMessageCount: 0,
-      indexedSeq: EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ,
-      leafEventId: null,
-      needsRebuild: false,
-    });
+    applyForwardIndex(
+      db,
+      params,
+      {
+        activeEventCount: 0,
+        activeMessageCount: 0,
+        indexedSeq: EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ,
+        leafEventId: null,
+        needsRebuild: false,
+      },
+      sourceGeneration,
+    );
     return params.maintainDisplayProjection === true
-      ? appendEligibleSessionTranscriptDisplayRowInTransaction(db, params)
+      ? appendEligibleSessionTranscriptDisplayRowInTransaction(db, {
+          ...params,
+          sourceGeneration,
+        })
       : existingDisplayInvalidated;
   }
   if (watermark.needsRebuild) {
@@ -301,6 +328,16 @@ export function indexAppendedTranscriptEventInTransaction(
     ) {
       invalidateDisplayProjectionForAppend(db, params);
     }
+    return true;
+  }
+  if (
+    !sessionTranscriptProjectionBindingMatches(
+      readSessionTranscriptProjectionBindingInTransaction(db, params.sessionId, "active"),
+      sourceGeneration,
+    )
+  ) {
+    markSessionTranscriptIndexDirtyInTransaction(db, params.sessionId);
+    invalidateDisplayProjectionForAppend(db, params);
     return true;
   }
   if (params.seq !== watermark.indexedSeq + 1) {
@@ -321,7 +358,7 @@ export function indexAppendedTranscriptEventInTransaction(
     return true;
   }
   if (isSessionTranscriptDisplayBoundary(params.event)) {
-    applyForwardIndex(db, params, watermark);
+    applyForwardIndex(db, params, watermark, sourceGeneration);
     invalidateDisplayProjectionForAppend(db, params);
     return true;
   }
@@ -350,9 +387,12 @@ export function indexAppendedTranscriptEventInTransaction(
     invalidateDisplayProjectionForAppend(db, params);
     return true;
   }
-  applyForwardIndex(db, params, watermark);
+  applyForwardIndex(db, params, watermark, sourceGeneration);
   return params.maintainDisplayProjection === true
-    ? appendEligibleSessionTranscriptDisplayRowInTransaction(db, params)
+    ? appendEligibleSessionTranscriptDisplayRowInTransaction(db, {
+        ...params,
+        sourceGeneration,
+      })
     : existingDisplayInvalidated;
 }
 
@@ -366,6 +406,7 @@ function applyForwardIndex(
     createdAt: number;
   },
   watermark: SessionTranscriptProjectionState,
+  sourceGeneration: string,
 ): void {
   const entry = extractTranscriptIndexEntry(params.event, params.createdAt);
   if (entry) {
@@ -396,6 +437,7 @@ function applyForwardIndex(
       needsRebuild: false,
     },
     params.createdAt,
+    sourceGeneration,
   );
 }
 
@@ -432,49 +474,6 @@ export function deleteSessionTranscriptIndexInTransaction(
   );
 }
 
-/**
- * Rebuilds one session's index from its full event set: drops existing FTS
- * rows, indexes the resolved active branch, and resets the watermark to the
- * same append parent the accessor's next append will resolve.
- */
-function rebuildSessionTranscriptIndexInTransaction(
-  db: DatabaseSync,
-  sessionId: string,
-  rows: readonly SessionTranscriptProjectionSourceRow[],
-): void {
-  const source = readSessionTranscriptSourceGenerationInTransaction(db, sessionId);
-  if (!source) {
-    throw new Error(`Transcript source generation is missing for ${sessionId}`);
-  }
-  const projection = buildSessionTranscriptProjection({
-    includeDisplayRows: false,
-    rows,
-    sessionId,
-    sourceGeneration: source.generation,
-    sourceTranscriptUpdatedAt: null,
-  });
-  deleteFtsRows(db, sessionId);
-  deleteActiveEventRows(db, sessionId);
-  for (const entry of projection.ftsRows) {
-    insertFtsRow(db, sessionId, entry);
-  }
-  for (const row of projection.activeRows) {
-    insertActiveEventRow(db, { ...row, sessionId });
-  }
-  writeWatermark(
-    db,
-    sessionId,
-    {
-      activeEventCount: projection.activeEventCount,
-      activeMessageCount: projection.activeMessageCount,
-      indexedSeq: projection.sourceIndexedSeq,
-      leafEventId: projection.leafEventId,
-      needsRebuild: false,
-    },
-    Date.now(),
-  );
-}
-
 /** Rebuilds one lagging projection under its current write transaction. */
 export function reconcileSessionTranscriptIndexInTransaction(
   db: DatabaseSync,
@@ -496,6 +495,17 @@ export function reconcileSessionTranscriptIndexInTransaction(
   if (!sessionTranscriptIndexNeedsReconcile(db, sessionId)) {
     return false;
   }
+  const source = readSessionTranscriptSourceGenerationInTransaction(db, sessionId);
+  const session = executeSqliteQueryTakeFirstSync(
+    db,
+    getIndexKysely(db)
+      .selectFrom("session_windows")
+      .select("transcript_updated_at")
+      .where("session_id", "=", sessionId),
+  );
+  if (!source || !session) {
+    throw new Error(`Transcript source generation is missing for ${sessionId}`);
+  }
   const rows = executeSqliteQuerySync(
     db,
     getIndexKysely(db)
@@ -504,15 +514,73 @@ export function reconcileSessionTranscriptIndexInTransaction(
       .where("session_id", "=", sessionId)
       .orderBy("seq", "asc"),
   ).rows;
-  rebuildSessionTranscriptIndexInTransaction(
-    db,
-    sessionId,
-    rows.map((row) => ({
+  const projection = buildSessionTranscriptProjection({
+    activeNeedsRebuild: true,
+    displayNeedsRebuild: false,
+    includeDisplayRows: false,
+    rows: rows.map((row) => ({
+      createdAt: row.created_at,
       event: JSON.parse(row.event_json) as unknown,
       seq: row.seq,
-      createdAt: row.created_at,
     })),
-  );
+    sessionId,
+    sourceGeneration: source.generation,
+    sourceTranscriptUpdatedAt: session.transcript_updated_at,
+  });
+  const claimId = -randomInt(1, 2 ** 47);
+  if (!claimPreparedSessionTranscriptProjectionInTransaction(db, projection, claimId)) {
+    return false;
+  }
+  let deleted;
+  do {
+    deleted = deletePreparedSessionTranscriptProjectionChunkInTransaction(db, {
+      claimId,
+      maxRowsPerTable: SYNCHRONOUS_PROJECTION_CHUNK_ROWS,
+      sessionId,
+      sourceGeneration: projection.sourceGeneration,
+      sourceIndexedSeq: projection.sourceIndexedSeq,
+    });
+    if (!deleted.owned) {
+      throw new Error(`Transcript projection claim changed while rebuilding ${sessionId}`);
+    }
+  } while (deleted.hasMore);
+  for (
+    let offset = 0;
+    offset < projection.activeRows.length;
+    offset += SYNCHRONOUS_PROJECTION_CHUNK_ROWS
+  ) {
+    if (
+      !appendPreparedSessionTranscriptProjectionChunkInTransaction(db, {
+        activeRows: projection.activeRows.slice(offset, offset + SYNCHRONOUS_PROJECTION_CHUNK_ROWS),
+        claimId,
+        sessionId,
+        sourceGeneration: projection.sourceGeneration,
+        sourceIndexedSeq: projection.sourceIndexedSeq,
+      })
+    ) {
+      throw new Error(`Transcript projection claim changed while rebuilding ${sessionId}`);
+    }
+  }
+  for (
+    let offset = 0;
+    offset < projection.ftsRows.length;
+    offset += SYNCHRONOUS_PROJECTION_FTS_CHUNK_ROWS
+  ) {
+    if (
+      !appendPreparedSessionTranscriptProjectionChunkInTransaction(db, {
+        claimId,
+        ftsRows: projection.ftsRows.slice(offset, offset + SYNCHRONOUS_PROJECTION_FTS_CHUNK_ROWS),
+        sessionId,
+        sourceGeneration: projection.sourceGeneration,
+        sourceIndexedSeq: projection.sourceIndexedSeq,
+      })
+    ) {
+      throw new Error(`Transcript projection claim changed while rebuilding ${sessionId}`);
+    }
+  }
+  if (!finalizePreparedSessionTranscriptProjectionInTransaction(db, projection, claimId)) {
+    throw new Error(`Transcript projection claim changed while finalizing ${sessionId}`);
+  }
   return true;
 }
 

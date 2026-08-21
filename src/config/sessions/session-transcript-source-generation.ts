@@ -16,6 +16,7 @@ import {
 type SourceGenerationDatabase = Pick<
   OpenClawAgentKyselyDatabase,
   | "session_transcript_projection_bindings"
+  | "session_transcript_index_state"
   | "session_windows"
   | "transcript_events"
   | "transcript_rewrite_watermarks"
@@ -46,6 +47,20 @@ function getSourceGenerationKysely(db: DatabaseSync) {
 
 function createTranscriptGeneration(): string {
   return randomUUID().replaceAll("-", "");
+}
+
+/** Reads the authoritative source token when the caller already owns the append frontier. */
+export function readSessionTranscriptSourceGenerationTokenInTransaction(
+  db: DatabaseSync,
+  sessionId: string,
+): string | undefined {
+  return executeSqliteQueryTakeFirstSync(
+    db,
+    getSourceGenerationKysely(db)
+      .selectFrom("transcript_rewrite_watermarks")
+      .select("generation")
+      .where("session_id", "=", sessionId),
+  )?.generation;
 }
 
 /** Reads the authoritative source generation and frontier from one SQLite snapshot. */
@@ -172,6 +187,15 @@ export function sessionTranscriptProjectionBindingMatches(
   );
 }
 
+export function sessionTranscriptSourceGenerationMatchesInTransaction(
+  db: DatabaseSync,
+  sessionId: string,
+  expected: SessionTranscriptSourceGeneration,
+): boolean {
+  const source = readSessionTranscriptSourceGenerationInTransaction(db, sessionId);
+  return source?.generation === expected.generation && source.indexedSeq === expected.indexedSeq;
+}
+
 /** Returns source identity only when one derived projection is bound to it. */
 export function readBoundSessionTranscriptSourceGenerationInTransaction(
   db: DatabaseSync,
@@ -189,6 +213,27 @@ export function readBoundSessionTranscriptSourceGenerationInTransaction(
   )
     ? source
     : undefined;
+}
+
+/** Returns source identity only while the active projection is fully current. */
+export function readCurrentSessionTranscriptActiveSourceInTransaction(
+  db: DatabaseSync,
+  sessionId: string,
+): SessionTranscriptSourceGeneration | undefined {
+  const source = readBoundSessionTranscriptSourceGenerationInTransaction(db, sessionId, {
+    projection: "active",
+  });
+  if (!source) {
+    return undefined;
+  }
+  const state = executeSqliteQueryTakeFirstSync(
+    db,
+    getSourceGenerationKysely(db)
+      .selectFrom("session_transcript_index_state")
+      .select(["indexed_seq", "needs_rebuild"])
+      .where("session_id", "=", sessionId),
+  );
+  return state?.needs_rebuild === 0 && state.indexed_seq === source.indexedSeq ? source : undefined;
 }
 
 /** Publishes one derived projection binding in its owning write transaction. */
