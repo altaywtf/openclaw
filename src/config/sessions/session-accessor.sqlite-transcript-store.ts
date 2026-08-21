@@ -29,6 +29,7 @@ import {
   rotateTranscriptGenerationInTransaction,
   touchTranscriptMutationInTransaction,
 } from "./session-accessor.sqlite-transcript-state.js";
+import { invalidateSessionTranscriptDisplayInTransaction } from "./session-transcript-display.js";
 import {
   deleteSessionTranscriptIndexInTransaction,
   indexAppendedTranscriptEventInTransaction,
@@ -49,6 +50,8 @@ export function appendTranscriptEventInTransaction(
   options: {
     allowStoredAlias?: boolean;
     dedupeByMessageIdempotency?: boolean;
+    /** Batch replacement/import owns one final display invalidation for all inserted rows. */
+    maintainDisplayProjection?: boolean;
     onProjectionReconcileNeeded?: () => void;
     scheduleProjectionReconcile?: boolean;
     touchMutation?: boolean;
@@ -95,6 +98,7 @@ export function appendTranscriptEventInTransaction(
     event: persistedEvent,
     eventId: identity?.eventId ?? null,
     createdAt,
+    maintainDisplayProjection: options.maintainDisplayProjection,
   });
   if (projectionNeedsRebuild) {
     options.onProjectionReconcileNeeded?.();
@@ -209,6 +213,7 @@ function appendTranscriptEventRowInTransaction(
     event: persistedEvent,
     eventId: identity?.eventId ?? null,
     createdAt,
+    maintainDisplayProjection: false,
   });
   if (!identity) {
     return true;
@@ -336,11 +341,13 @@ export function replaceSqliteTranscriptEventsInTransaction(
   if (events.length === 0) {
     if (deleted || previousGeneration) {
       rotateTranscriptGenerationInTransaction(database, resolved.sessionId);
+      invalidateSessionTranscriptDisplayInTransaction(database.db, resolved.sessionId);
       recordTranscriptReplacementMutation(
         database,
         resolved.sessionId,
         preservedTranscriptUpdatedAt,
       );
+      scheduleTranscriptProjectionReconcile(database, resolved, true, {});
     }
     return;
   }
@@ -352,6 +359,7 @@ export function replaceSqliteTranscriptEventsInTransaction(
   } else {
     ensureTranscriptGenerationInTransaction(database, resolved.sessionId);
   }
+  invalidateSessionTranscriptDisplayInTransaction(database.db, resolved.sessionId);
   let seq = 0;
   const seenEventIds = new Set<string>();
   const seenMessageIdempotencyKeys = new Set<string>();
@@ -375,6 +383,7 @@ export function replaceSqliteTranscriptEventsInTransaction(
   if (deleted || seq > 0) {
     recordTranscriptReplacementMutation(database, resolved.sessionId, preservedTranscriptUpdatedAt);
     reconcileSessionTranscriptIndexInTransaction(database.db, resolved.sessionId);
+    scheduleTranscriptProjectionReconcile(database, resolved, true, {});
   }
 }
 
@@ -426,8 +435,10 @@ export function rewriteSqliteTranscriptEventRowsInTransaction(
     }
   }
   rotateTranscriptGenerationInTransaction(database, resolved.sessionId);
+  invalidateSessionTranscriptDisplayInTransaction(database.db, resolved.sessionId);
   touchTranscriptMutationInTransaction(database, resolved.sessionId);
   reconcileSessionTranscriptIndexInTransaction(database.db, resolved.sessionId);
+  scheduleTranscriptProjectionReconcile(database, resolved, true, {});
 }
 
 // Text-only transcript repair: rewrites event_json for specific rows in place.
@@ -453,8 +464,14 @@ export function updateSqliteTranscriptEventJsonInTransaction(
     );
   }
   rotateTranscriptGenerationInTransaction(database, sessionId);
+  invalidateSessionTranscriptDisplayInTransaction(database.db, sessionId);
   deleteSessionTranscriptIndexInTransaction(database.db, sessionId);
   reconcileSessionTranscriptIndexInTransaction(database.db, sessionId);
+  startSessionTranscriptIndexReconcile({
+    agentId: database.agentId,
+    path: database.path,
+    preferredSessionId: sessionId,
+  });
   // Minimally advance transcript_updated_at (prev+1), NOT to now. This is a one-time maintenance
   // rewrite: bumping to now would reorder legacy sessions to the top of every recency view
   // (sqlite-history.ts orders by transcript_updated_at). But the watermark must still change,

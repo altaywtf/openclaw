@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { STREAM_ERROR_FALLBACK_TEXT } from "../../agents/stream-message-shared.js";
+import { HEARTBEAT_PROMPT } from "../../auto-reply/heartbeat.js";
+import { prepareSessionTranscriptDisplayRows } from "./session-transcript-display.js";
 import {
   buildSessionTranscriptProjection,
   type SessionTranscriptProjectionSourceRow,
@@ -58,10 +61,105 @@ describe("canonical session transcript projection", () => {
       { activePosition: 0, eventSeq: 1, messagePosition: 0 },
       { activePosition: 1, eventSeq: 3, messagePosition: 1 },
     ]);
+    expect(
+      result.displayRows.map(({ displayOrdinal, kind, sourceEventSeq }) => ({
+        displayOrdinal,
+        kind,
+        sourceEventSeq,
+      })),
+    ).toEqual([
+      { displayOrdinal: 0, kind: "user", sourceEventSeq: 1 },
+      { displayOrdinal: 1, kind: "assistant", sourceEventSeq: 3 },
+    ]);
     expect(result.ftsRows).toEqual([
       { messageId: "root", role: "user", text: "root text", timestamp: 1_000 },
       { messageId: "active", role: "assistant", text: "active text", timestamp: 3_000 },
     ]);
+  });
+
+  it.each([
+    {
+      event: { type: "message", message: { role: "user", content: "hello" } },
+      expected: "user",
+      name: "plain user",
+    },
+    {
+      event: { type: "message", message: { role: "assistant", content: "hello" } },
+      expected: "assistant",
+      name: "plain assistant",
+    },
+    {
+      event: { type: "compaction" },
+      expected: "compaction",
+      name: "compaction boundary",
+    },
+    {
+      event: { type: "reset" },
+      expected: "reset",
+      name: "reset boundary",
+    },
+    {
+      event: { type: "message", message: { role: "user", content: HEARTBEAT_PROMPT } },
+      expected: "opaque",
+      name: "heartbeat candidate",
+    },
+    {
+      event: {
+        type: "message",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: STREAM_ERROR_FALLBACK_TEXT }],
+          stopReason: "error",
+        },
+      },
+      expected: "opaque",
+      name: "stream error candidate",
+    },
+    {
+      event: {
+        type: "message",
+        message: {
+          role: "assistant",
+          content: [{ type: "toolCall", name: "message", arguments: {} }],
+        },
+      },
+      expected: "opaque",
+      name: "message tool candidate",
+    },
+    {
+      event: {
+        type: "message",
+        message: {
+          role: "assistant",
+          content: [{ type: "audio", data: "opaque" }],
+          openclawTtsSupplement: { spokenText: "hello" },
+        },
+      },
+      expected: "opaque",
+      name: "TTS supplement candidate",
+    },
+    {
+      event: {
+        type: "message",
+        message: {
+          role: "toolResult",
+          content: [{ type: "text", text: "tool" }],
+          details: { mcpAppPreview: { view: { id: "view-1" } } },
+        },
+      },
+      expected: "opaque",
+      name: "canvas candidate",
+    },
+    {
+      event: { type: "custom", id: "custom-1", parentId: null },
+      expected: "opaque",
+      name: "unknown canonical entry",
+    },
+  ])("uses the canonical display classifier for $name rows", ({ event, expected }) => {
+    const [plannedRow] = prepareSessionTranscriptDisplayRows([
+      { event: { id: "event-7", parentId: null, ...event }, seq: 7 },
+    ]);
+    expect(plannedRow).toMatchObject({ kind: expected, sourceEventSeq: 7 });
   });
 
   it("keeps persisted row timestamps for timestamp-less and invalid-timestamp messages", () => {

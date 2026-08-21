@@ -14,11 +14,17 @@ import {
   getNodeSqliteKysely,
 } from "../../infra/kysely-sync.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
+import { ensureOpenClawAgentDisplayRowSchema } from "../../state/openclaw-agent-display-row-schema.js";
+import {
+  appendEligibleSessionTranscriptDisplayRowInTransaction,
+  hasTranscriptMessage,
+  invalidateSessionTranscriptDisplayInTransaction,
+  isSessionTranscriptDisplayBoundary,
+  shouldProjectActiveEvent,
+} from "./session-transcript-display.js";
 import {
   buildSessionTranscriptProjection,
   extractTranscriptIndexEntry,
-  hasTranscriptMessage,
-  shouldProjectActiveEvent,
   type SessionTranscriptProjectionSourceRow,
   type TranscriptIndexEntry,
 } from "./session-transcript-projection-rebuild.js";
@@ -33,6 +39,7 @@ type TranscriptIndexDatabase = Omit<
     OpenClawAgentKyselyDatabase,
     | "session_windows"
     | "session_transcript_active_events"
+    | "session_transcript_display_state"
     | "session_transcript_fts"
     | "session_transcript_index_state"
     | "transcript_events"
@@ -190,6 +197,15 @@ function deleteFtsRows(db: DatabaseSync, sessionId: string): void {
   );
 }
 
+function invalidateDisplayProjectionForAppend(
+  db: DatabaseSync,
+  params: { maintainDisplayProjection?: boolean; sessionId: string },
+): void {
+  if (params.maintainDisplayProjection !== false) {
+    invalidateSessionTranscriptDisplayInTransaction(db, params.sessionId);
+  }
+}
+
 /**
  * In-transaction append hook. Forward-indexes the event when it
  * unambiguously extends the active branch and marks the session for rebuild
@@ -204,6 +220,7 @@ export function indexAppendedTranscriptEventInTransaction(
     event: unknown;
     eventId: string | null;
     createdAt: number;
+    maintainDisplayProjection?: boolean;
   },
 ): boolean {
   const watermark = readSessionTranscriptProjectionState(db, params.sessionId);
@@ -211,6 +228,7 @@ export function indexAppendedTranscriptEventInTransaction(
     if (params.seq !== 0) {
       // Pre-existing rows without index state (e.g. doctor-migrated
       // transcripts): stay unindexed until reconcile rebuilds the session.
+      invalidateDisplayProjectionForAppend(db, params);
       return true;
     }
     applyForwardIndex(db, params, {
@@ -220,14 +238,24 @@ export function indexAppendedTranscriptEventInTransaction(
       leafEventId: null,
       needsRebuild: false,
     });
-    return false;
+    return params.maintainDisplayProjection !== false
+      ? appendEligibleSessionTranscriptDisplayRowInTransaction(db, params)
+      : false;
   }
   if (watermark.needsRebuild) {
+    if (
+      isSessionTranscriptDisplayBoundary(params.event) ||
+      isSessionTranscriptLeafControl(params.event) ||
+      isSessionTranscriptSideAppendEntry(params.event)
+    ) {
+      invalidateDisplayProjectionForAppend(db, params);
+    }
     return true;
   }
   if (params.seq !== watermark.indexedSeq + 1) {
     // Out-of-band writes bypassed the hook; reconcile recomputes the truth.
     markSessionTranscriptIndexDirtyInTransaction(db, params.sessionId);
+    invalidateDisplayProjectionForAppend(db, params);
     return true;
   }
   if (
@@ -238,6 +266,12 @@ export function indexAppendedTranscriptEventInTransaction(
     // the main chain; the visible path must be re-resolved rather than
     // guessed at append time.
     markSessionTranscriptIndexDirtyInTransaction(db, params.sessionId);
+    invalidateDisplayProjectionForAppend(db, params);
+    return true;
+  }
+  if (isSessionTranscriptDisplayBoundary(params.event)) {
+    applyForwardIndex(db, params, watermark);
+    invalidateDisplayProjectionForAppend(db, params);
     return true;
   }
   const isCanonicalEvent = isCanonicalSessionTranscriptEntry(params.event);
@@ -245,6 +279,7 @@ export function indexAppendedTranscriptEventInTransaction(
     // A canonical tree supersedes legacy flat message rows. Re-resolve once
     // instead of retaining rows that are no longer on the selected path.
     markSessionTranscriptIndexDirtyInTransaction(db, params.sessionId);
+    invalidateDisplayProjectionForAppend(db, params);
     return true;
   }
   const treeEntry = parseSessionTranscriptTreeEntry(params.event);
@@ -256,14 +291,18 @@ export function indexAppendedTranscriptEventInTransaction(
     // A noncanonical row after a tracked tree cursor may be a flat fallback or
     // an opaque append ancestor. Only the full resolver can decide visibility.
     markSessionTranscriptIndexDirtyInTransaction(db, params.sessionId);
+    invalidateDisplayProjectionForAppend(db, params);
     return true;
   }
   if (treeEntry && treeEntry.parentId !== watermark.leafEventId) {
     markSessionTranscriptIndexDirtyInTransaction(db, params.sessionId);
+    invalidateDisplayProjectionForAppend(db, params);
     return true;
   }
   applyForwardIndex(db, params, watermark);
-  return false;
+  return params.maintainDisplayProjection !== false
+    ? appendEligibleSessionTranscriptDisplayRowInTransaction(db, params)
+    : false;
 }
 
 function applyForwardIndex(
@@ -353,6 +392,7 @@ function rebuildSessionTranscriptIndexInTransaction(
   rows: readonly SessionTranscriptProjectionSourceRow[],
 ): void {
   const projection = buildSessionTranscriptProjection({
+    includeDisplayRows: false,
     rows,
     sessionId,
     sourceTranscriptUpdatedAt: null,
@@ -426,6 +466,18 @@ export function reconcileSessionTranscriptIndexInTransaction(
  * behind the newest row. Ordered for deterministic reconcile passes.
  */
 export function listSessionsNeedingTranscriptIndexReconcile(db: DatabaseSync): string[] {
+  const hasTranscriptRows = Boolean(
+    db.prepare("SELECT 1 FROM transcript_events LIMIT 1").get(), // sqlite-allow-raw -- Avoid creating the lazy display group for an unused agent database.
+  );
+  const hasDisplayStateTable = Boolean(
+    db
+      .prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?")
+      .get("session_transcript_display_state"), // sqlite-allow-raw -- Feature-local lazy-schema presence probe.
+  );
+  if (!hasTranscriptRows && !hasDisplayStateTable) {
+    return [];
+  }
+  ensureOpenClawAgentDisplayRowSchema(db);
   const kysely = getIndexKysely(db);
   const rows = executeSqliteQuerySync(
     db,
@@ -452,18 +504,38 @@ export function listSessionsNeedingTranscriptIndexReconcile(db: DatabaseSync): s
         "st.session_id",
         "session_windows.session_id",
       )
+      .leftJoin(
+        "session_transcript_display_state as display",
+        "display.session_id",
+        "session_windows.session_id",
+      )
       .select("session_windows.session_id")
       .where((eb) =>
         eb.or([
           eb(eb.fn.coalesce("st.needs_rebuild", eb.val(1)), "!=", 0),
           eb("latest.seq", ">", eb.fn.coalesce("st.indexed_seq", eb.val(-1))),
+          eb(eb.fn.coalesce("display.needs_rebuild", eb.val(1)), "!=", 0),
+          eb("latest.seq", ">", eb.fn.coalesce("display.indexed_seq", eb.val(-1))),
         ]),
       )
       // The transcript PK makes the correlated latest-row lookup one index seek per session.
       // Grouping transcript_events here made every healthy search rescan the entire history.
       .orderBy("session_windows.session_id"),
   ).rows;
-  return rows.flatMap((row) => (typeof row.session_id === "string" ? [row.session_id] : []));
+  const emptyDirtyRows = executeSqliteQuerySync(
+    db,
+    kysely
+      .selectFrom("session_transcript_display_state")
+      .select("session_id")
+      .where("needs_rebuild", "!=", 0),
+  ).rows;
+  return [
+    ...new Set(
+      [...rows, ...emptyDirtyRows].flatMap((row) =>
+        typeof row.session_id === "string" ? [row.session_id] : [],
+      ),
+    ),
+  ].toSorted();
 }
 
 /** Drops index rows for sessions whose transcript rows are gone. */
