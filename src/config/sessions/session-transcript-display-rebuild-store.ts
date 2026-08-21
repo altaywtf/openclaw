@@ -15,6 +15,7 @@ import {
   SESSION_TRANSCRIPT_DISPLAY_ROW_SOURCES_TABLE,
   SESSION_TRANSCRIPT_DISPLAY_STATE_TABLE,
 } from "../../state/openclaw-agent-display-row-schema.js";
+import { chunkItems } from "../../utils/chunk-items.js";
 import {
   SESSION_TRANSCRIPT_DISPLAY_SEMANTICS_VERSION,
   parseDisplayRowKind,
@@ -29,6 +30,9 @@ import {
 } from "./session-transcript-display-store.js";
 
 const SESSION_TRANSCRIPT_DISPLAY_PAGE_MAX_ROWS = 200;
+// Node's SQLite builds default to 32,766 variables per statement. Leave room for
+// query-shape changes using the wider 11-binding canvas row as the batch bound.
+const DISPLAY_COMPANION_INSERT_BATCH_SIZE = Math.floor(32_000 / 11);
 type SessionTranscriptDisplayReadResult =
   | {
       generation: string;
@@ -190,10 +194,10 @@ export function appendSessionTranscriptDisplayChunkInTransaction(
         source_occurrence: source.sourceOccurrence,
       })),
     );
-    if (semanticSources.length > 0) {
+    for (const sources of chunkItems(semanticSources, DISPLAY_COMPANION_INSERT_BATCH_SIZE)) {
       executeSqliteQuerySync(
         db,
-        kysely.insertInto(SESSION_TRANSCRIPT_DISPLAY_ROW_SOURCES_TABLE).values(semanticSources),
+        kysely.insertInto(SESSION_TRANSCRIPT_DISPLAY_ROW_SOURCES_TABLE).values(sources),
       );
     }
     const canvases = params.rows.flatMap((row) =>
@@ -211,10 +215,10 @@ export function appendSessionTranscriptDisplayChunkInTransaction(
         view_id: canvas.viewId ?? null,
       })),
     );
-    if (canvases.length > 0) {
+    for (const canvasRows of chunkItems(canvases, DISPLAY_COMPANION_INSERT_BATCH_SIZE)) {
       executeSqliteQuerySync(
         db,
-        kysely.insertInto(SESSION_TRANSCRIPT_DISPLAY_CANVAS_TABLE).values(canvases),
+        kysely.insertInto(SESSION_TRANSCRIPT_DISPLAY_CANVAS_TABLE).values(canvasRows),
       );
     }
   }

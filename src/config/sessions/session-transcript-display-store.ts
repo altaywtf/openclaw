@@ -179,7 +179,14 @@ function readDisplayReducerCarry(
     db,
     getDisplayKysely(db)
       .selectFrom(SESSION_TRANSCRIPT_DISPLAY_CARRY_TABLE)
-      .select(["kind", "position", "related_event_seq", "source_event_seq", "source_occurrence"])
+      .select([
+        "delivery_event_seq",
+        "kind",
+        "position",
+        "related_event_seq",
+        "source_event_seq",
+        "source_occurrence",
+      ])
       .where("session_id", "=", sessionId)
       .orderBy("kind")
       .orderBy("position"),
@@ -192,6 +199,9 @@ function readDisplayReducerCarry(
     };
     if (row.related_event_seq !== null) {
       entry.relatedEventSeq = row.related_event_seq;
+    }
+    if (row.delivery_event_seq !== null) {
+      entry.deliveryEventSeq = row.delivery_event_seq;
     }
     return entry;
   });
@@ -215,6 +225,7 @@ export function writeDisplayReducerCarry(
     kysely.insertInto(SESSION_TRANSCRIPT_DISPLAY_CARRY_TABLE).values(
       carry.map((entry) => ({
         carry_version: SESSION_TRANSCRIPT_DISPLAY_SEMANTICS_VERSION,
+        delivery_event_seq: entry.deliveryEventSeq ?? null,
         kind: entry.kind,
         position: entry.position,
         related_event_seq: entry.relatedEventSeq ?? null,
@@ -490,14 +501,21 @@ function createDatabaseDisplayEffects(
             .orderBy("display_ordinal"),
         ).rows;
         for (const row of following) {
+          const shouldRevise = !revisedRows.has(row.row_id);
           executeSqliteQuerySync(
             db,
             kysely
               .updateTable(SESSION_TRANSCRIPT_DISPLAY_ROWS_TABLE)
-              .set({ display_ordinal: row.display_ordinal - 1 })
+              .set((eb) => ({
+                display_ordinal: row.display_ordinal - 1,
+                ...(shouldRevise ? { revision: eb("revision", "+", 1) } : {}),
+              }))
               .where("session_id", "=", sessionId)
               .where("row_id", "=", row.row_id),
           );
+          if (shouldRevise) {
+            revisedRows.add(row.row_id);
+          }
         }
         rowCount -= 1;
       }
@@ -557,6 +575,7 @@ export function appendEligibleSessionTranscriptDisplayRowInTransaction(
     params.seq,
     ...carry.flatMap((entry) => [
       entry.sourceEventSeq,
+      ...(entry.deliveryEventSeq === undefined ? [] : [entry.deliveryEventSeq]),
       ...(entry.relatedEventSeq === undefined ? [] : [entry.relatedEventSeq]),
     ]),
   ]);

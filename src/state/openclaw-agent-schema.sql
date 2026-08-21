@@ -681,7 +681,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_transcript_display_source
 CREATE TABLE IF NOT EXISTS session_transcript_display_row_sources (
   session_id TEXT NOT NULL,
   row_id TEXT NOT NULL,
-  relation TEXT NOT NULL CHECK (relation IN ('turn_boundary', 'message_tool_mirror', 'tts_supplement')),
+  relation TEXT NOT NULL CHECK (relation IN ('turn_boundary', 'message_tool_mirror', 'message_tool_result', 'tts_supplement')),
   position INTEGER NOT NULL,
   source_event_seq INTEGER NOT NULL CHECK (source_event_seq >= 0),
   source_occurrence INTEGER NOT NULL CHECK (source_occurrence >= 0),
@@ -691,7 +691,7 @@ CREATE TABLE IF NOT EXISTS session_transcript_display_row_sources (
   FOREIGN KEY (session_id, source_event_seq) REFERENCES transcript_events(session_id, seq) ON DELETE CASCADE,
   CHECK (
     (relation = 'turn_boundary' AND position = 0) OR
-    (relation IN ('message_tool_mirror', 'tts_supplement') AND position BETWEEN 0 AND 15)
+    (relation IN ('message_tool_mirror', 'message_tool_result', 'tts_supplement') AND position BETWEEN 0 AND 15)
   )
 ) STRICT;
 
@@ -725,11 +725,13 @@ CREATE TABLE IF NOT EXISTS session_transcript_display_carry (
   source_event_seq INTEGER NOT NULL CHECK (source_event_seq >= 0),
   source_occurrence INTEGER NOT NULL CHECK (source_occurrence >= 0),
   related_event_seq INTEGER CHECK (related_event_seq IS NULL OR related_event_seq >= 0),
+  delivery_event_seq INTEGER CHECK (delivery_event_seq IS NULL OR delivery_event_seq >= 0),
   carry_version INTEGER NOT NULL CHECK (carry_version = 1),
   PRIMARY KEY (session_id, kind, position),
   FOREIGN KEY (session_id) REFERENCES session_transcript_display_state(session_id) ON DELETE CASCADE,
   FOREIGN KEY (session_id, source_event_seq) REFERENCES transcript_events(session_id, seq) ON DELETE CASCADE,
   FOREIGN KEY (session_id, related_event_seq) REFERENCES transcript_events(session_id, seq) ON DELETE CASCADE,
+  FOREIGN KEY (session_id, delivery_event_seq) REFERENCES transcript_events(session_id, seq) ON DELETE CASCADE,
   CHECK (
     (kind = 'heartbeat_boundary' AND position = 0) OR
     (kind = 'stream_error' AND position BETWEEN 0 AND 7) OR
@@ -737,7 +739,8 @@ CREATE TABLE IF NOT EXISTS session_transcript_display_carry (
     (kind = 'tts_candidate' AND position BETWEEN 0 AND 63)
   ),
   CHECK (source_occurrence = 0 OR kind = 'message_tool'),
-  CHECK (related_event_seq IS NULL OR kind IN ('message_tool', 'canvas_pending'))
+  CHECK (related_event_seq IS NULL OR kind IN ('message_tool', 'canvas_pending')),
+  CHECK (delivery_event_seq IS NULL OR kind = 'message_tool')
 ) STRICT;
 
 CREATE VIRTUAL TABLE IF NOT EXISTS session_transcript_fts USING fts5(

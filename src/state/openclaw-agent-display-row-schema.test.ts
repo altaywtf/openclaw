@@ -276,6 +276,15 @@ describe("agent display-row schema", () => {
         database
           .prepare(
             `INSERT INTO session_transcript_display_carry
+               (session_id, kind, position, source_event_seq, source_occurrence, delivery_event_seq, carry_version)
+             VALUES ('session-1', 'message_tool', 0, 0, 0, -1, 1)`,
+          )
+          .run(),
+      ).toThrow(/delivery_event_seq/u);
+      expect(() =>
+        database
+          .prepare(
+            `INSERT INTO session_transcript_display_carry
                (session_id, kind, position, source_event_seq, source_occurrence, carry_version)
              VALUES ('session-1', 'message_tool', 0, 0, -1, 1)`,
           )

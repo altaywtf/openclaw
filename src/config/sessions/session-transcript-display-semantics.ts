@@ -7,9 +7,12 @@ import {
 import { HEARTBEAT_PROMPT } from "../../auto-reply/heartbeat.js";
 import { isOpenClawDeliveryMirrorAssistantMessage } from "../../shared/transcript-only-openclaw-assistant.js";
 import {
+  isDisplayHiddenMessage,
   isForwardedSessionsSend,
+  isHiddenUserMessage,
   isPureStreamError,
   isRenderableAssistant,
+  isSessionsSendInterSessionUserMessage,
   isSuppressedControlReply,
   isTtsSupplement,
   normalizeHistoryType,
@@ -19,9 +22,13 @@ import {
   readMessageToolResult,
   readTtsMarker,
   ttsMarkerMatches,
-  type MessageToolCall,
   type PreparedSessionTranscriptDisplayCanvas,
 } from "./session-transcript-display-classification.js";
+import {
+  flushSessionTranscriptMessageToolMirrors,
+  handleSessionTranscriptDeliveryMirror,
+  handleSessionTranscriptMessageToolResult,
+} from "./session-transcript-display-message-tool.js";
 import {
   isCanonicalSessionTranscriptEntry,
   parseSessionTranscriptTreeEntry,
@@ -46,6 +53,7 @@ export type SessionTranscriptDisplayRowKind =
   | "user";
 export type SessionTranscriptDisplayRelation =
   | "message_tool_mirror"
+  | "message_tool_result"
   | "tts_supplement"
   | "turn_boundary";
 export type SessionTranscriptDisplayCarryKind = keyof typeof DISPLAY_CARRY_LIMITS;
@@ -57,6 +65,7 @@ export type PreparedSessionTranscriptDisplaySource = {
 };
 export { type PreparedSessionTranscriptDisplayCanvas } from "./session-transcript-display-classification.js";
 export type PreparedSessionTranscriptDisplayCarry = {
+  deliveryEventSeq?: number;
   kind: SessionTranscriptDisplayCarryKind;
   position: number;
   relatedEventSeq?: number;
@@ -102,8 +111,14 @@ export function parseDisplayRowKind(value: string): SessionTranscriptDisplayRowK
 }
 
 export function parseDisplayCarryKind(value: string): SessionTranscriptDisplayCarryKind {
-  if (Object.hasOwn(DISPLAY_CARRY_LIMITS, value)) {
-    return value as SessionTranscriptDisplayCarryKind;
+  if (
+    value === "canvas_pending" ||
+    value === "heartbeat_boundary" ||
+    value === "message_tool" ||
+    value === "stream_error" ||
+    value === "tts_candidate"
+  ) {
+    return value;
   }
   throw new Error(`Unexpected transcript display carry kind: ${value}`);
 }
@@ -218,14 +233,6 @@ function eventMessage(event: unknown): Record<string, unknown> | undefined {
   return readRecord(readRecord(event)?.message);
 }
 
-function messageToolCallForCarry(
-  state: DisplayReducerState,
-  entry: PreparedSessionTranscriptDisplayCarry,
-): MessageToolCall | undefined {
-  const message = eventMessage(state.readEvent(entry.sourceEventSeq));
-  return message ? readMessageToolCalls(message)[entry.sourceOccurrence] : undefined;
-}
-
 function attachPendingHeartbeat(
   state: DisplayReducerState,
   row: DisplayReducerRow,
@@ -242,85 +249,6 @@ function attachPendingHeartbeat(
     { sourceEventSeq: boundary.sourceEventSeq, sourceOccurrence: 0 },
   ]);
   clearCarry(state, "heartbeat_boundary");
-}
-
-function flushMessageToolMirrors(
-  state: DisplayReducerState,
-  anchor: DisplayReducerRow,
-  selected?: readonly PreparedSessionTranscriptDisplayCarry[],
-): void {
-  const pending = carryEntries(state, "message_tool");
-  const chosen = selected ?? pending.filter((entry) => entry.relatedEventSeq !== undefined);
-  if (chosen.length > 0) {
-    state.effects.addRelation(
-      anchor,
-      "message_tool_mirror",
-      chosen.map((entry) => ({
-        sourceEventSeq: entry.sourceEventSeq,
-        sourceOccurrence: entry.sourceOccurrence,
-      })),
-    );
-  }
-  if (selected) {
-    const flushed = new Set(selected);
-    replaceCarry(
-      state,
-      "message_tool",
-      pending.filter((entry) => !flushed.has(entry)),
-    );
-  } else {
-    clearCarry(state, "message_tool");
-  }
-}
-
-function handleMessageToolResult(
-  state: DisplayReducerState,
-  message: Record<string, unknown>,
-  sourceEventSeq: number,
-): void {
-  const result = readMessageToolResult(message);
-  if (!result?.successful) {
-    return;
-  }
-  const pending = carryEntries(state, "message_tool");
-  for (const entry of pending) {
-    if (entry.relatedEventSeq !== undefined) {
-      continue;
-    }
-    const call = messageToolCallForCarry(state, entry);
-    if (
-      !call ||
-      (call.callId && result.callId !== call.callId) ||
-      (call.requiresSourceRouteConfirmation && !result.sourceRouteConfirmed)
-    ) {
-      continue;
-    }
-    entry.relatedEventSeq = sourceEventSeq;
-  }
-  replaceCarry(state, "message_tool", pending);
-}
-
-function handleDeliveryMirror(
-  state: DisplayReducerState,
-  message: Record<string, unknown>,
-  row: DisplayReducerRow,
-): boolean {
-  if (!isOpenClawDeliveryMirrorAssistantMessage(message)) {
-    return false;
-  }
-  const text = readMessageText(message)?.trim();
-  if (!text) {
-    return false;
-  }
-  const matching = carryEntries(state, "message_tool").filter((entry) => {
-    const call = messageToolCallForCarry(state, entry);
-    return entry.relatedEventSeq !== undefined && call?.text.trim() === text;
-  });
-  if (matching.length === 0) {
-    return false;
-  }
-  flushMessageToolMirrors(state, row, matching);
-  return true;
 }
 
 function findTtsTarget(
@@ -399,14 +327,23 @@ export function reduceSessionTranscriptDisplaySource(
     return;
   }
   const role = message.role;
-  if (isForwardedSessionsSend(message)) {
-    const kind = role === "assistant" && isRenderableAssistant(message) ? "assistant" : "opaque";
+  if (isDisplayHiddenMessage(message)) {
+    state.effects.appendRow("opaque", source.seq);
+    return;
+  }
+  if (isForwardedSessionsSend(message) || isSessionsSendInterSessionUserMessage(message)) {
+    const kind =
+      role === "user" && readMessageText(message)?.trim()
+        ? "assistant"
+        : role === "assistant" && isRenderableAssistant(message)
+          ? "assistant"
+          : "opaque";
     state.effects.appendRow(kind, source.seq);
     return;
   }
   if (
     role === "user" &&
-    isHeartbeatUserMessage(message as { role: string; content?: unknown }, HEARTBEAT_PROMPT)
+    isHeartbeatUserMessage({ content: message.content, role }, HEARTBEAT_PROMPT)
   ) {
     clearCarry(state, "message_tool", "stream_error");
     const dropped = pushCarry(state, "heartbeat_boundary", { sourceEventSeq: source.seq });
@@ -415,10 +352,11 @@ export function reduceSessionTranscriptDisplaySource(
     }
     return;
   }
-  if (
-    role === "assistant" &&
-    isHeartbeatOkResponse(message as { role: string; content?: unknown })
-  ) {
+  if (role === "assistant" && isHeartbeatOkResponse({ content: message.content, role })) {
+    return;
+  }
+  if (isHiddenUserMessage(message)) {
+    state.effects.appendRow("opaque", source.seq);
     return;
   }
   if (role === "user") {
@@ -435,10 +373,23 @@ export function reduceSessionTranscriptDisplaySource(
   }
   const calls = readMessageToolCalls(message);
   if (calls.length > 0) {
-    const row = state.effects.appendRow("opaque", source.seq);
+    const kind = isRenderableAssistant(message) ? "assistant" : "opaque";
+    const pendingErrors = carryEntries(state, "stream_error");
+    const row =
+      kind === "assistant" && pendingErrors.length > 0
+        ? state.effects.replaceStreamRows(
+            pendingErrors.map((entry) => entry.sourceEventSeq),
+            source.seq,
+          )
+        : state.effects.appendRow(kind, source.seq);
     attachPendingHeartbeat(state, row, role);
     for (const sourceOccurrence of calls.keys()) {
       pushCarry(state, "message_tool", { sourceEventSeq: source.seq, sourceOccurrence });
+    }
+    if (kind === "assistant") {
+      clearCarry(state, "stream_error");
+      movePendingCanvases(state, row);
+      pushCarry(state, "tts_candidate", { sourceEventSeq: source.seq });
     }
     return;
   }
@@ -479,7 +430,7 @@ export function reduceSessionTranscriptDisplaySource(
   let row: DisplayReducerRow | undefined;
   if (result) {
     row = state.effects.appendRow("opaque", source.seq);
-    handleMessageToolResult(state, message, source.seq);
+    handleSessionTranscriptMessageToolResult(state, message, source.seq);
   } else if (!suppressed) {
     const kind =
       role === "assistant" && isRenderableAssistant(message)
@@ -499,7 +450,11 @@ export function reduceSessionTranscriptDisplaySource(
       clearCarry(state, "stream_error");
     }
   }
-  if (row && deliveryMirror && handleDeliveryMirror(state, message, row)) {
+  if (
+    row &&
+    deliveryMirror &&
+    handleSessionTranscriptDeliveryMirror(state, message, row, source.seq)
+  ) {
     attachPendingHeartbeat(state, row, role);
     if (row.kind === "assistant" && isRenderableAssistant(message)) {
       movePendingCanvases(state, row);
@@ -513,7 +468,7 @@ export function reduceSessionTranscriptDisplaySource(
     );
     if (succeeded.length > 0) {
       row = state.effects.appendRow("assistant", source.seq);
-      flushMessageToolMirrors(state, row);
+      flushSessionTranscriptMessageToolMirrors(state, row);
       attachPendingHeartbeat(state, row, role);
     } else {
       clearCarry(state, "message_tool");
@@ -543,7 +498,10 @@ function createPreparedDisplayEffects(rows: DisplayReducerRow[]): DisplayReducer
   };
   const normalize = () => {
     rows.forEach((row, displayOrdinal) => {
-      row.displayOrdinal = displayOrdinal;
+      if (row.displayOrdinal !== displayOrdinal) {
+        row.displayOrdinal = displayOrdinal;
+        revise(row);
+      }
     });
   };
   const reindexCanvases = (

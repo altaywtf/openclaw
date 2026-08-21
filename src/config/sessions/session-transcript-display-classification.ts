@@ -1,10 +1,15 @@
 import { createHash } from "node:crypto";
 import { asOptionalRecord as readRecord } from "@openclaw/normalization-core/record-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+import { OPENCLAW_RUNTIME_CONTEXT_CUSTOM_TYPE } from "../../agents/internal-runtime-context.js";
 import { STREAM_ERROR_FALLBACK_TEXT } from "../../agents/stream-message-shared.js";
 import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../../auto-reply/tokens.js";
 import { extractCanvasFromDetails, extractCanvasFromText } from "../../chat/canvas-render.js";
-import { normalizeInputProvenance } from "../../sessions/input-provenance.js";
+import {
+  INTER_SESSION_PROMPT_PREFIX_BASE,
+  normalizeInputProvenance,
+} from "../../sessions/input-provenance.js";
+import { hasPersistedMedia } from "../../sessions/user-turn-media.js";
 
 export type PreparedSessionTranscriptDisplayCanvas = {
   boardWidgetName?: string;
@@ -134,7 +139,7 @@ function hasNonEmptyValue(value: unknown): boolean {
   if (!value || typeof value !== "object") {
     return value != null;
   }
-  return Object.values(value as Record<string, unknown>).some(hasNonEmptyValue);
+  return Object.values(readRecord(value) ?? {}).some(hasNonEmptyValue);
 }
 
 export type MessageToolCall = {
@@ -219,7 +224,13 @@ export function readMessageToolResult(message: Record<string, unknown>): {
   if (toolName && toolName !== "message") {
     return null;
   }
-  const resultValues = [message.result, message.output, message.content, message.text];
+  const resultValues = [
+    message.details,
+    message.result,
+    message.output,
+    message.content,
+    message.text,
+  ];
   const serialized = resultValues.map((value) => {
     try {
       return typeof value === "string" ? value : JSON.stringify(value);
@@ -236,7 +247,9 @@ export function readMessageToolResult(message: Record<string, unknown>): {
       /"(?:deliveryStatus|delivery_status|status)"\s*:\s*"dry_run"/iu.test(value ?? ""),
     ) ||
     serialized.some((value) =>
-      /"(?:delivered|status|messageId)"\s*:\s*(?:false|"skipped"|"suppressed")/iu.test(value ?? ""),
+      /"(?:delivered|deliveryStatus|delivery_status|status|messageId)"\s*:\s*(?:false|"skipped"|"suppressed")/iu.test(
+        value ?? "",
+      ),
     );
   const callId = readToolCallId(message);
   return {
@@ -248,7 +261,67 @@ export function readMessageToolResult(message: Record<string, unknown>): {
 
 export function isForwardedSessionsSend(message: Record<string, unknown>): boolean {
   const provenance = normalizeInputProvenance(message.provenance);
-  return provenance?.kind === "inter_session" && provenance.sourceTool === "sessions_send";
+  return (
+    message.role === "assistant" &&
+    provenance?.kind === "inter_session" &&
+    provenance.sourceTool === "sessions_send"
+  );
+}
+
+export function isSessionsSendInterSessionUserMessage(message: Record<string, unknown>): boolean {
+  const provenance = normalizeInputProvenance(message.provenance);
+  return (
+    message.role === "user" &&
+    provenance?.kind === "inter_session" &&
+    provenance.sourceTool === "sessions_send"
+  );
+}
+
+export function isDisplayHiddenMessage(message: Record<string, unknown>): boolean {
+  return (
+    message.display === false ||
+    (message.role === "custom" && message.customType === OPENCLAW_RUNTIME_CONTEXT_CUSTOM_TYPE)
+  );
+}
+
+function isEmptyTextOnlyContent(content: unknown): boolean {
+  if (typeof content === "string") {
+    return content.trim().length === 0;
+  }
+  if (!Array.isArray(content) || content.length === 0) {
+    return Array.isArray(content);
+  }
+  let sawText = false;
+  for (const block of content) {
+    const entry = readRecord(block);
+    if (!entry || entry.type !== "text") {
+      return false;
+    }
+    sawText = true;
+    if (typeof entry.text !== "string" || entry.text.trim().length > 0) {
+      return false;
+    }
+  }
+  return sawText;
+}
+
+function isSubagentAnnounceInterSessionUserMessage(message: Record<string, unknown>): boolean {
+  const provenance = normalizeInputProvenance(message.provenance);
+  if (provenance?.kind === "inter_session" && provenance.sourceTool === "subagent_announce") {
+    return true;
+  }
+  const text = readMessageText(message) ?? "";
+  return (
+    text.includes(INTER_SESSION_PROMPT_PREFIX_BASE) && text.includes("sourceTool=subagent_announce")
+  );
+}
+
+export function isHiddenUserMessage(message: Record<string, unknown>): boolean {
+  return (
+    message.role === "user" &&
+    (isSubagentAnnounceInterSessionUserMessage(message) ||
+      (isEmptyTextOnlyContent(message.content ?? message.text) && !hasPersistedMedia(message)))
+  );
 }
 
 export function isSuppressedControlReply(message: Record<string, unknown>): boolean {
@@ -275,9 +348,9 @@ export function isPureStreamError(message: Record<string, unknown>): boolean {
 export function isRenderableAssistant(message: Record<string, unknown>): boolean {
   if (
     message.role !== "assistant" ||
+    isDisplayHiddenMessage(message) ||
     isPureStreamError(message) ||
-    isSuppressedControlReply(message) ||
-    readMessageToolCalls(message).length > 0
+    isSuppressedControlReply(message)
   ) {
     return false;
   }

@@ -149,12 +149,13 @@ export function readDisplaySnapshot(scope: DatabaseScope, sessionId: string) {
     );
   const carry = db
     .prepare(
-      "SELECT kind, position, source_event_seq, source_occurrence, related_event_seq FROM session_transcript_display_carry WHERE session_id = ? ORDER BY kind, position",
+      "SELECT kind, position, source_event_seq, source_occurrence, related_event_seq, delivery_event_seq FROM session_transcript_display_carry WHERE session_id = ? ORDER BY kind, position",
     )
     .all(sessionId)
     .map((entry) => {
       const carryRow = entry as {
         kind: string;
+        delivery_event_seq: number | null;
         position: number;
         related_event_seq: number | null;
         source_event_seq: number;
@@ -166,9 +167,13 @@ export function readDisplaySnapshot(scope: DatabaseScope, sessionId: string) {
         relatedEventSeq: carryRow.related_event_seq,
         sourceEventSeq: carryRow.source_event_seq,
       };
-      return carryRow.source_occurrence === 0
-        ? result
-        : Object.assign(result, { sourceOccurrence: carryRow.source_occurrence });
+      if (carryRow.delivery_event_seq !== null) {
+        Object.assign(result, { deliveryEventSeq: carryRow.delivery_event_seq });
+      }
+      if (carryRow.source_occurrence !== 0) {
+        Object.assign(result, { sourceOccurrence: carryRow.source_occurrence });
+      }
+      return result;
     });
   return { canvases, carry, rows, sources };
 }
@@ -205,9 +210,13 @@ function normalizeDisplayPlan(plan: PreparedSessionTranscriptDisplayProjection) 
           relatedEventSeq: entry.relatedEventSeq ?? null,
           sourceEventSeq: entry.sourceEventSeq,
         };
-        return entry.sourceOccurrence === 0
-          ? result
-          : Object.assign(result, { sourceOccurrence: entry.sourceOccurrence });
+        if (entry.deliveryEventSeq !== undefined) {
+          Object.assign(result, { deliveryEventSeq: entry.deliveryEventSeq });
+        }
+        if (entry.sourceOccurrence !== 0) {
+          Object.assign(result, { sourceOccurrence: entry.sourceOccurrence });
+        }
+        return result;
       })
       .toSorted(
         (left, right) => left.kind.localeCompare(right.kind) || left.position - right.position,
@@ -349,6 +358,12 @@ export const STATEFUL_DISPLAY_EXPECTED_PREFIXES = {
           position: 0,
           relation: "message_tool_mirror",
           sourceEventSeq: 0,
+        },
+        {
+          displayOrdinal: 2,
+          position: 0,
+          relation: "message_tool_result",
+          sourceEventSeq: 1,
         },
       ],
     },

@@ -10,6 +10,7 @@ type ExpectedRow = {
 function expectedSnapshot(
   rows: ExpectedRow[],
   carry: Array<{
+    deliveryEventSeq?: number;
     kind: string;
     position: number;
     relatedEventSeq: number | null;
@@ -295,6 +296,12 @@ export const NEGATIVE_DISPLAY_EXPECTED_PREFIXES = {
           relation: "message_tool_mirror",
           sourceEventSeq: 0,
         },
+        {
+          displayOrdinal: 3,
+          position: 0,
+          relation: "message_tool_result",
+          sourceEventSeq: 1,
+        },
       ],
     ),
     expectedSnapshot(
@@ -312,11 +319,23 @@ export const NEGATIVE_DISPLAY_EXPECTED_PREFIXES = {
           sourceEventSeq: 0,
         },
         {
+          displayOrdinal: 3,
+          position: 0,
+          relation: "message_tool_result",
+          sourceEventSeq: 1,
+        },
+        {
           displayOrdinal: 4,
           position: 0,
           relation: "message_tool_mirror",
           sourceEventSeq: 0,
           sourceOccurrence: 1,
+        },
+        {
+          displayOrdinal: 4,
+          position: 0,
+          relation: "message_tool_result",
+          sourceEventSeq: 2,
         },
       ],
     ),
@@ -351,6 +370,12 @@ export const NEGATIVE_DISPLAY_EXPECTED_PREFIXES = {
           relation: "message_tool_mirror",
           sourceEventSeq: 0,
         },
+        {
+          displayOrdinal: 4,
+          position: 0,
+          relation: "message_tool_result",
+          sourceEventSeq: 1,
+        },
       ],
     ),
     expectedSnapshot(
@@ -368,10 +393,22 @@ export const NEGATIVE_DISPLAY_EXPECTED_PREFIXES = {
           sourceEventSeq: 0,
         },
         {
+          displayOrdinal: 4,
+          position: 0,
+          relation: "message_tool_result",
+          sourceEventSeq: 1,
+        },
+        {
           displayOrdinal: 5,
           position: 0,
           relation: "message_tool_mirror",
           sourceEventSeq: 2,
+        },
+        {
+          displayOrdinal: 5,
+          position: 0,
+          relation: "message_tool_result",
+          sourceEventSeq: 3,
         },
       ],
     ),
@@ -528,6 +565,12 @@ export const DELIVERY_CANVAS_EXPECTED_PREFIXES = [
         position: 0,
         relation: "message_tool_mirror",
         sourceEventSeq: 2,
+      },
+      {
+        displayOrdinal: 4,
+        position: 0,
+        relation: "message_tool_result",
+        sourceEventSeq: 3,
       },
     ],
     STATEFUL_DISPLAY_EXPECTED_PREFIXES.canvas[2].canvases.map((canvas) =>
