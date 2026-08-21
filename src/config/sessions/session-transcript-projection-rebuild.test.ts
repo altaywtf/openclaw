@@ -1,13 +1,26 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { STREAM_ERROR_FALLBACK_TEXT } from "../../agents/stream-message-shared.js";
 import { HEARTBEAT_PROMPT } from "../../auto-reply/heartbeat.js";
+import {
+  closeOpenClawAgentDatabasesForTest,
+  openOpenClawAgentDatabase,
+} from "../../state/openclaw-agent-db.js";
+import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import {
+  appendTranscriptEvent,
+  appendTranscriptMessage,
+  persistSessionTranscriptTurn,
+} from "./session-accessor.js";
 import { prepareSessionTranscriptDisplayRows } from "./session-transcript-display.js";
 import {
   buildSessionTranscriptProjection,
   type SessionTranscriptProjectionSourceRow,
 } from "./session-transcript-projection-rebuild.js";
+import { waitForSessionTranscriptIndexReconcile } from "./session-transcript-reconcile.js";
 
 const SESSION_ID = "projection-session";
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 function row(
   seq: number,
@@ -26,6 +39,45 @@ function projection(rows: SessionTranscriptProjectionSourceRow[]) {
 }
 
 describe("canonical session transcript projection", () => {
+  let env: NodeJS.ProcessEnv;
+  const scope = {
+    agentId: "main",
+    sessionId: SESSION_ID,
+    sessionKey: "agent:main:projection-session",
+  };
+
+  beforeEach(() => {
+    env = {
+      ...process.env,
+      OPENCLAW_STATE_DIR: tempDirs.make("openclaw-transcript-projection-"),
+    };
+  });
+
+  afterEach(() => {
+    closeOpenClawAgentDatabasesForTest();
+    closeOpenClawStateDatabaseForTest();
+  });
+
+  function readProjectionSourceRows(): SessionTranscriptProjectionSourceRow[] {
+    return openOpenClawAgentDatabase({ agentId: scope.agentId, env })
+      .db.prepare(
+        "SELECT seq, event_json, created_at FROM transcript_events WHERE session_id = ? ORDER BY seq",
+      )
+      .all(scope.sessionId)
+      .map((entry) => {
+        const row = entry as { created_at: number; event_json: string; seq: number };
+        return { createdAt: row.created_at, event: JSON.parse(row.event_json), seq: row.seq };
+      });
+  }
+
+  function readDisplayRows() {
+    return openOpenClawAgentDatabase({ agentId: scope.agentId, env })
+      .db.prepare(
+        "SELECT display_ordinal, kind, source_event_seq FROM session_transcript_display_rows WHERE session_id = ? ORDER BY display_ordinal",
+      )
+      .all(scope.sessionId);
+  }
+
   it("projects one deterministic active branch for both rebuild owners", () => {
     const result = projection([
       row(0, { id: SESSION_ID, type: "session", version: 3 }),
@@ -74,6 +126,42 @@ describe("canonical session transcript projection", () => {
     expect(result.ftsRows).toEqual([
       { messageId: "root", role: "user", text: "root text", timestamp: 1_000 },
       { messageId: "active", role: "assistant", text: "active text", timestamp: 3_000 },
+    ]);
+  });
+
+  it("matches incremental append and rebuild after excluding the header and abandoned branch", async () => {
+    await persistSessionTranscriptTurn(
+      { ...scope, env },
+      {
+        messages: [
+          { eventId: "root", parentId: null, message: { role: "user", content: "root" } },
+          {
+            eventId: "abandoned",
+            parentId: "root",
+            message: { role: "assistant", content: "abandoned" },
+          },
+          {
+            eventId: "active",
+            parentId: "root",
+            message: { role: "assistant", content: "active" },
+          },
+        ],
+        touchSessionEntry: false,
+      },
+    );
+    await waitForSessionTranscriptIndexReconcile({ agentId: scope.agentId, env });
+
+    const planned = prepareSessionTranscriptDisplayRows(readProjectionSourceRows()).map(
+      ({ displayOrdinal, kind, sourceEventSeq }) => ({
+        display_ordinal: displayOrdinal,
+        kind,
+        source_event_seq: sourceEventSeq,
+      }),
+    );
+    expect(readDisplayRows()).toEqual(planned);
+    expect(planned).toEqual([
+      { display_ordinal: 0, kind: "user", source_event_seq: 1 },
+      { display_ordinal: 1, kind: "assistant", source_event_seq: 3 },
     ]);
   });
 
@@ -155,11 +243,26 @@ describe("canonical session transcript projection", () => {
       expected: "opaque",
       name: "unknown canonical entry",
     },
-  ])("uses the canonical display classifier for $name rows", ({ event, expected }) => {
-    const [plannedRow] = prepareSessionTranscriptDisplayRows([
-      { event: { id: "event-7", parentId: null, ...event }, seq: 7 },
-    ]);
-    expect(plannedRow).toMatchObject({ kind: expected, sourceEventSeq: 7 });
+  ])("uses the canonical display classifier for $name rows", async ({ event, expected }) => {
+    if (event.type === "message" && event.message) {
+      await appendTranscriptMessage(
+        { ...scope, env },
+        { eventId: "event-1", message: event.message, parentId: null },
+      );
+    } else {
+      await appendTranscriptEvent({ ...scope, env }, { id: "event-1", parentId: null, ...event });
+    }
+    await waitForSessionTranscriptIndexReconcile({ agentId: scope.agentId, env });
+
+    const planned = prepareSessionTranscriptDisplayRows(readProjectionSourceRows()).map(
+      ({ displayOrdinal, kind, sourceEventSeq }) => ({
+        display_ordinal: displayOrdinal,
+        kind,
+        source_event_seq: sourceEventSeq,
+      }),
+    );
+    expect(readDisplayRows()).toEqual(planned);
+    expect(planned).toMatchObject([{ kind: expected }]);
   });
 
   it("keeps persisted row timestamps for timestamp-less and invalid-timestamp messages", () => {
