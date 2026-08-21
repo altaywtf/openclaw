@@ -21,14 +21,14 @@ type SourceGenerationDatabase = Pick<
   | "transcript_rewrite_watermarks"
 >;
 
-export const EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ = -1;
+const EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ = -1;
 
-export type SessionTranscriptSourceGeneration = {
+type SessionTranscriptSourceGeneration = {
   generation: string;
   indexedSeq: number;
 };
 
-export type SessionTranscriptProjectionBinding =
+type SessionTranscriptProjectionBinding =
   | {
       projection: "active";
       projectionGeneration: null;

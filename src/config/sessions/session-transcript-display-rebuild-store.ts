@@ -1,10 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Generated } from "kysely";
-import {
-  executeSqliteQuerySync,
-  executeSqliteQueryTakeFirstSync,
-  getNodeSqliteKysely,
-} from "../../infra/kysely-sync.js";
+import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
 import type {
   PreparedSessionTranscriptDisplayCarry,

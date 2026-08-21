@@ -20,11 +20,12 @@ import { OPENCLAW_AGENT_SCHEMA_SQL } from "./openclaw-agent-schema.js";
 import {
   AGENT_SCHEMA_WITHOUT_TRANSCRIPT_PROJECTION_BINDINGS_SQL,
   ensureOpenClawAgentTranscriptProjectionBindingSchema,
-  SESSION_TRANSCRIPT_PROJECTION_BINDINGS_OWNER_INDEX,
   SESSION_TRANSCRIPT_PROJECTION_BINDINGS_TABLE,
 } from "./openclaw-agent-transcript-projection-binding-schema.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const SESSION_TRANSCRIPT_PROJECTION_BINDINGS_OWNER_INDEX =
+  "idx_agent_transcript_projection_bindings_owner";
 
 afterEach(() => {
   closeOpenClawAgentDatabasesForTest();

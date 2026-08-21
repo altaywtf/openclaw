@@ -5,7 +5,7 @@ import { OPENCLAW_AGENT_SCHEMA_SQL } from "./openclaw-agent-schema.js";
 
 export const SESSION_TRANSCRIPT_PROJECTION_BINDINGS_TABLE =
   "session_transcript_projection_bindings";
-export const SESSION_TRANSCRIPT_PROJECTION_BINDINGS_OWNER_INDEX =
+const SESSION_TRANSCRIPT_PROJECTION_BINDINGS_OWNER_INDEX =
   "idx_agent_transcript_projection_bindings_owner";
 
 const BINDING_SCHEMA_START = `CREATE TABLE IF NOT EXISTS ${SESSION_TRANSCRIPT_PROJECTION_BINDINGS_TABLE} (`;
@@ -34,11 +34,11 @@ function schemaObjectExists(db: DatabaseSync, name: string): boolean {
 }
 
 function readSchemaVersion(db: DatabaseSync): number {
-  const row = db.prepare("PRAGMA schema_version").get() as { schema_version?: unknown } | undefined;
-  if (typeof row?.schema_version !== "number") {
+  const schemaVersion = db.prepare("PRAGMA schema_version").get()?.schema_version;
+  if (typeof schemaVersion !== "number") {
     throw new Error("OpenClaw agent transcript projection binding schema version is invalid.");
   }
-  return row.schema_version;
+  return schemaVersion;
 }
 
 /** Validates a present lazy binding group without materializing an absent one. */
