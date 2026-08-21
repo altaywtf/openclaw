@@ -10,11 +10,20 @@ import {
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { persistSessionTranscriptTurn, upsertSessionEntryCore } from "./session-accessor.js";
 import {
+  NEGATIVE_DISPLAY_EXPECTED_PREFIXES,
+  expectedCanvasCarryCapPrefixes,
+  expectedHeartbeatCarryCapPrefixes,
+  expectedMessageCarryCapPrefixes,
+  expectedStreamCarryCapPrefixes,
+  expectedTtsCarryCapPrefixes,
+} from "./session-transcript-display.expected-fixtures.js";
+import {
   appendEligibleSessionTranscriptDisplayRowInTransaction,
   prepareSessionTranscriptDisplayProjection,
   prepareSessionTranscriptDisplayRows,
 } from "./session-transcript-display.js";
 import {
+  STATEFUL_DISPLAY_EXPECTED_PREFIXES,
   canvasUrlWithLength,
   plannedDisplaySnapshot,
   readDisplayRowIdentities,
@@ -89,7 +98,11 @@ describe("canonical session transcript projection", () => {
       .all(sessionId);
   }
 
-  async function expectIncrementalDisplayParity(name: string, events: Record<string, unknown>[]) {
+  async function expectIncrementalDisplayParity(
+    name: string,
+    events: Record<string, unknown>[],
+    expectedPrefixes?: readonly unknown[],
+  ) {
     const sessionId = `${scope.sessionId}-${name}`;
     const sessionKey = `${scope.sessionKey}-${name}`;
     await upsertSessionEntryCore(
@@ -117,6 +130,9 @@ describe("canonical session transcript projection", () => {
       sourceRows.push(row(seq, event, seq + 1));
       const snapshot = readDisplaySnapshot({ agentId: scope.agentId, env }, sessionId);
       expect(snapshot, `prefix ${seq} of ${name}`).toEqual(plannedDisplaySnapshot(sourceRows));
+      if (expectedPrefixes) {
+        expect(snapshot, `independent prefix ${seq} of ${name}`).toEqual(expectedPrefixes[seq]);
+      }
       const identities = readDisplayRowIdentities({ agentId: scope.agentId, env }, sessionId);
       for (const previous of previousIdentities) {
         const current = identities.find(
@@ -245,149 +261,89 @@ describe("canonical session transcript projection", () => {
         view: { boardWidgetName: "status", id, url },
       },
     });
-    const heartbeat = await expectIncrementalDisplayParity("heartbeat", [
-      message("heartbeat-user", { role: "user", content: HEARTBEAT_PROMPT }),
-      message("heartbeat-ok", { role: "assistant", content: "HEARTBEAT_OK" }),
-      message("heartbeat-system", { role: "system", content: "internal" }),
-      message("heartbeat-visible", { role: "user", content: "visible" }),
-    ]);
-    expect(heartbeat).toEqual({
-      canvases: [],
-      carry: [],
-      rows: [
-        { display_ordinal: 0, kind: "opaque", revision: 1, source_event_seq: 2 },
-        { display_ordinal: 1, kind: "user", revision: 1, source_event_seq: 3 },
+    await expectIncrementalDisplayParity(
+      "heartbeat",
+      [
+        message("heartbeat-user", { role: "user", content: HEARTBEAT_PROMPT }),
+        message("heartbeat-ok", { role: "assistant", content: "HEARTBEAT_OK" }),
+        message("heartbeat-system", { role: "system", content: "internal" }),
+        message("heartbeat-visible", { role: "user", content: "visible" }),
       ],
-      sources: [
-        {
-          displayOrdinal: 1,
-          position: 0,
-          relation: "turn_boundary",
-          sourceEventSeq: 0,
-        },
+      STATEFUL_DISPLAY_EXPECTED_PREFIXES.heartbeat,
+    );
+    await expectIncrementalDisplayParity(
+      "stream-error",
+      [
+        message("stream-error", {
+          role: "assistant",
+          content: [{ type: "text", text: STREAM_ERROR_FALLBACK_TEXT }],
+          stopReason: "error",
+        }),
+        message("stream-hidden", { role: "assistant", content: "NO_REPLY" }),
+        message("stream-repair", { role: "assistant", content: "Recovered reply" }),
       ],
-    });
-    const streamError = await expectIncrementalDisplayParity("stream-error", [
-      message("stream-error", {
-        role: "assistant",
-        content: [{ type: "text", text: STREAM_ERROR_FALLBACK_TEXT }],
-        stopReason: "error",
-      }),
-      message("stream-hidden", { role: "assistant", content: "NO_REPLY" }),
-      message("stream-repair", { role: "assistant", content: "Recovered reply" }),
-    ]);
-    expect(streamError).toEqual({
-      canvases: [],
-      carry: [{ kind: "tts_candidate", position: 0, relatedEventSeq: null, sourceEventSeq: 2 }],
-      rows: [{ display_ordinal: 0, kind: "assistant", revision: 2, source_event_seq: 2 }],
-      sources: [],
-    });
-    const messageTool = await expectIncrementalDisplayParity("message-tool", [
-      message("message-call", {
-        role: "assistant",
-        content: [
-          {
-            type: "toolCall",
-            id: "call-message",
-            name: "message",
-            arguments: { action: "send", message: "RAW_TOOL_CALL_SENTINEL" },
-          },
-        ],
-      }),
-      message("message-result", {
-        role: "toolResult",
-        toolCallId: "call-message",
-        toolName: "message",
-        content: [{ type: "text", text: "RAW_TOOL_RESULT_SENTINEL" }],
-        details: { sourceReplyRoute: "current-source" },
-        result: { ok: true },
-      }),
-      message("message-flush", { role: "assistant", content: "NO_REPLY" }),
-    ]);
-    expect(messageTool).toEqual({
-      canvases: [],
-      carry: [],
-      rows: [
-        { display_ordinal: 0, kind: "opaque", revision: 1, source_event_seq: 0 },
-        { display_ordinal: 1, kind: "opaque", revision: 1, source_event_seq: 1 },
-        { display_ordinal: 2, kind: "assistant", revision: 1, source_event_seq: 2 },
+      STATEFUL_DISPLAY_EXPECTED_PREFIXES.streamError,
+    );
+    await expectIncrementalDisplayParity(
+      "message-tool",
+      [
+        message("message-call", {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: "call-message",
+              name: "message",
+              arguments: { action: "send", message: "RAW_TOOL_CALL_SENTINEL" },
+            },
+          ],
+        }),
+        message("message-result", {
+          role: "toolResult",
+          toolCallId: "call-message",
+          toolName: "message",
+          content: [{ type: "text", text: "RAW_TOOL_RESULT_SENTINEL" }],
+          details: { sourceReplyRoute: "current-source" },
+          result: { ok: true },
+        }),
+        message("message-flush", { role: "assistant", content: "NO_REPLY" }),
       ],
-      sources: [
-        {
-          displayOrdinal: 2,
-          position: 0,
-          relation: "message_tool_mirror",
-          sourceEventSeq: 0,
-        },
+      STATEFUL_DISPLAY_EXPECTED_PREFIXES.messageTool,
+    );
+    await expectIncrementalDisplayParity(
+      "tts",
+      [
+        message("tts-target", { role: "assistant", content: "Spoken answer" }),
+        message("tts-intervening-user", { role: "user", content: "later prompt" }),
+        message("tts-supplement", {
+          role: "assistant",
+          content: [
+            { type: "text", text: "Audio reply" },
+            { type: "audio", url: "/media/tts.mp3" },
+          ],
+          openclawTtsSupplement: { spokenText: "Spoken answer" },
+        }),
       ],
-    });
-    const tts = await expectIncrementalDisplayParity("tts", [
-      message("tts-target", { role: "assistant", content: "Spoken answer" }),
-      message("tts-intervening-user", { role: "user", content: "later prompt" }),
-      message("tts-supplement", {
-        role: "assistant",
-        content: [
-          { type: "text", text: "Audio reply" },
-          { type: "audio", url: "/media/tts.mp3" },
-        ],
-        openclawTtsSupplement: { spokenText: "Spoken answer" },
-      }),
-    ]);
-    expect(tts).toEqual({
-      canvases: [],
-      carry: [{ kind: "tts_candidate", position: 0, relatedEventSeq: null, sourceEventSeq: 0 }],
-      rows: [
-        { display_ordinal: 0, kind: "assistant", revision: 2, source_event_seq: 0 },
-        { display_ordinal: 1, kind: "user", revision: 1, source_event_seq: 1 },
+      STATEFUL_DISPLAY_EXPECTED_PREFIXES.tts,
+    );
+    await expectIncrementalDisplayParity(
+      "canvas",
+      [
+        message("canvas-target", { role: "assistant", content: "Initial assistant" }),
+        message("canvas-tool", {
+          role: "toolResult",
+          toolCallId: "canvas-call",
+          toolName: "canvas",
+          content: [{ type: "text", text: "RAW_CANVAS_RESULT_SENTINEL" }],
+          details: canvasDetails(
+            "/__openclaw__/canvas/documents/cv_status/assets/status%20page.html",
+            "cv_status",
+          ),
+        }),
+        message("canvas-next-assistant", { role: "assistant", content: "Final assistant" }),
       ],
-      sources: [
-        {
-          displayOrdinal: 0,
-          position: 0,
-          relation: "tts_supplement",
-          sourceEventSeq: 2,
-        },
-      ],
-    });
-    const canvas = await expectIncrementalDisplayParity("canvas", [
-      message("canvas-target", { role: "assistant", content: "Initial assistant" }),
-      message("canvas-tool", {
-        role: "toolResult",
-        toolCallId: "canvas-call",
-        toolName: "canvas",
-        content: [{ type: "text", text: "RAW_CANVAS_RESULT_SENTINEL" }],
-        details: canvasDetails(
-          "/__openclaw__/canvas/documents/cv_status/assets/status%20page.html",
-          "cv_status",
-        ),
-      }),
-      message("canvas-next-assistant", { role: "assistant", content: "Final assistant" }),
-    ]);
-    expect(canvas).toMatchObject({
-      canvases: [
-        {
-          boardWidgetName: "status",
-          displayOrdinal: 2,
-          position: 0,
-          preferredHeight: 1200,
-          sandbox: "scripts",
-          sourceEventSeq: 1,
-          title: "Canvas title",
-          url: "/__openclaw__/canvas/documents/cv_status/assets/status%20page.html",
-          viewId: "cv_status",
-        },
-      ],
-      carry: [
-        { kind: "tts_candidate", position: 0, relatedEventSeq: null, sourceEventSeq: 0 },
-        { kind: "tts_candidate", position: 1, relatedEventSeq: null, sourceEventSeq: 2 },
-      ],
-      rows: [
-        { display_ordinal: 0, kind: "assistant", revision: 3, source_event_seq: 0 },
-        { display_ordinal: 1, kind: "opaque", revision: 1, source_event_seq: 1 },
-        { display_ordinal: 2, kind: "assistant", revision: 2, source_event_seq: 2 },
-      ],
-      sources: [],
-    });
+      STATEFUL_DISPLAY_EXPECTED_PREFIXES.canvas,
+    );
 
     const privacyDatabase = openOpenClawAgentDatabase({ agentId: scope.agentId, env }).db;
     const serialized = [
@@ -430,33 +386,37 @@ describe("canonical session transcript projection", () => {
         toolName: "message",
         result: { ok: true },
       });
-    const snapshot = await expectIncrementalDisplayParity("selective-message-mirror", [
-      call("call-a", "Reply A"),
-      result("call-a"),
-      call("call-b", "Reply B"),
-      result("call-b"),
-      message("delivery-a", {
-        role: "assistant",
-        content: "Reply A",
-        openclawDeliveryMirror: { kind: "channel-final" },
-      }),
-      message("flush-b", { role: "assistant", content: "NO_REPLY" }),
-    ]);
-    expect(snapshot.sources).toEqual([
-      {
-        displayOrdinal: 4,
-        position: 0,
-        relation: "message_tool_mirror",
-        sourceEventSeq: 0,
-      },
-      {
-        displayOrdinal: 5,
-        position: 0,
-        relation: "message_tool_mirror",
-        sourceEventSeq: 2,
-      },
-    ]);
-    expect(snapshot.carry).toEqual([]);
+    await expectIncrementalDisplayParity(
+      "selective-message-mirror",
+      [
+        call("call-a", "Reply A"),
+        result("call-a"),
+        call("call-b", "Reply B"),
+        result("call-b"),
+        message("delivery-a", {
+          role: "assistant",
+          content: "Reply A",
+          openclawDeliveryMirror: { kind: "channel-final" },
+        }),
+        message("flush-b", { role: "assistant", content: "NO_REPLY" }),
+      ],
+      NEGATIVE_DISPLAY_EXPECTED_PREFIXES.selectiveMessageMirror,
+    );
+
+    await expectIncrementalDisplayParity(
+      "unmatched-message-mirror",
+      [
+        call("call-unmatched", "Expected reply"),
+        result("call-unmatched"),
+        message("delivery-other", {
+          role: "assistant",
+          content: "Different reply",
+          openclawDeliveryMirror: { kind: "channel-final" },
+        }),
+        message("unmatched-flush", { role: "assistant", content: "NO_REPLY" }),
+      ],
+      NEGATIVE_DISPLAY_EXPECTED_PREFIXES.unmatchedDeliveryMirror,
+    );
   });
 
   it("keeps forwarded sends and settled negative transitions out of semantic carry", async () => {
@@ -465,113 +425,132 @@ describe("canonical session transcript projection", () => {
       message: value,
       type: "message",
     });
-    const forwarded = await expectIncrementalDisplayParity("forwarded-message-tool", [
-      message("forwarded-call", {
-        role: "assistant",
-        provenance: { kind: "inter_session", sourceTool: "sessions_send" },
-        content: [
-          {
-            type: "toolCall",
-            id: "forwarded-call",
-            name: "message",
-            arguments: { action: "send", message: "Forwarded send" },
-          },
-        ],
-      }),
-      message("forwarded-result", {
-        role: "toolResult",
-        toolCallId: "forwarded-call",
-        toolName: "message",
-        result: { ok: true },
-      }),
-      message("forwarded-flush", { role: "assistant", content: "NO_REPLY" }),
-    ]);
-    expect(forwarded).toMatchObject({
-      carry: [],
-      rows: [
-        { display_ordinal: 0, kind: "opaque", revision: 1, source_event_seq: 0 },
-        { display_ordinal: 1, kind: "opaque", revision: 1, source_event_seq: 1 },
+    await expectIncrementalDisplayParity(
+      "forwarded-message-tool",
+      [
+        message("forwarded-call", {
+          role: "assistant",
+          provenance: { kind: "inter_session", sourceTool: "sessions_send" },
+          content: [
+            {
+              type: "toolCall",
+              id: "forwarded-call",
+              name: "message",
+              arguments: { action: "send", message: "Forwarded send" },
+            },
+          ],
+        }),
+        message("forwarded-result", {
+          role: "toolResult",
+          toolCallId: "forwarded-call",
+          toolName: "message",
+          result: { ok: true },
+        }),
+        message("forwarded-flush", { role: "assistant", content: "NO_REPLY" }),
       ],
-      sources: [],
-    });
+      NEGATIVE_DISPLAY_EXPECTED_PREFIXES.forwardedMessageTool,
+    );
 
-    const forwardedHeartbeat = await expectIncrementalDisplayParity("forwarded-heartbeat", [
-      message("heartbeat", { role: "user", content: HEARTBEAT_PROMPT }),
-      message("forwarded", {
-        role: "assistant",
-        provenance: { kind: "inter_session", sourceTool: "sessions_send" },
-        content: [
-          {
-            type: "toolCall",
-            id: "forwarded-heartbeat-call",
-            name: "message",
-            arguments: { action: "send", message: "Forwarded send" },
-          },
-        ],
-      }),
-      message("visible", { role: "user", content: "visible turn" }),
-    ]);
-    expect(forwardedHeartbeat).toMatchObject({
-      carry: [],
-      rows: [
-        { display_ordinal: 0, kind: "opaque", revision: 1, source_event_seq: 1 },
-        { display_ordinal: 1, kind: "user", revision: 1, source_event_seq: 2 },
+    await expectIncrementalDisplayParity(
+      "forwarded-heartbeat",
+      [
+        message("heartbeat", { role: "user", content: HEARTBEAT_PROMPT }),
+        message("forwarded", {
+          role: "assistant",
+          provenance: { kind: "inter_session", sourceTool: "sessions_send" },
+          content: [
+            {
+              type: "toolCall",
+              id: "forwarded-heartbeat-call",
+              name: "message",
+              arguments: { action: "send", message: "Forwarded send" },
+            },
+          ],
+        }),
+        message("visible", { role: "user", content: "visible turn" }),
       ],
-      sources: [
-        {
-          displayOrdinal: 1,
-          position: 0,
-          relation: "turn_boundary",
-          sourceEventSeq: 0,
-        },
-      ],
-    });
+      NEGATIVE_DISPLAY_EXPECTED_PREFIXES.forwardedHeartbeat,
+    );
 
-    const settledError = await expectIncrementalDisplayParity("settled-stream-error", [
-      message("error", {
-        role: "assistant",
-        content: STREAM_ERROR_FALLBACK_TEXT,
-        stopReason: "error",
-      }),
-      message("user", { role: "user", content: "new turn" }),
-      message("assistant", { role: "assistant", content: "new reply" }),
-    ]);
-    expect(settledError.rows).toEqual([
-      { display_ordinal: 0, kind: "assistant", revision: 1, source_event_seq: 0 },
-      { display_ordinal: 1, kind: "user", revision: 1, source_event_seq: 1 },
-      { display_ordinal: 2, kind: "assistant", revision: 1, source_event_seq: 2 },
-    ]);
-
-    const mismatchedTts = await expectIncrementalDisplayParity("mismatched-tts", [
-      message("target", { role: "assistant", content: "Original" }),
-      message("supplement", {
-        role: "assistant",
-        content: [{ type: "audio", url: "/media/tts.mp3" }],
-        openclawTtsSupplement: { spokenText: "Different" },
-      }),
-    ]);
-    expect(mismatchedTts).toMatchObject({
-      rows: [
-        { display_ordinal: 0, kind: "assistant", revision: 1, source_event_seq: 0 },
-        { display_ordinal: 1, kind: "opaque", revision: 1, source_event_seq: 1 },
+    await expectIncrementalDisplayParity(
+      "settled-stream-error",
+      [
+        message("error", {
+          role: "assistant",
+          content: STREAM_ERROR_FALLBACK_TEXT,
+          stopReason: "error",
+        }),
+        message("user", { role: "user", content: "new turn" }),
+        message("assistant", { role: "assistant", content: "new reply" }),
       ],
-      sources: [],
-    });
+      NEGATIVE_DISPLAY_EXPECTED_PREFIXES.settledStreamError,
+    );
+
+    await expectIncrementalDisplayParity(
+      "multiple-stream-errors",
+      [
+        message("error-1", {
+          role: "assistant",
+          content: STREAM_ERROR_FALLBACK_TEXT,
+          stopReason: "error",
+        }),
+        message("error-2", {
+          role: "assistant",
+          content: STREAM_ERROR_FALLBACK_TEXT,
+          stopReason: "error",
+        }),
+        message("repair", { role: "assistant", content: "recovered" }),
+      ],
+      NEGATIVE_DISPLAY_EXPECTED_PREFIXES.multipleStreamErrors,
+    );
+
+    await expectIncrementalDisplayParity(
+      "structured-stream-error",
+      [
+        message("error", {
+          role: "assistant",
+          content: [
+            { type: "text", text: STREAM_ERROR_FALLBACK_TEXT },
+            { type: "reasoning", text: "private" },
+            { type: "toolCall", id: "read-1", name: "read", arguments: {} },
+          ],
+          stopReason: "error",
+        }),
+        message("assistant", { role: "assistant", content: "later reply" }),
+      ],
+      NEGATIVE_DISPLAY_EXPECTED_PREFIXES.structuredStreamError,
+    );
+
+    await expectIncrementalDisplayParity(
+      "mismatched-tts",
+      [
+        message("target", { role: "assistant", content: "Original" }),
+        message("supplement", {
+          role: "assistant",
+          content: [{ type: "audio", url: "/media/tts.mp3" }],
+          openclawTtsSupplement: { spokenText: "Different" },
+        }),
+      ],
+      NEGATIVE_DISPLAY_EXPECTED_PREFIXES.mismatchedTts,
+    );
   });
 
-  it("applies deterministic carry caps and canvas v1 bounds", () => {
-    const assistantRows = Array.from({ length: 65 }, (_, seq) =>
-      row(seq, {
-        id: `assistant-${seq}`,
-        message: { role: "assistant", content: `answer ${seq}` },
-        type: "message",
-      }),
+  it("applies deterministic carry caps and canvas v1 bounds", async () => {
+    const assistantEvents = Array.from({ length: 65 }, (_, seq) => ({
+      id: `assistant-${seq}`,
+      message: { role: "assistant", content: `answer ${seq}` },
+      type: "message",
+    }));
+    const result = await expectIncrementalDisplayParity(
+      "tts-carry-cap",
+      assistantEvents,
+      expectedTtsCarryCapPrefixes(65),
     );
-    const result = prepareSessionTranscriptDisplayProjection(assistantRows);
     expect(result.carry.filter((entry) => entry.kind === "tts_candidate")).toEqual(
       Array.from({ length: 64 }, (_, position) => ({
         kind: "tts_candidate",
         position,
+        relatedEventSeq: null,
         sourceEventSeq: position + 1,
       })),
     );
@@ -617,93 +596,117 @@ describe("canonical session transcript projection", () => {
     });
     expect(canvas?.title).toHaveLength(256);
 
-    const streamCarry = prepareSessionTranscriptDisplayProjection(
-      Array.from({ length: 9 }, (_, seq) =>
-        row(seq, {
-          id: `stream-${seq}`,
-          message: {
-            role: "assistant",
-            content: STREAM_ERROR_FALLBACK_TEXT,
-            stopReason: "error",
-          },
-          type: "message",
-        }),
-      ),
+    const streamEvents = Array.from({ length: 9 }, (_, seq) => ({
+      id: `stream-${seq}`,
+      message: {
+        role: "assistant",
+        content: STREAM_ERROR_FALLBACK_TEXT,
+        stopReason: "error",
+      },
+      type: "message",
+    }));
+    const streamCarry = (
+      await expectIncrementalDisplayParity(
+        "stream-carry-cap",
+        streamEvents,
+        expectedStreamCarryCapPrefixes(9),
+      )
     ).carry.filter((entry) => entry.kind === "stream_error");
     expect(streamCarry.map((entry) => entry.sourceEventSeq)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
 
-    const messageCarry = prepareSessionTranscriptDisplayProjection(
-      Array.from({ length: 17 }, (_, seq) =>
-        row(seq, {
-          id: `message-${seq}`,
-          message: {
-            role: "assistant",
-            content: [
-              {
-                type: "toolCall",
-                id: `call-${seq}`,
-                name: "message",
-                arguments: { action: "send", message: `message ${seq}` },
-              },
-            ],
+    const messageEvents = Array.from({ length: 17 }, (_, seq) => ({
+      id: `message-${seq}`,
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: `call-${seq}`,
+            name: "message",
+            arguments: { action: "send", message: `message ${seq}` },
           },
-          type: "message",
-        }),
-      ),
+        ],
+      },
+      type: "message",
+    }));
+    const messageCarry = (
+      await expectIncrementalDisplayParity(
+        "message-carry-cap",
+        messageEvents,
+        expectedMessageCarryCapPrefixes(17),
+      )
     ).carry.filter((entry) => entry.kind === "message_tool");
     expect(messageCarry.map((entry) => entry.sourceEventSeq)).toEqual(
       Array.from({ length: 16 }, (_, index) => index + 1),
     );
 
-    const heartbeatCarry = prepareSessionTranscriptDisplayProjection([
-      row(0, {
-        id: "heartbeat-0",
-        message: { role: "user", content: HEARTBEAT_PROMPT },
-        type: "message",
-      }),
-      row(1, {
-        id: "heartbeat-1",
-        message: { role: "user", content: HEARTBEAT_PROMPT },
-        type: "message",
-      }),
-    ]).carry.filter((entry) => entry.kind === "heartbeat_boundary");
+    const heartbeatProjection = await expectIncrementalDisplayParity(
+      "heartbeat-carry-cap",
+      [
+        {
+          id: "heartbeat-0",
+          message: { role: "user", content: HEARTBEAT_PROMPT },
+          type: "message",
+        },
+        {
+          id: "heartbeat-1",
+          message: { role: "user", content: HEARTBEAT_PROMPT },
+          type: "message",
+        },
+      ],
+      expectedHeartbeatCarryCapPrefixes(),
+    );
+    const heartbeatCarry = heartbeatProjection.carry.filter(
+      (entry) => entry.kind === "heartbeat_boundary",
+    );
     expect(heartbeatCarry).toEqual([
-      { kind: "heartbeat_boundary", position: 0, sourceEventSeq: 1 },
+      {
+        kind: "heartbeat_boundary",
+        position: 0,
+        relatedEventSeq: null,
+        sourceEventSeq: 1,
+      },
+    ]);
+    expect(heartbeatProjection.rows).toEqual([
+      { display_ordinal: 0, kind: "opaque", revision: 1, source_event_seq: 0 },
     ]);
 
-    const canvasProjection = prepareSessionTranscriptDisplayProjection([
-      row(0, {
+    const canvasEvents = [
+      {
         id: "canvas-target",
         message: { role: "assistant", content: "target" },
         type: "message",
-      }),
-      ...Array.from({ length: 17 }, (_, index) =>
-        row(index + 1, {
-          id: `canvas-${index}`,
-          message: {
-            role: "toolResult",
-            toolName: "canvas",
-            details: {
-              mcpAppPreview: {
-                kind: "canvas",
-                presentation: { target: "assistant_message" },
-                view: {
-                  id: `view-${index}`,
-                  url: `/__openclaw__/canvas/documents/cv_test/${index}.html`,
-                },
+      },
+      ...Array.from({ length: 17 }, (_, index) => ({
+        id: `canvas-${index}`,
+        message: {
+          role: "toolResult",
+          toolName: "canvas",
+          details: {
+            mcpAppPreview: {
+              kind: "canvas",
+              presentation: { target: "assistant_message" },
+              view: {
+                id: `view-${index}`,
+                url: `/__openclaw__/canvas/documents/cv_test/${index}.html`,
               },
             },
           },
-          type: "message",
-        }),
-      ),
-    ]);
+        },
+        type: "message",
+      })),
+    ];
+    const canvasProjection = await expectIncrementalDisplayParity(
+      "canvas-carry-cap",
+      canvasEvents,
+      expectedCanvasCarryCapPrefixes(17),
+    );
     expect(
       canvasProjection.carry
         .filter((entry) => entry.kind === "canvas_pending")
         .map((entry) => entry.sourceEventSeq),
     ).toEqual(Array.from({ length: 16 }, (_, index) => index + 2));
-    expect(canvasProjection.rows[0]?.canvases.map((entry) => entry.sourceEventSeq)).toEqual(
+    expect(canvasProjection.canvases.map((entry) => entry.sourceEventSeq)).toEqual(
       Array.from({ length: 16 }, (_, index) => index + 2),
     );
   });

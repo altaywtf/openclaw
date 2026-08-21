@@ -395,8 +395,11 @@ export function reduceSessionTranscriptDisplaySource(
     role === "user" &&
     isHeartbeatUserMessage(message as { role: string; content?: unknown }, HEARTBEAT_PROMPT)
   ) {
-    clearCarry(state, "heartbeat_boundary", "message_tool", "stream_error");
-    pushCarry(state, "heartbeat_boundary", { sourceEventSeq: source.seq });
+    clearCarry(state, "message_tool", "stream_error");
+    const dropped = pushCarry(state, "heartbeat_boundary", { sourceEventSeq: source.seq });
+    if (dropped) {
+      state.effects.appendRow("opaque", dropped.sourceEventSeq);
+    }
     return;
   }
   if (
@@ -501,9 +504,7 @@ export function reduceSessionTranscriptDisplaySource(
   }
   attachPendingHeartbeat(state, row, role);
   if (row.kind === "assistant" && isRenderableAssistant(message)) {
-    if (!deliveryMirror) {
-      clearCarry(state, "message_tool");
-    }
+    clearCarry(state, "message_tool");
     movePendingCanvases(state, row);
     pushCarry(state, "tts_candidate", { sourceEventSeq: source.seq });
   }

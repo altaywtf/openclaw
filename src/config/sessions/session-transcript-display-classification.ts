@@ -63,6 +63,16 @@ function hasVisibleNonTextContent(message: Record<string, unknown>): boolean {
   );
 }
 
+function hasAnyNonTextContent(message: Record<string, unknown>): boolean {
+  return (
+    Array.isArray(message.content) &&
+    message.content.some((block) => {
+      const type = readRecord(block)?.type;
+      return type !== "text" && type !== "input_text" && type !== "output_text";
+    })
+  );
+}
+
 export function normalizeHistoryType(value: unknown): string | undefined {
   return typeof value === "string" ? value.trim().toLowerCase().replaceAll("_", "") : undefined;
 }
@@ -250,7 +260,7 @@ export function isPureStreamError(message: Record<string, unknown>): boolean {
     message.role === "assistant" &&
     message.stopReason === "error" &&
     readMessageText(message)?.trim() === STREAM_ERROR_FALLBACK_TEXT &&
-    !hasVisibleNonTextContent(message)
+    !hasAnyNonTextContent(message)
   );
 }
 
