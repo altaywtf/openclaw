@@ -20,6 +20,8 @@ import {
   resolveDeliveryProvenCanonicalSessionKey,
 } from "./store-entry.js";
 
+export { ensureSessionTranscriptSourceGenerationInTransaction } from "./session-transcript-source-generation.js";
+
 export function ensureTranscriptSessionRoot(
   database: OpenClawAgentDatabase,
   scope: ResolvedTranscriptScope,

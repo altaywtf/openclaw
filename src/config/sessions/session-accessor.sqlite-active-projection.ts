@@ -5,6 +5,7 @@ import {
   openOpenClawAgentDatabase,
   type OpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
+import { ensureOpenClawAgentTranscriptProjectionSourceColumns } from "../../state/openclaw-agent-transcript-projection-source-schema.js";
 import type { SessionTranscriptReadScope } from "./session-accessor.sqlite-contract.js";
 import {
   resolveSqliteTranscriptReadScope,
@@ -13,10 +14,7 @@ import {
 import type { SessionTranscriptProjectionState } from "./session-transcript-index.js";
 import { SessionTranscriptProjectionUnavailableError } from "./session-transcript-projection-error.js";
 import { startSessionTranscriptIndexReconcile } from "./session-transcript-reconcile.js";
-import {
-  EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ,
-  readBoundSessionTranscriptSourceGenerationInTransaction,
-} from "./session-transcript-source-generation.js";
+import { EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ } from "./session-transcript-source-generation.js";
 
 type ActiveTranscriptDatabase = Pick<
   OpenClawAgentKyselyDatabase,
@@ -39,6 +37,7 @@ const EMPTY_PROJECTION_STATE: SessionTranscriptProjectionState = {
   indexedSeq: EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ,
   leafEventId: null,
   needsRebuild: false,
+  sourceGeneration: null,
 };
 
 export function getActiveTranscriptKysely(database: OpenClawAgentDatabase) {
@@ -49,11 +48,13 @@ function readProjectionSnapshot(
   database: OpenClawAgentDatabase,
   sessionId: string,
 ): { latestSeq: number; state?: SessionTranscriptProjectionState } | undefined {
+  ensureOpenClawAgentTranscriptProjectionSourceColumns(database.db);
   const row = executeSqliteQueryTakeFirstSync(
     database.db,
     getActiveTranscriptKysely(database)
       .selectFrom("transcript_events as latest")
       .leftJoin("session_transcript_index_state as state", "state.session_id", "latest.session_id")
+      .leftJoin("transcript_rewrite_watermarks as source", "source.session_id", "latest.session_id")
       .select([
         "latest.seq as latest_seq",
         "state.active_event_count",
@@ -61,6 +62,8 @@ function readProjectionSnapshot(
         "state.indexed_seq",
         "state.leaf_event_id",
         "state.needs_rebuild",
+        "state.source_generation",
+        "source.generation",
       ])
       .where("latest.session_id", "=", sessionId)
       .orderBy("latest.seq", "desc")
@@ -79,6 +82,8 @@ function readProjectionSnapshot(
             indexedSeq: row.indexed_seq,
             leafEventId: row.leaf_event_id,
             needsRebuild: row.needs_rebuild !== 0,
+            sourceGeneration:
+              row.source_generation === row.generation ? row.source_generation : null,
           },
         }
       : {}),
@@ -102,17 +107,11 @@ export function withCurrentProjectionSnapshot<T>(
           value: read({ database, resolved, state: EMPTY_PROJECTION_STATE }),
         };
       }
-      const source = readBoundSessionTranscriptSourceGenerationInTransaction(
-        database.db,
-        resolved.sessionId,
-        { projection: "active" },
-      );
       if (
-        source &&
         snapshot.state &&
         !snapshot.state.needsRebuild &&
         snapshot.state.indexedSeq === snapshot.latestSeq &&
-        snapshot.latestSeq === source.indexedSeq
+        snapshot.state.sourceGeneration !== null
       ) {
         return {
           kind: "value" as const,

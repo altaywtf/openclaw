@@ -15,6 +15,7 @@ import {
   projectionRow,
   readDisplaySnapshot,
 } from "./session-transcript-display.test-support.js";
+import { readSessionTranscriptSourceGenerationTokenInTransaction } from "./session-transcript-source-generation.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
@@ -48,10 +49,18 @@ describe("session transcript display semantics", () => {
               "INSERT INTO transcript_events (session_id, seq, event_json, created_at) VALUES (?, ?, ?, ?)",
             )
             .run(sessionId, seq, JSON.stringify(event), seq + 1);
+          const sourceGeneration = readSessionTranscriptSourceGenerationTokenInTransaction(
+            database.db,
+            sessionId,
+          );
+          if (!sourceGeneration) {
+            throw new Error("expected transcript source generation");
+          }
           appendEligibleSessionTranscriptDisplayRowInTransaction(database.db, {
             event,
             seq,
             sessionId,
+            sourceGeneration,
           });
         },
         { agentId, env },

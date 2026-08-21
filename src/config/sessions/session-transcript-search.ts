@@ -3,7 +3,7 @@
 // this module owns the query path and schedules the shared reconcile owner
 // when doctor imports or out-of-band writes leave derived rows behind.
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
-import { ensureOpenClawAgentTranscriptProjectionBindingSchema } from "../../state/openclaw-agent-transcript-projection-binding-schema.js";
+import { ensureOpenClawAgentTranscriptProjectionSourceColumns } from "../../state/openclaw-agent-transcript-projection-source-schema.js";
 import { truncateUtf16Safe } from "../../utils.js";
 import { resolveSqliteTargetFromSessionStorePath } from "./session-sqlite-target.js";
 import { listSessionsNeedingTranscriptIndexReconcile } from "./session-transcript-index.js";
@@ -64,7 +64,7 @@ export function searchSessionTranscripts(params: {
     ...(databasePath ? { path: databasePath } : {}),
   };
   const database = openOpenClawAgentDatabase(databaseOptions);
-  ensureOpenClawAgentTranscriptProjectionBindingSchema(database.db);
+  ensureOpenClawAgentTranscriptProjectionSourceColumns(database.db);
   const dirtySessions = listSessionsNeedingTranscriptIndexReconcile(database.db);
   if (dirtySessions.length > 0) {
     startSessionTranscriptIndexReconcile(databaseOptions);
@@ -91,14 +91,10 @@ export function searchSessionTranscripts(params: {
     JOIN session_windows ON session_windows.session_id = session_transcript_fts.session_id
     JOIN transcript_rewrite_watermarks AS source
       ON source.session_id = session_transcript_fts.session_id
-    JOIN session_transcript_projection_bindings AS binding
-      ON binding.session_id = session_transcript_fts.session_id
-      AND binding.projection = 'active'
-      AND binding.projection_generation IS NULL
-      AND binding.source_generation = source.generation
     JOIN session_transcript_index_state AS state
       ON state.session_id = session_transcript_fts.session_id
       AND state.needs_rebuild = 0
+      AND state.source_generation = source.generation
       AND state.indexed_seq = (
         SELECT latest.seq
         FROM transcript_events AS latest

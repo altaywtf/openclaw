@@ -19,8 +19,10 @@ export function readActiveTranscriptEntryAnchorInTransaction(params: {
   resolved: ResolvedTranscriptScope;
   entryId: string;
   message?: unknown;
+  projectionCurrent?: boolean;
 }): TranscriptEntryAnchor | undefined {
   if (
+    params.projectionCurrent !== true &&
     !readCurrentSessionTranscriptActiveSourceInTransaction(
       params.database.db,
       params.resolved.sessionId,

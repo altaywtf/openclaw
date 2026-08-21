@@ -6,7 +6,7 @@ import {
   openOpenClawAgentDatabase,
   type OpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
-import { ensureOpenClawAgentTranscriptProjectionBindingSchema } from "../../state/openclaw-agent-transcript-projection-binding-schema.js";
+import { ensureOpenClawAgentTranscriptProjectionSourceColumns } from "../../state/openclaw-agent-transcript-projection-source-schema.js";
 import type {
   SessionTranscriptReadScope,
   TranscriptEvent,
@@ -21,7 +21,6 @@ type TitleProbeDatabase = Pick<
   OpenClawAgentKyselyDatabase,
   | "session_transcript_active_events"
   | "session_transcript_index_state"
-  | "session_transcript_projection_bindings"
   | "session_windows"
   | "transcript_events"
   | "transcript_rewrite_watermarks"
@@ -62,7 +61,7 @@ function readTitleProbeChunk(
   database: OpenClawAgentDatabase,
   sessionIds: readonly string[],
 ): Map<string, SessionTranscriptTitleProbe> {
-  ensureOpenClawAgentTranscriptProjectionBindingSchema(database.db);
+  ensureOpenClawAgentTranscriptProjectionSourceColumns(database.db);
   const db = getTitleProbeKysely(database);
   const rows = runSqliteDeferredTransactionSync(
     database.db,
@@ -80,11 +79,6 @@ function readTitleProbeChunk(
             "transcript_rewrite_watermarks as rewrite",
             "rewrite.session_id",
             "window.session_id",
-          )
-          .leftJoin("session_transcript_projection_bindings as binding", (join) =>
-            join
-              .onRef("binding.session_id", "=", "window.session_id")
-              .on("binding.projection", "=", "active"),
           )
           .leftJoin("session_transcript_active_events as active", (join) =>
             join
@@ -112,7 +106,7 @@ function readTitleProbeChunk(
             "state.indexed_seq",
             "state.needs_rebuild",
             "rewrite.generation",
-            "binding.source_generation",
+            "state.source_generation",
             "active.message_position",
             "event.event_json",
             eb
@@ -148,6 +142,8 @@ function readTitleProbeChunk(
   for (const row of rows) {
     const emptyTranscript = row.latest_seq === null;
     const projectionCurrent =
+      typeof row.generation === "string" &&
+      typeof row.source_generation === "string" &&
       row.needs_rebuild === 0 &&
       row.indexed_seq === row.latest_seq &&
       row.source_generation === row.generation;

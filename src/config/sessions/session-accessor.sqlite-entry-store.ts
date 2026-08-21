@@ -49,7 +49,7 @@ import {
   hasValidSessionEntryIdentity,
   parseSessionEntryJson as parseSessionEntryRow,
 } from "./session-accessor.sqlite-status.js";
-import { readTranscriptMutationStateInTransaction } from "./session-accessor.sqlite-transcript-state.js";
+import * as transcript from "./session-accessor.sqlite-transcript-state.js";
 import {
   assertCanonicalSessionEntryLineageWrite,
   assertCanonicalSqliteSessionKeysCurrent,
@@ -57,7 +57,6 @@ import {
   canonicalSessionKeyMigrationRequiredError,
 } from "./session-canonical-key.js";
 import { parseSqliteSessionEntryRecord } from "./session-entry-json.js";
-import { ensureSessionTranscriptSourceGenerationInTransaction } from "./session-transcript-source-generation.js";
 import { projectCanonicalSessionEntryShape } from "./store-entry-shape.js";
 import {
   collectSessionEntryLookupKeys,
@@ -630,8 +629,8 @@ export function writeSessionEntry(
   // Registry writes snapshot the current transcript watermark so recovery can
   // distinguish same-millisecond transcript writes before and after this row.
   const transcriptObservedAt =
-    readTranscriptMutationStateInTransaction(database, normalizedEntry.sessionId).updatedAt ??
-    updatedAt;
+    transcript.readTranscriptMutationStateInTransaction(database, normalizedEntry.sessionId)
+      .updatedAt ?? updatedAt;
   const boundSessionRoot = bindSessionRoot({ entry: normalizedEntry, sessionKey, updatedAt });
   const conversation = prepareSessionConversationForWrite({
     database,
@@ -729,7 +728,7 @@ export function writeSessionEntry(
         }),
       ),
   );
-  ensureSessionTranscriptSourceGenerationInTransaction(database, sessionRow.session_id);
+  transcript.ensureSessionTranscriptSourceGenerationInTransaction(database, sessionRow.session_id);
   if (conversation) {
     linkSessionConversation({
       database,
@@ -741,5 +740,4 @@ export function writeSessionEntry(
   }
   publishSessionEntryCacheInvalidation(database, sessionNode, writeGeneration);
 }
-
 /** Resolves the parent fork decision using SQLite transcript rows when totals are stale. */

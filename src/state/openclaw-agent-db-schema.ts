@@ -44,7 +44,7 @@ import {
   backfillSessionConversations,
   ensureSessionAdditiveColumns,
   ensureSessionEntryValidityProjection,
-  hasPendingSessionConversationRouteContextColumn,
+  hasPendingSessionAdditiveSchemaMigration,
   migrateConversationDeliveryTargetColumn,
   migrateSessionEntryStatusProjection,
   readSqliteTableColumns,
@@ -154,11 +154,6 @@ function hasPendingSessionKeyContractSchemaMigration(db: DatabaseSync): boolean 
       .get(),
   );
   return !sessionNodeColumns.has("entry_valid") || !hasContractTable;
-}
-
-function hasPendingSessionProjectColumn(db: DatabaseSync): boolean {
-  const columns = readSqliteTableColumns(db, "session_nodes");
-  return Boolean(columns && !columns.has("project_id"));
 }
 
 function migrateMemoryChunkMetadataSchema(db: DatabaseSync): void {
@@ -570,8 +565,7 @@ export function assertAgentDatabaseIntegrityBeforeMutation(
     (hasPendingMemoryChunkMetadataMigration(database) ||
       hasPendingSessionKeyContractSchemaMigration(database) ||
       hasRetiredAgentStateLeaseSchema(database) ||
-      hasPendingSessionConversationRouteContextColumn(database) ||
-      hasPendingSessionProjectColumn(database));
+      hasPendingSessionAdditiveSchemaMigration(database));
   if (userVersion === OPENCLAW_AGENT_SCHEMA_VERSION && !hasPendingCurrentVersionMigration) {
     verifyAndRepairCanonicalSqliteIndexes(database, pathname, AGENT_BASE_SCHEMA_SQL, {
       allowMissingColumns: true,

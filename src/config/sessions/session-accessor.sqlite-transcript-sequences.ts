@@ -39,13 +39,21 @@ export function rememberCommittedTranscriptMessageSequencesInTransaction(
   if (appendedMessages.length === 0) {
     return;
   }
+  const appendedProjectionCurrent = appendedMessages.every((message) => message.anchor);
   const db = getNodeSqliteKysely<
     Pick<OpenClawAgentKyselyDatabase, "session_transcript_active_events">
   >(database.db);
-  if (!readCurrentSessionTranscriptActiveSourceInTransaction(database.db, sessionId)) {
+  if (
+    !appendedProjectionCurrent &&
+    !readCurrentSessionTranscriptActiveSourceInTransaction(database.db, sessionId)
+  ) {
     return;
   }
   for (const message of appendedMessages) {
+    if (appendedProjectionCurrent && message.anchor) {
+      committedTranscriptMessageSequences.set(message, message.anchor.activeMessagePosition + 1);
+      continue;
+    }
     const identity = readTranscriptIdentityByEventId(database, sessionId, message.messageId);
     if (!identity) {
       continue;

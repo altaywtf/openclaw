@@ -3510,11 +3510,7 @@ describe("openclaw agent database", () => {
 
     const repaired = migrateAndOpenLegacyAgentDatabaseForTest({ agentId: "worker-1", env });
     expect(normalizeSqliteSchemaShapeSql(collectSqliteSchemaShape(repaired.db))).toEqual(
-      normalizeSqliteSchemaShapeSql(
-        createSqliteSchemaShapeFromSql(
-          AGENT_BASE_SCHEMA_SQL,
-        ),
-      ),
+      normalizeSqliteSchemaShapeSql(createSqliteSchemaShapeFromSql(AGENT_BASE_SCHEMA_SQL)),
     );
     expect(
       repaired.db

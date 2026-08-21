@@ -23,7 +23,10 @@ import {
   ensureOpenClawAgentBoardSchemaInTransaction,
 } from "./openclaw-agent-board-schema.js";
 import { CONTEXT_ENGINE_TURN_OUTBOX_TABLE } from "./openclaw-agent-context-engine-turn-outbox-schema.js";
-import { FIRST_USE_ADDITIVE_AGENT_COLUMN_DEFINITIONS } from "./openclaw-agent-db-additive-columns.js";
+import {
+  FIRST_USE_ADDITIVE_AGENT_COLUMN_DEFINITIONS,
+  TRANSCRIPT_PROJECTION_SOURCE_COLUMN_DEFINITIONS,
+} from "./openclaw-agent-db-additive-columns.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "./openclaw-agent-db-contract.js";
 import { OpenClawAgentDatabaseMediaMigrationRequiredError } from "./openclaw-agent-db-migration-required.js";
 import {
@@ -57,10 +60,6 @@ import {
   STANDING_INTENTS_FTS_TABLE,
   STANDING_INTENTS_TABLE,
 } from "./openclaw-agent-standing-intents-schema.js";
-import {
-  SESSION_TRANSCRIPT_PROJECTION_BINDINGS_TABLE,
-  validateOpenClawAgentTranscriptProjectionBindingSchema,
-} from "./openclaw-agent-transcript-projection-binding-schema.js";
 
 type ExistingAgentSchemaMeta = {
   agentId: string | null;
@@ -84,7 +83,6 @@ const AGENT_SCHEMA_COMPATIBILITY = {
     SESSION_TRANSCRIPT_DISPLAY_ROWS_TABLE,
     SESSION_TRANSCRIPT_DISPLAY_ROW_SOURCES_TABLE,
     SESSION_TRANSCRIPT_DISPLAY_STATE_TABLE,
-    SESSION_TRANSCRIPT_PROJECTION_BINDINGS_TABLE,
     STANDING_INTENTS_TABLE,
     STANDING_INTENTS_FTS_TABLE,
     ...STANDING_INTENTS_FTS_SHADOW_TABLES,
@@ -94,6 +92,9 @@ const AGENT_SCHEMA_COMPATIBILITY = {
     "session_participants.actor_source",
     "standing_intents.creator_sender",
     ...FIRST_USE_ADDITIVE_AGENT_COLUMN_DEFINITIONS.map(
+      ({ columnName, tableName }) => `${tableName}.${columnName}`,
+    ),
+    ...TRANSCRIPT_PROJECTION_SOURCE_COLUMN_DEFINITIONS.map(
       ({ columnName, tableName }) => `${tableName}.${columnName}`,
     ),
   ],
@@ -146,7 +147,6 @@ export function assertOpenClawAgentCurrentRuntimeSchema(
   }
   assertOpenClawAgentSchemaContains(database, options.pathname, OPENCLAW_AGENT_SCHEMA_SQL);
   validateOpenClawAgentDisplayRowSchema(database);
-  validateOpenClawAgentTranscriptProjectionBindingSchema(database);
 }
 
 function hasAnyCanonicalTable(database: DatabaseSync, schemaSql: string): boolean {

@@ -1,6 +1,4 @@
 // Active transcript projection tests cover branch rebuilds and bounded large-history reads.
-import { EventEmitter } from "node:events";
-import type { Worker } from "node:worker_threads";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { requireNodeSqlite } from "../../infra/node-sqlite.js";
@@ -24,14 +22,12 @@ import {
 } from "./session-accessor.sqlite-active-events.js";
 import { runExclusiveSqliteSessionWrite } from "./session-accessor.sqlite-scope.js";
 import { appendTranscriptEventsInTransaction } from "./session-accessor.sqlite-transcript-store.js";
-import { prepareSessionTranscriptProjection } from "./session-transcript-projection-rebuild.js";
 import {
   reconcileSessionTranscriptIndexes,
   startSessionTranscriptIndexReconcile,
   waitForSessionTranscriptIndexReconcile,
   waitForSessionTranscriptProjection,
 } from "./session-transcript-reconcile.js";
-import { replaceSessionTranscriptSourceGenerationInTransaction } from "./session-transcript-source-generation.js";
 
 const queuedSessionWrite = vi.hoisted(() => vi.fn());
 
@@ -861,102 +857,6 @@ describe("SQLite active transcript event projection", () => {
     expect(createWorker).not.toHaveBeenCalled();
   }, 10_000);
 
-  it.each(["failed", "done", "error", "exit", "rejected-continuation"] as const)(
-    "abandons a claimed projection after worker %s and permits a fresh retry",
-    async (terminal) => {
-      await persistSessionTranscriptTurn(scope, {
-        messages: [{ eventId: "seed", message: { role: "user", content: "seed" } }],
-        touchSessionEntry: false,
-      });
-      const databaseOptions = { agentId: scope.agentId, env: scope.env };
-      const database = openOpenClawAgentDatabase(databaseOptions);
-      database.db.exec(`
-        UPDATE session_transcript_index_state
-        SET needs_rebuild = 1
-        WHERE session_id = '${scope.sessionId}';
-        UPDATE session_transcript_display_state
-        SET needs_rebuild = 1
-        WHERE session_id = '${scope.sessionId}';
-      `);
-      const prepared = prepareSessionTranscriptProjection(database.db, scope.sessionId);
-      expect(prepared).toBeDefined();
-      const {
-        activeRows: _activeRows,
-        displayRows: _displayRows,
-        ftsRows: _ftsRows,
-        ...plan
-      } = prepared!;
-      const worker = Object.assign(new EventEmitter(), {
-        postMessage: vi.fn((message: { accepted: boolean; type: "continue" }) => {
-          if (!message.accepted) {
-            queueMicrotask(() => worker.emit("message", { type: "done" }));
-            return;
-          }
-          queueMicrotask(() => {
-            if (terminal === "failed") {
-              worker.emit("message", { error: "injected worker failure", type: "failed" });
-            } else if (terminal === "done") {
-              worker.emit("message", { type: "done" });
-            } else if (terminal === "error") {
-              worker.emit("error", new Error("injected worker error"));
-            } else if (terminal === "exit") {
-              worker.emit("exit", 7);
-            } else {
-              runOpenClawAgentWriteTransaction((writeDatabase) => {
-                replaceSessionTranscriptSourceGenerationInTransaction(
-                  writeDatabase,
-                  scope.sessionId,
-                );
-              }, databaseOptions);
-              worker.emit("message", {
-                rows: prepared!.activeRows.slice(0, 1),
-                sessionId: scope.sessionId,
-                type: "active-chunk",
-              });
-            }
-          });
-        }),
-        terminate: vi.fn(async () => 0),
-      });
-      const createWorker = vi.fn(() => {
-        queueMicrotask(() => worker.emit("message", { plan, type: "plan-start" }));
-        return worker as unknown as Worker;
-      });
-
-      const outcome = reconcileSessionTranscriptIndexes({
-        ...databaseOptions,
-        createWorker,
-      });
-      if (terminal === "rejected-continuation") {
-        await expect(outcome).resolves.toEqual({ reconciledSessions: 0 });
-      } else {
-        await expect(outcome).rejects.toThrow();
-      }
-      expect(createWorker).toHaveBeenCalledTimes(1);
-      const abandoned = database.db
-        .prepare(
-          `SELECT
-             (SELECT updated_at FROM session_transcript_index_state WHERE session_id = ?) AS active_claim,
-             (SELECT updated_at FROM session_transcript_display_state WHERE session_id = ?) AS display_claim,
-             (SELECT COUNT(*) FROM session_transcript_projection_bindings WHERE session_id = ?) AS binding_count`,
-        )
-        .get(scope.sessionId, scope.sessionId, scope.sessionId) as {
-        active_claim: number;
-        binding_count: number;
-        display_claim: number;
-      };
-      expect(abandoned.binding_count).toBe(0);
-      expect(abandoned.active_claim).toBeGreaterThanOrEqual(0);
-      expect(abandoned.display_claim).toBeGreaterThanOrEqual(0);
-
-      await expect(reconcileSessionTranscriptIndexes(databaseOptions)).resolves.toEqual({
-        reconciledSessions: 1,
-      });
-      expect(readSessionTranscriptMessageEventCount(scope)).toBe(1);
-    },
-    20_000,
-  );
-
   it("keeps dirty batch appends off the synchronous writer stack", async () => {
     await persistSessionTranscriptTurn(scope, {
       messages: [{ eventId: "root", message: { role: "user", content: "root" } }],
@@ -1059,11 +959,15 @@ describe("SQLite active transcript event projection", () => {
           `
             INSERT INTO session_transcript_index_state
               (session_id, indexed_seq, leaf_event_id, needs_rebuild,
-               active_event_count, active_message_count, updated_at)
-            VALUES (?, 100000, 'm100000', 0, 100000, 100000, 100000)
+               active_event_count, active_message_count, source_generation, updated_at)
+            VALUES (
+              ?, 100000, 'm100000', 0, 100000, 100000,
+              (SELECT generation FROM transcript_rewrite_watermarks WHERE session_id = ?),
+              100000
+            )
           `,
         )
-        .run(scope.sessionId);
+        .run(scope.sessionId, scope.sessionId);
       database.db.exec("COMMIT;");
     } catch (error) {
       database.db.exec("ROLLBACK;");

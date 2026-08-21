@@ -28,10 +28,8 @@ import {
 } from "./session-transcript-display-store.js";
 import {
   EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ,
-  deleteSessionTranscriptProjectionBindingsInTransaction,
-  readBoundSessionTranscriptSourceGenerationInTransaction,
+  readSessionTranscriptSourceGenerationInTransaction,
   sessionTranscriptSourceGenerationMatchesInTransaction,
-  writeSessionTranscriptProjectionBindingInTransaction,
 } from "./session-transcript-source-generation.js";
 
 const SESSION_TRANSCRIPT_DISPLAY_PAGE_MAX_ROWS = 200;
@@ -94,12 +92,12 @@ export function claimSessionTranscriptDisplayInTransaction(
     if (params.previousGeneration !== null) {
       return false;
     }
-    deleteSessionTranscriptProjectionBindingsInTransaction(db, params.sessionId, "display");
     writeDisplayState(db, params.sessionId, {
       generation: params.generation,
       indexedSeq: EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ,
       needsRebuild: true,
       rowCount: 0,
+      sourceGeneration: null,
       updatedAt: params.claimId,
     });
     return true;
@@ -107,11 +105,11 @@ export function claimSessionTranscriptDisplayInTransaction(
   if (state.generation !== params.previousGeneration) {
     return false;
   }
-  deleteSessionTranscriptProjectionBindingsInTransaction(db, params.sessionId, "display");
   writeDisplayState(db, params.sessionId, {
     ...state,
     generation: params.generation,
     needsRebuild: true,
+    sourceGeneration: null,
     updatedAt: params.claimId,
   });
   return true;
@@ -143,19 +141,16 @@ export function abandonSessionTranscriptDisplayClaimInTransaction(
   db: DatabaseSync,
   params: { claimId: number; generation: string; sessionId: string },
 ): void {
-  const result = executeSqliteQuerySync(
+  executeSqliteQuerySync(
     db,
     getDisplayKysely(db)
       .updateTable(SESSION_TRANSCRIPT_DISPLAY_STATE_TABLE)
-      .set({ updated_at: Date.now() })
+      .set({ source_generation: null, updated_at: Date.now() })
       .where("session_id", "=", params.sessionId)
       .where("generation", "=", params.generation)
       .where("needs_rebuild", "!=", 0)
       .where("updated_at", "=", params.claimId),
   );
-  if (result.numAffectedRows === 1n) {
-    deleteSessionTranscriptProjectionBindingsInTransaction(db, params.sessionId, "display");
-  }
 }
 
 export function deleteSessionTranscriptDisplayChunkInTransaction(
@@ -294,6 +289,7 @@ export function finalizeSessionTranscriptDisplayInTransaction(
         indexed_seq: params.sourceIndexedSeq,
         needs_rebuild: 0,
         row_count: params.rowCount,
+        source_generation: params.sourceGeneration,
         updated_at: Date.now(),
       })
       .where("session_id", "=", params.sessionId)
@@ -304,11 +300,6 @@ export function finalizeSessionTranscriptDisplayInTransaction(
   if (result.numAffectedRows !== 1n) {
     return false;
   }
-  writeSessionTranscriptProjectionBindingInTransaction(db, params.sessionId, {
-    projection: "display",
-    projectionGeneration: params.generation,
-    sourceGeneration: params.sourceGeneration,
-  });
   return true;
 }
 
@@ -326,17 +317,15 @@ function readSessionTranscriptDisplayRowsSnapshot(
 ): SessionTranscriptDisplayReadResult {
   const state = readSessionTranscriptDisplayState(db, sessionId);
   const source = state
-    ? readBoundSessionTranscriptSourceGenerationInTransaction(db, sessionId, {
-        projection: "display",
-        projectionGeneration: state.generation,
-      })
+    ? readSessionTranscriptSourceGenerationInTransaction(db, sessionId)
     : undefined;
   if (
     !source ||
     !state ||
     state.generation !== params.expectedGeneration ||
     state.needsRebuild ||
-    state.indexedSeq !== source.indexedSeq
+    state.indexedSeq !== source.indexedSeq ||
+    state.sourceGeneration !== source.generation
   ) {
     return { generation: state?.generation ?? null, kind: "reset" };
   }

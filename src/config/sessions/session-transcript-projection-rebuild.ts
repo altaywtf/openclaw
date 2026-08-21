@@ -22,12 +22,8 @@ import {
 } from "./session-transcript-display.js";
 import {
   EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ,
-  deleteSessionTranscriptProjectionBindingsInTransaction,
-  readSessionTranscriptProjectionBindingInTransaction,
   readSessionTranscriptSourceGenerationInTransaction,
-  sessionTranscriptProjectionBindingMatches,
   sessionTranscriptSourceGenerationMatchesInTransaction,
-  writeSessionTranscriptProjectionBindingInTransaction,
 } from "./session-transcript-source-generation.js";
 import {
   resolveVisibleTranscriptAppendParentId,
@@ -83,7 +79,7 @@ export type PreparedSessionTranscriptProjection = PreparedSessionTranscriptProje
   ftsRows: TranscriptIndexEntry[];
 };
 
-export type SessionTranscriptProjectionSourceRow = {
+type SessionTranscriptProjectionSourceRow = {
   createdAt: number;
   event: unknown;
   seq: number;
@@ -266,31 +262,19 @@ export function prepareSessionTranscriptProjection(
         db,
         kysely
           .selectFrom("session_transcript_index_state")
-          .select(["indexed_seq", "needs_rebuild"])
+          .select(["indexed_seq", "needs_rebuild", "source_generation"])
           .where("session_id", "=", sessionId),
       );
       const includeDisplayProjection = options.includeDisplayProjection === true;
       const displayState = includeDisplayProjection
         ? readSessionTranscriptDisplayState(db, sessionId)
         : undefined;
-      const activeBinding = readSessionTranscriptProjectionBindingInTransaction(
-        db,
-        sessionId,
-        "active",
-      );
-      const displayBinding = includeDisplayProjection
-        ? readSessionTranscriptProjectionBindingInTransaction(db, sessionId, "display")
-        : undefined;
       const displayNeedsRebuild =
         includeDisplayProjection &&
         (!displayState ||
           displayState.needsRebuild ||
           displayState.indexedSeq !== latestSeq ||
-          !sessionTranscriptProjectionBindingMatches(
-            displayBinding,
-            source.generation,
-            displayState.generation,
-          ));
+          displayState.sourceGeneration !== source.generation);
       const displayGeneration =
         displayState && (!displayNeedsRebuild || displayState.needsRebuild)
           ? displayState.generation
@@ -302,7 +286,7 @@ export function prepareSessionTranscriptProjection(
           (!activeState ||
             activeState.needs_rebuild !== 0 ||
             activeState.indexed_seq !== latestSeq ||
-            !sessionTranscriptProjectionBindingMatches(activeBinding, source.generation)),
+            activeState.source_generation !== source.generation),
         displayGeneration,
         displayNeedsRebuild,
         includeDisplayRows: includeDisplayProjection,
@@ -357,12 +341,13 @@ function projectionClaimIsOwned(
     db,
     getProjectionKysely(db)
       .selectFrom("session_transcript_index_state")
-      .select(["needs_rebuild", "updated_at"])
+      .select(["needs_rebuild", "source_generation", "updated_at"])
       .where("session_id", "=", params.sessionId),
   );
   return Boolean(
     row &&
     row.needs_rebuild !== 0 &&
+    row.source_generation === null &&
     row.updated_at === params.claimId &&
     sessionTranscriptSourceGenerationMatchesInTransaction(db, params.sessionId, {
       generation: params.sourceGeneration,
@@ -385,7 +370,7 @@ export function claimPreparedSessionTranscriptProjectionInTransaction(
     db,
     kysely
       .selectFrom("session_transcript_index_state")
-      .select(["indexed_seq", "needs_rebuild"])
+      .select(["indexed_seq", "needs_rebuild", "source_generation"])
       .where("session_id", "=", plan.sessionId),
   );
   const activeNeedsRebuild =
@@ -393,10 +378,7 @@ export function claimPreparedSessionTranscriptProjectionInTransaction(
     (!current ||
       current.needs_rebuild !== 0 ||
       current.indexed_seq !== plan.sourceIndexedSeq ||
-      !sessionTranscriptProjectionBindingMatches(
-        readSessionTranscriptProjectionBindingInTransaction(db, plan.sessionId, "active"),
-        plan.sourceGeneration,
-      ));
+      current.source_generation !== plan.sourceGeneration);
   if (
     activeNeedsRebuild !== plan.activeNeedsRebuild ||
     (!plan.activeNeedsRebuild && !plan.displayNeedsRebuild)
@@ -425,7 +407,6 @@ export function claimPreparedSessionTranscriptProjectionInTransaction(
     return false;
   }
   if (plan.activeNeedsRebuild) {
-    deleteSessionTranscriptProjectionBindingsInTransaction(db, plan.sessionId, "active");
     executeSqliteQuerySync(
       db,
       kysely
@@ -437,6 +418,7 @@ export function claimPreparedSessionTranscriptProjectionInTransaction(
           leaf_event_id: null,
           needs_rebuild: 1,
           session_id: plan.sessionId,
+          source_generation: null,
           updated_at: claimId,
         })
         .onConflict((conflict) =>
@@ -446,6 +428,7 @@ export function claimPreparedSessionTranscriptProjectionInTransaction(
             indexed_seq: EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ,
             leaf_event_id: null,
             needs_rebuild: 1,
+            source_generation: null,
             updated_at: claimId,
           }),
         ),
@@ -460,18 +443,15 @@ export function abandonPreparedSessionTranscriptProjectionInTransaction(
   claimId: number,
 ): void {
   if (plan.activeNeedsRebuild) {
-    const result = executeSqliteQuerySync(
+    executeSqliteQuerySync(
       db,
       getProjectionKysely(db)
         .updateTable("session_transcript_index_state")
-        .set({ updated_at: Date.now() })
+        .set({ source_generation: null, updated_at: Date.now() })
         .where("session_id", "=", plan.sessionId)
         .where("needs_rebuild", "!=", 0)
         .where("updated_at", "=", claimId),
     );
-    if (result.numAffectedRows === 1n) {
-      deleteSessionTranscriptProjectionBindingsInTransaction(db, plan.sessionId, "active");
-    }
   }
   if (plan.displayNeedsRebuild) {
     abandonSessionTranscriptDisplayClaimInTransaction(db, {
@@ -628,6 +608,7 @@ export function finalizePreparedSessionTranscriptProjectionInTransaction(
         indexed_seq: plan.sourceIndexedSeq,
         leaf_event_id: plan.leafEventId,
         needs_rebuild: 0,
+        source_generation: plan.sourceGeneration,
         updated_at: Date.now(),
       })
       .where("session_id", "=", plan.sessionId)
@@ -637,10 +618,5 @@ export function finalizePreparedSessionTranscriptProjectionInTransaction(
   if (result.numAffectedRows !== 1n) {
     return false;
   }
-  writeSessionTranscriptProjectionBindingInTransaction(db, plan.sessionId, {
-    projection: "active",
-    projectionGeneration: null,
-    sourceGeneration: plan.sourceGeneration,
-  });
   return true;
 }

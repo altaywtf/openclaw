@@ -7,15 +7,12 @@ import {
 } from "../../infra/kysely-sync.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
-import {
-  ensureOpenClawAgentTranscriptProjectionBindingSchema,
-  SESSION_TRANSCRIPT_PROJECTION_BINDINGS_TABLE,
-  validateOpenClawAgentTranscriptProjectionBindingSchema,
-} from "../../state/openclaw-agent-transcript-projection-binding-schema.js";
+import { ensureOpenClawAgentTranscriptProjectionSourceColumns } from "../../state/openclaw-agent-transcript-projection-source-schema.js";
+import { tableExists } from "../../state/openclaw-state-db-schema-helpers.js";
 
 type SourceGenerationDatabase = Pick<
   OpenClawAgentKyselyDatabase,
-  | "session_transcript_projection_bindings"
+  | "session_transcript_display_state"
   | "session_transcript_index_state"
   | "session_windows"
   | "transcript_events"
@@ -28,18 +25,6 @@ type SessionTranscriptSourceGeneration = {
   generation: string;
   indexedSeq: number;
 };
-
-type SessionTranscriptProjectionBinding =
-  | {
-      projection: "active";
-      projectionGeneration: null;
-      sourceGeneration: string;
-    }
-  | {
-      projection: "display";
-      projectionGeneration: string;
-      sourceGeneration: string;
-    };
 
 function getSourceGenerationKysely(db: DatabaseSync) {
   return getNodeSqliteKysely<SourceGenerationDatabase>(db);
@@ -100,19 +85,24 @@ export function ensureSessionTranscriptSourceGenerationInTransaction(
   database: Pick<OpenClawAgentDatabase, "db">,
   sessionId: string,
 ): string {
+  ensureOpenClawAgentTranscriptProjectionSourceColumns(database.db);
+  const existing = readSessionTranscriptSourceGenerationTokenInTransaction(database.db, sessionId);
+  if (existing) {
+    return existing;
+  }
   const generation = createTranscriptGeneration();
   const db = getSourceGenerationKysely(database.db);
-  executeSqliteQuerySync(
+  const inserted = executeSqliteQuerySync(
     database.db,
     db
       .insertInto("transcript_rewrite_watermarks")
       .values({ session_id: sessionId, generation, updated_at: Date.now() })
       .onConflict((conflict) => conflict.column("session_id").doNothing()),
   );
-  return (
-    readSessionTranscriptSourceGenerationInTransaction(database.db, sessionId)?.generation ??
-    generation
-  );
+  return inserted.numAffectedRows === 1n
+    ? generation
+    : (readSessionTranscriptSourceGenerationTokenInTransaction(database.db, sessionId) ??
+        generation);
 }
 
 /** Backfills legacy windows through the same source-generation policy before reconciliation. */
@@ -138,55 +128,6 @@ export function ensureAllSessionTranscriptSourceGenerationsInTransaction(
   return missing.length;
 }
 
-/** Reads one derived projection's binding without materializing an absent lazy group. */
-export function readSessionTranscriptProjectionBindingInTransaction(
-  db: DatabaseSync,
-  sessionId: string,
-  projection: SessionTranscriptProjectionBinding["projection"],
-): SessionTranscriptProjectionBinding | undefined {
-  if (!validateOpenClawAgentTranscriptProjectionBindingSchema(db)) {
-    return undefined;
-  }
-  const row = executeSqliteQueryTakeFirstSync(
-    db,
-    getSourceGenerationKysely(db)
-      .selectFrom(SESSION_TRANSCRIPT_PROJECTION_BINDINGS_TABLE)
-      .select(["projection", "projection_generation", "source_generation"])
-      .where("session_id", "=", sessionId)
-      .where("projection", "=", projection),
-  );
-  if (!row) {
-    return undefined;
-  }
-  if (row.projection === "active" && row.projection_generation === null) {
-    return {
-      projection: "active",
-      projectionGeneration: null,
-      sourceGeneration: row.source_generation,
-    };
-  }
-  if (row.projection === "display" && row.projection_generation !== null) {
-    return {
-      projection: "display",
-      projectionGeneration: row.projection_generation,
-      sourceGeneration: row.source_generation,
-    };
-  }
-  throw new Error(`Invalid transcript projection binding for ${sessionId}:${projection}`);
-}
-
-export function sessionTranscriptProjectionBindingMatches(
-  binding: SessionTranscriptProjectionBinding | undefined,
-  sourceGeneration: string,
-  projectionGeneration?: string,
-): boolean {
-  return Boolean(
-    binding &&
-    binding.sourceGeneration === sourceGeneration &&
-    (binding.projection === "active" || binding.projectionGeneration === projectionGeneration),
-  );
-}
-
 export function sessionTranscriptSourceGenerationMatchesInTransaction(
   db: DatabaseSync,
   sessionId: string,
@@ -196,102 +137,40 @@ export function sessionTranscriptSourceGenerationMatchesInTransaction(
   return source?.generation === expected.generation && source.indexedSeq === expected.indexedSeq;
 }
 
-/** Returns source identity only when one derived projection is bound to it. */
-export function readBoundSessionTranscriptSourceGenerationInTransaction(
-  db: DatabaseSync,
-  sessionId: string,
-  projection: { projection: "active" } | { projection: "display"; projectionGeneration: string },
-): SessionTranscriptSourceGeneration | undefined {
-  const source = readSessionTranscriptSourceGenerationInTransaction(db, sessionId);
-  if (!source) {
-    return undefined;
-  }
-  return sessionTranscriptProjectionBindingMatches(
-    readSessionTranscriptProjectionBindingInTransaction(db, sessionId, projection.projection),
-    source.generation,
-    projection.projection === "display" ? projection.projectionGeneration : undefined,
-  )
-    ? source
-    : undefined;
-}
-
 /** Returns source identity only while the active projection is fully current. */
 export function readCurrentSessionTranscriptActiveSourceInTransaction(
   db: DatabaseSync,
   sessionId: string,
 ): SessionTranscriptSourceGeneration | undefined {
-  const source = readBoundSessionTranscriptSourceGenerationInTransaction(db, sessionId, {
-    projection: "active",
-  });
-  if (!source) {
-    return undefined;
-  }
-  const state = executeSqliteQueryTakeFirstSync(
+  ensureOpenClawAgentTranscriptProjectionSourceColumns(db);
+  const row = executeSqliteQueryTakeFirstSync(
     db,
     getSourceGenerationKysely(db)
-      .selectFrom("session_transcript_index_state")
-      .select(["indexed_seq", "needs_rebuild"])
-      .where("session_id", "=", sessionId),
+      .selectFrom("session_transcript_index_state as state")
+      .innerJoin("transcript_rewrite_watermarks as source", "source.session_id", "state.session_id")
+      .select((eb) => [
+        "source.generation",
+        "state.indexed_seq",
+        "state.needs_rebuild",
+        "state.source_generation",
+        eb
+          .selectFrom("transcript_events as event")
+          .select((inner) => inner.fn.max<number>("event.seq").as("source_indexed_seq"))
+          .whereRef("event.session_id", "=", "state.session_id")
+          .as("source_indexed_seq"),
+      ])
+      .where("state.session_id", "=", sessionId),
   );
-  return state?.needs_rebuild === 0 && state.indexed_seq === source.indexedSeq ? source : undefined;
+  const sourceIndexedSeq = row?.source_indexed_seq ?? EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ;
+  return row &&
+    row.needs_rebuild === 0 &&
+    row.indexed_seq === sourceIndexedSeq &&
+    row.source_generation === row.generation
+    ? { generation: row.generation, indexedSeq: sourceIndexedSeq }
+    : undefined;
 }
 
-/** Publishes one derived projection binding in its owning write transaction. */
-export function writeSessionTranscriptProjectionBindingInTransaction(
-  db: DatabaseSync,
-  sessionId: string,
-  binding: SessionTranscriptProjectionBinding,
-): void {
-  ensureOpenClawAgentTranscriptProjectionBindingSchema(db);
-  const existing = readSessionTranscriptProjectionBindingInTransaction(
-    db,
-    sessionId,
-    binding.projection,
-  );
-  if (
-    existing?.sourceGeneration === binding.sourceGeneration &&
-    existing.projectionGeneration === binding.projectionGeneration
-  ) {
-    return;
-  }
-  executeSqliteQuerySync(
-    db,
-    getSourceGenerationKysely(db)
-      .insertInto(SESSION_TRANSCRIPT_PROJECTION_BINDINGS_TABLE)
-      .values({
-        projection: binding.projection,
-        projection_generation: binding.projectionGeneration,
-        session_id: sessionId,
-        source_generation: binding.sourceGeneration,
-      })
-      .onConflict((conflict) =>
-        conflict.columns(["session_id", "projection"]).doUpdateSet({
-          projection_generation: binding.projectionGeneration,
-          source_generation: binding.sourceGeneration,
-        }),
-      ),
-  );
-}
-
-/** Clears derived bindings without creating their lazy storage. */
-export function deleteSessionTranscriptProjectionBindingsInTransaction(
-  db: DatabaseSync,
-  sessionId: string,
-  projection?: SessionTranscriptProjectionBinding["projection"],
-): void {
-  if (!validateOpenClawAgentTranscriptProjectionBindingSchema(db)) {
-    return;
-  }
-  const query = getSourceGenerationKysely(db)
-    .deleteFrom(SESSION_TRANSCRIPT_PROJECTION_BINDINGS_TABLE)
-    .where("session_id", "=", sessionId);
-  executeSqliteQuerySync(
-    db,
-    projection === undefined ? query : query.where("projection", "=", projection),
-  );
-}
-
-/** Replaces source identity and invalidates every derived binding atomically. */
+/** Replaces source identity and invalidates every derived projection atomically. */
 export function replaceSessionTranscriptSourceGenerationInTransaction(
   database: Pick<OpenClawAgentDatabase, "db">,
   sessionId: string,
@@ -299,10 +178,11 @@ export function replaceSessionTranscriptSourceGenerationInTransaction(
 ): string {
   const generation = source.generation ?? createTranscriptGeneration();
   const updatedAt = source.updatedAt ?? Date.now();
-  deleteSessionTranscriptProjectionBindingsInTransaction(database.db, sessionId);
+  ensureOpenClawAgentTranscriptProjectionSourceColumns(database.db);
+  const db = getSourceGenerationKysely(database.db);
   executeSqliteQuerySync(
     database.db,
-    getSourceGenerationKysely(database.db)
+    db
       .insertInto("transcript_rewrite_watermarks")
       .values({ generation, session_id: sessionId, updated_at: updatedAt })
       .onConflict((conflict) =>
@@ -312,5 +192,21 @@ export function replaceSessionTranscriptSourceGenerationInTransaction(
         }),
       ),
   );
+  executeSqliteQuerySync(
+    database.db,
+    db
+      .updateTable("session_transcript_index_state")
+      .set({ source_generation: null })
+      .where("session_id", "=", sessionId),
+  );
+  if (tableExists(database.db, "session_transcript_display_state")) {
+    executeSqliteQuerySync(
+      database.db,
+      db
+        .updateTable("session_transcript_display_state")
+        .set({ source_generation: null })
+        .where("session_id", "=", sessionId),
+    );
+  }
   return generation;
 }

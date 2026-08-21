@@ -272,7 +272,8 @@ describe("SQLite session entry cache", () => {
       sessionId: "same-connection-non-entry-2",
       updatedAt: 1,
     });
-    ensureOpenClawAgentDisplayRowSchema(openOpenClawAgentDatabase(scope).db);
+    const database = openOpenClawAgentDatabase(scope).db;
+    ensureOpenClawAgentDisplayRowSchema(database);
     const first = listSessionEntriesCore({ ...scope, clone: false, projection: "list" });
 
     await appendTranscriptMessage(

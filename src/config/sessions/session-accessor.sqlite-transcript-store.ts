@@ -70,7 +70,10 @@ export function appendTranscriptEventInTransaction(
   ensureTranscriptSessionRoot(database, scope, createdAt, {
     allowStoredAlias: options.allowStoredAlias === true,
   });
-  ensureSessionTranscriptSourceGenerationInTransaction(database, scope.sessionId);
+  const sourceGeneration = ensureSessionTranscriptSourceGenerationInTransaction(
+    database,
+    scope.sessionId,
+  );
   const identity = readTranscriptEventIdentity(persistedEvent);
   if (identity && readTranscriptIdentityByEventId(database, scope.sessionId, identity.eventId)) {
     return false;
@@ -106,6 +109,7 @@ export function appendTranscriptEventInTransaction(
     eventId: identity?.eventId ?? null,
     createdAt,
     maintainDisplayProjection: options.maintainDisplayProjection,
+    sourceGeneration,
   });
   if (projectionNeedsRebuild) {
     options.onProjectionReconcileNeeded?.();
@@ -357,6 +361,9 @@ export function replaceSqliteTranscriptEventsInTransaction(
       .select("updated_at")
       .where("session_id", "=", resolved.sessionId),
   );
+  if (!sourceWindow && events.length === 0) {
+    return;
+  }
   if (!sourceWindow || (events.length > 0 && options.preserveSessionWindowRecency !== true)) {
     ensureTranscriptSessionRoot(database, resolved, readEventTimestamp(events[0]) ?? Date.now());
   }

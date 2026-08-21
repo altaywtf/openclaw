@@ -1,11 +1,18 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { EventEmitter } from "node:events";
+import type { Worker } from "node:worker_threads";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import {
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
   runOpenClawAgentWriteTransaction,
 } from "../../state/openclaw-agent-db.js";
-import { appendTranscriptMessage, upsertSessionEntryCore } from "./session-accessor.js";
+import {
+  appendTranscriptMessage,
+  persistSessionTranscriptTurn,
+  upsertSessionEntryCore,
+} from "./session-accessor.js";
+import { readSessionTranscriptMessageEventCount } from "./session-accessor.sqlite-active-events.js";
 import { ensureSqliteTranscriptGenerationsForCanonicalRepair } from "./session-accessor.sqlite-canonical-repair.js";
 import { importSqliteSessionRows } from "./session-accessor.sqlite-import.js";
 import { resolveSqliteTranscriptScope } from "./session-accessor.sqlite-scope.js";
@@ -24,6 +31,7 @@ import {
   finalizePreparedSessionTranscriptProjectionInTransaction,
   prepareSessionTranscriptProjection,
 } from "./session-transcript-projection-rebuild.js";
+import { reconcileSessionTranscriptIndexes } from "./session-transcript-reconcile.js";
 import { replaceSessionTranscriptSourceGenerationInTransaction } from "./session-transcript-source-generation.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -50,6 +58,24 @@ function readGeneration(scope: ReturnType<typeof createScope>): string | undefin
 }
 
 describe("session transcript source generation", () => {
+  it("keeps an empty replacement for an absent session as a no-op", async () => {
+    const scope = createScope("absent-empty-replacement");
+    await replaceTranscriptEvents(scope, []);
+
+    const database = openOpenClawAgentDatabase({ agentId: scope.agentId, env: scope.env });
+    expect(
+      database.db
+        .prepare(
+          `SELECT
+             (SELECT COUNT(*) FROM session_windows WHERE session_id = ?) AS windows,
+             (SELECT COUNT(*) FROM transcript_rewrite_watermarks WHERE session_id = ?) AS generations,
+             (SELECT COUNT(*) FROM sqlite_schema
+              WHERE type = 'table' AND name = 'session_transcript_display_state') AS display_tables`,
+        )
+        .get(scope.sessionId, scope.sessionId),
+    ).toEqual({ display_tables: 0, generations: 0, windows: 0 });
+  });
+
   it("owns an empty generation and rotates it once for an empty replacement", async () => {
     const scope = createScope("empty-replacement");
     await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 10 });
@@ -116,49 +142,41 @@ describe("session transcript source generation", () => {
     expect(readGeneration(scope)).toMatch(/^[0-9a-f]{32}$/u);
   });
 
-  it("publishes active and display bindings only after projection use", async () => {
-    const scope = createScope("projection-bindings");
+  it("publishes source ownership with active and display projection state", async () => {
+    const scope = createScope("projection-source-ownership");
     await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 10 });
     const database = openOpenClawAgentDatabase({ agentId: scope.agentId, env: scope.env });
-    expect(
-      database.db
-        .prepare(
-          "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'session_transcript_projection_bindings'",
-        )
-        .get(),
-    ).toBeUndefined();
 
     await appendTranscriptMessage(scope, {
-      message: { role: "user", content: "binding source" },
+      maintainDisplayProjection: true,
+      message: { role: "user", content: "projection source" },
     });
 
     const sourceGeneration = readGeneration(scope);
     expect(
       database.db
         .prepare(
-          `SELECT projection, projection_generation, source_generation
-           FROM session_transcript_projection_bindings
-           WHERE session_id = ?
-           ORDER BY projection`,
+          `SELECT
+             active.source_generation AS active_source_generation,
+             display.source_generation AS display_source_generation,
+             display.generation AS display_generation
+           FROM session_transcript_index_state AS active
+           JOIN session_transcript_display_state AS display
+             ON display.session_id = active.session_id
+           WHERE active.session_id = ?`,
         )
-        .all(scope.sessionId),
-    ).toEqual([
-      {
-        projection: "active",
-        projection_generation: null,
-        source_generation: sourceGeneration,
-      },
-      {
-        projection: "display",
-        projection_generation: expect.stringMatching(/^[0-9a-f]{32}$/u),
-        source_generation: sourceGeneration,
-      },
-    ]);
+        .get(scope.sessionId),
+    ).toEqual({
+      active_source_generation: sourceGeneration,
+      display_generation: expect.stringMatching(/^[0-9a-f]{32}$/u),
+      display_source_generation: sourceGeneration,
+    });
   });
 
   it("rejects prepared work after a same-sequence source replacement", async () => {
     const scope = createScope("stale-preparation");
     await appendTranscriptMessage(scope, {
+      maintainDisplayProjection: true,
       message: { role: "user", content: "prepared source" },
     });
     const database = openOpenClawAgentDatabase({ agentId: scope.agentId, env: scope.env });
@@ -179,10 +197,16 @@ describe("session transcript source generation", () => {
         expect(
           writeDatabase.db
             .prepare(
-              "SELECT COUNT(*) AS count FROM session_transcript_projection_bindings WHERE session_id = ?",
+              `SELECT
+                 active.source_generation AS active_source_generation,
+                 display.source_generation AS display_source_generation
+               FROM session_transcript_index_state AS active
+               JOIN session_transcript_display_state AS display
+                 ON display.session_id = active.session_id
+               WHERE active.session_id = ?`,
             )
             .get(scope.sessionId),
-        ).toEqual({ count: 0 });
+        ).toEqual({ active_source_generation: null, display_source_generation: null });
         expect(
           claimPreparedSessionTranscriptProjectionInTransaction(writeDatabase.db, plan!, -101),
         ).toBe(false);
@@ -194,6 +218,7 @@ describe("session transcript source generation", () => {
   it("rejects final publication after a same-sequence source replacement", async () => {
     const scope = createScope("stale-finalization");
     await appendTranscriptMessage(scope, {
+      maintainDisplayProjection: true,
       message: { role: "user", content: "claimed source" },
     });
     const database = openOpenClawAgentDatabase({ agentId: scope.agentId, env: scope.env });
@@ -230,6 +255,7 @@ describe("session transcript source generation", () => {
   it("does not forward-publish rows from an unbound projection", async () => {
     const scope = createScope("stale-forward-append");
     const initial = await appendTranscriptMessage(scope, {
+      maintainDisplayProjection: true,
       message: { role: "user", content: "bound source" },
     });
     expect(initial).toBeDefined();
@@ -258,14 +284,16 @@ describe("session transcript source generation", () => {
         .prepare(
           `SELECT
              (SELECT needs_rebuild FROM session_transcript_index_state WHERE session_id = ?) AS active_needs_rebuild,
+             (SELECT source_generation FROM session_transcript_index_state WHERE session_id = ?) AS active_source_generation,
              (SELECT needs_rebuild FROM session_transcript_display_state WHERE session_id = ?) AS display_needs_rebuild,
-             (SELECT COUNT(*) FROM session_transcript_projection_bindings WHERE session_id = ?) AS binding_count`,
+             (SELECT source_generation FROM session_transcript_display_state WHERE session_id = ?) AS display_source_generation`,
         )
-        .get(scope.sessionId, scope.sessionId, scope.sessionId),
+        .get(scope.sessionId, scope.sessionId, scope.sessionId, scope.sessionId),
     ).toEqual({
       active_needs_rebuild: 1,
-      binding_count: 0,
+      active_source_generation: null,
       display_needs_rebuild: 1,
+      display_source_generation: null,
     });
   });
 
@@ -274,14 +302,12 @@ describe("session transcript source generation", () => {
     async (change) => {
       const scope = createScope(`stale-chunks-${change}`);
       await appendTranscriptMessage(scope, {
+        maintainDisplayProjection: true,
         message: { role: "user", content: "claimed source" },
       });
       const database = openOpenClawAgentDatabase({ agentId: scope.agentId, env: scope.env });
       database.db.exec(`
         UPDATE session_transcript_index_state
-        SET needs_rebuild = 1
-        WHERE session_id = '${scope.sessionId}';
-        UPDATE session_transcript_display_state
         SET needs_rebuild = 1
         WHERE session_id = '${scope.sessionId}';
       `);
@@ -387,6 +413,7 @@ describe("session transcript source generation", () => {
   it("does not let delayed abandonment invalidate a newer publication", async () => {
     const scope = createScope("delayed-abandonment");
     await appendTranscriptMessage(scope, {
+      maintainDisplayProjection: true,
       message: { role: "user", content: "fresh owner" },
     });
     const options = { agentId: scope.agentId, env: scope.env };
@@ -418,21 +445,129 @@ describe("session transcript source generation", () => {
     expect(
       database.db
         .prepare(
-          `SELECT projection, source_generation
-           FROM session_transcript_projection_bindings
-           WHERE session_id = ?
-           ORDER BY projection`,
+          `SELECT
+             active.source_generation AS active_source_generation,
+             display.source_generation AS display_source_generation
+           FROM session_transcript_index_state AS active
+           JOIN session_transcript_display_state AS display
+             ON display.session_id = active.session_id
+           WHERE active.session_id = ?`,
         )
-        .all(scope.sessionId),
-    ).toEqual([
-      { projection: "active", source_generation: plan!.sourceGeneration },
-      { projection: "display", source_generation: plan!.sourceGeneration },
-    ]);
+        .get(scope.sessionId),
+    ).toEqual({
+      active_source_generation: plan!.sourceGeneration,
+      display_source_generation: plan!.sourceGeneration,
+    });
   });
+
+  it.each(["failed", "done", "error", "exit", "rejected-continuation"] as const)(
+    "abandons a claimed projection after worker %s and permits a fresh retry",
+    async (terminal) => {
+      const scope = createScope(`worker-${terminal}`);
+      await persistSessionTranscriptTurn(scope, {
+        messages: [
+          {
+            eventId: "seed",
+            maintainDisplayProjection: true,
+            message: { role: "user", content: "seed" },
+          },
+        ],
+        touchSessionEntry: false,
+      });
+      const databaseOptions = { agentId: scope.agentId, env: scope.env };
+      const database = openOpenClawAgentDatabase(databaseOptions);
+      database.db.exec(`
+        UPDATE session_transcript_index_state
+        SET needs_rebuild = 1
+        WHERE session_id = '${scope.sessionId}';
+        UPDATE session_transcript_display_state
+        SET needs_rebuild = 1
+        WHERE session_id = '${scope.sessionId}';
+      `);
+      const prepared = prepareSessionTranscriptProjection(database.db, scope.sessionId);
+      expect(prepared).toBeDefined();
+      const {
+        activeRows: _activeRows,
+        displayRows: _displayRows,
+        ftsRows: _ftsRows,
+        ...plan
+      } = prepared!;
+      const worker = Object.assign(new EventEmitter(), {
+        postMessage: vi.fn((message: { accepted: boolean; type: "continue" }) => {
+          if (!message.accepted) {
+            queueMicrotask(() => {
+              worker.emit("message", { type: "done" });
+              worker.emit("exit", 0);
+            });
+            return;
+          }
+          queueMicrotask(() => {
+            if (terminal === "failed") {
+              worker.emit("message", { error: "injected worker failure", type: "failed" });
+            } else if (terminal === "done") {
+              worker.emit("message", { type: "done" });
+              worker.emit("exit", 0);
+            } else if (terminal === "error") {
+              worker.emit("error", new Error("injected worker error"));
+            } else if (terminal === "exit") {
+              worker.emit("exit", 7);
+            } else {
+              runOpenClawAgentWriteTransaction((writeDatabase) => {
+                replaceSessionTranscriptSourceGenerationInTransaction(
+                  writeDatabase,
+                  scope.sessionId,
+                );
+              }, databaseOptions);
+              worker.emit("message", {
+                rows: prepared!.activeRows.slice(0, 1),
+                sessionId: scope.sessionId,
+                type: "active-chunk",
+              });
+            }
+          });
+        }),
+        terminate: vi.fn(async () => 0),
+      });
+      const createWorker = vi.fn(() => {
+        queueMicrotask(() => worker.emit("message", { plan, type: "plan-start" }));
+        return worker as unknown as Worker;
+      });
+
+      const outcome = reconcileSessionTranscriptIndexes({
+        ...databaseOptions,
+        createWorker,
+      });
+      if (terminal === "rejected-continuation") {
+        await expect(outcome).resolves.toEqual({ reconciledSessions: 0 });
+      } else {
+        await expect(outcome).rejects.toThrow();
+      }
+      expect(createWorker).toHaveBeenCalledTimes(1);
+      const abandoned = database.db
+        .prepare(
+          `SELECT
+             (SELECT updated_at FROM session_transcript_index_state WHERE session_id = ?) AS active_claim,
+             (SELECT source_generation FROM session_transcript_index_state WHERE session_id = ?) AS active_source_generation`,
+        )
+        .get(scope.sessionId, scope.sessionId) as {
+        active_claim: number;
+        active_source_generation: string | null;
+      };
+      expect(abandoned.active_claim).toBeGreaterThanOrEqual(0);
+      expect(abandoned.active_source_generation).toBeNull();
+
+      await expect(reconcileSessionTranscriptIndexes(databaseOptions)).resolves.toEqual({
+        reconciledSessions: 1,
+      });
+      expect(readSessionTranscriptMessageEventCount(scope)).toBe(1);
+    },
+    20_000,
+  );
 
   it("rolls back a synchronous rebuild when its claimed source changes", async () => {
     const scope = createScope("synchronous-claim-race");
     await appendTranscriptMessage(scope, {
+      maintainDisplayProjection: true,
       message: { role: "user", content: "synchronous source" },
     });
     const options = { agentId: scope.agentId, env: scope.env };
@@ -446,11 +581,17 @@ describe("session transcript source generation", () => {
           "SELECT active_position, event_seq, message_position FROM session_transcript_active_events WHERE session_id = ? ORDER BY active_position",
         )
         .all(scope.sessionId),
-      bindings: database.db
+      projectionSources: database.db
         .prepare(
-          "SELECT projection, projection_generation, source_generation FROM session_transcript_projection_bindings WHERE session_id = ? ORDER BY projection",
+          `SELECT
+             active.source_generation AS active_source_generation,
+             display.source_generation AS display_source_generation
+           FROM session_transcript_index_state AS active
+           JOIN session_transcript_display_state AS display
+             ON display.session_id = active.session_id
+           WHERE active.session_id = ?`,
         )
-        .all(scope.sessionId),
+        .get(scope.sessionId),
       fts: database.db
         .prepare(
           "SELECT message_id, role, text FROM session_transcript_fts WHERE session_id = ? ORDER BY message_id",
@@ -481,11 +622,17 @@ describe("session transcript source generation", () => {
           "SELECT active_position, event_seq, message_position FROM session_transcript_active_events WHERE session_id = ? ORDER BY active_position",
         )
         .all(scope.sessionId),
-      bindings: database.db
+      projectionSources: database.db
         .prepare(
-          "SELECT projection, projection_generation, source_generation FROM session_transcript_projection_bindings WHERE session_id = ? ORDER BY projection",
+          `SELECT
+             active.source_generation AS active_source_generation,
+             display.source_generation AS display_source_generation
+           FROM session_transcript_index_state AS active
+           JOIN session_transcript_display_state AS display
+             ON display.session_id = active.session_id
+           WHERE active.session_id = ?`,
         )
-        .all(scope.sessionId),
+        .get(scope.sessionId),
       fts: database.db
         .prepare(
           "SELECT message_id, role, text FROM session_transcript_fts WHERE session_id = ? ORDER BY message_id",

@@ -1,9 +1,8 @@
+import type { DatabaseSync } from "node:sqlite";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { prepareSessionTranscriptDisplayProjection } from "./session-transcript-display.js";
-import {
-  buildSessionTranscriptProjection,
-  type SessionTranscriptProjectionSourceRow,
-} from "./session-transcript-projection-rebuild.js";
+import { buildSessionTranscriptProjection } from "./session-transcript-projection-rebuild.js";
+import { readSessionTranscriptSourceGenerationTokenInTransaction } from "./session-transcript-source-generation.js";
 
 type DatabaseScope = {
   agentId: string;
@@ -12,6 +11,9 @@ type DatabaseScope = {
 type PreparedSessionTranscriptDisplayProjection = ReturnType<
   typeof prepareSessionTranscriptDisplayProjection
 >;
+type SessionTranscriptProjectionSourceRow = Parameters<
+  typeof buildSessionTranscriptProjection
+>[0]["rows"][number];
 
 export function projectionRow(
   seq: number,
@@ -28,6 +30,14 @@ export function projectionFixture(rows: SessionTranscriptProjectionSourceRow[]) 
     sourceGeneration: "test-source-generation",
     sourceTranscriptUpdatedAt: 42,
   });
+}
+
+export function readRequiredSourceGeneration(db: DatabaseSync, sessionId: string) {
+  const generation = readSessionTranscriptSourceGenerationTokenInTransaction(db, sessionId);
+  if (!generation) {
+    throw new Error("expected transcript source generation");
+  }
+  return generation;
 }
 
 export function canvasUrlWithLength(length: number): string {

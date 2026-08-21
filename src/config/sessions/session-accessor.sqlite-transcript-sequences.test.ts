@@ -19,7 +19,7 @@ describe("committed transcript message sequences", () => {
     closeOpenClawAgentDatabasesForTest();
   });
 
-  it("omits a sequence when the active projection binding is stale", async () => {
+  it("omits a sequence when the active projection source is stale", async () => {
     const scope = {
       agentId: "main",
       env: { OPENCLAW_STATE_DIR: tempDirs.make("openclaw-committed-sequence-") },
@@ -56,9 +56,9 @@ describe("committed transcript message sequences", () => {
     expect(
       database.db
         .prepare(
-          "SELECT COUNT(*) AS count FROM session_transcript_projection_bindings WHERE session_id = ?",
+          "SELECT source_generation FROM session_transcript_index_state WHERE session_id = ?",
         )
         .get(scope.sessionId),
-    ).toEqual({ count: 0 });
+    ).toEqual({ source_generation: null });
   });
 });

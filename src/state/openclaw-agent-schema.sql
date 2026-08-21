@@ -629,6 +629,7 @@ CREATE TABLE IF NOT EXISTS session_transcript_index_state (
   needs_rebuild INTEGER NOT NULL DEFAULT 0,
   active_event_count INTEGER NOT NULL DEFAULT 0,
   active_message_count INTEGER NOT NULL DEFAULT 0,
+  source_generation TEXT,
   updated_at INTEGER NOT NULL,
   FOREIGN KEY (session_id) REFERENCES session_windows(session_id) ON DELETE CASCADE
 ) STRICT;
@@ -655,6 +656,7 @@ CREATE TABLE IF NOT EXISTS session_transcript_display_state (
   indexed_seq INTEGER NOT NULL CHECK (indexed_seq >= -1),
   row_count INTEGER NOT NULL CHECK (row_count >= 0),
   needs_rebuild INTEGER NOT NULL DEFAULT 0 CHECK (needs_rebuild IN (0, 1)),
+  source_generation TEXT,
   updated_at INTEGER NOT NULL,
   FOREIGN KEY (session_id) REFERENCES session_windows(session_id) ON DELETE CASCADE
 ) STRICT;
@@ -742,21 +744,6 @@ CREATE TABLE IF NOT EXISTS session_transcript_display_carry (
   CHECK (related_event_seq IS NULL OR kind IN ('message_tool', 'canvas_pending')),
   CHECK (delivery_event_seq IS NULL OR kind = 'message_tool')
 ) STRICT;
-
-CREATE TABLE IF NOT EXISTS session_transcript_projection_bindings (
-  session_id TEXT NOT NULL,
-  projection TEXT NOT NULL CHECK (projection IN ('active', 'display')),
-  projection_generation TEXT,
-  source_generation TEXT NOT NULL,
-  FOREIGN KEY (session_id) REFERENCES session_windows(session_id) ON DELETE CASCADE,
-  CHECK (
-    (projection = 'active' AND projection_generation IS NULL) OR
-    (projection = 'display' AND projection_generation IS NOT NULL)
-  )
-) STRICT;
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_transcript_projection_bindings_owner
-  ON session_transcript_projection_bindings(session_id, projection);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS session_transcript_fts USING fts5(
   text,

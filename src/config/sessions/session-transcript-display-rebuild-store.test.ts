@@ -5,6 +5,7 @@ import {
   appendSessionTranscriptDisplayChunkInTransaction,
   claimSessionTranscriptDisplayInTransaction,
 } from "./session-transcript-display-rebuild-store.js";
+import { ensureSessionTranscriptSourceGenerationInTransaction } from "./session-transcript-source-generation.js";
 
 vi.mock("../../infra/tmp-openclaw-dir.js", () => ({
   DEFAULT_POSIX_TMP_ROOT: "/tmp/openclaw",
@@ -77,12 +78,17 @@ describe("transcript display rebuild persistence", () => {
         );
       }
       const generation = `generation-${entry.sessionId}`;
+      const sourceGeneration = ensureSessionTranscriptSourceGenerationInTransaction(
+        { db },
+        entry.sessionId,
+      );
       const claimId = Date.now();
       db.exec("BEGIN IMMEDIATE");
       expect(
         claimSessionTranscriptDisplayInTransaction(db, {
           claimId,
           generation,
+          previousGeneration: null,
           sessionId: entry.sessionId,
         }),
       ).toBe(true);
@@ -100,6 +106,8 @@ describe("transcript display rebuild persistence", () => {
             sourceEventSeq,
           })),
           sessionId: entry.sessionId,
+          sourceGeneration,
+          sourceIndexedSeq: ROW_COUNT - 1,
         }),
       ).toBe(true);
       db.exec("COMMIT");

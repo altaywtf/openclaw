@@ -3,7 +3,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
+import {
+  executeSqliteQuerySync,
+  executeSqliteQueryTakeFirstSync,
+  getNodeSqliteKysely,
+} from "../../infra/kysely-sync.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
 import {
   closeOpenClawAgentDatabasesForTest,
@@ -93,7 +97,10 @@ function agentKysely() {
     kysely: getNodeSqliteKysely<
       Pick<
         OpenClawAgentKyselyDatabase,
-        "session_transcript_fts" | "session_transcript_index_state" | "transcript_events"
+        | "session_transcript_fts"
+        | "session_transcript_index_state"
+        | "transcript_events"
+        | "transcript_rewrite_watermarks"
       >
     >(database.db),
   };
@@ -266,12 +273,29 @@ describe("searchSessionTranscripts", () => {
     expect(result.hits).toHaveLength(1);
   });
 
-  it("detects missing, dirty, and lagging transcript index watermarks", async () => {
+  it("detects missing source, dirty, and lagging transcript index watermarks", async () => {
     await appendUserMessage("session-1", "agent:main:main", "indexed message");
     const { db, kysely } = agentKysely();
     const pending = () => listSessionsNeedingTranscriptIndexReconcile(db);
 
     expect(pending()).toEqual([]);
+
+    const source = executeSqliteQueryTakeFirstSync(
+      db,
+      kysely
+        .deleteFrom("transcript_rewrite_watermarks")
+        .where("session_id", "=", "session-1")
+        .returning(["generation", "updated_at"]),
+    );
+    expect(pending()).toEqual(["session-1"]);
+    executeSqliteQuerySync(
+      db,
+      kysely.insertInto("transcript_rewrite_watermarks").values({
+        generation: source!.generation,
+        session_id: "session-1",
+        updated_at: source!.updated_at,
+      }),
+    );
 
     executeSqliteQuerySync(
       db,

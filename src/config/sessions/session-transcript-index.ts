@@ -16,7 +16,8 @@ import {
 } from "../../infra/kysely-sync.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
 import { ensureOpenClawAgentDisplayRowSchema } from "../../state/openclaw-agent-display-row-schema.js";
-import { ensureOpenClawAgentTranscriptProjectionBindingSchema } from "../../state/openclaw-agent-transcript-projection-binding-schema.js";
+import { ensureOpenClawAgentTranscriptProjectionSourceColumns } from "../../state/openclaw-agent-transcript-projection-source-schema.js";
+import { chunkItems } from "../../utils/chunk-items.js";
 import {
   appendEligibleSessionTranscriptDisplayRowInTransaction,
   hasTranscriptMessage,
@@ -36,12 +37,8 @@ import {
 } from "./session-transcript-projection-rebuild.js";
 import {
   EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ,
-  deleteSessionTranscriptProjectionBindingsInTransaction,
-  readSessionTranscriptProjectionBindingInTransaction,
   readSessionTranscriptSourceGenerationInTransaction,
   readSessionTranscriptSourceGenerationTokenInTransaction,
-  sessionTranscriptProjectionBindingMatches,
-  writeSessionTranscriptProjectionBindingInTransaction,
 } from "./session-transcript-source-generation.js";
 import {
   isCanonicalSessionTranscriptEntry,
@@ -50,8 +47,7 @@ import {
   parseSessionTranscriptTreeEntry,
 } from "./transcript-tree.js";
 
-const SQLITE_TABLE_EXISTS_SQL =
-  "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?";
+const SQLITE_TABLE_EXISTS_SQL = "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?";
 
 type TranscriptIndexDatabase = Omit<
   Pick<
@@ -59,7 +55,6 @@ type TranscriptIndexDatabase = Omit<
     | "session_windows"
     | "session_transcript_active_events"
     | "session_transcript_display_state"
-    | "session_transcript_projection_bindings"
     | "session_transcript_fts"
     | "session_transcript_index_state"
     | "transcript_rewrite_watermarks"
@@ -84,6 +79,7 @@ export type SessionTranscriptProjectionState = {
   indexedSeq: number;
   leafEventId: string | null;
   needsRebuild: boolean;
+  sourceGeneration: string | null;
 };
 
 function getIndexKysely(db: DatabaseSync) {
@@ -94,6 +90,7 @@ function readSessionTranscriptProjectionState(
   db: DatabaseSync,
   sessionId: string,
 ): SessionTranscriptProjectionState | undefined {
+  ensureOpenClawAgentTranscriptProjectionSourceColumns(db);
   const row = executeSqliteQueryTakeFirstSync(
     db,
     getIndexKysely(db)
@@ -104,6 +101,7 @@ function readSessionTranscriptProjectionState(
         "indexed_seq",
         "leaf_event_id",
         "needs_rebuild",
+        "source_generation",
       ])
       .where("session_id", "=", sessionId),
   );
@@ -116,6 +114,7 @@ function readSessionTranscriptProjectionState(
     indexedSeq: row.indexed_seq,
     leafEventId: row.leaf_event_id,
     needsRebuild: row.needs_rebuild !== 0,
+    sourceGeneration: row.source_generation,
   };
 }
 
@@ -129,10 +128,7 @@ export function sessionTranscriptIndexNeedsReconcile(db: DatabaseSync, sessionId
     !state ||
     state.needsRebuild ||
     state.indexedSeq !== source.indexedSeq ||
-    !sessionTranscriptProjectionBindingMatches(
-      readSessionTranscriptProjectionBindingInTransaction(db, sessionId, "active"),
-      source.generation,
-    )
+    state.sourceGeneration !== source.generation
   );
 }
 
@@ -143,6 +139,9 @@ function writeWatermark(
   now: number,
   sourceGeneration?: string,
 ): void {
+  if (!watermark.needsRebuild && !sourceGeneration) {
+    throw new Error(`Transcript source generation is missing for ${sessionId}`);
+  }
   executeSqliteQuerySync(
     db,
     getIndexKysely(db)
@@ -154,6 +153,7 @@ function writeWatermark(
         indexed_seq: watermark.indexedSeq,
         leaf_event_id: watermark.leafEventId,
         needs_rebuild: watermark.needsRebuild ? 1 : 0,
+        source_generation: watermark.needsRebuild ? null : sourceGeneration,
         updated_at: now,
       })
       .onConflict((conflict) =>
@@ -163,22 +163,11 @@ function writeWatermark(
           indexed_seq: watermark.indexedSeq,
           leaf_event_id: watermark.leafEventId,
           needs_rebuild: watermark.needsRebuild ? 1 : 0,
+          source_generation: watermark.needsRebuild ? null : sourceGeneration,
           updated_at: now,
         }),
       ),
   );
-  if (watermark.needsRebuild) {
-    deleteSessionTranscriptProjectionBindingsInTransaction(db, sessionId, "active");
-  } else {
-    if (!sourceGeneration) {
-      throw new Error(`Transcript source generation is missing for ${sessionId}`);
-    }
-    writeSessionTranscriptProjectionBindingInTransaction(db, sessionId, {
-      projection: "active",
-      projectionGeneration: null,
-      sourceGeneration,
-    });
-  }
 }
 
 function insertActiveEventRow(
@@ -208,7 +197,6 @@ function deleteActiveEventRows(db: DatabaseSync, sessionId: string): void {
       .deleteFrom("session_transcript_active_events")
       .where("session_id", "=", sessionId),
   );
-  deleteSessionTranscriptProjectionBindingsInTransaction(db, sessionId, "active");
 }
 
 function insertFtsRow(db: DatabaseSync, sessionId: string, entry: TranscriptIndexEntry): void {
@@ -260,15 +248,15 @@ export function indexAppendedTranscriptEventInTransaction(
     createdAt: number;
     /** True maintains, false skips for a batch owner, omission invalidates adopted state. */
     maintainDisplayProjection?: boolean;
+    sourceGeneration?: string;
   },
 ): boolean {
   const existingDisplayInvalidated =
     params.maintainDisplayProjection === undefined &&
     invalidateExistingSessionTranscriptDisplayInTransaction(db, params.sessionId);
-  const sourceGeneration = readSessionTranscriptSourceGenerationTokenInTransaction(
-    db,
-    params.sessionId,
-  );
+  const sourceGeneration =
+    params.sourceGeneration ??
+    readSessionTranscriptSourceGenerationTokenInTransaction(db, params.sessionId);
   if (!sourceGeneration) {
     throw new Error(`Transcript source generation is missing for ${params.sessionId}`);
   }
@@ -289,6 +277,7 @@ export function indexAppendedTranscriptEventInTransaction(
         indexedSeq: EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ,
         leafEventId: null,
         needsRebuild: false,
+        sourceGeneration,
       },
       sourceGeneration,
     );
@@ -309,12 +298,7 @@ export function indexAppendedTranscriptEventInTransaction(
     }
     return true;
   }
-  if (
-    !sessionTranscriptProjectionBindingMatches(
-      readSessionTranscriptProjectionBindingInTransaction(db, params.sessionId, "active"),
-      sourceGeneration,
-    )
-  ) {
+  if (watermark.sourceGeneration !== sourceGeneration) {
     markSessionTranscriptIndexDirtyInTransaction(db, params.sessionId);
     invalidateDisplayProjectionForAppend(db, params);
     return true;
@@ -414,6 +398,7 @@ function applyForwardIndex(
       indexedSeq: params.seq,
       leafEventId: advancesLeaf ? params.eventId : watermark.leafEventId,
       needsRebuild: false,
+      sourceGeneration,
     },
     params.createdAt,
     sourceGeneration,
@@ -433,6 +418,7 @@ function markSessionTranscriptIndexDirtyInTransaction(db: DatabaseSync, sessionI
       indexedSeq: watermark?.indexedSeq ?? EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ,
       leafEventId: watermark?.leafEventId ?? null,
       needsRebuild: true,
+      sourceGeneration: null,
     },
     now,
   );
@@ -523,14 +509,10 @@ export function reconcileSessionTranscriptIndexInTransaction(
       throw new Error(`Transcript projection claim changed while rebuilding ${sessionId}`);
     }
   } while (deleted.hasMore);
-  for (
-    let offset = 0;
-    offset < projection.activeRows.length;
-    offset += SYNCHRONOUS_PROJECTION_CHUNK_ROWS
-  ) {
+  for (const activeRows of chunkItems(projection.activeRows, SYNCHRONOUS_PROJECTION_CHUNK_ROWS)) {
     if (
       !appendPreparedSessionTranscriptProjectionChunkInTransaction(db, {
-        activeRows: projection.activeRows.slice(offset, offset + SYNCHRONOUS_PROJECTION_CHUNK_ROWS),
+        activeRows,
         claimId,
         sessionId,
         sourceGeneration: projection.sourceGeneration,
@@ -540,15 +522,11 @@ export function reconcileSessionTranscriptIndexInTransaction(
       throw new Error(`Transcript projection claim changed while rebuilding ${sessionId}`);
     }
   }
-  for (
-    let offset = 0;
-    offset < projection.ftsRows.length;
-    offset += SYNCHRONOUS_PROJECTION_FTS_CHUNK_ROWS
-  ) {
+  for (const ftsRows of chunkItems(projection.ftsRows, SYNCHRONOUS_PROJECTION_FTS_CHUNK_ROWS)) {
     if (
       !appendPreparedSessionTranscriptProjectionChunkInTransaction(db, {
         claimId,
-        ftsRows: projection.ftsRows.slice(offset, offset + SYNCHRONOUS_PROJECTION_FTS_CHUNK_ROWS),
+        ftsRows,
         sessionId,
         sourceGeneration: projection.sourceGeneration,
         sourceIndexedSeq: projection.sourceIndexedSeq,
@@ -569,9 +547,11 @@ export function reconcileSessionTranscriptIndexInTransaction(
  * behind the newest row. Ordered for deterministic reconcile passes.
  */
 function hasTranscriptRows(db: DatabaseSync): boolean {
-  return Boolean(
-    db.prepare("SELECT 1 FROM transcript_events LIMIT 1").get(), // sqlite-allow-raw -- Avoid creating the lazy display group for an unused agent database.
-  );
+  return Boolean(db.prepare("SELECT 1 FROM transcript_events LIMIT 1").get()); // sqlite-allow-raw -- Avoid creating the lazy display group for an unused agent database.
+}
+
+function sessionIds(rows: readonly { session_id: unknown }[]): string[] {
+  return rows.flatMap(({ session_id }) => (typeof session_id === "string" ? [session_id] : []));
 }
 
 /** Lists sessions whose active and FTS projection is not bound to the current source. */
@@ -579,7 +559,7 @@ export function listSessionsNeedingTranscriptIndexReconcile(db: DatabaseSync): s
   if (!hasTranscriptRows(db)) {
     return [];
   }
-  ensureOpenClawAgentTranscriptProjectionBindingSchema(db);
+  ensureOpenClawAgentTranscriptProjectionSourceColumns(db);
   const rows = executeSqliteQuerySync(
     db,
     getIndexKysely(db)
@@ -610,11 +590,6 @@ export function listSessionsNeedingTranscriptIndexReconcile(db: DatabaseSync): s
         "source.session_id",
         "session_windows.session_id",
       )
-      .leftJoin("session_transcript_projection_bindings as active_binding", (join) =>
-        join
-          .onRef("active_binding.session_id", "=", "session_windows.session_id")
-          .on("active_binding.projection", "=", "active"),
-      )
       .select("session_windows.session_id")
       .where((eb) =>
         eb.or([
@@ -624,29 +599,28 @@ export function listSessionsNeedingTranscriptIndexReconcile(db: DatabaseSync): s
             ">",
             eb.fn.coalesce("st.indexed_seq", eb.val(EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ)),
           ),
-          eb("active_binding.source_generation", "is", null),
-          eb("active_binding.source_generation", "!=", eb.ref("source.generation")),
+          eb("st.source_generation", "is", null),
+          eb("source.generation", "is", null),
+          eb("st.source_generation", "!=", eb.ref("source.generation")),
         ]),
       )
       .orderBy("session_windows.session_id"),
   ).rows;
-  return rows.flatMap((row) => (typeof row.session_id === "string" ? [row.session_id] : []));
+  return sessionIds(rows);
 }
 
 /** Lists sessions whose active, FTS, or display projection requires repair. */
 export function listSessionsNeedingTranscriptProjectionReconcile(db: DatabaseSync): string[] {
   const transcriptRowsPresent = hasTranscriptRows(db);
   const hasDisplayStateTable = Boolean(
-    // sqlite-allow-raw -- Avoid installing the lazy display group solely to decide whether reconcile has work.
-    db
-      .prepare(/* sqlite-allow-raw */ SQLITE_TABLE_EXISTS_SQL)
-      .get("session_transcript_display_state"),
+    // sqlite-allow-raw -- Probe the lazy schema without installing it.
+    db.prepare(SQLITE_TABLE_EXISTS_SQL).get("session_transcript_display_state"),
   );
   if (!transcriptRowsPresent && !hasDisplayStateTable) {
     return [];
   }
   ensureOpenClawAgentDisplayRowSchema(db);
-  ensureOpenClawAgentTranscriptProjectionBindingSchema(db);
+  ensureOpenClawAgentTranscriptProjectionSourceColumns(db);
   const kysely = getIndexKysely(db);
   const rows = transcriptRowsPresent
     ? executeSqliteQuerySync(
@@ -679,11 +653,6 @@ export function listSessionsNeedingTranscriptProjectionReconcile(db: DatabaseSyn
             "source.session_id",
             "session_windows.session_id",
           )
-          .leftJoin("session_transcript_projection_bindings as binding", (join) =>
-            join
-              .onRef("binding.session_id", "=", "session_windows.session_id")
-              .on("binding.projection", "=", "display"),
-          )
           .select("session_windows.session_id")
           .where((eb) =>
             eb.or([
@@ -696,9 +665,9 @@ export function listSessionsNeedingTranscriptProjectionReconcile(db: DatabaseSyn
                   eb.val(EMPTY_SESSION_TRANSCRIPT_SOURCE_INDEXED_SEQ),
                 ),
               ),
-              eb("binding.source_generation", "is", null),
-              eb("binding.source_generation", "!=", eb.ref("source.generation")),
-              eb("binding.projection_generation", "!=", eb.ref("display.generation")),
+              eb("display.source_generation", "is", null),
+              eb("source.generation", "is", null),
+              eb("display.source_generation", "!=", eb.ref("source.generation")),
             ]),
           )
           .orderBy("session_windows.session_id"),
@@ -708,40 +677,27 @@ export function listSessionsNeedingTranscriptProjectionReconcile(db: DatabaseSyn
     db,
     kysely
       .selectFrom("session_transcript_display_state as display")
-      .innerJoin(
+      .leftJoin(
         "transcript_rewrite_watermarks as source",
         "source.session_id",
         "display.session_id",
-      )
-      .leftJoin("session_transcript_projection_bindings as binding", (join) =>
-        join
-          .onRef("binding.session_id", "=", "display.session_id")
-          .on("binding.projection", "=", "display"),
       )
       .select("display.session_id")
       .where((eb) =>
         eb.or([
           eb("display.needs_rebuild", "!=", 0),
-          eb("binding.source_generation", "is", null),
-          eb("binding.source_generation", "!=", eb.ref("source.generation")),
-          eb("binding.projection_generation", "!=", eb.ref("display.generation")),
+          eb("display.source_generation", "is", null),
+          eb("source.generation", "is", null),
+          eb("display.source_generation", "!=", eb.ref("source.generation")),
         ]),
       ),
   ).rows;
   return [
-    ...new Set(
-      [
-        ...listSessionsNeedingTranscriptIndexReconcile(db),
-        ...rows,
-        ...displayDirtyRows,
-      ].flatMap((row) =>
-        typeof row === "string"
-          ? [row]
-          : typeof row.session_id === "string"
-            ? [row.session_id]
-            : [],
-      ),
-    ),
+    ...new Set([
+      ...listSessionsNeedingTranscriptIndexReconcile(db),
+      ...sessionIds(rows),
+      ...sessionIds(displayDirtyRows),
+    ]),
   ].toSorted();
 }
 

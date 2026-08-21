@@ -297,14 +297,14 @@ describe("SQLite transcript display rows", () => {
     expect(readRows()).toEqual(secondRows);
   });
 
-  it("resets a ready display when its source-generation binding is stale", async () => {
+  it("resets a ready display when its source generation is stale", async () => {
     await appendPlainPair();
     const ready = readState();
     database()
       .db.prepare(
-        `UPDATE session_transcript_projection_bindings
+        `UPDATE session_transcript_display_state
          SET source_generation = 'stale-source'
-         WHERE session_id = ? AND projection = 'display'`,
+         WHERE session_id = ?`,
       )
       .run(scope.sessionId);
 
@@ -646,7 +646,9 @@ describe("SQLite transcript display rows", () => {
       },
       { agentId: scope.agentId, env: scope.env },
     );
-    const plan = prepareSessionTranscriptProjection(database().db, scope.sessionId);
+    const plan = prepareSessionTranscriptProjection(database().db, scope.sessionId, {
+      includeDisplayProjection: true,
+    });
     expect(plan).toMatchObject({
       activeNeedsRebuild: false,
       displayNeedsRebuild: true,

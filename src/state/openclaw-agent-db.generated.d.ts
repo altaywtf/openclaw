@@ -376,6 +376,7 @@ export interface SessionTranscriptDisplayState {
   needs_rebuild: Generated<number>;
   row_count: number;
   session_id: string;
+  source_generation: string | null;
   updated_at: number;
 }
 
@@ -424,14 +425,8 @@ export interface SessionTranscriptIndexState {
   leaf_event_id: string | null;
   needs_rebuild: Generated<number>;
   session_id: string;
+  source_generation: string | null;
   updated_at: number;
-}
-
-export interface SessionTranscriptProjectionBindings {
-  projection: string;
-  projection_generation: string | null;
-  session_id: string;
-  source_generation: string;
 }
 
 export interface SessionWindows {
@@ -579,7 +574,6 @@ export interface DB {
   session_transcript_fts_docsize: SessionTranscriptFtsDocsize;
   session_transcript_fts_idx: SessionTranscriptFtsIdx;
   session_transcript_index_state: SessionTranscriptIndexState;
-  session_transcript_projection_bindings: SessionTranscriptProjectionBindings;
   session_windows: SessionWindows;
   standing_intents: StandingIntents;
   standing_intents_fts: StandingIntentsFts;

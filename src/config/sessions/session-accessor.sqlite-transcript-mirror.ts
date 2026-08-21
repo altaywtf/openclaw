@@ -12,7 +12,7 @@ import {
 import { getSessionKysely, type ResolvedTranscriptScope } from "./session-accessor.sqlite-scope.js";
 import { readActiveTranscriptEntryAnchorInTransaction } from "./session-accessor.sqlite-transcript-anchor.js";
 import { readMessageIdempotencyKey } from "./session-accessor.sqlite-transcript-store.js";
-import { readBoundSessionTranscriptSourceGenerationInTransaction } from "./session-transcript-source-generation.js";
+import { readCurrentSessionTranscriptActiveSourceInTransaction } from "./session-transcript-source-generation.js";
 import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
 
 // Keep supplied-key probes below SQLite's conservative variable ceiling.
@@ -30,6 +30,10 @@ function loadTranscriptEventsForMirrorFallback(
   sessionId: string,
 ): TranscriptEvent[] | undefined {
   const db = getSessionKysely(database.db);
+  const source = readCurrentSessionTranscriptActiveSourceInTransaction(database.db, sessionId);
+  if (source) {
+    return undefined;
+  }
   const latest = executeSqliteQueryTakeFirstSync(
     database.db,
     db
@@ -41,25 +45,6 @@ function loadTranscriptEventsForMirrorFallback(
   );
   if (!latest) {
     return [];
-  }
-  const state = executeSqliteQueryTakeFirstSync(
-    database.db,
-    db
-      .selectFrom("session_transcript_index_state")
-      .select(["indexed_seq", "needs_rebuild"])
-      .where("session_id", "=", sessionId),
-  );
-  const source = readBoundSessionTranscriptSourceGenerationInTransaction(database.db, sessionId, {
-    projection: "active",
-  });
-  if (
-    source &&
-    state &&
-    state.needs_rebuild === 0 &&
-    state.indexed_seq === latest.seq &&
-    source.indexedSeq === latest.seq
-  ) {
-    return undefined;
   }
   // Raw rows stay authoritative if projection maintenance has not caught up.
   return loadTranscriptEventsFromDatabase(database, sessionId);
