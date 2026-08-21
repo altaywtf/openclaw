@@ -5,14 +5,19 @@ import { HEARTBEAT_PROMPT } from "../../auto-reply/heartbeat.js";
 import {
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
+  runOpenClawAgentWriteTransaction,
 } from "../../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import {
   appendTranscriptEvent,
   appendTranscriptMessage,
   persistSessionTranscriptTurn,
+  upsertSessionEntryCore,
 } from "./session-accessor.js";
-import { prepareSessionTranscriptDisplayRows } from "./session-transcript-display.js";
+import {
+  appendEligibleSessionTranscriptDisplayRowInTransaction,
+  prepareSessionTranscriptDisplayRows,
+} from "./session-transcript-display.js";
 import {
   buildSessionTranscriptProjection,
   type SessionTranscriptProjectionSourceRow,
@@ -65,17 +70,46 @@ describe("canonical session transcript projection", () => {
       )
       .all(scope.sessionId)
       .map((entry) => {
-        const row = entry as { created_at: number; event_json: string; seq: number };
-        return { createdAt: row.created_at, event: JSON.parse(row.event_json), seq: row.seq };
+        const sourceRow = entry as { created_at: number; event_json: string; seq: number };
+        return {
+          createdAt: sourceRow.created_at,
+          event: JSON.parse(sourceRow.event_json),
+          seq: sourceRow.seq,
+        };
       });
   }
 
-  function readDisplayRows() {
+  function readDisplayRows(sessionId = scope.sessionId) {
     return openOpenClawAgentDatabase({ agentId: scope.agentId, env })
       .db.prepare(
         "SELECT display_ordinal, kind, source_event_seq FROM session_transcript_display_rows WHERE session_id = ? ORDER BY display_ordinal",
       )
-      .all(scope.sessionId);
+      .all(sessionId);
+  }
+
+  async function appendEligibleDisplayRowDirectly(event: Record<string, unknown>) {
+    const sessionId = `${scope.sessionId}-direct`;
+    const sessionKey = `${scope.sessionKey}-direct`;
+    await upsertSessionEntryCore(
+      { agentId: scope.agentId, env, sessionKey },
+      { sessionId, updatedAt: 1 },
+    );
+    runOpenClawAgentWriteTransaction(
+      (database) => {
+        database.db
+          .prepare(
+            "INSERT INTO transcript_events (session_id, seq, event_json, created_at) VALUES (?, 0, ?, 1)",
+          )
+          .run(sessionId, JSON.stringify(event));
+        appendEligibleSessionTranscriptDisplayRowInTransaction(database.db, {
+          event,
+          seq: 0,
+          sessionId,
+        });
+      },
+      { agentId: scope.agentId, env },
+    );
+    return readDisplayRows(sessionId);
   }
 
   it("projects one deterministic active branch for both rebuild owners", () => {
@@ -240,20 +274,38 @@ describe("canonical session transcript projection", () => {
       name: "canvas candidate",
     },
     {
+      event: {
+        type: "message",
+        message: { role: "toolResult", content: "tool result" },
+      },
+      expected: "opaque",
+      name: "tool record",
+    },
+    {
       event: { type: "custom", id: "custom-1", parentId: null },
       expected: "opaque",
       name: "unknown canonical entry",
     },
   ])("uses the canonical display classifier for $name rows", async ({ event, expected }) => {
+    const persistedEvent = { id: "event-1", parentId: null, ...event };
     if (event.type === "message" && event.message) {
       await appendTranscriptMessage(
         { ...scope, env },
         { eventId: "event-1", message: event.message, parentId: null },
       );
     } else {
-      await appendTranscriptEvent({ ...scope, env }, { id: "event-1", parentId: null, ...event });
+      await appendTranscriptEvent({ ...scope, env }, persistedEvent);
     }
     await waitForSessionTranscriptIndexReconcile({ agentId: scope.agentId, env });
+
+    const directExpected = prepareSessionTranscriptDisplayRows([
+      { event: persistedEvent, seq: 0 },
+    ]).map(({ displayOrdinal, kind, sourceEventSeq }) => ({
+      display_ordinal: displayOrdinal,
+      kind,
+      source_event_seq: sourceEventSeq,
+    }));
+    expect(await appendEligibleDisplayRowDirectly(persistedEvent)).toEqual(directExpected);
 
     const planned = prepareSessionTranscriptDisplayRows(readProjectionSourceRows()).map(
       ({ displayOrdinal, kind, sourceEventSeq }) => ({
