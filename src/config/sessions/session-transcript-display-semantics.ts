@@ -248,7 +248,16 @@ function flushMessageToolMirrors(
       chosen.map((entry) => entry.sourceEventSeq),
     );
   }
-  clearCarry(state, "message_tool");
+  if (selected) {
+    const flushed = new Set(selected);
+    replaceCarry(
+      state,
+      "message_tool",
+      pending.filter((entry) => !flushed.has(entry)),
+    );
+  } else {
+    clearCarry(state, "message_tool");
+  }
 }
 
 function handleMessageToolResult(
@@ -377,9 +386,13 @@ export function reduceSessionTranscriptDisplaySource(
     return;
   }
   const role = message.role;
+  if (isForwardedSessionsSend(message)) {
+    const kind = role === "assistant" && isRenderableAssistant(message) ? "assistant" : "opaque";
+    state.effects.appendRow(kind, source.seq);
+    return;
+  }
   if (
     role === "user" &&
-    !isForwardedSessionsSend(message) &&
     isHeartbeatUserMessage(message as { role: string; content?: unknown }, HEARTBEAT_PROMPT)
   ) {
     clearCarry(state, "heartbeat_boundary", "message_tool", "stream_error");
@@ -499,8 +512,8 @@ export function reduceSessionTranscriptDisplaySource(
 function createPreparedDisplayEffects(rows: DisplayReducerRow[]): DisplayReducerEffects {
   const newRows = new Set<string>();
   const revisedRows = new Set<string>();
-  const revise = (row: DisplayReducerRow) => {
-    if (newRows.has(row.rowId) || revisedRows.has(row.rowId)) {
+  const revise = (row: DisplayReducerRow, includeNew = false) => {
+    if ((!includeNew && newRows.has(row.rowId)) || revisedRows.has(row.rowId)) {
       return;
     }
     row.revision += 1;
@@ -542,7 +555,7 @@ function createPreparedDisplayEffects(rows: DisplayReducerRow[]): DisplayReducer
         }
       }
       if (changed) {
-        revise(row);
+        revise(row, true);
       }
     },
     addRelation: (row, relation, sourceEventSeqs) => {

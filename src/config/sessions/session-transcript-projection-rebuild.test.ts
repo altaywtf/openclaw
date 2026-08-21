@@ -15,6 +15,12 @@ import {
   prepareSessionTranscriptDisplayRows,
 } from "./session-transcript-display.js";
 import {
+  canvasUrlWithLength,
+  plannedDisplaySnapshot,
+  readDisplayRowIdentities,
+  readDisplaySnapshot,
+} from "./session-transcript-display.test-support.js";
+import {
   buildSessionTranscriptProjection,
   type SessionTranscriptProjectionSourceRow,
 } from "./session-transcript-projection-rebuild.js";
@@ -83,161 +89,6 @@ describe("canonical session transcript projection", () => {
       .all(sessionId);
   }
 
-  function readDisplaySnapshot(sessionId: string) {
-    const db = openOpenClawAgentDatabase({ agentId: scope.agentId, env }).db;
-    const rows = db
-      .prepare(
-        "SELECT display_ordinal, kind, revision, source_event_seq FROM session_transcript_display_rows WHERE session_id = ? ORDER BY display_ordinal",
-      )
-      .all(sessionId) as Array<{
-      display_ordinal: number;
-      kind: string;
-      revision: number;
-      source_event_seq: number;
-    }>;
-    const ordinalByRowId = new Map(
-      (
-        db
-          .prepare(
-            "SELECT row_id, display_ordinal FROM session_transcript_display_rows WHERE session_id = ?",
-          )
-          .all(sessionId) as Array<{ display_ordinal: number; row_id: string }>
-      ).map((entry) => [entry.row_id, entry.display_ordinal]),
-    );
-    const sources = (
-      db
-        .prepare(
-          "SELECT row_id, relation, position, source_event_seq FROM session_transcript_display_row_sources WHERE session_id = ? ORDER BY row_id, relation, position",
-        )
-        .all(sessionId) as Array<{
-        position: number;
-        relation: string;
-        row_id: string;
-        source_event_seq: number;
-      }>
-    )
-      .map((source) => ({
-        displayOrdinal: ordinalByRowId.get(source.row_id),
-        position: source.position,
-        relation: source.relation,
-        sourceEventSeq: source.source_event_seq,
-      }))
-      .toSorted(
-        (left, right) =>
-          (left.displayOrdinal ?? -1) - (right.displayOrdinal ?? -1) ||
-          left.relation.localeCompare(right.relation) ||
-          left.position - right.position,
-      );
-    const canvases = (
-      db
-        .prepare(
-          "SELECT row_id, position, source_event_seq, url, view_id, title, preferred_height, sandbox, board_widget_name FROM session_transcript_display_canvas WHERE session_id = ? ORDER BY row_id, position",
-        )
-        .all(sessionId) as Array<{
-        board_widget_name: string | null;
-        position: number;
-        preferred_height: number | null;
-        row_id: string;
-        sandbox: string | null;
-        source_event_seq: number;
-        title: string | null;
-        url: string;
-        view_id: string | null;
-      }>
-    )
-      .map((canvas) => ({
-        boardWidgetName: canvas.board_widget_name,
-        displayOrdinal: ordinalByRowId.get(canvas.row_id),
-        position: canvas.position,
-        preferredHeight: canvas.preferred_height,
-        sandbox: canvas.sandbox,
-        sourceEventSeq: canvas.source_event_seq,
-        title: canvas.title,
-        url: canvas.url,
-        viewId: canvas.view_id,
-      }))
-      .toSorted(
-        (left, right) =>
-          (left.displayOrdinal ?? -1) - (right.displayOrdinal ?? -1) ||
-          left.position - right.position,
-      );
-    const carry = db
-      .prepare(
-        "SELECT kind, position, source_event_seq, related_event_seq FROM session_transcript_display_carry WHERE session_id = ? ORDER BY kind, position",
-      )
-      .all(sessionId)
-      .map((entry) => {
-        const carryRow = entry as {
-          kind: string;
-          position: number;
-          related_event_seq: number | null;
-          source_event_seq: number;
-        };
-        return {
-          kind: carryRow.kind,
-          position: carryRow.position,
-          relatedEventSeq: carryRow.related_event_seq,
-          sourceEventSeq: carryRow.source_event_seq,
-        };
-      });
-    return { canvases, carry, rows, sources };
-  }
-
-  function plannedDisplaySnapshot(rows: SessionTranscriptProjectionSourceRow[]) {
-    const planned = prepareSessionTranscriptDisplayProjection(rows);
-    return {
-      canvases: planned.rows
-        .flatMap((plannedRow) =>
-          plannedRow.canvases.map((canvas) => ({
-            boardWidgetName: canvas.boardWidgetName ?? null,
-            displayOrdinal: plannedRow.displayOrdinal,
-            position: canvas.position,
-            preferredHeight: canvas.preferredHeight ?? null,
-            sandbox: canvas.sandbox ?? null,
-            sourceEventSeq: canvas.sourceEventSeq,
-            title: canvas.title ?? null,
-            url: canvas.url,
-            viewId: canvas.viewId ?? null,
-          })),
-        )
-        .toSorted(
-          (left, right) =>
-            left.displayOrdinal - right.displayOrdinal || left.position - right.position,
-        ),
-      carry: planned.carry
-        .map((entry) => ({
-          kind: entry.kind,
-          position: entry.position,
-          relatedEventSeq: entry.relatedEventSeq ?? null,
-          sourceEventSeq: entry.sourceEventSeq,
-        }))
-        .toSorted(
-          (left, right) => left.kind.localeCompare(right.kind) || left.position - right.position,
-        ),
-      rows: planned.rows.map((entry) => ({
-        display_ordinal: entry.displayOrdinal,
-        kind: entry.kind,
-        revision: entry.revision,
-        source_event_seq: entry.sourceEventSeq,
-      })),
-      sources: planned.rows
-        .flatMap((entry) =>
-          entry.semanticSources.map((source) => ({
-            displayOrdinal: entry.displayOrdinal,
-            position: source.position,
-            relation: source.relation,
-            sourceEventSeq: source.sourceEventSeq,
-          })),
-        )
-        .toSorted(
-          (left, right) =>
-            left.displayOrdinal - right.displayOrdinal ||
-            left.relation.localeCompare(right.relation) ||
-            left.position - right.position,
-        ),
-    };
-  }
-
   async function expectIncrementalDisplayParity(name: string, events: Record<string, unknown>[]) {
     const sessionId = `${scope.sessionId}-${name}`;
     const sessionKey = `${scope.sessionKey}-${name}`;
@@ -246,6 +97,7 @@ describe("canonical session transcript projection", () => {
       { sessionId, updatedAt: 1 },
     );
     const sourceRows: SessionTranscriptProjectionSourceRow[] = [];
+    let previousIdentities: Array<{ display_ordinal: number; row_id: string }> = [];
     for (const [seq, event] of events.entries()) {
       runOpenClawAgentWriteTransaction(
         (database) => {
@@ -263,10 +115,22 @@ describe("canonical session transcript projection", () => {
         { agentId: scope.agentId, env },
       );
       sourceRows.push(row(seq, event, seq + 1));
-      expect(readDisplaySnapshot(sessionId), `prefix ${seq} of ${name}`).toEqual(
-        plannedDisplaySnapshot(sourceRows),
-      );
+      const snapshot = readDisplaySnapshot({ agentId: scope.agentId, env }, sessionId);
+      expect(snapshot, `prefix ${seq} of ${name}`).toEqual(plannedDisplaySnapshot(sourceRows));
+      const identities = readDisplayRowIdentities({ agentId: scope.agentId, env }, sessionId);
+      for (const previous of previousIdentities) {
+        const current = identities.find(
+          (identity) => identity.display_ordinal === previous.display_ordinal,
+        );
+        if (current) {
+          expect(current.row_id, `row identity ${previous.display_ordinal} of ${name}`).toBe(
+            previous.row_id,
+          );
+        }
+      }
+      previousIdentities = identities;
     }
+    return readDisplaySnapshot({ agentId: scope.agentId, env }, sessionId);
   }
 
   it("projects one deterministic active branch for both rebuild owners", () => {
@@ -381,13 +245,29 @@ describe("canonical session transcript projection", () => {
         view: { boardWidgetName: "status", id, url },
       },
     });
-    await expectIncrementalDisplayParity("heartbeat", [
+    const heartbeat = await expectIncrementalDisplayParity("heartbeat", [
       message("heartbeat-user", { role: "user", content: HEARTBEAT_PROMPT }),
       message("heartbeat-ok", { role: "assistant", content: "HEARTBEAT_OK" }),
       message("heartbeat-system", { role: "system", content: "internal" }),
       message("heartbeat-visible", { role: "user", content: "visible" }),
     ]);
-    await expectIncrementalDisplayParity("stream-error", [
+    expect(heartbeat).toEqual({
+      canvases: [],
+      carry: [],
+      rows: [
+        { display_ordinal: 0, kind: "opaque", revision: 1, source_event_seq: 2 },
+        { display_ordinal: 1, kind: "user", revision: 1, source_event_seq: 3 },
+      ],
+      sources: [
+        {
+          displayOrdinal: 1,
+          position: 0,
+          relation: "turn_boundary",
+          sourceEventSeq: 0,
+        },
+      ],
+    });
+    const streamError = await expectIncrementalDisplayParity("stream-error", [
       message("stream-error", {
         role: "assistant",
         content: [{ type: "text", text: STREAM_ERROR_FALLBACK_TEXT }],
@@ -396,7 +276,13 @@ describe("canonical session transcript projection", () => {
       message("stream-hidden", { role: "assistant", content: "NO_REPLY" }),
       message("stream-repair", { role: "assistant", content: "Recovered reply" }),
     ]);
-    await expectIncrementalDisplayParity("message-tool", [
+    expect(streamError).toEqual({
+      canvases: [],
+      carry: [{ kind: "tts_candidate", position: 0, relatedEventSeq: null, sourceEventSeq: 2 }],
+      rows: [{ display_ordinal: 0, kind: "assistant", revision: 2, source_event_seq: 2 }],
+      sources: [],
+    });
+    const messageTool = await expectIncrementalDisplayParity("message-tool", [
       message("message-call", {
         role: "assistant",
         content: [
@@ -418,7 +304,24 @@ describe("canonical session transcript projection", () => {
       }),
       message("message-flush", { role: "assistant", content: "NO_REPLY" }),
     ]);
-    await expectIncrementalDisplayParity("tts", [
+    expect(messageTool).toEqual({
+      canvases: [],
+      carry: [],
+      rows: [
+        { display_ordinal: 0, kind: "opaque", revision: 1, source_event_seq: 0 },
+        { display_ordinal: 1, kind: "opaque", revision: 1, source_event_seq: 1 },
+        { display_ordinal: 2, kind: "assistant", revision: 1, source_event_seq: 2 },
+      ],
+      sources: [
+        {
+          displayOrdinal: 2,
+          position: 0,
+          relation: "message_tool_mirror",
+          sourceEventSeq: 0,
+        },
+      ],
+    });
+    const tts = await expectIncrementalDisplayParity("tts", [
       message("tts-target", { role: "assistant", content: "Spoken answer" }),
       message("tts-intervening-user", { role: "user", content: "later prompt" }),
       message("tts-supplement", {
@@ -430,7 +333,23 @@ describe("canonical session transcript projection", () => {
         openclawTtsSupplement: { spokenText: "Spoken answer" },
       }),
     ]);
-    await expectIncrementalDisplayParity("canvas", [
+    expect(tts).toEqual({
+      canvases: [],
+      carry: [{ kind: "tts_candidate", position: 0, relatedEventSeq: null, sourceEventSeq: 0 }],
+      rows: [
+        { display_ordinal: 0, kind: "assistant", revision: 2, source_event_seq: 0 },
+        { display_ordinal: 1, kind: "user", revision: 1, source_event_seq: 1 },
+      ],
+      sources: [
+        {
+          displayOrdinal: 0,
+          position: 0,
+          relation: "tts_supplement",
+          sourceEventSeq: 2,
+        },
+      ],
+    });
+    const canvas = await expectIncrementalDisplayParity("canvas", [
       message("canvas-target", { role: "assistant", content: "Initial assistant" }),
       message("canvas-tool", {
         role: "toolResult",
@@ -444,6 +363,31 @@ describe("canonical session transcript projection", () => {
       }),
       message("canvas-next-assistant", { role: "assistant", content: "Final assistant" }),
     ]);
+    expect(canvas).toMatchObject({
+      canvases: [
+        {
+          boardWidgetName: "status",
+          displayOrdinal: 2,
+          position: 0,
+          preferredHeight: 1200,
+          sandbox: "scripts",
+          sourceEventSeq: 1,
+          title: "Canvas title",
+          url: "/__openclaw__/canvas/documents/cv_status/assets/status%20page.html",
+          viewId: "cv_status",
+        },
+      ],
+      carry: [
+        { kind: "tts_candidate", position: 0, relatedEventSeq: null, sourceEventSeq: 0 },
+        { kind: "tts_candidate", position: 1, relatedEventSeq: null, sourceEventSeq: 2 },
+      ],
+      rows: [
+        { display_ordinal: 0, kind: "assistant", revision: 3, source_event_seq: 0 },
+        { display_ordinal: 1, kind: "opaque", revision: 1, source_event_seq: 1 },
+        { display_ordinal: 2, kind: "assistant", revision: 2, source_event_seq: 2 },
+      ],
+      sources: [],
+    });
 
     const privacyDatabase = openOpenClawAgentDatabase({ agentId: scope.agentId, env }).db;
     const serialized = [
@@ -459,6 +403,160 @@ describe("canonical session transcript projection", () => {
     expect(serialized).not.toContain("RAW_TOOL_CALL_SENTINEL");
     expect(serialized).not.toContain("RAW_TOOL_RESULT_SENTINEL");
     expect(serialized).not.toContain("RAW_CANVAS_RESULT_SENTINEL");
+  });
+
+  it("preserves unmatched message sends across a selective delivery-mirror flush", async () => {
+    const message = (id: string, value: Record<string, unknown>) => ({
+      id,
+      message: value,
+      type: "message",
+    });
+    const call = (id: string, text: string) =>
+      message(`call-${id}`, {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id,
+            name: "message",
+            arguments: { action: "send", message: text },
+          },
+        ],
+      });
+    const result = (id: string) =>
+      message(`result-${id}`, {
+        role: "toolResult",
+        toolCallId: id,
+        toolName: "message",
+        result: { ok: true },
+      });
+    const snapshot = await expectIncrementalDisplayParity("selective-message-mirror", [
+      call("call-a", "Reply A"),
+      result("call-a"),
+      call("call-b", "Reply B"),
+      result("call-b"),
+      message("delivery-a", {
+        role: "assistant",
+        content: "Reply A",
+        openclawDeliveryMirror: { kind: "channel-final" },
+      }),
+      message("flush-b", { role: "assistant", content: "NO_REPLY" }),
+    ]);
+    expect(snapshot.sources).toEqual([
+      {
+        displayOrdinal: 4,
+        position: 0,
+        relation: "message_tool_mirror",
+        sourceEventSeq: 0,
+      },
+      {
+        displayOrdinal: 5,
+        position: 0,
+        relation: "message_tool_mirror",
+        sourceEventSeq: 2,
+      },
+    ]);
+    expect(snapshot.carry).toEqual([]);
+  });
+
+  it("keeps forwarded sends and settled negative transitions out of semantic carry", async () => {
+    const message = (id: string, value: Record<string, unknown>) => ({
+      id,
+      message: value,
+      type: "message",
+    });
+    const forwarded = await expectIncrementalDisplayParity("forwarded-message-tool", [
+      message("forwarded-call", {
+        role: "assistant",
+        provenance: { kind: "inter_session", sourceTool: "sessions_send" },
+        content: [
+          {
+            type: "toolCall",
+            id: "forwarded-call",
+            name: "message",
+            arguments: { action: "send", message: "Forwarded send" },
+          },
+        ],
+      }),
+      message("forwarded-result", {
+        role: "toolResult",
+        toolCallId: "forwarded-call",
+        toolName: "message",
+        result: { ok: true },
+      }),
+      message("forwarded-flush", { role: "assistant", content: "NO_REPLY" }),
+    ]);
+    expect(forwarded).toMatchObject({
+      carry: [],
+      rows: [
+        { display_ordinal: 0, kind: "opaque", revision: 1, source_event_seq: 0 },
+        { display_ordinal: 1, kind: "opaque", revision: 1, source_event_seq: 1 },
+      ],
+      sources: [],
+    });
+
+    const forwardedHeartbeat = await expectIncrementalDisplayParity("forwarded-heartbeat", [
+      message("heartbeat", { role: "user", content: HEARTBEAT_PROMPT }),
+      message("forwarded", {
+        role: "assistant",
+        provenance: { kind: "inter_session", sourceTool: "sessions_send" },
+        content: [
+          {
+            type: "toolCall",
+            id: "forwarded-heartbeat-call",
+            name: "message",
+            arguments: { action: "send", message: "Forwarded send" },
+          },
+        ],
+      }),
+      message("visible", { role: "user", content: "visible turn" }),
+    ]);
+    expect(forwardedHeartbeat).toMatchObject({
+      carry: [],
+      rows: [
+        { display_ordinal: 0, kind: "opaque", revision: 1, source_event_seq: 1 },
+        { display_ordinal: 1, kind: "user", revision: 1, source_event_seq: 2 },
+      ],
+      sources: [
+        {
+          displayOrdinal: 1,
+          position: 0,
+          relation: "turn_boundary",
+          sourceEventSeq: 0,
+        },
+      ],
+    });
+
+    const settledError = await expectIncrementalDisplayParity("settled-stream-error", [
+      message("error", {
+        role: "assistant",
+        content: STREAM_ERROR_FALLBACK_TEXT,
+        stopReason: "error",
+      }),
+      message("user", { role: "user", content: "new turn" }),
+      message("assistant", { role: "assistant", content: "new reply" }),
+    ]);
+    expect(settledError.rows).toEqual([
+      { display_ordinal: 0, kind: "assistant", revision: 1, source_event_seq: 0 },
+      { display_ordinal: 1, kind: "user", revision: 1, source_event_seq: 1 },
+      { display_ordinal: 2, kind: "assistant", revision: 1, source_event_seq: 2 },
+    ]);
+
+    const mismatchedTts = await expectIncrementalDisplayParity("mismatched-tts", [
+      message("target", { role: "assistant", content: "Original" }),
+      message("supplement", {
+        role: "assistant",
+        content: [{ type: "audio", url: "/media/tts.mp3" }],
+        openclawTtsSupplement: { spokenText: "Different" },
+      }),
+    ]);
+    expect(mismatchedTts).toMatchObject({
+      rows: [
+        { display_ordinal: 0, kind: "assistant", revision: 1, source_event_seq: 0 },
+        { display_ordinal: 1, kind: "opaque", revision: 1, source_event_seq: 1 },
+      ],
+      sources: [],
+    });
   });
 
   it("applies deterministic carry caps and canvas v1 bounds", () => {
@@ -615,13 +713,18 @@ describe("canonical session transcript projection", () => {
     "/__openclaw__/canvas/documents/cv_test/../index.html",
     "/__openclaw__/canvas/documents/cv_test/%2findex.html",
     "/__openclaw__/canvas/documents/cv_test/%2Findex.html",
+    "/__openclaw__/canvas/documents/cv_test/%41.html",
     "/__openclaw__/canvas/documents/cv_test/%zz",
     "/__openclaw__/canvas/documents/cv_test/index.html?token=secret",
     "/__openclaw__/canvas/documents/cv_test/index.html#fragment",
     "/__openclaw__/canvas/documents/cv_test/",
     `/__openclaw__/canvas/documents/cv_test/${"x".repeat(129)}`,
+    `/__openclaw__/canvas/documents/${"d".repeat(129)}/index.html`,
+    `/__openclaw__/canvas/documents/cv_test/${Array.from({ length: 17 }, () => "x").join("/")}`,
+    "/__openclaw__/canvas/documents/cv_test/path\\name.html",
     "/__openclaw__/canvas/documents/cv_test/%00index.html",
     "/__openclaw__/canvas/documents/cv_test/name%3Avalue",
+    canvasUrlWithLength(2049),
   ])("rejects unsafe persisted canvas URL %s", (url) => {
     const result = prepareSessionTranscriptDisplayProjection([
       row(0, {
@@ -646,6 +749,99 @@ describe("canonical session transcript projection", () => {
       }),
     ]);
     expect(result.rows.flatMap((entry) => entry.canvases)).toEqual([]);
+  });
+
+  it("accepts exact canvas URL and persisted-field boundaries", () => {
+    const sixteenSegments = `/__openclaw__/canvas/documents/cv/${Array.from(
+      { length: 16 },
+      (_, index) => `s${index}`,
+    ).join("/")}`;
+    const acceptedUrls = [
+      canvasUrlWithLength(2048),
+      `/__openclaw__/canvas/documents/${"d".repeat(128)}/index.html`,
+      sixteenSegments,
+    ];
+    for (const [index, url] of acceptedUrls.entries()) {
+      const result = prepareSessionTranscriptDisplayProjection([
+        row(0, {
+          id: `assistant-${index}`,
+          message: { role: "assistant", content: "target" },
+          type: "message",
+        }),
+        row(1, {
+          id: `canvas-${index}`,
+          message: {
+            role: "toolResult",
+            toolName: "canvas",
+            content: [
+              {
+                type: "canvas",
+                preview: {
+                  boardWidgetName: `a${"b".repeat(63)}`,
+                  kind: "canvas",
+                  preferredHeight: 160,
+                  render: "url",
+                  sandbox: "strict",
+                  surface: "assistant_message",
+                  title: "t".repeat(257),
+                  url,
+                  viewId: "v".repeat(128),
+                },
+              },
+            ],
+          },
+          type: "message",
+        }),
+      ]);
+      expect(result.rows[0]?.canvases).toEqual([
+        {
+          boardWidgetName: `a${"b".repeat(63)}`,
+          position: 0,
+          preferredHeight: 160,
+          sandbox: "strict",
+          sourceEventSeq: 1,
+          title: "t".repeat(256),
+          url,
+          viewId: "v".repeat(128),
+        },
+      ]);
+    }
+
+    const omitted = prepareSessionTranscriptDisplayProjection([
+      row(0, {
+        id: "assistant",
+        message: { role: "assistant", content: "target" },
+        type: "message",
+      }),
+      row(1, {
+        id: "canvas",
+        message: {
+          role: "toolResult",
+          toolName: "canvas",
+          content: [
+            {
+              type: "canvas",
+              preview: {
+                boardWidgetName: "Invalid Widget",
+                kind: "canvas",
+                preferredHeight: 159,
+                render: "url",
+                sandbox: "trusted",
+                surface: "assistant_message",
+                url: "/__openclaw__/canvas/documents/cv/index.html",
+                viewId: "v".repeat(129),
+              },
+            },
+          ],
+        },
+        type: "message",
+      }),
+    ]).rows[0]?.canvases[0];
+    expect(omitted).toEqual({
+      position: 0,
+      sourceEventSeq: 1,
+      url: "/__openclaw__/canvas/documents/cv/index.html",
+    });
   });
 
   it("caps and deduplicates canvas facts while omitting unsupported fields", () => {

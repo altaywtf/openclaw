@@ -722,7 +722,7 @@ CREATE TABLE IF NOT EXISTS session_transcript_display_carry (
   kind TEXT NOT NULL CHECK (kind IN ('heartbeat_boundary', 'stream_error', 'message_tool', 'tts_candidate', 'canvas_pending')),
   position INTEGER NOT NULL,
   source_event_seq INTEGER NOT NULL CHECK (source_event_seq >= 0),
-  related_event_seq INTEGER,
+  related_event_seq INTEGER CHECK (related_event_seq IS NULL OR related_event_seq >= 0),
   carry_version INTEGER NOT NULL CHECK (carry_version = 1),
   PRIMARY KEY (session_id, kind, position),
   FOREIGN KEY (session_id) REFERENCES session_transcript_display_state(session_id) ON DELETE CASCADE,

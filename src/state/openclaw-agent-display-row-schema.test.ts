@@ -244,6 +244,33 @@ describe("agent display-row schema", () => {
     }
   });
 
+  it("rejects negative semantic and carry source references", () => {
+    const database = createDisplayDatabase();
+    try {
+      insertDisplayStateAndRow(database);
+      expect(() =>
+        database
+          .prepare(
+            `INSERT INTO session_transcript_display_row_sources
+               (session_id, row_id, relation, position, source_event_seq, semantics_version)
+             VALUES ('session-1', 'row-1', 'tts_supplement', 0, -1, 1)`,
+          )
+          .run(),
+      ).toThrow(/source_event_seq/u);
+      expect(() =>
+        database
+          .prepare(
+            `INSERT INTO session_transcript_display_carry
+               (session_id, kind, position, source_event_seq, related_event_seq, carry_version)
+             VALUES ('session-1', 'message_tool', 0, 0, -1, 1)`,
+          )
+          .run(),
+      ).toThrow(/related_event_seq/u);
+    } finally {
+      database.close();
+    }
+  });
+
   it.each([
     {
       deleteSql: "DELETE FROM transcript_events WHERE session_id = 'session-1' AND seq = 0",

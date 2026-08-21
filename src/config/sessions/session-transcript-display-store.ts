@@ -244,8 +244,8 @@ function createDatabaseDisplayEffects(
     );
     return row ? displayRowFromDatabase(row) : undefined;
   };
-  const revise = (row: DisplayReducerRow) => {
-    if (newRows.has(row.rowId) || revisedRows.has(row.rowId)) {
+  const revise = (row: DisplayReducerRow, includeNew = false) => {
+    if ((!includeNew && newRows.has(row.rowId)) || revisedRows.has(row.rowId)) {
       return;
     }
     executeSqliteQuerySync(
@@ -331,7 +331,7 @@ function createDatabaseDisplayEffects(
         ),
       );
     }
-    revise(row);
+    revise(row, true);
   };
   const removeCanvases = (sourceEventSeq: number) => {
     const owners = executeSqliteQuerySync(
