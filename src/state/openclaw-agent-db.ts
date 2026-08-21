@@ -43,6 +43,7 @@ import {
 import {
   assertCanonicalAgentMediaPersistenceVersion,
   assertExistingAgentSchemaOwner,
+  assertOpenClawAgentCurrentRuntimeSchema,
   assertSupportedAgentSchemaVersion,
   readExistingAgentSchemaMeta,
 } from "./openclaw-agent-db-schema-helpers.js";
@@ -343,7 +344,11 @@ export function openOpenClawAgentDatabase(
           synchronous: "NORMAL",
         });
         openedWalMaintenance = maintenance;
-        if (!isValidatedReopen) {
+        if (isValidatedReopen) {
+          // The process cache skips write-capable convergence, not shape validation:
+          // same-version lazy groups can drift while a physical handle is closed.
+          assertOpenClawAgentCurrentRuntimeSchema(db, { agentId, pathname });
+        } else {
           ensureOpenClawAgentSchema(db, agentId, pathname);
         }
         return maintenance;

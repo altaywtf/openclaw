@@ -57,7 +57,10 @@ import {
   STANDING_INTENTS_FTS_TABLE,
   STANDING_INTENTS_TABLE,
 } from "./openclaw-agent-standing-intents-schema.js";
-import { SESSION_TRANSCRIPT_PROJECTION_BINDINGS_TABLE } from "./openclaw-agent-transcript-projection-binding-schema.js";
+import {
+  SESSION_TRANSCRIPT_PROJECTION_BINDINGS_TABLE,
+  validateOpenClawAgentTranscriptProjectionBindingSchema,
+} from "./openclaw-agent-transcript-projection-binding-schema.js";
 
 type ExistingAgentSchemaMeta = {
   agentId: string | null;
@@ -143,6 +146,7 @@ export function assertOpenClawAgentCurrentRuntimeSchema(
   }
   assertOpenClawAgentSchemaContains(database, options.pathname, OPENCLAW_AGENT_SCHEMA_SQL);
   validateOpenClawAgentDisplayRowSchema(database);
+  validateOpenClawAgentTranscriptProjectionBindingSchema(database);
 }
 
 function hasAnyCanonicalTable(database: DatabaseSync, schemaSql: string): boolean {

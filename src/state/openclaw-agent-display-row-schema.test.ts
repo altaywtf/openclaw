@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { assertSqliteSchemaContains } from "../infra/sqlite-schema-contract.js";
 import {
+  closeOpenClawAgentDatabaseByPath,
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
 } from "./openclaw-agent-db.js";
@@ -529,20 +530,33 @@ describe("agent transcript projection binding schema", () => {
     }
   });
 
-  it("revalidates a damaged present group after physical reopen", () => {
+  it.each([
+    {
+      damage: `DROP INDEX ${SESSION_TRANSCRIPT_PROJECTION_BINDINGS_OWNER_INDEX};`,
+      name: "missing owner index",
+    },
+    {
+      damage: `
+        DROP TABLE ${SESSION_TRANSCRIPT_PROJECTION_BINDINGS_TABLE};
+        CREATE INDEX ${SESSION_TRANSCRIPT_PROJECTION_BINDINGS_OWNER_INDEX}
+          ON transcript_rewrite_watermarks(session_id);
+      `,
+      name: "owner index attached to another table",
+    },
+  ])("revalidates a $name after physical reopen", ({ damage }) => {
     const stateDir = tempDirs.make("openclaw-projection-binding-reopen-");
     const options = { agentId: "main", env: { OPENCLAW_STATE_DIR: stateDir } };
     const initial = openOpenClawAgentDatabase(options);
     const databasePath = initial.path;
     ensureOpenClawAgentTranscriptProjectionBindingSchema(initial.db);
-    closeOpenClawAgentDatabasesForTest();
+    expect(closeOpenClawAgentDatabaseByPath(databasePath)).toBe(true);
 
     const damaged = new DatabaseSync(databasePath);
-    damaged.exec(`DROP INDEX ${SESSION_TRANSCRIPT_PROJECTION_BINDINGS_OWNER_INDEX};`);
+    damaged.exec(damage);
     damaged.close();
 
     expect(() => openOpenClawAgentDatabase(options)).toThrow(
-      /idx_agent_transcript_projection_bindings_owner|schema/u,
+      /partially present|idx_agent_transcript_projection_bindings_owner|schema/u,
     );
   });
 
