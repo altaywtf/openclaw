@@ -1,43 +1,49 @@
 import { randomUUID } from "node:crypto";
 import { asOptionalRecord as readRecord } from "@openclaw/normalization-core/record-coerce";
+import { isHeartbeatOkResponse, isHeartbeatUserMessage } from "../auto-reply/heartbeat-filter.js";
+import { HEARTBEAT_PROMPT } from "../auto-reply/heartbeat.js";
 import {
-  isHeartbeatOkResponse,
-  isHeartbeatUserMessage,
-} from "../../auto-reply/heartbeat-filter.js";
-import { HEARTBEAT_PROMPT } from "../../auto-reply/heartbeat.js";
-import { isOpenClawDeliveryMirrorAssistantMessage } from "../../shared/transcript-only-openclaw-assistant.js";
+  isCanonicalSessionTranscriptEntry,
+  parseSessionTranscriptTreeEntry,
+} from "../config/sessions/transcript-tree.js";
+import { selectVisibleTranscriptEventEntries } from "../config/sessions/transcript-visible-events.js";
+import { isOpenClawDeliveryMirrorAssistantMessage } from "../shared/transcript-only-openclaw-assistant.js";
+import { isSessionsSendInterSessionUserMessage } from "./input-provenance.js";
 import {
   isDisplayHiddenMessage,
+  isAssistantErrorMessage,
   isForwardedSessionsSend,
   isHiddenUserMessage,
   isPureStreamError,
   isRenderableAssistant,
-  isSessionsSendInterSessionUserMessage,
   isSuppressedControlReply,
   isTtsSupplement,
   normalizeHistoryType,
   readCanvasPreviews,
-  readMessageText,
   readMessageToolCalls,
   readMessageToolResult,
   readTtsMarker,
   ttsMarkerMatches,
-  type PreparedSessionTranscriptDisplayCanvas,
-} from "./session-transcript-display-classification.js";
+} from "./transcript-display-classification.js";
 import {
   flushSessionTranscriptMessageToolMirrors,
   handleSessionTranscriptDeliveryMirror,
   handleSessionTranscriptMessageToolResult,
-} from "./session-transcript-display-message-tool.js";
-import {
-  isCanonicalSessionTranscriptEntry,
-  parseSessionTranscriptTreeEntry,
-} from "./transcript-tree.js";
-import { selectVisibleTranscriptEventEntries } from "./transcript-visible-events.js";
+} from "./transcript-display-message-tool.js";
+import type {
+  DisplayReducerEffects,
+  DisplayReducerRow,
+  DisplayReducerState,
+  PreparedSessionTranscriptDisplayCanvas,
+  PreparedSessionTranscriptDisplayCarry,
+  PreparedSessionTranscriptDisplayRow,
+  SessionTranscriptDisplayCarryKind,
+  SessionTranscriptDisplayRowKind,
+} from "./transcript-display-reducer-contract.js";
 
 export const SESSION_TRANSCRIPT_DISPLAY_ROW_VERSION = 1;
 export const SESSION_TRANSCRIPT_DISPLAY_SEMANTICS_VERSION = 1;
-export const DISPLAY_CARRY_LIMITS = {
+const DISPLAY_CARRY_LIMITS = {
   canvas_pending: 16,
   heartbeat_boundary: 1,
   message_tool: 16,
@@ -45,50 +51,7 @@ export const DISPLAY_CARRY_LIMITS = {
   tts_candidate: 64,
 } as const;
 
-export type SessionTranscriptDisplayRowKind =
-  | "assistant"
-  | "compaction"
-  | "opaque"
-  | "reset"
-  | "user";
-export type SessionTranscriptDisplayRelation =
-  | "message_tool_mirror"
-  | "message_tool_result"
-  | "tts_supplement"
-  | "turn_boundary";
-export type SessionTranscriptDisplayCarryKind = keyof typeof DISPLAY_CARRY_LIMITS;
-export type PreparedSessionTranscriptDisplaySource = {
-  position: number;
-  relation: SessionTranscriptDisplayRelation;
-  sourceEventSeq: number;
-  sourceOccurrence: number;
-};
-export { type PreparedSessionTranscriptDisplayCanvas } from "./session-transcript-display-classification.js";
-export type PreparedSessionTranscriptDisplayCarry = {
-  deliveryEventSeq?: number;
-  kind: SessionTranscriptDisplayCarryKind;
-  position: number;
-  relatedEventSeq?: number;
-  sourceEventSeq: number;
-  sourceOccurrence: number;
-};
-export type SessionTranscriptDisplaySourceReference = {
-  sourceEventSeq: number;
-  sourceOccurrence: number;
-};
-type PlannedSessionTranscriptDisplayRow = {
-  canvases: PreparedSessionTranscriptDisplayCanvas[];
-  kind: SessionTranscriptDisplayRowKind;
-  semanticSources: PreparedSessionTranscriptDisplaySource[];
-  sourceEventSeq: number;
-};
-export type PreparedSessionTranscriptDisplayRow = PlannedSessionTranscriptDisplayRow & {
-  displayOrdinal: number;
-  revision: number;
-  rowId: string;
-  rowVersion: number;
-};
-export type PreparedSessionTranscriptDisplayProjection = {
+type PreparedSessionTranscriptDisplayProjection = {
   carry: PreparedSessionTranscriptDisplayCarry[];
   rows: PreparedSessionTranscriptDisplayRow[];
 };
@@ -151,39 +114,6 @@ export function isSessionTranscriptDisplayBoundary(event: unknown): boolean {
   const type = record.type;
   return type === "compaction" || type === "reset";
 }
-
-export type DisplayReducerRow = PlannedSessionTranscriptDisplayRow & {
-  displayOrdinal: number;
-  revision: number;
-  rowId: string;
-};
-
-export type DisplayReducerEffects = {
-  addCanvases: (
-    row: DisplayReducerRow,
-    sourceEventSeq: number,
-    canvases: Array<Omit<PreparedSessionTranscriptDisplayCanvas, "position">>,
-  ) => void;
-  addRelation: (
-    row: DisplayReducerRow,
-    relation: SessionTranscriptDisplayRelation,
-    sources: readonly SessionTranscriptDisplaySourceReference[],
-  ) => void;
-  appendRow: (kind: SessionTranscriptDisplayRowKind, sourceEventSeq: number) => DisplayReducerRow;
-  beginSource: () => void;
-  findRow: (sourceEventSeq: number) => DisplayReducerRow | undefined;
-  removeCanvases: (sourceEventSeq: number) => void;
-  replaceStreamRows: (
-    pendingSourceEventSeqs: readonly number[],
-    sourceEventSeq: number,
-  ) => DisplayReducerRow;
-};
-
-export type DisplayReducerState = {
-  carry: PreparedSessionTranscriptDisplayCarry[];
-  effects: DisplayReducerEffects;
-  readEvent: (sourceEventSeq: number) => unknown;
-};
 
 function carryEntries(
   state: DisplayReducerState,
@@ -331,14 +261,26 @@ export function reduceSessionTranscriptDisplaySource(
     state.effects.appendRow("opaque", source.seq);
     return;
   }
-  if (isForwardedSessionsSend(message) || isSessionsSendInterSessionUserMessage(message)) {
-    const kind =
-      role === "user" && readMessageText(message)?.trim()
+  const forwardedAssistant = isForwardedSessionsSend(message);
+  const forwardedUser = isSessionsSendInterSessionUserMessage(message);
+  if (forwardedAssistant || forwardedUser) {
+    const kind = forwardedUser
+      ? "assistant"
+      : role === "assistant" && isRenderableAssistant(message)
         ? "assistant"
-        : role === "assistant" && isRenderableAssistant(message)
-          ? "assistant"
-          : "opaque";
-    state.effects.appendRow(kind, source.seq);
+        : "opaque";
+    const pendingErrors = carryEntries(state, "stream_error");
+    if (forwardedAssistant && kind === "assistant" && pendingErrors.length > 0) {
+      state.effects.replaceStreamRows(
+        pendingErrors.map((entry) => entry.sourceEventSeq),
+        source.seq,
+      );
+    } else {
+      state.effects.appendRow(kind, source.seq);
+    }
+    if (forwardedUser || kind === "assistant") {
+      clearCarry(state, "stream_error");
+    }
     return;
   }
   if (
@@ -350,9 +292,6 @@ export function reduceSessionTranscriptDisplaySource(
     if (dropped) {
       state.effects.appendRow("opaque", dropped.sourceEventSeq);
     }
-    return;
-  }
-  if (role === "assistant" && isHeartbeatOkResponse({ content: message.content, role })) {
     return;
   }
   if (isHiddenUserMessage(message)) {
@@ -369,6 +308,22 @@ export function reduceSessionTranscriptDisplaySource(
     const row = state.effects.appendRow("assistant", source.seq);
     attachPendingHeartbeat(state, row, role);
     pushCarry(state, "stream_error", { sourceEventSeq: source.seq });
+    return;
+  }
+  if (isAssistantErrorMessage(message)) {
+    const pendingErrors = carryEntries(state, "stream_error");
+    const row =
+      pendingErrors.length > 0
+        ? state.effects.replaceStreamRows(
+            pendingErrors.map((entry) => entry.sourceEventSeq),
+            source.seq,
+          )
+        : state.effects.appendRow("assistant", source.seq);
+    attachPendingHeartbeat(state, row, role);
+    clearCarry(state, "stream_error");
+    return;
+  }
+  if (role === "assistant" && isHeartbeatOkResponse({ content: message.content, role })) {
     return;
   }
   const calls = readMessageToolCalls(message);
@@ -638,10 +593,4 @@ export function prepareSessionTranscriptDisplayProjection(
       Object.assign(row, { rowVersion: SESSION_TRANSCRIPT_DISPLAY_ROW_VERSION }),
     ),
   };
-}
-
-export function prepareSessionTranscriptDisplayRows(
-  rows: readonly { event: unknown; seq: number }[],
-): PreparedSessionTranscriptDisplayRow[] {
-  return prepareSessionTranscriptDisplayProjection(rows).rows;
 }

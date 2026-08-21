@@ -1,15 +1,16 @@
 import { createHash } from "node:crypto";
 import { asOptionalRecord as readRecord } from "@openclaw/normalization-core/record-coerce";
+import { normalizeLowercaseStringOrEmpty as normalizeErrorSignal } from "@openclaw/normalization-core/string-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
-import { OPENCLAW_RUNTIME_CONTEXT_CUSTOM_TYPE } from "../../agents/internal-runtime-context.js";
-import { STREAM_ERROR_FALLBACK_TEXT } from "../../agents/stream-message-shared.js";
-import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../../auto-reply/tokens.js";
-import { extractCanvasFromDetails, extractCanvasFromText } from "../../chat/canvas-render.js";
-import {
-  INTER_SESSION_PROMPT_PREFIX_BASE,
-  normalizeInputProvenance,
-} from "../../sessions/input-provenance.js";
-import { hasPersistedMedia } from "../../sessions/user-turn-media.js";
+import { isContextOverflowError } from "../agents/failover/classify.js";
+import { OPENCLAW_RUNTIME_CONTEXT_CUSTOM_TYPE } from "../agents/internal-runtime-context.js";
+import { STREAM_ERROR_FALLBACK_TEXT } from "../agents/stream-message-shared.js";
+import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
+import { extractCanvasFromDetails, extractCanvasFromText } from "../chat/canvas-render.js";
+import { INTER_SESSION_PROMPT_PREFIX_BASE, normalizeInputProvenance } from "./input-provenance.js";
+import { hasPersistedMedia } from "./user-turn-media.js";
+
+export { readMessageToolResult } from "./message-tool-result.js";
 
 export type PreparedSessionTranscriptDisplayCanvas = {
   boardWidgetName?: string;
@@ -21,6 +22,29 @@ export type PreparedSessionTranscriptDisplayCanvas = {
   url: string;
   viewId?: string;
 };
+
+const ASSISTANT_ERROR_FALLBACK_TEXT = "The agent run failed before producing a reply.";
+const ASSISTANT_CONTEXT_OVERFLOW_FALLBACK_TEXT =
+  "Context overflow: this conversation is too large for the model. Try /compact, use /new to start a fresh session, or retry the command with a tighter output limit.";
+
+function isContextOverflowErrorSignal(value: unknown): boolean {
+  return (
+    typeof value === "string" &&
+    (normalizeErrorSignal(value) === "context_overflow" || isContextOverflowError(value))
+  );
+}
+
+export function isAssistantErrorMessage(message: Record<string, unknown>): boolean {
+  return message.role === "assistant" && message.stopReason === "error";
+}
+
+export function getAssistantErrorFallbackText(message: Record<string, unknown>): string {
+  return [message.errorCode, message.errorType, message.errorMessage].some(
+    isContextOverflowErrorSignal,
+  )
+    ? ASSISTANT_CONTEXT_OVERFLOW_FALLBACK_TEXT
+    : ASSISTANT_ERROR_FALLBACK_TEXT;
+}
 
 export function readMessageText(message: Record<string, unknown>): string | undefined {
   if (typeof message.content === "string") {
@@ -211,67 +235,10 @@ export function readMessageToolCalls(message: Record<string, unknown>): MessageT
   });
 }
 
-export function readMessageToolResult(message: Record<string, unknown>): {
-  callId?: string;
-  sourceRouteConfirmed: boolean;
-  successful: boolean;
-} | null {
-  const role = normalizeHistoryType(message.role);
-  const toolName = readToolName(message)?.toLowerCase();
-  if (role !== "toolresult" && role !== "tool" && role !== "function" && toolName !== "message") {
-    return null;
-  }
-  if (toolName && toolName !== "message") {
-    return null;
-  }
-  const resultValues = [
-    message.details,
-    message.result,
-    message.output,
-    message.content,
-    message.text,
-  ];
-  const serialized = resultValues.map((value) => {
-    try {
-      return typeof value === "string" ? value : JSON.stringify(value);
-    } catch {
-      return "";
-    }
-  });
-  const failed =
-    message.isError === true ||
-    (message.error != null && message.error !== false) ||
-    serialized.some((value) => /"ok"\s*:\s*false/u.test(value ?? "")) ||
-    serialized.some((value) => /"dry_?run"\s*:\s*true/iu.test(value ?? "")) ||
-    serialized.some((value) =>
-      /"(?:deliveryStatus|delivery_status|status)"\s*:\s*"dry_run"/iu.test(value ?? ""),
-    ) ||
-    serialized.some((value) =>
-      /"(?:delivered|deliveryStatus|delivery_status|status|messageId)"\s*:\s*(?:false|"skipped"|"suppressed")/iu.test(
-        value ?? "",
-      ),
-    );
-  const callId = readToolCallId(message);
-  return {
-    ...(callId ? { callId } : {}),
-    sourceRouteConfirmed: readRecord(message.details)?.sourceReplyRoute === "current-source",
-    successful: !failed,
-  };
-}
-
 export function isForwardedSessionsSend(message: Record<string, unknown>): boolean {
   const provenance = normalizeInputProvenance(message.provenance);
   return (
     message.role === "assistant" &&
-    provenance?.kind === "inter_session" &&
-    provenance.sourceTool === "sessions_send"
-  );
-}
-
-export function isSessionsSendInterSessionUserMessage(message: Record<string, unknown>): boolean {
-  const provenance = normalizeInputProvenance(message.provenance);
-  return (
-    message.role === "user" &&
     provenance?.kind === "inter_session" &&
     provenance.sourceTool === "sessions_send"
   );

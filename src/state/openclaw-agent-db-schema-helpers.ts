@@ -66,6 +66,7 @@ type ExistingAgentSchemaMeta = {
 
 const AGENT_SCHEMA_COMPATIBILITY = {
   allowCompatibleAdditiveColumns: true,
+  compatibleAdditiveColumnTables: [SESSION_TRANSCRIPT_DISPLAY_STATE_TABLE],
   allowedMissingTables: [
     MEMORY_INDEX_CHUNK_PROVENANCE_TABLE,
     MEMORY_INDEX_CHUNK_RECALL_METADATA_TABLE,

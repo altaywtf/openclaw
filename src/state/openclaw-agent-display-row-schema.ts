@@ -18,6 +18,7 @@ const SQLITE_TABLE_EXISTS_SQL = "SELECT 1 FROM sqlite_schema WHERE type = 'table
 const ENSURED_DATABASES = new WeakSet<DatabaseSync>();
 const ABSENT_DATABASES = new WeakSet<DatabaseSync>();
 const FOUNDATION_ONLY_DATABASES = new WeakSet<DatabaseSync>();
+const DISPLAY_SCHEMA_COMPATIBILITY = { allowCompatibleAdditiveColumns: true } as const;
 
 function splitDisplayRowSchema(sql: string): {
   displayFoundation: string;
@@ -73,6 +74,7 @@ export function validateOpenClawAgentDisplayRowSchema(db: DatabaseSync): boolean
     db,
     "OpenClaw agent display-row foundation schema",
     AGENT_DISPLAY_ROW_FOUNDATION_SCHEMA_SQL,
+    DISPLAY_SCHEMA_COMPATIBILITY,
   );
   const semanticTables = [
     SESSION_TRANSCRIPT_DISPLAY_ROW_SOURCES_TABLE,
@@ -89,7 +91,12 @@ export function validateOpenClawAgentDisplayRowSchema(db: DatabaseSync): boolean
   if (presentSemanticTables.length !== semanticTables.length) {
     throw new Error("OpenClaw agent display-row semantics schema is partially present.");
   }
-  assertSqliteSchemaContains(db, "OpenClaw agent display-row schema", AGENT_DISPLAY_ROW_SCHEMA_SQL);
+  assertSqliteSchemaContains(
+    db,
+    "OpenClaw agent display-row schema",
+    AGENT_DISPLAY_ROW_SCHEMA_SQL,
+    DISPLAY_SCHEMA_COMPATIBILITY,
+  );
   ENSURED_DATABASES.add(db);
   return true;
 }
@@ -123,6 +130,13 @@ export function ensureOpenClawAgentDisplayRowSchema(db: DatabaseSync): void {
       db.exec(AGENT_DISPLAY_ROW_SCHEMA_SQL); // sqlite-allow-raw -- Canonical additive DDL only.
     } else if (!complete) {
       db.exec(AGENT_DISPLAY_ROW_SEMANTICS_SCHEMA_SQL); // sqlite-allow-raw -- Canonical additive DDL only.
+      // Foundation rows were reduced under older semantics. Rotate and dirty
+      // them so readers cannot publish a mixed-generation projection.
+      // sqlite-allow-raw -- One-time lazy semantic migration.
+      db.prepare(
+        `UPDATE ${SESSION_TRANSCRIPT_DISPLAY_STATE_TABLE}
+         SET generation = lower(hex(randomblob(16))), needs_rebuild = 1, updated_at = ?`,
+      ).run(Date.now());
     }
     ABSENT_DATABASES.delete(db);
     FOUNDATION_ONLY_DATABASES.delete(db);

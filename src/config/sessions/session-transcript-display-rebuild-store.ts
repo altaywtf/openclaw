@@ -6,6 +6,15 @@ import {
   getNodeSqliteKysely,
 } from "../../infra/kysely-sync.js";
 import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
+import type {
+  PreparedSessionTranscriptDisplayCarry,
+  PreparedSessionTranscriptDisplayRow,
+  SessionTranscriptDisplayRowKind,
+} from "../../sessions/transcript-display-reducer-contract.js";
+import {
+  SESSION_TRANSCRIPT_DISPLAY_SEMANTICS_VERSION,
+  parseDisplayRowKind,
+} from "../../sessions/transcript-display-reducer.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
 import {
   ensureOpenClawAgentDisplayRowSchema,
@@ -16,13 +25,6 @@ import {
   SESSION_TRANSCRIPT_DISPLAY_STATE_TABLE,
 } from "../../state/openclaw-agent-display-row-schema.js";
 import { chunkItems } from "../../utils/chunk-items.js";
-import {
-  SESSION_TRANSCRIPT_DISPLAY_SEMANTICS_VERSION,
-  parseDisplayRowKind,
-  type PreparedSessionTranscriptDisplayCarry,
-  type PreparedSessionTranscriptDisplayRow,
-  type SessionTranscriptDisplayRowKind,
-} from "./session-transcript-display-semantics.js";
 import {
   readSessionTranscriptDisplayState,
   writeDisplayReducerCarry,

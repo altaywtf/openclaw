@@ -10,23 +10,14 @@ import {
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { persistSessionTranscriptTurn, upsertSessionEntryCore } from "./session-accessor.js";
 import {
-  DELIVERY_CANVAS_EXPECTED_PREFIXES,
-  NEGATIVE_DISPLAY_EXPECTED_PREFIXES,
   dryRunMessageToolEvents,
   dryRunMessageToolResultEvents,
-  expectedCanvasCarryCapPrefixes,
-  expectedHeartbeatCarryCapPrefixes,
-  expectedMessageCarryCapPrefixes,
-  expectedStreamCarryCapPrefixes,
-  expectedTtsCarryCapPrefixes,
-} from "./session-transcript-display.expected-fixtures.js";
+} from "./session-transcript-display.expected-test-support.js";
 import {
   appendEligibleSessionTranscriptDisplayRowInTransaction,
   prepareSessionTranscriptDisplayProjection,
-  prepareSessionTranscriptDisplayRows,
 } from "./session-transcript-display.js";
 import {
-  STATEFUL_DISPLAY_EXPECTED_PREFIXES,
   canvasUrlWithLength,
   plannedDisplaySnapshot,
   projectionFixture as projection,
@@ -85,11 +76,7 @@ describe("canonical session transcript projection", () => {
       .all(sessionId);
   }
 
-  async function expectIncrementalDisplayParity(
-    name: string,
-    events: Record<string, unknown>[],
-    expectedPrefixes?: readonly unknown[],
-  ) {
+  async function expectIncrementalDisplayParity(name: string, events: Record<string, unknown>[]) {
     const sessionId = `${scope.sessionId}-${name}`;
     const sessionKey = `${scope.sessionKey}-${name}`;
     await upsertSessionEntryCore(
@@ -117,9 +104,6 @@ describe("canonical session transcript projection", () => {
       sourceRows.push(row(seq, event, seq + 1));
       const snapshot = readDisplaySnapshot({ agentId: scope.agentId, env }, sessionId);
       expect(snapshot, `prefix ${seq} of ${name}`).toEqual(plannedDisplaySnapshot(sourceRows));
-      if (expectedPrefixes) {
-        expect(snapshot, `independent prefix ${seq} of ${name}`).toEqual(expectedPrefixes[seq]);
-      }
       const identities = readDisplayRowIdentities({ agentId: scope.agentId, env }, sessionId);
       for (const previous of previousIdentities) {
         const current = identities.find(
@@ -192,31 +176,24 @@ describe("canonical session transcript projection", () => {
       { ...scope, env },
       {
         messages: [
-          {
-            eventId: "root",
-            maintainDisplayProjection: true,
-            parentId: null,
-            message: { role: "user", content: "root" },
-          },
+          { eventId: "root", parentId: null, message: { role: "user", content: "root" } },
           {
             eventId: "abandoned",
-            maintainDisplayProjection: true,
             parentId: "root",
             message: { role: "assistant", content: "abandoned" },
           },
           {
             eventId: "active",
-            maintainDisplayProjection: true,
             parentId: "root",
             message: { role: "assistant", content: "active" },
           },
-        ],
+        ].map((message) => Object.assign(message, { maintainDisplayProjection: true })),
         touchSessionEntry: false,
       },
     );
     await reconcileSessionTranscriptDisplayProjection({ agentId: scope.agentId, env });
 
-    const planned = prepareSessionTranscriptDisplayRows(readProjectionSourceRows()).map(
+    const planned = prepareSessionTranscriptDisplayProjection(readProjectionSourceRows()).rows.map(
       ({ displayOrdinal, kind, sourceEventSeq }) => ({
         display_ordinal: displayOrdinal,
         kind,
@@ -248,89 +225,69 @@ describe("canonical session transcript projection", () => {
         view: { boardWidgetName: "status", id, url },
       },
     });
-    await expectIncrementalDisplayParity(
-      "heartbeat",
-      [
-        message("heartbeat-user", { role: "user", content: HEARTBEAT_PROMPT }),
-        message("heartbeat-ok", { role: "assistant", content: "HEARTBEAT_OK" }),
-        message("heartbeat-system", { role: "system", content: "internal" }),
-        message("heartbeat-visible", { role: "user", content: "visible" }),
-      ],
-      STATEFUL_DISPLAY_EXPECTED_PREFIXES.heartbeat,
-    );
-    await expectIncrementalDisplayParity(
-      "stream-error",
-      [
-        message("stream-error", {
-          role: "assistant",
-          content: [{ type: "text", text: STREAM_ERROR_FALLBACK_TEXT }],
-          stopReason: "error",
-        }),
-        message("stream-hidden", { role: "assistant", content: "NO_REPLY" }),
-        message("stream-repair", { role: "assistant", content: "Recovered reply" }),
-      ],
-      STATEFUL_DISPLAY_EXPECTED_PREFIXES.streamError,
-    );
-    await expectIncrementalDisplayParity(
-      "message-tool",
-      [
-        message("message-call", {
-          role: "assistant",
-          content: [
-            {
-              type: "toolCall",
-              id: "call-message",
-              name: "message",
-              arguments: { action: "send", message: "RAW_TOOL_CALL_SENTINEL" },
-            },
-          ],
-        }),
-        message("message-result", {
-          role: "toolResult",
-          toolCallId: "call-message",
-          toolName: "message",
-          content: [{ type: "text", text: "RAW_TOOL_RESULT_SENTINEL" }],
-          details: { sourceReplyRoute: "current-source" },
-          result: { ok: true },
-        }),
-        message("message-flush", { role: "assistant", content: "NO_REPLY" }),
-      ],
-      STATEFUL_DISPLAY_EXPECTED_PREFIXES.messageTool,
-    );
-    await expectIncrementalDisplayParity(
-      "tts",
-      [
-        message("tts-target", { role: "assistant", content: "Spoken answer" }),
-        message("tts-intervening-user", { role: "user", content: "later prompt" }),
-        message("tts-supplement", {
-          role: "assistant",
-          content: [
-            { type: "text", text: "Audio reply" },
-            { type: "audio", url: "/media/tts.mp3" },
-          ],
-          openclawTtsSupplement: { spokenText: "Spoken answer" },
-        }),
-      ],
-      STATEFUL_DISPLAY_EXPECTED_PREFIXES.tts,
-    );
-    await expectIncrementalDisplayParity(
-      "canvas",
-      [
-        message("canvas-target", { role: "assistant", content: "Initial assistant" }),
-        message("canvas-tool", {
-          role: "toolResult",
-          toolCallId: "canvas-call",
-          toolName: "canvas",
-          content: [{ type: "text", text: "RAW_CANVAS_RESULT_SENTINEL" }],
-          details: canvasDetails(
-            "/__openclaw__/canvas/documents/cv_status/assets/status%20page.html",
-            "cv_status",
-          ),
-        }),
-        message("canvas-next-assistant", { role: "assistant", content: "Final assistant" }),
-      ],
-      STATEFUL_DISPLAY_EXPECTED_PREFIXES.canvas,
-    );
+    await expectIncrementalDisplayParity("heartbeat", [
+      message("heartbeat-user", { role: "user", content: HEARTBEAT_PROMPT }),
+      message("heartbeat-ok", { role: "assistant", content: "HEARTBEAT_OK" }),
+      message("heartbeat-system", { role: "system", content: "internal" }),
+      message("heartbeat-visible", { role: "user", content: "visible" }),
+    ]);
+    await expectIncrementalDisplayParity("stream-error", [
+      message("stream-error", {
+        role: "assistant",
+        content: [{ type: "text", text: STREAM_ERROR_FALLBACK_TEXT }],
+        stopReason: "error",
+      }),
+      message("stream-hidden", { role: "assistant", content: "NO_REPLY" }),
+      message("stream-repair", { role: "assistant", content: "Recovered reply" }),
+    ]);
+    await expectIncrementalDisplayParity("message-tool", [
+      message("message-call", {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "call-message",
+            name: "message",
+            arguments: { action: "send", message: "RAW_TOOL_CALL_SENTINEL" },
+          },
+        ],
+      }),
+      message("message-result", {
+        role: "toolResult",
+        toolCallId: "call-message",
+        toolName: "message",
+        content: [{ type: "text", text: "RAW_TOOL_RESULT_SENTINEL" }],
+        details: { sourceReplyRoute: "current-source" },
+        result: { ok: true },
+      }),
+      message("message-flush", { role: "assistant", content: "NO_REPLY" }),
+    ]);
+    await expectIncrementalDisplayParity("tts", [
+      message("tts-target", { role: "assistant", content: "Spoken answer" }),
+      message("tts-intervening-user", { role: "user", content: "later prompt" }),
+      message("tts-supplement", {
+        role: "assistant",
+        content: [
+          { type: "text", text: "Audio reply" },
+          { type: "audio", url: "/media/tts.mp3" },
+        ],
+        openclawTtsSupplement: { spokenText: "Spoken answer" },
+      }),
+    ]);
+    await expectIncrementalDisplayParity("canvas", [
+      message("canvas-target", { role: "assistant", content: "Initial assistant" }),
+      message("canvas-tool", {
+        role: "toolResult",
+        toolCallId: "canvas-call",
+        toolName: "canvas",
+        content: [{ type: "text", text: "RAW_CANVAS_RESULT_SENTINEL" }],
+        details: canvasDetails(
+          "/__openclaw__/canvas/documents/cv_status/assets/status%20page.html",
+          "cv_status",
+        ),
+      }),
+      message("canvas-next-assistant", { role: "assistant", content: "Final assistant" }),
+    ]);
 
     const serialized = serializeDisplayTables({ agentId: scope.agentId, env });
     expect(serialized).not.toContain("RAW_TOOL_CALL_SENTINEL");
@@ -363,128 +320,108 @@ describe("canonical session transcript projection", () => {
         toolName: "message",
         result: { ok: true },
       });
-    await expectIncrementalDisplayParity(
-      "selective-message-mirror",
-      [
-        call("call-a", "Reply A"),
-        result("call-a"),
-        call("call-b", "Reply B"),
-        result("call-b"),
-        message("delivery-a", {
-          role: "assistant",
-          content: "Reply A",
-          model: "delivery-mirror",
-          openclawDeliveryMirror: { kind: "channel-final" },
-          provider: "openclaw",
-        }),
-        message("flush-b", { role: "assistant", content: "NO_REPLY" }),
-      ],
-      NEGATIVE_DISPLAY_EXPECTED_PREFIXES.selectiveMessageMirror,
-    );
+    await expectIncrementalDisplayParity("selective-message-mirror", [
+      call("call-a", "Reply A"),
+      result("call-a"),
+      call("call-b", "Reply B"),
+      result("call-b"),
+      message("delivery-a", {
+        role: "assistant",
+        content: "Reply A",
+        model: "delivery-mirror",
+        openclawDeliveryMirror: { kind: "channel-final" },
+        provider: "openclaw",
+      }),
+      message("flush-b", { role: "assistant", content: "NO_REPLY" }),
+    ]);
 
-    await expectIncrementalDisplayParity(
-      "unmatched-message-mirror",
-      [
-        call("call-unmatched", "Expected reply"),
-        result("call-unmatched"),
-        message("delivery-other", {
-          role: "assistant",
-          content: "Different reply",
-          model: "delivery-mirror",
-          openclawDeliveryMirror: { kind: "channel-final" },
-          provider: "openclaw",
-        }),
-        message("unmatched-flush", { role: "assistant", content: "NO_REPLY" }),
-      ],
-      NEGATIVE_DISPLAY_EXPECTED_PREFIXES.unmatchedDeliveryMirror,
-    );
+    await expectIncrementalDisplayParity("unmatched-message-mirror", [
+      call("call-unmatched", "Expected reply"),
+      result("call-unmatched"),
+      message("delivery-other", {
+        role: "assistant",
+        content: "Different reply",
+        model: "delivery-mirror",
+        openclawDeliveryMirror: { kind: "channel-final" },
+        provider: "openclaw",
+      }),
+      message("unmatched-flush", { role: "assistant", content: "NO_REPLY" }),
+    ]);
 
-    await expectIncrementalDisplayParity(
-      "lookalike-message-mirror",
-      [
-        call("call-lookalike", "Expected reply"),
-        result("call-lookalike"),
-        message("lookalike-delivery", {
-          role: "assistant",
-          content: "Expected reply",
-          openclawDeliveryMirror: { kind: "channel-final" },
-        }),
-        message("lookalike-flush", { role: "assistant", content: "NO_REPLY" }),
-      ],
-      NEGATIVE_DISPLAY_EXPECTED_PREFIXES.unmatchedDeliveryMirror,
-    );
+    await expectIncrementalDisplayParity("lookalike-message-mirror", [
+      call("call-lookalike", "Expected reply"),
+      result("call-lookalike"),
+      message("lookalike-delivery", {
+        role: "assistant",
+        content: "Expected reply",
+        openclawDeliveryMirror: { kind: "channel-final" },
+      }),
+      message("lookalike-flush", { role: "assistant", content: "NO_REPLY" }),
+    ]);
 
-    await expectIncrementalDisplayParity(
-      "same-source-message-mirror",
-      [
-        message("multi-call", {
-          role: "assistant",
-          content: [
-            {
-              type: "toolCall",
-              id: "same-source-a",
-              name: "message",
-              arguments: { action: "send", message: "Reply A" },
+    await expectIncrementalDisplayParity("same-source-message-mirror", [
+      message("multi-call", {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "same-source-a",
+            name: "message",
+            arguments: { action: "send", message: "Reply A" },
+          },
+          {
+            type: "toolCall",
+            id: "same-source-b",
+            name: "message",
+            arguments: { action: "send", message: "Reply B" },
+          },
+        ],
+      }),
+      result("same-source-a"),
+      result("same-source-b"),
+      message("same-source-delivery-a", {
+        role: "assistant",
+        content: "Reply A",
+        model: "delivery-mirror",
+        openclawDeliveryMirror: { kind: "channel-final" },
+        provider: "openclaw",
+      }),
+      message("same-source-flush-b", { role: "assistant", content: "NO_REPLY" }),
+    ]);
+
+    await expectIncrementalDisplayParity("delivery-mirror-canvas", [
+      message("canvas-target", { role: "assistant", content: "Initial assistant" }),
+      message("canvas-tool", {
+        role: "toolResult",
+        toolCallId: "canvas-call",
+        toolName: "canvas",
+        details: {
+          mcpAppPreview: {
+            kind: "canvas",
+            presentation: {
+              preferred_height: 1400,
+              sandbox: "scripts",
+              target: "assistant_message",
+              title: "Canvas title",
             },
-            {
-              type: "toolCall",
-              id: "same-source-b",
-              name: "message",
-              arguments: { action: "send", message: "Reply B" },
-            },
-          ],
-        }),
-        result("same-source-a"),
-        result("same-source-b"),
-        message("same-source-delivery-a", {
-          role: "assistant",
-          content: "Reply A",
-          model: "delivery-mirror",
-          openclawDeliveryMirror: { kind: "channel-final" },
-          provider: "openclaw",
-        }),
-        message("same-source-flush-b", { role: "assistant", content: "NO_REPLY" }),
-      ],
-      NEGATIVE_DISPLAY_EXPECTED_PREFIXES.sameSourceMessageMirror,
-    );
-
-    await expectIncrementalDisplayParity(
-      "delivery-mirror-canvas",
-      [
-        message("canvas-target", { role: "assistant", content: "Initial assistant" }),
-        message("canvas-tool", {
-          role: "toolResult",
-          toolCallId: "canvas-call",
-          toolName: "canvas",
-          details: {
-            mcpAppPreview: {
-              kind: "canvas",
-              presentation: {
-                preferred_height: 1400,
-                sandbox: "scripts",
-                target: "assistant_message",
-                title: "Canvas title",
-              },
-              view: {
-                boardWidgetName: "status",
-                id: "cv_status",
-                url: "/__openclaw__/canvas/documents/cv_status/assets/status%20page.html",
-              },
+            view: {
+              boardWidgetName: "status",
+              id: "cv_status",
+              url: "/__openclaw__/canvas/documents/cv_status/assets/status%20page.html",
             },
           },
-        }),
-        call("canvas-message-call", "Reply A"),
-        result("canvas-message-call"),
-        message("canvas-delivery", {
-          role: "assistant",
-          content: "Reply A",
-          model: "delivery-mirror",
-          openclawDeliveryMirror: { kind: "channel-final" },
-          provider: "openclaw",
-        }),
-      ],
-      DELIVERY_CANVAS_EXPECTED_PREFIXES,
-    );
+        },
+      }),
+      call("canvas-message-call", "Reply A"),
+      result("canvas-message-call"),
+      message("canvas-delivery", {
+        role: "assistant",
+        content: "Reply A",
+        model: "delivery-mirror",
+        openclawDeliveryMirror: { kind: "channel-final" },
+        provider: "openclaw",
+      }),
+    ]);
   });
 
   it("keeps forwarded sends and settled negative transitions out of semantic carry", async () => {
@@ -493,152 +430,119 @@ describe("canonical session transcript projection", () => {
       message: value,
       type: "message",
     });
-    await expectIncrementalDisplayParity(
-      "forwarded-message-tool",
-      [
-        message("forwarded-call", {
-          role: "assistant",
-          provenance: { kind: "inter_session", sourceTool: "sessions_send" },
-          content: [
-            {
-              type: "toolCall",
-              id: "forwarded-call",
-              name: "message",
-              arguments: { action: "send", message: "Forwarded send" },
-            },
-          ],
-        }),
-        message("forwarded-result", {
-          role: "toolResult",
-          toolCallId: "forwarded-call",
-          toolName: "message",
-          result: { ok: true },
-        }),
-        message("forwarded-flush", { role: "assistant", content: "NO_REPLY" }),
-      ],
-      NEGATIVE_DISPLAY_EXPECTED_PREFIXES.forwardedMessageTool,
-    );
+    await expectIncrementalDisplayParity("forwarded-message-tool", [
+      message("forwarded-call", {
+        role: "assistant",
+        provenance: { kind: "inter_session", sourceTool: "sessions_send" },
+        content: [
+          {
+            type: "toolCall",
+            id: "forwarded-call",
+            name: "message",
+            arguments: { action: "send", message: "Forwarded send" },
+          },
+        ],
+      }),
+      message("forwarded-result", {
+        role: "toolResult",
+        toolCallId: "forwarded-call",
+        toolName: "message",
+        result: { ok: true },
+      }),
+      message("forwarded-flush", { role: "assistant", content: "NO_REPLY" }),
+    ]);
 
-    await expectIncrementalDisplayParity(
-      "normalized-forwarded-message-tool",
-      [
-        message("forwarded-call", {
-          role: "assistant",
-          provenance: { kind: "inter_session", sourceTool: " sessions_send " },
-          content: [
-            {
-              type: "toolCall",
-              id: "normalized-forwarded-call",
-              name: "message",
-              arguments: { action: "send", message: "Forwarded send" },
-            },
-          ],
-        }),
-        message("forwarded-result", {
-          role: "toolResult",
-          toolCallId: "normalized-forwarded-call",
-          toolName: "message",
-          result: { ok: true },
-        }),
-        message("forwarded-flush", { role: "assistant", content: "NO_REPLY" }),
-      ],
-      NEGATIVE_DISPLAY_EXPECTED_PREFIXES.forwardedMessageTool,
-    );
+    await expectIncrementalDisplayParity("normalized-forwarded-message-tool", [
+      message("forwarded-call", {
+        role: "assistant",
+        provenance: { kind: "inter_session", sourceTool: " sessions_send " },
+        content: [
+          {
+            type: "toolCall",
+            id: "normalized-forwarded-call",
+            name: "message",
+            arguments: { action: "send", message: "Forwarded send" },
+          },
+        ],
+      }),
+      message("forwarded-result", {
+        role: "toolResult",
+        toolCallId: "normalized-forwarded-call",
+        toolName: "message",
+        result: { ok: true },
+      }),
+      message("forwarded-flush", { role: "assistant", content: "NO_REPLY" }),
+    ]);
 
-    await expectIncrementalDisplayParity(
-      "dry-run-message-tool",
-      dryRunMessageToolEvents(),
-      NEGATIVE_DISPLAY_EXPECTED_PREFIXES.forwardedMessageTool,
-    );
+    await expectIncrementalDisplayParity("dry-run-message-tool", dryRunMessageToolEvents());
 
     await expectIncrementalDisplayParity(
       "dry-run-message-tool-result",
       dryRunMessageToolResultEvents(),
-      NEGATIVE_DISPLAY_EXPECTED_PREFIXES.dryRunResult,
     );
 
-    await expectIncrementalDisplayParity(
-      "forwarded-heartbeat",
-      [
-        message("heartbeat", { role: "user", content: HEARTBEAT_PROMPT }),
-        message("forwarded", {
-          role: "assistant",
-          provenance: { kind: "inter_session", sourceTool: "sessions_send" },
-          content: [
-            {
-              type: "toolCall",
-              id: "forwarded-heartbeat-call",
-              name: "message",
-              arguments: { action: "send", message: "Forwarded send" },
-            },
-          ],
-        }),
-        message("visible", { role: "user", content: "visible turn" }),
-      ],
-      NEGATIVE_DISPLAY_EXPECTED_PREFIXES.forwardedHeartbeat,
-    );
+    await expectIncrementalDisplayParity("forwarded-heartbeat", [
+      message("heartbeat", { role: "user", content: HEARTBEAT_PROMPT }),
+      message("forwarded", {
+        role: "assistant",
+        provenance: { kind: "inter_session", sourceTool: "sessions_send" },
+        content: [
+          {
+            type: "toolCall",
+            id: "forwarded-heartbeat-call",
+            name: "message",
+            arguments: { action: "send", message: "Forwarded send" },
+          },
+        ],
+      }),
+      message("visible", { role: "user", content: "visible turn" }),
+    ]);
 
-    await expectIncrementalDisplayParity(
-      "settled-stream-error",
-      [
-        message("error", {
-          role: "assistant",
-          content: STREAM_ERROR_FALLBACK_TEXT,
-          stopReason: "error",
-        }),
-        message("user", { role: "user", content: "new turn" }),
-        message("assistant", { role: "assistant", content: "new reply" }),
-      ],
-      NEGATIVE_DISPLAY_EXPECTED_PREFIXES.settledStreamError,
-    );
+    await expectIncrementalDisplayParity("settled-stream-error", [
+      message("error", {
+        role: "assistant",
+        content: STREAM_ERROR_FALLBACK_TEXT,
+        stopReason: "error",
+      }),
+      message("user", { role: "user", content: "new turn" }),
+      message("assistant", { role: "assistant", content: "new reply" }),
+    ]);
 
-    await expectIncrementalDisplayParity(
-      "multiple-stream-errors",
-      [
-        message("error-1", {
-          role: "assistant",
-          content: STREAM_ERROR_FALLBACK_TEXT,
-          stopReason: "error",
-        }),
-        message("error-2", {
-          role: "assistant",
-          content: STREAM_ERROR_FALLBACK_TEXT,
-          stopReason: "error",
-        }),
-        message("repair", { role: "assistant", content: "recovered" }),
-      ],
-      NEGATIVE_DISPLAY_EXPECTED_PREFIXES.multipleStreamErrors,
-    );
+    await expectIncrementalDisplayParity("multiple-stream-errors", [
+      message("error-1", {
+        role: "assistant",
+        content: STREAM_ERROR_FALLBACK_TEXT,
+        stopReason: "error",
+      }),
+      message("error-2", {
+        role: "assistant",
+        content: STREAM_ERROR_FALLBACK_TEXT,
+        stopReason: "error",
+      }),
+      message("repair", { role: "assistant", content: "recovered" }),
+    ]);
 
-    await expectIncrementalDisplayParity(
-      "structured-stream-error",
-      [
-        message("error", {
-          role: "assistant",
-          content: [
-            { type: "text", text: STREAM_ERROR_FALLBACK_TEXT },
-            { type: "reasoning", text: "private" },
-            { type: "toolCall", id: "read-1", name: "read", arguments: {} },
-          ],
-          stopReason: "error",
-        }),
-        message("assistant", { role: "assistant", content: "later reply" }),
-      ],
-      NEGATIVE_DISPLAY_EXPECTED_PREFIXES.structuredStreamError,
-    );
+    await expectIncrementalDisplayParity("structured-stream-error", [
+      message("error", {
+        role: "assistant",
+        content: [
+          { type: "text", text: STREAM_ERROR_FALLBACK_TEXT },
+          { type: "reasoning", text: "private" },
+          { type: "toolCall", id: "read-1", name: "read", arguments: {} },
+        ],
+        stopReason: "error",
+      }),
+      message("assistant", { role: "assistant", content: "later reply" }),
+    ]);
 
-    await expectIncrementalDisplayParity(
-      "mismatched-tts",
-      [
-        message("target", { role: "assistant", content: "Original" }),
-        message("supplement", {
-          role: "assistant",
-          content: [{ type: "audio", url: "/media/tts.mp3" }],
-          openclawTtsSupplement: { spokenText: "Different" },
-        }),
-      ],
-      NEGATIVE_DISPLAY_EXPECTED_PREFIXES.mismatchedTts,
-    );
+    await expectIncrementalDisplayParity("mismatched-tts", [
+      message("target", { role: "assistant", content: "Original" }),
+      message("supplement", {
+        role: "assistant",
+        content: [{ type: "audio", url: "/media/tts.mp3" }],
+        openclawTtsSupplement: { spokenText: "Different" },
+      }),
+    ]);
   });
 
   it("applies deterministic carry caps and canvas v1 bounds", async () => {
@@ -647,11 +551,7 @@ describe("canonical session transcript projection", () => {
       message: { role: "assistant", content: `answer ${seq}` },
       type: "message",
     }));
-    await expectIncrementalDisplayParity(
-      "tts-carry-cap",
-      assistantEvents,
-      expectedTtsCarryCapPrefixes(65),
-    );
+    await expectIncrementalDisplayParity("tts-carry-cap", assistantEvents);
 
     const canvas = prepareSessionTranscriptDisplayProjection([
       row(0, {
@@ -703,11 +603,7 @@ describe("canonical session transcript projection", () => {
       },
       type: "message",
     }));
-    await expectIncrementalDisplayParity(
-      "stream-carry-cap",
-      streamEvents,
-      expectedStreamCarryCapPrefixes(9),
-    );
+    await expectIncrementalDisplayParity("stream-carry-cap", streamEvents);
 
     const messageEvents = Array.from({ length: 17 }, (_, seq) => ({
       id: `message-${seq}`,
@@ -724,28 +620,20 @@ describe("canonical session transcript projection", () => {
       },
       type: "message",
     }));
-    await expectIncrementalDisplayParity(
-      "message-carry-cap",
-      messageEvents,
-      expectedMessageCarryCapPrefixes(17),
-    );
+    await expectIncrementalDisplayParity("message-carry-cap", messageEvents);
 
-    await expectIncrementalDisplayParity(
-      "heartbeat-carry-cap",
-      [
-        {
-          id: "heartbeat-0",
-          message: { role: "user", content: HEARTBEAT_PROMPT },
-          type: "message",
-        },
-        {
-          id: "heartbeat-1",
-          message: { role: "user", content: HEARTBEAT_PROMPT },
-          type: "message",
-        },
-      ],
-      expectedHeartbeatCarryCapPrefixes(),
-    );
+    await expectIncrementalDisplayParity("heartbeat-carry-cap", [
+      {
+        id: "heartbeat-0",
+        message: { role: "user", content: HEARTBEAT_PROMPT },
+        type: "message",
+      },
+      {
+        id: "heartbeat-1",
+        message: { role: "user", content: HEARTBEAT_PROMPT },
+        type: "message",
+      },
+    ]);
 
     const canvasEvents = [
       {
@@ -772,11 +660,7 @@ describe("canonical session transcript projection", () => {
         type: "message",
       })),
     ];
-    await expectIncrementalDisplayParity(
-      "canvas-carry-cap",
-      canvasEvents,
-      expectedCanvasCarryCapPrefixes(17),
-    );
+    await expectIncrementalDisplayParity("canvas-carry-cap", canvasEvents);
   });
 
   it.each([

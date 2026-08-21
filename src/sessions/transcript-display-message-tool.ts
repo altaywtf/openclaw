@@ -1,16 +1,16 @@
 import { asOptionalRecord as readRecord } from "@openclaw/normalization-core/record-coerce";
-import { isOpenClawDeliveryMirrorAssistantMessage } from "../../shared/transcript-only-openclaw-assistant.js";
+import { isOpenClawDeliveryMirrorAssistantMessage } from "../shared/transcript-only-openclaw-assistant.js";
 import {
   readMessageText,
   readMessageToolCalls,
   readMessageToolResult,
   type MessageToolCall,
-} from "./session-transcript-display-classification.js";
+} from "./transcript-display-classification.js";
 import type {
   DisplayReducerRow,
   DisplayReducerState,
   PreparedSessionTranscriptDisplayCarry,
-} from "./session-transcript-display-semantics.js";
+} from "./transcript-display-reducer-contract.js";
 
 function messageToolCarry(state: DisplayReducerState): PreparedSessionTranscriptDisplayCarry[] {
   return state.carry.filter((entry) => entry.kind === "message_tool");
@@ -131,13 +131,20 @@ export function handleSessionTranscriptDeliveryMirror(
   if (!text) {
     return false;
   }
-  const matching = messageToolCarry(state).filter((entry) => {
+  const deliveryMirrorCallId = readRecord(message.openclawDeliveryMirror)?.toolCallId;
+  const candidates = messageToolCarry(state).filter((entry) => {
     const call = messageToolCallForCarry(state, entry);
-    return entry.deliveryEventSeq === undefined && call?.text.trim() === text;
+    return (
+      entry.deliveryEventSeq === undefined &&
+      (typeof deliveryMirrorCallId === "string"
+        ? call?.callId === deliveryMirrorCallId
+        : call?.text.trim() === text)
+    );
   });
-  if (matching.length === 0) {
+  if (candidates.length !== 1) {
     return false;
   }
+  const matching = candidates;
   const succeeded = matching.filter((entry) => entry.relatedEventSeq !== undefined);
   if (succeeded.length > 0) {
     flushSessionTranscriptMessageToolMirrors(state, row, succeeded);

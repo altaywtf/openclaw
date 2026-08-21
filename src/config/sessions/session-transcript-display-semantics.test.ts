@@ -109,13 +109,19 @@ describe("session transcript display semantics", () => {
             name: "message",
             arguments: { action: "send", message: "Delivered reply" },
           },
+          {
+            type: "toolCall",
+            id: "same-text-call",
+            name: "message",
+            arguments: { action: "send", message: "Delivered reply" },
+          },
         ],
       }),
       message("early-delivery", {
         role: "assistant",
         content: "Delivered reply",
         model: "delivery-mirror",
-        openclawDeliveryMirror: { kind: "channel-final" },
+        openclawDeliveryMirror: { kind: "channel-final", toolCallId: "mixed-call" },
         provider: "openclaw",
       }),
       message("message-result", {
@@ -152,36 +158,107 @@ describe("session transcript display semantics", () => {
         sourceEventSeq: 8,
       },
     ]);
+    expect(snapshot.carry.filter((entry) => entry.kind === "message_tool")).toEqual([
+      {
+        kind: "message_tool",
+        position: 0,
+        relatedEventSeq: null,
+        sourceEventSeq: 6,
+        sourceOccurrence: 1,
+      },
+    ]);
   });
 
-  it.each(["status", "deliveryStatus", "delivery_status"] as const)(
-    "does not mirror message-tool results suppressed by details.%s",
-    async (field) => {
-      const snapshot = await persistEvents(`suppressed-result-${field}`, [
-        message("call", {
-          role: "assistant",
-          content: [
-            {
-              type: "toolCall",
-              id: "call",
-              name: "message",
-              arguments: { action: "send", message: "must stay hidden" },
-            },
-          ],
-        }),
-        message("result", {
-          role: "toolResult",
-          toolCallId: "call",
-          toolName: "message",
-          details: { [field]: "suppressed" },
-          result: { ok: true },
-        }),
-        message("flush", { role: "assistant", content: "NO_REPLY" }),
-      ]);
-      expect(snapshot.carry).toEqual([]);
-      expect(snapshot.sources).toEqual([]);
+  it.each([
+    { details: { status: "suppressed" }, name: "details.status suppression", result: { ok: true } },
+    {
+      details: { deliveryStatus: "suppressed" },
+      name: "details.deliveryStatus suppression",
+      result: { ok: true },
     },
-  );
+    {
+      details: { delivery_status: "suppressed" },
+      name: "details.delivery_status suppression",
+      result: { ok: true },
+    },
+    { name: "a bare false result", result: false, details: undefined },
+    {
+      name: "a nested JSON false result",
+      result: [{ type: "text", text: '{"ok":false}' }],
+      details: undefined,
+    },
+    {
+      name: "a nested dry-run result",
+      result: [{ type: "text", text: '{"dryRun":true}' }],
+      details: undefined,
+    },
+  ])("does not mirror message-tool results containing $name", async ({ details, name, result }) => {
+    const snapshot = await persistEvents(`negative-result-${name.replaceAll(" ", "-")}`, [
+      message("call", {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "call",
+            name: "message",
+            arguments: { action: "send", message: "must stay hidden" },
+          },
+        ],
+      }),
+      message("result", {
+        role: "toolResult",
+        toolCallId: "call",
+        toolName: "message",
+        ...(details ? { details } : {}),
+        result,
+      }),
+      message("flush", { role: "assistant", content: "NO_REPLY" }),
+    ]);
+    expect(snapshot.carry).toEqual([]);
+    expect(snapshot.sources).toEqual([]);
+  });
+
+  it("preserves assistant errors and settles carry across empty forwarded turns", async () => {
+    const userSettled = await persistEvents("forwarded-user-stream-error", [
+      message("error", {
+        role: "assistant",
+        content: STREAM_ERROR_FALLBACK_TEXT,
+        stopReason: "error",
+      }),
+      message("empty-error", {
+        role: "assistant",
+        content: [],
+        stopReason: "error",
+      }),
+      message("forwarded-user", {
+        role: "user",
+        content: "",
+        provenance: { kind: "inter_session", sourceTool: "sessions_send" },
+      }),
+      message("later-assistant", { role: "assistant", content: "later reply" }),
+    ]);
+    expect(userSettled.rows).toMatchObject([
+      { kind: "assistant", source_event_seq: 1 },
+      { kind: "assistant", source_event_seq: 2 },
+      { kind: "assistant", source_event_seq: 3 },
+    ]);
+
+    const assistantRepaired = await persistEvents("forwarded-assistant-stream-error", [
+      message("error", {
+        role: "assistant",
+        content: STREAM_ERROR_FALLBACK_TEXT,
+        stopReason: "error",
+      }),
+      message("forwarded-assistant", {
+        role: "assistant",
+        content: "forwarded reply",
+        provenance: { kind: "inter_session", sourceTool: "sessions_send" },
+      }),
+    ]);
+    expect(assistantRepaired.rows).toEqual([
+      { display_ordinal: 0, kind: "assistant", revision: 2, source_event_seq: 1 },
+    ]);
+  });
 
   it("revises rows whose ordinals shift during stream-error collapse", async () => {
     const events = [
