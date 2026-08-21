@@ -26,6 +26,7 @@ import {
 } from "./session-transcript-display.js";
 import {
   deleteOrphanedTranscriptIndexRowsInTransaction,
+  listSessionsNeedingTranscriptIndexReconcile,
   listSessionsNeedingTranscriptProjectionReconcile,
   sessionTranscriptIndexNeedsReconcile,
 } from "./session-transcript-index.js";
@@ -47,6 +48,7 @@ const PROJECTION_WRITE_CHUNK_ROWS = 512;
 const PROJECTION_READY_POLL_MS = 10;
 
 type RunningReconcile = {
+  includeDisplayProjection: boolean;
   pending: boolean;
   preferredSessionId?: string;
   promise?: Promise<SessionTranscriptReconcileResult>;
@@ -244,6 +246,20 @@ async function finalizePreparedProjection(
 export async function reconcileSessionTranscriptIndexes(
   params: SessionTranscriptReconcileParams,
 ): Promise<SessionTranscriptReconcileResult> {
+  return await reconcileSessionTranscriptProjections(params, false);
+}
+
+/** Reconciles explicitly adopted display state alongside the active/search projection. */
+export async function reconcileSessionTranscriptDisplayProjection(
+  params: SessionTranscriptReconcileParams,
+): Promise<SessionTranscriptReconcileResult> {
+  return await reconcileSessionTranscriptProjections(params, true);
+}
+
+async function reconcileSessionTranscriptProjections(
+  params: SessionTranscriptReconcileParams,
+  includeDisplayProjection: boolean,
+): Promise<SessionTranscriptReconcileResult> {
   const databasePath = resolveOpenClawAgentSqlitePath(params);
   const databaseOptions: OpenClawAgentDatabaseOptions = {
     agentId: params.agentId,
@@ -257,7 +273,12 @@ export async function reconcileSessionTranscriptIndexes(
     "sessions.transcript-index.preflight",
     (database) => {
       deleteOrphanedTranscriptIndexRowsInTransaction(database.db);
-      return listSessionsNeedingTranscriptProjectionReconcile(database.db).length > 0;
+      return (
+        (includeDisplayProjection
+          ? listSessionsNeedingTranscriptProjectionReconcile(database.db)
+          : listSessionsNeedingTranscriptIndexReconcile(database.db)
+        ).length > 0
+      );
     },
   );
   if (!needsWorker) {
@@ -267,6 +288,7 @@ export async function reconcileSessionTranscriptIndexes(
   const sourceWorkerExecArgv = workerUrl.pathname.endsWith(".ts") ? ["--import", "tsx"] : undefined;
   const input: SessionTranscriptReconcileWorkerInput = {
     agentId: params.agentId,
+    includeDisplayProjection,
     path: databasePath,
     ...(params.preferredSessionId ? { preferredSessionId: params.preferredSessionId } : {}),
   };
@@ -279,6 +301,9 @@ export async function reconcileSessionTranscriptIndexes(
   } catch (error) {
     throw toStringifiedError(error);
   }
+  const workerExit = new Promise<void>((resolveExit) => {
+    worker.once("exit", () => resolveExit());
+  });
 
   return new Promise<SessionTranscriptReconcileResult>((resolve, reject) => {
     let active: ActivePreparedProjection | undefined;
@@ -320,6 +345,7 @@ export async function reconcileSessionTranscriptIndexes(
           settle(() => reject(toStringifiedError(error)), true);
           return;
         }
+        await workerExit;
         settle(() => resolve({ reconciledSessions }), false);
         return;
       }
@@ -383,16 +409,32 @@ export async function reconcileSessionTranscriptIndexes(
 export function startSessionTranscriptIndexReconcile(
   params: SessionTranscriptReconcileParams,
 ): void {
+  startSessionTranscriptReconcile(params, false);
+}
+
+/** Starts one deferred reconcile that includes explicitly adopted display state. */
+export function startSessionTranscriptDisplayReconcile(
+  params: SessionTranscriptReconcileParams,
+): void {
+  startSessionTranscriptReconcile(params, true);
+}
+
+function startSessionTranscriptReconcile(
+  params: SessionTranscriptReconcileParams,
+  includeDisplayProjection: boolean,
+): void {
   const key = reconcileKey(params);
   const running = runningReconciles.get(key);
   if (running) {
     // The active pass snapshots dirty sessions. Latch later writes so it
     // rescans before ownership is released instead of losing their work.
     running.pending = true;
+    running.includeDisplayProjection ||= includeDisplayProjection;
     running.preferredSessionId ??= params.preferredSessionId;
     return;
   }
   const state: RunningReconcile = {
+    includeDisplayProjection,
     pending: false,
     ...(params.preferredSessionId ? { preferredSessionId: params.preferredSessionId } : {}),
   };
@@ -401,12 +443,17 @@ export function startSessionTranscriptIndexReconcile(
       let reconciledSessions = 0;
       while (true) {
         state.pending = false;
+        const reconcileDisplayProjection = state.includeDisplayProjection;
+        state.includeDisplayProjection = false;
         const preferredSessionId = state.preferredSessionId;
         delete state.preferredSessionId;
-        const result = await reconcileSessionTranscriptIndexes({
-          ...params,
-          ...(preferredSessionId ? { preferredSessionId } : {}),
-        });
+        const result = await reconcileSessionTranscriptProjections(
+          {
+            ...params,
+            ...(preferredSessionId ? { preferredSessionId } : {}),
+          },
+          reconcileDisplayProjection,
+        );
         reconciledSessions += result.reconciledSessions;
         if (state.pending) {
           continue;
@@ -424,15 +471,19 @@ export function startSessionTranscriptIndexReconcile(
         `session transcript reconcile failed agent=${params.agentId} error=${error instanceof Error ? error.message : String(error)}`,
       );
       const shouldHandoff = state.pending;
+      const reconcileDisplayProjection = state.includeDisplayProjection;
       const preferredSessionId = state.preferredSessionId;
       if (runningReconciles.get(key) === state) {
         runningReconciles.delete(key);
       }
       if (shouldHandoff) {
-        startSessionTranscriptIndexReconcile({
-          ...params,
-          ...(preferredSessionId ? { preferredSessionId } : {}),
-        });
+        startSessionTranscriptReconcile(
+          {
+            ...params,
+            ...(preferredSessionId ? { preferredSessionId } : {}),
+          },
+          reconcileDisplayProjection,
+        );
         await waitForSessionTranscriptIndexReconcile(params);
       }
       return { reconciledSessions: 0 };

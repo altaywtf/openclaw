@@ -4,7 +4,10 @@ import {
   closeOpenClawAgentDatabaseByPath,
   openOpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
-import { listSessionsNeedingTranscriptProjectionReconcile } from "./session-transcript-index.js";
+import {
+  listSessionsNeedingTranscriptIndexReconcile,
+  listSessionsNeedingTranscriptProjectionReconcile,
+} from "./session-transcript-index.js";
 import {
   prepareSessionTranscriptProjection,
   type PreparedSessionTranscriptProjection,
@@ -19,6 +22,7 @@ const FTS_TEXT_BYTES_PER_CHUNK = 256 * 1024;
 
 export type SessionTranscriptReconcileWorkerInput = {
   agentId: string;
+  includeDisplayProjection: boolean;
   path: string;
   preferredSessionId?: string;
 };
@@ -58,7 +62,11 @@ function parseWorkerInput(value: unknown): SessionTranscriptReconcileWorkerInput
     return undefined;
   }
   const input = value as Record<string, unknown>;
-  if (typeof input.agentId !== "string" || typeof input.path !== "string") {
+  if (
+    typeof input.agentId !== "string" ||
+    typeof input.includeDisplayProjection !== "boolean" ||
+    typeof input.path !== "string"
+  ) {
     return undefined;
   }
   if (input.preferredSessionId !== undefined && typeof input.preferredSessionId !== "string") {
@@ -66,6 +74,7 @@ function parseWorkerInput(value: unknown): SessionTranscriptReconcileWorkerInput
   }
   return {
     agentId: input.agentId,
+    includeDisplayProjection: input.includeDisplayProjection,
     path: input.path,
     ...(typeof input.preferredSessionId === "string"
       ? { preferredSessionId: input.preferredSessionId }
@@ -198,11 +207,15 @@ async function run(): Promise<void> {
       path: reconcileInput.path,
     });
     const sessionIds = orderSessionIds(
-      listSessionsNeedingTranscriptProjectionReconcile(database.db),
+      reconcileInput.includeDisplayProjection
+        ? listSessionsNeedingTranscriptProjectionReconcile(database.db)
+        : listSessionsNeedingTranscriptIndexReconcile(database.db),
       reconcileInput.preferredSessionId,
     );
     for (const sessionId of sessionIds) {
-      const plan = prepareSessionTranscriptProjection(database.db, sessionId);
+      const plan = prepareSessionTranscriptProjection(database.db, sessionId, {
+        includeDisplayProjection: reconcileInput.includeDisplayProjection,
+      });
       if (plan) {
         await streamPreparedProjection(plan);
       }

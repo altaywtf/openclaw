@@ -22,7 +22,7 @@ import {
   buildSessionTranscriptProjection,
   type SessionTranscriptProjectionSourceRow,
 } from "./session-transcript-projection-rebuild.js";
-import { waitForSessionTranscriptIndexReconcile } from "./session-transcript-reconcile.js";
+import { reconcileSessionTranscriptDisplayProjection } from "./session-transcript-reconcile.js";
 
 const SESSION_ID = "projection-session";
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -179,11 +179,11 @@ describe("canonical session transcript projection", () => {
             parentId: "root",
             message: { role: "assistant", content: "active" },
           },
-        ],
+        ].map((message) => Object.assign(message, { maintainDisplayProjection: true })),
         touchSessionEntry: false,
       },
     );
-    await waitForSessionTranscriptIndexReconcile({ agentId: scope.agentId, env });
+    await reconcileSessionTranscriptDisplayProjection({ agentId: scope.agentId, env });
 
     const planned = prepareSessionTranscriptDisplayRows(readProjectionSourceRows()).map(
       ({ displayOrdinal, kind, sourceEventSeq }) => ({
@@ -291,12 +291,17 @@ describe("canonical session transcript projection", () => {
     if (event.type === "message" && event.message) {
       await appendTranscriptMessage(
         { ...scope, env },
-        { eventId: "event-1", message: event.message, parentId: null },
+        {
+          eventId: "event-1",
+          maintainDisplayProjection: true,
+          message: event.message,
+          parentId: null,
+        },
       );
     } else {
       await appendTranscriptEvent({ ...scope, env }, persistedEvent);
     }
-    await waitForSessionTranscriptIndexReconcile({ agentId: scope.agentId, env });
+    await reconcileSessionTranscriptDisplayProjection({ agentId: scope.agentId, env });
 
     const directExpected = prepareSessionTranscriptDisplayRows([
       { event: persistedEvent, seq: 0 },

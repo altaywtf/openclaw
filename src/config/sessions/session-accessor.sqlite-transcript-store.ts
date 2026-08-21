@@ -29,13 +29,16 @@ import {
   rotateTranscriptGenerationInTransaction,
   touchTranscriptMutationInTransaction,
 } from "./session-accessor.sqlite-transcript-state.js";
-import { invalidateSessionTranscriptDisplayInTransaction } from "./session-transcript-display.js";
+import { invalidateExistingSessionTranscriptDisplayInTransaction } from "./session-transcript-display.js";
 import {
   deleteSessionTranscriptIndexInTransaction,
   indexAppendedTranscriptEventInTransaction,
   reconcileSessionTranscriptIndexInTransaction,
 } from "./session-transcript-index.js";
-import { startSessionTranscriptIndexReconcile } from "./session-transcript-reconcile.js";
+import {
+  startSessionTranscriptDisplayReconcile,
+  startSessionTranscriptIndexReconcile,
+} from "./session-transcript-reconcile.js";
 import { createSessionTranscriptHeader } from "./transcript-header.js";
 import {
   isSessionTranscriptLeafControl,
@@ -50,7 +53,10 @@ export function appendTranscriptEventInTransaction(
   options: {
     allowStoredAlias?: boolean;
     dedupeByMessageIdempotency?: boolean;
-    /** Batch replacement/import owns one final display invalidation for all inserted rows. */
+    /**
+     * True maintains display rows incrementally. False means a batch caller owns
+     * one final invalidation. Omission invalidates adopted display state only.
+     */
     maintainDisplayProjection?: boolean;
     onProjectionReconcileNeeded?: () => void;
     scheduleProjectionReconcile?: boolean;
@@ -142,14 +148,18 @@ function scheduleTranscriptProjectionReconcile(
   database: OpenClawAgentDatabase,
   scope: ResolvedTranscriptScope,
   projectionNeedsRebuild: boolean,
-  options: { scheduleProjectionReconcile?: boolean },
+  options: { maintainDisplayProjection?: boolean; scheduleProjectionReconcile?: boolean },
 ): void {
   if (!projectionNeedsRebuild || options.scheduleProjectionReconcile === false) {
     return;
   }
   // setImmediate in the reconcile owner runs only after this synchronous
   // SQLite transaction commits, keeping full-tree work off the writer stack.
-  startSessionTranscriptIndexReconcile({
+  const startReconcile =
+    options.maintainDisplayProjection === true
+      ? startSessionTranscriptDisplayReconcile
+      : startSessionTranscriptIndexReconcile;
+  startReconcile({
     agentId: scope.agentId,
     path: database.path,
     preferredSessionId: scope.sessionId,
@@ -246,6 +256,7 @@ export function ensureTranscriptHeader(
   database: OpenClawAgentDatabase,
   scope: ResolvedTranscriptScope,
   cwd: string | undefined,
+  options: { maintainDisplayProjection?: boolean } = {},
 ): void {
   const db = getSessionKysely(database.db);
   const existing = executeSqliteQueryTakeFirstSync(
@@ -263,6 +274,7 @@ export function ensureTranscriptHeader(
     database,
     scope,
     createSessionTranscriptHeader({ cwd, sessionId: scope.sessionId }),
+    { maintainDisplayProjection: options.maintainDisplayProjection },
   );
 }
 
@@ -341,13 +353,18 @@ export function replaceSqliteTranscriptEventsInTransaction(
   if (events.length === 0) {
     if (deleted || previousGeneration) {
       rotateTranscriptGenerationInTransaction(database, resolved.sessionId);
-      invalidateSessionTranscriptDisplayInTransaction(database.db, resolved.sessionId);
+      const displayProjectionInvalidated = invalidateExistingSessionTranscriptDisplayInTransaction(
+        database.db,
+        resolved.sessionId,
+      );
       recordTranscriptReplacementMutation(
         database,
         resolved.sessionId,
         preservedTranscriptUpdatedAt,
       );
-      scheduleTranscriptProjectionReconcile(database, resolved, true, {});
+      scheduleTranscriptProjectionReconcile(database, resolved, true, {
+        maintainDisplayProjection: displayProjectionInvalidated,
+      });
     }
     return;
   }
@@ -359,7 +376,10 @@ export function replaceSqliteTranscriptEventsInTransaction(
   } else {
     ensureTranscriptGenerationInTransaction(database, resolved.sessionId);
   }
-  invalidateSessionTranscriptDisplayInTransaction(database.db, resolved.sessionId);
+  const displayProjectionInvalidated = invalidateExistingSessionTranscriptDisplayInTransaction(
+    database.db,
+    resolved.sessionId,
+  );
   let seq = 0;
   const seenEventIds = new Set<string>();
   const seenMessageIdempotencyKeys = new Set<string>();
@@ -383,7 +403,9 @@ export function replaceSqliteTranscriptEventsInTransaction(
   if (deleted || seq > 0) {
     recordTranscriptReplacementMutation(database, resolved.sessionId, preservedTranscriptUpdatedAt);
     reconcileSessionTranscriptIndexInTransaction(database.db, resolved.sessionId);
-    scheduleTranscriptProjectionReconcile(database, resolved, true, {});
+    scheduleTranscriptProjectionReconcile(database, resolved, true, {
+      maintainDisplayProjection: displayProjectionInvalidated,
+    });
   }
 }
 
@@ -435,10 +457,15 @@ export function rewriteSqliteTranscriptEventRowsInTransaction(
     }
   }
   rotateTranscriptGenerationInTransaction(database, resolved.sessionId);
-  invalidateSessionTranscriptDisplayInTransaction(database.db, resolved.sessionId);
+  const displayProjectionInvalidated = invalidateExistingSessionTranscriptDisplayInTransaction(
+    database.db,
+    resolved.sessionId,
+  );
   touchTranscriptMutationInTransaction(database, resolved.sessionId);
   reconcileSessionTranscriptIndexInTransaction(database.db, resolved.sessionId);
-  scheduleTranscriptProjectionReconcile(database, resolved, true, {});
+  scheduleTranscriptProjectionReconcile(database, resolved, true, {
+    maintainDisplayProjection: displayProjectionInvalidated,
+  });
 }
 
 // Text-only transcript repair: rewrites event_json for specific rows in place.
@@ -464,10 +491,16 @@ export function updateSqliteTranscriptEventJsonInTransaction(
     );
   }
   rotateTranscriptGenerationInTransaction(database, sessionId);
-  invalidateSessionTranscriptDisplayInTransaction(database.db, sessionId);
+  const displayProjectionInvalidated = invalidateExistingSessionTranscriptDisplayInTransaction(
+    database.db,
+    sessionId,
+  );
   deleteSessionTranscriptIndexInTransaction(database.db, sessionId);
   reconcileSessionTranscriptIndexInTransaction(database.db, sessionId);
-  startSessionTranscriptIndexReconcile({
+  const startReconcile = displayProjectionInvalidated
+    ? startSessionTranscriptDisplayReconcile
+    : startSessionTranscriptIndexReconcile;
+  startReconcile({
     agentId: database.agentId,
     path: database.path,
     preferredSessionId: sessionId,

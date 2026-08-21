@@ -57,7 +57,7 @@ import {
 } from "./openclaw-agent-db-session-provenance.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "./openclaw-agent-db.generated.js";
 import { resolveOpenClawAgentSqlitePath } from "./openclaw-agent-db.paths.js";
-import { AGENT_SCHEMA_WITHOUT_DISPLAY_ROWS_SQL } from "./openclaw-agent-display-row-schema.js";
+import { AGENT_BASE_SCHEMA_SQL } from "./openclaw-agent-display-row-schema.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "./openclaw-agent-schema.js";
 import { OPENCLAW_SQLITE_BUSY_TIMEOUT_MS } from "./openclaw-state-db.js";
 
@@ -65,7 +65,6 @@ type OpenClawAgentMetadataDatabase = Pick<OpenClawAgentKyselyDatabase, "schema_m
 type MigratedSessionEntry = Record<string, unknown>;
 
 const agentDbLog = createSubsystemLogger("state/agent-db");
-const BASE_AGENT_SCHEMA_SQL = AGENT_SCHEMA_WITHOUT_DISPLAY_ROWS_SQL;
 
 function migratedSessionColumn(
   columns: ReadonlySet<string>,
@@ -575,7 +574,7 @@ export function assertAgentDatabaseIntegrityBeforeMutation(
       hasPendingSessionConversationRouteContextColumn(database) ||
       hasPendingSessionProjectColumn(database));
   if (userVersion === OPENCLAW_AGENT_SCHEMA_VERSION && !hasPendingCurrentVersionMigration) {
-    verifyAndRepairCanonicalSqliteIndexes(database, pathname, BASE_AGENT_SCHEMA_SQL, {
+    verifyAndRepairCanonicalSqliteIndexes(database, pathname, AGENT_BASE_SCHEMA_SQL, {
       allowMissingColumns: true,
       validateAfterRepair: () =>
         assertOpenClawAgentCurrentRuntimeSchema(database, { agentId, pathname }),
@@ -637,11 +636,11 @@ function ensureAgentSchema(
         ensureSessionKeyContractSchemaInTransaction(db);
         if (hasPendingMemoryChunkMetadataMigration(db)) {
           migrateMemoryChunkMetadataSchema(db);
-          db.exec(BASE_AGENT_SCHEMA_SQL);
+          db.exec(AGENT_BASE_SCHEMA_SQL);
         }
         // Repeat index repair before the transactional schema assertion so a
         // concurrent opener cannot turn repairable drift into a hard refusal.
-        repairCanonicalSqliteIndexes(db, pathname, BASE_AGENT_SCHEMA_SQL, {
+        repairCanonicalSqliteIndexes(db, pathname, AGENT_BASE_SCHEMA_SQL, {
           verifyPhysicalIntegrity: false,
         });
         assertAgentSchemaVersion(db, { agentId, pathname, version: targetVersion });
@@ -669,7 +668,7 @@ function ensureAgentSchema(
       migrateSessionNodesAndWindows(db, previousVersion);
       ensureSessionAdditiveColumns(db);
       ensureSessionEntryValidityProjection(db);
-      db.exec(BASE_AGENT_SCHEMA_SQL);
+      db.exec(AGENT_BASE_SCHEMA_SQL);
       migrateMemoryChunkMetadataSchema(db);
       if (previousVersion < targetVersion) {
         ensureOpenClawAgentBoardSchemaInTransaction(db);
@@ -677,11 +676,11 @@ function ensureAgentSchema(
       migrateSessionTranscriptGenerations(db, previousVersion);
       migrateSessionTranscriptActiveProjection(db, previousVersion);
       if (previousVersion < 11) {
-        migrateSqliteSchemaToStrictInTransaction(db, BASE_AGENT_SCHEMA_SQL, {
+        migrateSqliteSchemaToStrictInTransaction(db, AGENT_BASE_SCHEMA_SQL, {
           databaseLabel: pathname,
         });
       }
-      repairCanonicalSqliteIndexes(db, pathname, BASE_AGENT_SCHEMA_SQL, {
+      repairCanonicalSqliteIndexes(db, pathname, AGENT_BASE_SCHEMA_SQL, {
         verifyPhysicalIntegrity: false,
       });
       const kysely = getNodeSqliteKysely<OpenClawAgentMetadataDatabase>(db);

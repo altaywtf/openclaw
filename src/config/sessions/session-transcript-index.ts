@@ -18,6 +18,7 @@ import { ensureOpenClawAgentDisplayRowSchema } from "../../state/openclaw-agent-
 import {
   appendEligibleSessionTranscriptDisplayRowInTransaction,
   hasTranscriptMessage,
+  invalidateExistingSessionTranscriptDisplayInTransaction,
   invalidateSessionTranscriptDisplayInTransaction,
   isSessionTranscriptDisplayBoundary,
   shouldProjectActiveEvent,
@@ -204,7 +205,7 @@ function invalidateDisplayProjectionForAppend(
   db: DatabaseSync,
   params: { maintainDisplayProjection?: boolean; sessionId: string },
 ): void {
-  if (params.maintainDisplayProjection !== false) {
+  if (params.maintainDisplayProjection === true) {
     invalidateSessionTranscriptDisplayInTransaction(db, params.sessionId);
   }
 }
@@ -223,9 +224,13 @@ export function indexAppendedTranscriptEventInTransaction(
     event: unknown;
     eventId: string | null;
     createdAt: number;
+    /** True maintains, false skips for a batch owner, omission invalidates adopted state. */
     maintainDisplayProjection?: boolean;
   },
 ): boolean {
+  const existingDisplayInvalidated =
+    params.maintainDisplayProjection === undefined &&
+    invalidateExistingSessionTranscriptDisplayInTransaction(db, params.sessionId);
   const watermark = readSessionTranscriptProjectionState(db, params.sessionId);
   if (!watermark) {
     if (params.seq !== 0) {
@@ -241,9 +246,9 @@ export function indexAppendedTranscriptEventInTransaction(
       leafEventId: null,
       needsRebuild: false,
     });
-    return params.maintainDisplayProjection !== false
+    return params.maintainDisplayProjection === true
       ? appendEligibleSessionTranscriptDisplayRowInTransaction(db, params)
-      : false;
+      : existingDisplayInvalidated;
   }
   if (watermark.needsRebuild) {
     if (
@@ -303,9 +308,9 @@ export function indexAppendedTranscriptEventInTransaction(
     return true;
   }
   applyForwardIndex(db, params, watermark);
-  return params.maintainDisplayProjection !== false
+  return params.maintainDisplayProjection === true
     ? appendEligibleSessionTranscriptDisplayRowInTransaction(db, params)
-    : false;
+    : existingDisplayInvalidated;
 }
 
 function applyForwardIndex(

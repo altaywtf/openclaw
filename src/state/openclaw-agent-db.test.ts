@@ -51,7 +51,7 @@ import {
   resolveOpenClawAgentSqlitePath,
   runOpenClawAgentWriteTransaction,
 } from "./openclaw-agent-db.js";
-import { AGENT_SCHEMA_WITHOUT_DISPLAY_ROWS_SQL } from "./openclaw-agent-display-row-schema.js";
+import { AGENT_BASE_SCHEMA_SQL } from "./openclaw-agent-display-row-schema.js";
 import {
   closeOpenClawStateDatabaseForTest,
   OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
@@ -83,7 +83,7 @@ function createCurrentAgentRuntimeSchemaShape() {
   const { DatabaseSync } = requireNodeSqlite();
   const database = new DatabaseSync(":memory:");
   try {
-    database.exec(AGENT_SCHEMA_WITHOUT_DISPLAY_ROWS_SQL);
+    database.exec(AGENT_BASE_SCHEMA_SQL);
     return collectSqliteSchemaShape(database);
   } finally {
     database.close();

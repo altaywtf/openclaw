@@ -15,6 +15,7 @@ import {
   ensureOpenClawAgentDisplayRowSchema,
   SESSION_TRANSCRIPT_DISPLAY_ROWS_TABLE,
   SESSION_TRANSCRIPT_DISPLAY_STATE_TABLE,
+  validateOpenClawAgentDisplayRowSchema,
 } from "../../state/openclaw-agent-display-row-schema.js";
 import {
   isCanonicalSessionTranscriptEntry,
@@ -327,6 +328,28 @@ export function invalidateSessionTranscriptDisplayInTransaction(
     updatedAt: Date.now(),
   });
   return generation;
+}
+
+/** Invalidates an adopted display projection without materializing absent storage. */
+export function invalidateExistingSessionTranscriptDisplayInTransaction(
+  db: DatabaseSync,
+  sessionId: string,
+): boolean {
+  if (!validateOpenClawAgentDisplayRowSchema(db)) {
+    return false;
+  }
+  const result = executeSqliteQuerySync(
+    db,
+    getDisplayKysely(db)
+      .updateTable(SESSION_TRANSCRIPT_DISPLAY_STATE_TABLE)
+      .set({
+        generation: createDisplayGeneration(),
+        needs_rebuild: 1,
+        updated_at: Date.now(),
+      })
+      .where("session_id", "=", sessionId),
+  );
+  return result.numAffectedRows === 1n;
 }
 
 /** Extends one ready display generation after active-path eligibility is already proven. */

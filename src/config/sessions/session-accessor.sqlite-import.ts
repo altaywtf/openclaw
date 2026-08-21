@@ -26,9 +26,12 @@ import {
   touchTranscriptMutationInTransaction,
 } from "./session-accessor.sqlite-transcript-state.js";
 import { appendTranscriptEventInTransaction } from "./session-accessor.sqlite-transcript-store.js";
-import { invalidateSessionTranscriptDisplayInTransaction } from "./session-transcript-display.js";
+import { invalidateExistingSessionTranscriptDisplayInTransaction } from "./session-transcript-display.js";
 import { reconcileSessionTranscriptIndexInTransaction } from "./session-transcript-index.js";
-import { startSessionTranscriptIndexReconcile } from "./session-transcript-reconcile.js";
+import {
+  startSessionTranscriptDisplayReconcile,
+  startSessionTranscriptIndexReconcile,
+} from "./session-transcript-reconcile.js";
 import type { SessionEntry } from "./types.js";
 
 /** Internal doctor/migration import target for one legacy session row. */
@@ -50,6 +53,7 @@ type SqliteSessionImportRowsParams = {
 
 /** Summary of rows written by an internal doctor/migration import. */
 type SqliteSessionImportRowsResult = {
+  displayProjectionInvalidated: boolean;
   sessionId: string;
   sessionKey: string;
   skippedExisting?: true;
@@ -84,6 +88,7 @@ function importSqliteSessionRowsInTransaction(
   prepared: ReturnType<typeof prepareSqliteSessionImport>,
 ): SqliteSessionImportRowsResult {
   const { params, resolved } = prepared;
+  let displayProjectionInvalidated = false;
   let transcriptEvents = 0;
   // Doctor may have staged another legacy alias in this database already. Inspect only this
   // exact import target; runtime-wide canonical validation runs after the import phase.
@@ -92,6 +97,7 @@ function importSqliteSessionRowsInTransaction(
   })?.entry;
   if (params.skipIfExists === true && currentEntry) {
     return {
+      displayProjectionInvalidated,
       sessionId: params.entry.sessionId,
       sessionKey: resolved.sessionKey,
       skippedExisting: true,
@@ -155,7 +161,10 @@ function importSqliteSessionRowsInTransaction(
       }
       transcriptEvents = exactTranscriptRows.length;
       reconcileSessionTranscriptIndexInTransaction(database.db, params.entry.sessionId);
-      invalidateSessionTranscriptDisplayInTransaction(database.db, params.entry.sessionId);
+      displayProjectionInvalidated = invalidateExistingSessionTranscriptDisplayInTransaction(
+        database.db,
+        params.entry.sessionId,
+      );
       publishSessionEntryCacheInvalidation(database);
     }
   } else if (prepared.transcriptEvents) {
@@ -186,7 +195,10 @@ function importSqliteSessionRowsInTransaction(
     }
     reconcileSessionTranscriptIndexInTransaction(database.db, params.entry.sessionId);
     if (transcriptEvents > 0) {
-      invalidateSessionTranscriptDisplayInTransaction(database.db, params.entry.sessionId);
+      displayProjectionInvalidated = invalidateExistingSessionTranscriptDisplayInTransaction(
+        database.db,
+        params.entry.sessionId,
+      );
     }
     publishSessionEntryCacheInvalidation(database);
   }
@@ -200,6 +212,7 @@ function importSqliteSessionRowsInTransaction(
     touchTranscriptMutationInTransaction(database, params.entry.sessionId);
   }
   return {
+    displayProjectionInvalidated,
     sessionId: params.entry.sessionId,
     sessionKey: resolved.sessionKey,
     transcriptEvents,
@@ -228,7 +241,10 @@ export async function importSqliteSessionRowsBatch(
     if (result.transcriptEvents === 0) {
       continue;
     }
-    startSessionTranscriptIndexReconcile({
+    const startReconcile = result.displayProjectionInvalidated
+      ? startSessionTranscriptDisplayReconcile
+      : startSessionTranscriptIndexReconcile;
+    startReconcile({
       ...toDatabaseOptions(resolved),
       preferredSessionId: result.sessionId,
     });

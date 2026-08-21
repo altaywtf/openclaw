@@ -211,6 +211,7 @@ export function buildSessionTranscriptProjection(params: {
 export function prepareSessionTranscriptProjection(
   db: DatabaseSync,
   sessionId: string,
+  options: { includeDisplayProjection?: boolean } = {},
 ): PreparedSessionTranscriptProjection | undefined {
   return runSqliteDeferredTransactionSync(
     db,
@@ -242,9 +243,13 @@ export function prepareSessionTranscriptProjection(
           .select(["indexed_seq", "needs_rebuild"])
           .where("session_id", "=", sessionId),
       );
-      const displayState = readSessionTranscriptDisplayState(db, sessionId);
+      const includeDisplayProjection = options.includeDisplayProjection === true;
+      const displayState = includeDisplayProjection
+        ? readSessionTranscriptDisplayState(db, sessionId)
+        : undefined;
       const displayNeedsRebuild =
-        !displayState || displayState.needsRebuild || displayState.indexedSeq !== latestSeq;
+        includeDisplayProjection &&
+        (!displayState || displayState.needsRebuild || displayState.indexedSeq !== latestSeq);
 
       return buildSessionTranscriptProjection({
         activeNeedsRebuild:
@@ -254,6 +259,7 @@ export function prepareSessionTranscriptProjection(
             activeState.indexed_seq !== latestSeq),
         displayGeneration: displayState?.generation ?? randomUUID().replaceAll("-", ""),
         displayNeedsRebuild,
+        includeDisplayRows: includeDisplayProjection,
         rows: rows.map((row) => ({
           createdAt: row.created_at,
           event: JSON.parse(row.event_json) as Record<string, unknown>,

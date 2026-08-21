@@ -25,12 +25,15 @@ import { bindSessionWindowEntryProjection } from "./session-accessor.sqlite-sess
 import { parseSessionEntryJson } from "./session-accessor.sqlite-status.js";
 import { ensureTranscriptGenerationInTransaction } from "./session-accessor.sqlite-transcript-state.js";
 import { canonicalSessionKeyMigrationRequiredError } from "./session-canonical-key.js";
-import { invalidateSessionTranscriptDisplayInTransaction } from "./session-transcript-display.js";
+import { invalidateExistingSessionTranscriptDisplayInTransaction } from "./session-transcript-display.js";
 import {
   deleteSessionTranscriptIndexInTransaction,
   reconcileSessionTranscriptIndexInTransaction,
 } from "./session-transcript-index.js";
-import { startSessionTranscriptIndexReconcile } from "./session-transcript-reconcile.js";
+import {
+  startSessionTranscriptDisplayReconcile,
+  startSessionTranscriptIndexReconcile,
+} from "./session-transcript-reconcile.js";
 import { normalizeStoreSessionKey } from "./store-entry.js";
 import type { SessionEntry } from "./types.js";
 
@@ -473,10 +476,16 @@ function copySqliteSessionOwnedStateForRepair(params: {
     }
     // Every transcript projection follows the selected canonical source, including replacements
     // whose final sequence is unchanged or lower than the destination it supersedes.
-    invalidateSessionTranscriptDisplayInTransaction(params.destination.db, sessionId);
+    const displayProjectionInvalidated = invalidateExistingSessionTranscriptDisplayInTransaction(
+      params.destination.db,
+      sessionId,
+    );
     deleteSessionTranscriptIndexInTransaction(params.destination.db, sessionId);
     reconcileSessionTranscriptIndexInTransaction(params.destination.db, sessionId);
-    startSessionTranscriptIndexReconcile({
+    const startReconcile = displayProjectionInvalidated
+      ? startSessionTranscriptDisplayReconcile
+      : startSessionTranscriptIndexReconcile;
+    startReconcile({
       agentId: params.destination.agentId,
       path: params.destination.path,
       preferredSessionId: sessionId,

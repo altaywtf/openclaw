@@ -11,6 +11,7 @@ const DISPLAY_ROW_SCHEMA_END =
   "CREATE VIRTUAL TABLE IF NOT EXISTS session_transcript_fts USING fts5(";
 const SQLITE_TABLE_EXISTS_SQL = "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?";
 const ENSURED_DATABASES = new WeakSet<DatabaseSync>();
+const ABSENT_DATABASES = new WeakSet<DatabaseSync>();
 
 function splitDisplayRowSchema(sql: string): {
   displayRows: string;
@@ -30,7 +31,7 @@ function splitDisplayRowSchema(sql: string): {
 const displayRowSchema = splitDisplayRowSchema(OPENCLAW_AGENT_SCHEMA_SQL);
 
 const AGENT_DISPLAY_ROW_SCHEMA_SQL = displayRowSchema.displayRows;
-export const AGENT_SCHEMA_WITHOUT_DISPLAY_ROWS_SQL = displayRowSchema.withoutDisplayRows;
+export const AGENT_BASE_SCHEMA_SQL = displayRowSchema.withoutDisplayRows;
 
 function hasDisplayRowTable(db: DatabaseSync, tableName: string): boolean {
   return Boolean(
@@ -39,16 +40,24 @@ function hasDisplayRowTable(db: DatabaseSync, tableName: string): boolean {
   );
 }
 
-function validateExistingDisplayRowSchema(db: DatabaseSync): boolean {
+export function validateOpenClawAgentDisplayRowSchema(db: DatabaseSync): boolean {
+  if (ENSURED_DATABASES.has(db)) {
+    return true;
+  }
+  if (ABSENT_DATABASES.has(db)) {
+    return false;
+  }
   const statePresent = hasDisplayRowTable(db, SESSION_TRANSCRIPT_DISPLAY_STATE_TABLE);
   const rowsPresent = hasDisplayRowTable(db, SESSION_TRANSCRIPT_DISPLAY_ROWS_TABLE);
   if (!statePresent && !rowsPresent) {
+    ABSENT_DATABASES.add(db);
     return false;
   }
   if (!statePresent || !rowsPresent) {
     throw new Error("OpenClaw agent display-row schema is partially present.");
   }
   assertSqliteSchemaContains(db, "OpenClaw agent display-row schema", AGENT_DISPLAY_ROW_SCHEMA_SQL);
+  ENSURED_DATABASES.add(db);
   return true;
 }
 
@@ -58,7 +67,7 @@ function cacheDisplayRowSchemaAfterTransaction(db: DatabaseSync): void {
       return;
     }
     try {
-      if (validateExistingDisplayRowSchema(db)) {
+      if (validateOpenClawAgentDisplayRowSchema(db)) {
         ENSURED_DATABASES.add(db);
       }
     } catch {
@@ -73,8 +82,9 @@ export function ensureOpenClawAgentDisplayRowSchema(db: DatabaseSync): void {
     return;
   }
   const ensure = () => {
-    if (!validateExistingDisplayRowSchema(db)) {
+    if (!validateOpenClawAgentDisplayRowSchema(db)) {
       db.exec(AGENT_DISPLAY_ROW_SCHEMA_SQL); // sqlite-allow-raw -- Canonical additive DDL only.
+      ABSENT_DATABASES.delete(db);
       assertSqliteSchemaContains(
         db,
         "OpenClaw agent display-row schema",

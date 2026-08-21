@@ -8,7 +8,7 @@ import {
 } from "./openclaw-agent-db.js";
 import {
   ensureOpenClawAgentDisplayRowSchema,
-  AGENT_SCHEMA_WITHOUT_DISPLAY_ROWS_SQL,
+  AGENT_BASE_SCHEMA_SQL,
   SESSION_TRANSCRIPT_DISPLAY_ROWS_TABLE,
   SESSION_TRANSCRIPT_DISPLAY_STATE_TABLE,
 } from "./openclaw-agent-display-row-schema.js";
@@ -113,7 +113,7 @@ describe("agent display-row schema", () => {
   it("does not cache a schema ensure rolled back by its caller", () => {
     const database = new DatabaseSync(":memory:");
     try {
-      database.exec(AGENT_SCHEMA_WITHOUT_DISPLAY_ROWS_SQL);
+      database.exec(AGENT_BASE_SCHEMA_SQL);
       database.exec("BEGIN IMMEDIATE;");
       ensureOpenClawAgentDisplayRowSchema(database);
       database.exec("ROLLBACK;");
@@ -149,15 +149,15 @@ describe("agent display-row schema", () => {
       `,
       message: /session_transcript_display_rows|schema/u,
     },
-  ])("rejects $name instead of silently completing the group", ({ damage, message }) => {
-    const database = new DatabaseSync(":memory:");
-    try {
-      database.exec(OPENCLAW_AGENT_SCHEMA_SQL);
-      database.exec(damage);
-      expect(() => ensureOpenClawAgentDisplayRowSchema(database)).toThrow(message);
-    } finally {
-      database.close();
-    }
+  ])("rejects $name during physical reopen", ({ damage, message }) => {
+    const stateDir = tempDirs.make("openclaw-display-row-reopen-");
+    const options = { agentId: "main", env: { OPENCLAW_STATE_DIR: stateDir } };
+    const database = openOpenClawAgentDatabase(options);
+    ensureOpenClawAgentDisplayRowSchema(database.db);
+    database.db.exec(damage);
+    closeOpenClawAgentDatabasesForTest();
+
+    expect(() => openOpenClawAgentDatabase(options)).toThrow(message);
   });
 
   it("keeps a complete populated group compatible with the prior schema contract", () => {
@@ -165,11 +165,7 @@ describe("agent display-row schema", () => {
     try {
       insertDisplayStateAndRow(database);
       expect(() =>
-        assertSqliteSchemaContains(
-          database,
-          "previous agent schema",
-          AGENT_SCHEMA_WITHOUT_DISPLAY_ROWS_SQL,
-        ),
+        assertSqliteSchemaContains(database, "previous agent schema", AGENT_BASE_SCHEMA_SQL),
       ).not.toThrow();
       expect(database.prepare("SELECT row_id FROM session_transcript_display_rows").get()).toEqual({
         row_id: "row-1",

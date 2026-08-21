@@ -800,7 +800,13 @@ describe("SQLite active transcript event projection", () => {
 
   it("skips the preparation worker when the projection is already current", async () => {
     await persistSessionTranscriptTurn(scope, {
-      messages: [{ eventId: "seed", message: { role: "user", content: "seed" } }],
+      messages: [
+        {
+          eventId: "seed",
+          maintainDisplayProjection: true,
+          message: { role: "user", content: "seed" },
+        },
+      ],
       touchSessionEntry: false,
     });
     queuedSessionWrite.mockClear();
