@@ -12,10 +12,11 @@ import {
   claimSessionTranscriptDisplayInTransaction,
   finalizeSessionTranscriptDisplayInTransaction,
   hasTranscriptMessage,
-  prepareSessionTranscriptDisplayRows,
+  prepareSessionTranscriptDisplayProjection,
   readSessionTranscriptDisplayRowsInTransaction,
   readSessionTranscriptDisplayState,
   shouldProjectActiveEvent,
+  type PreparedSessionTranscriptDisplayCarry,
   type PreparedSessionTranscriptDisplayRow,
 } from "./session-transcript-display.js";
 import {
@@ -50,6 +51,7 @@ export type PreparedSessionTranscriptProjectionMetadata = {
   activeEventCount: number;
   activeMessageCount: number;
   activeNeedsRebuild: boolean;
+  displayCarry: PreparedSessionTranscriptDisplayCarry[];
   displayGeneration: string;
   displayNeedsRebuild: boolean;
   displayRowCount: number;
@@ -163,8 +165,11 @@ export function buildSessionTranscriptProjection(params: {
   const now = Date.now();
   const events = params.rows.map((row) => row.event);
   const activeRows: PreparedSessionTranscriptProjection["activeRows"] = [];
-  const displayRows =
-    params.includeDisplayRows === false ? [] : prepareSessionTranscriptDisplayRows(params.rows);
+  const displayProjection =
+    params.includeDisplayRows === false
+      ? { carry: [], rows: [] }
+      : prepareSessionTranscriptDisplayProjection(params.rows);
+  const displayRows = displayProjection.rows;
   const ftsRows: TranscriptIndexEntry[] = [];
   let activeMessageCount = 0;
 
@@ -195,6 +200,7 @@ export function buildSessionTranscriptProjection(params: {
     activeMessageCount,
     activeNeedsRebuild: params.activeNeedsRebuild ?? true,
     activeRows,
+    displayCarry: displayProjection.carry,
     displayGeneration: params.displayGeneration ?? randomUUID().replaceAll("-", ""),
     displayNeedsRebuild: params.displayNeedsRebuild ?? true,
     displayRowCount: displayRows.length,
@@ -501,6 +507,7 @@ export function finalizePreparedSessionTranscriptProjectionInTransaction(
     plan.displayNeedsRebuild &&
     !finalizeSessionTranscriptDisplayInTransaction(db, {
       claimId,
+      carry: plan.displayCarry,
       generation: plan.displayGeneration,
       rowCount: plan.displayRowCount,
       sessionId: plan.sessionId,

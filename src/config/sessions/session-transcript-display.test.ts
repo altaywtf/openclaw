@@ -20,7 +20,12 @@ import {
 } from "./session-accessor.sqlite-transcript-write.js";
 import type { SessionTranscriptTurnMessageAppend } from "./session-accessor.types.js";
 import {
+  appendSessionTranscriptDisplayChunkInTransaction,
+  claimSessionTranscriptDisplayInTransaction,
+  deleteSessionTranscriptDisplayChunkInTransaction,
+  finalizeSessionTranscriptDisplayInTransaction,
   invalidateSessionTranscriptDisplayInTransaction,
+  prepareSessionTranscriptDisplayProjection,
   readSessionTranscriptDisplayRowsInTransaction,
   readSessionTranscriptDisplayState,
 } from "./session-transcript-display.js";
@@ -380,6 +385,174 @@ describe("SQLite transcript display rows", () => {
         limit: Number.MAX_SAFE_INTEGER,
       }),
     ).toEqual({ generation: rebuilding.generation, kind: "reset" });
+  });
+
+  it("rejects stale row and companion chunks, then publishes one fresh retry", async () => {
+    await persistSessionTranscriptTurn(scope, {
+      messages: [
+        {
+          eventId: "assistant-target",
+          parentId: null,
+          message: { role: "assistant", content: "Spoken answer" },
+        },
+        {
+          eventId: "tts-supplement",
+          parentId: "assistant-target",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "text", text: "Audio reply" },
+              { type: "audio", url: "/media/tts.mp3" },
+            ],
+            openclawTtsSupplement: { spokenText: "Spoken answer" },
+          },
+        },
+      ],
+      touchSessionEntry: false,
+    });
+    const sourceRows = database()
+      .db.prepare("SELECT seq, event_json FROM transcript_events WHERE session_id = ? ORDER BY seq")
+      .all(scope.sessionId)
+      .map((entry) => {
+        const source = entry as { event_json: string; seq: number };
+        return { event: JSON.parse(source.event_json), seq: source.seq };
+      });
+    const plan = prepareSessionTranscriptDisplayProjection(sourceRows);
+    expect(plan.rows[0]?.semanticSources).toMatchObject([
+      { relation: "tts_supplement", sourceEventSeq: 2 },
+    ]);
+
+    const firstGeneration = runOpenClawAgentWriteTransaction(
+      (agentDatabase) =>
+        invalidateSessionTranscriptDisplayInTransaction(agentDatabase.db, scope.sessionId),
+      { agentId: scope.agentId, env: scope.env },
+    );
+    const firstClaim = 101;
+    runOpenClawAgentWriteTransaction(
+      (agentDatabase) => {
+        expect(
+          claimSessionTranscriptDisplayInTransaction(agentDatabase.db, {
+            claimId: firstClaim,
+            generation: firstGeneration,
+            sessionId: scope.sessionId,
+          }),
+        ).toBe(true);
+        let deleted;
+        do {
+          deleted = deleteSessionTranscriptDisplayChunkInTransaction(agentDatabase.db, {
+            claimId: firstClaim,
+            generation: firstGeneration,
+            maxRows: 1,
+            sessionId: scope.sessionId,
+          });
+          expect(deleted.owned).toBe(true);
+        } while (deleted.hasMore);
+        expect(
+          appendSessionTranscriptDisplayChunkInTransaction(agentDatabase.db, {
+            claimId: firstClaim,
+            generation: firstGeneration,
+            rows: plan.rows.slice(0, 1),
+            sessionId: scope.sessionId,
+          }),
+        ).toBe(true);
+      },
+      { agentId: scope.agentId, env: scope.env },
+    );
+
+    const retryGeneration = runOpenClawAgentWriteTransaction(
+      (agentDatabase) =>
+        invalidateSessionTranscriptDisplayInTransaction(agentDatabase.db, scope.sessionId),
+      { agentId: scope.agentId, env: scope.env },
+    );
+    runOpenClawAgentWriteTransaction(
+      (agentDatabase) => {
+        expect(
+          appendSessionTranscriptDisplayChunkInTransaction(agentDatabase.db, {
+            claimId: firstClaim,
+            generation: firstGeneration,
+            rows: plan.rows.slice(1),
+            sessionId: scope.sessionId,
+          }),
+        ).toBe(false);
+        expect(
+          finalizeSessionTranscriptDisplayInTransaction(agentDatabase.db, {
+            carry: plan.carry,
+            claimId: firstClaim,
+            generation: firstGeneration,
+            rowCount: plan.rows.length,
+            sessionId: scope.sessionId,
+            sourceIndexedSeq: sourceRows.at(-1)?.seq ?? -1,
+          }),
+        ).toBe(false);
+      },
+      { agentId: scope.agentId, env: scope.env },
+    );
+    expect(
+      readPage({
+        expectedGeneration: firstGeneration,
+        fromOrdinal: 0,
+        limit: 10,
+      }),
+    ).toEqual({ generation: retryGeneration, kind: "reset" });
+
+    const retryClaim = 202;
+    runOpenClawAgentWriteTransaction(
+      (agentDatabase) => {
+        expect(
+          claimSessionTranscriptDisplayInTransaction(agentDatabase.db, {
+            claimId: retryClaim,
+            generation: retryGeneration,
+            sessionId: scope.sessionId,
+          }),
+        ).toBe(true);
+        let deleted;
+        do {
+          deleted = deleteSessionTranscriptDisplayChunkInTransaction(agentDatabase.db, {
+            claimId: retryClaim,
+            generation: retryGeneration,
+            maxRows: 1,
+            sessionId: scope.sessionId,
+          });
+        } while (deleted.hasMore);
+        expect(
+          appendSessionTranscriptDisplayChunkInTransaction(agentDatabase.db, {
+            claimId: retryClaim,
+            generation: retryGeneration,
+            rows: plan.rows,
+            sessionId: scope.sessionId,
+          }),
+        ).toBe(true);
+        expect(
+          finalizeSessionTranscriptDisplayInTransaction(agentDatabase.db, {
+            carry: plan.carry,
+            claimId: retryClaim,
+            generation: retryGeneration,
+            rowCount: plan.rows.length,
+            sessionId: scope.sessionId,
+            sourceIndexedSeq: sourceRows.at(-1)?.seq ?? -1,
+          }),
+        ).toBe(true);
+      },
+      { agentId: scope.agentId, env: scope.env },
+    );
+    expect(
+      readPage({
+        expectedGeneration: retryGeneration,
+        fromOrdinal: 0,
+        limit: 10,
+      }),
+    ).toMatchObject({
+      generation: retryGeneration,
+      kind: "ready",
+      rows: [{ kind: "assistant", revision: 2, sourceEventSeq: 1 }],
+    });
+    expect(
+      database()
+        .db.prepare(
+          "SELECT relation, source_event_seq FROM session_transcript_display_row_sources WHERE session_id = ?",
+        )
+        .all(scope.sessionId),
+    ).toEqual([{ relation: "tts_supplement", source_event_seq: 2 }]);
   });
 
   it("publishes an empty ready generation after clearing a transcript", async () => {
