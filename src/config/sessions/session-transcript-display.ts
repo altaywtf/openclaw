@@ -63,6 +63,12 @@ type SessionTranscriptDisplayReadResult =
     }
   | { generation: string | null; kind: "reset" };
 
+type SessionTranscriptDisplayReadParams = {
+  expectedGeneration: string;
+  fromOrdinal: number | "tail";
+  limit: number;
+};
+
 type DisplayRowDatabase = Omit<
   Pick<
     OpenClawAgentKyselyDatabase,
@@ -538,7 +544,7 @@ function parseDisplayRowKind(value: string): SessionTranscriptDisplayRowKind {
 function readSessionTranscriptDisplayRowsSnapshot(
   db: DatabaseSync,
   sessionId: string,
-  params: { expectedGeneration: string; fromOrdinal: number; limit: number },
+  params: SessionTranscriptDisplayReadParams,
 ): SessionTranscriptDisplayReadResult {
   const state = readSessionTranscriptDisplayState(db, sessionId);
   const latest = executeSqliteQueryTakeFirstSync(
@@ -559,22 +565,27 @@ function readSessionTranscriptDisplayRowsSnapshot(
   ) {
     return { generation: state?.generation ?? null, kind: "reset" };
   }
-  const fromOrdinal = Number.isFinite(params.fromOrdinal)
-    ? Math.max(0, Math.floor(params.fromOrdinal))
-    : 0;
+  const tail = params.fromOrdinal === "tail";
+  const fromOrdinal =
+    params.fromOrdinal === "tail" || !Number.isFinite(params.fromOrdinal)
+      ? 0
+      : Math.max(0, Math.floor(params.fromOrdinal));
   const limit = normalizeDisplayPageLimit(params.limit);
+  const kysely = getDisplayKysely(db);
+  const pageQuery = kysely
+    .selectFrom(SESSION_TRANSCRIPT_DISPLAY_ROWS_TABLE)
+    .select(["display_ordinal", "kind", "revision", "row_id", "row_version", "source_event_seq"])
+    .where("session_id", "=", sessionId);
   const selected = executeSqliteQuerySync(
     db,
-    getDisplayKysely(db)
-      .selectFrom(SESSION_TRANSCRIPT_DISPLAY_ROWS_TABLE)
-      .select(["display_ordinal", "kind", "revision", "row_id", "row_version", "source_event_seq"])
-      .where("session_id", "=", sessionId)
-      .where("display_ordinal", ">=", fromOrdinal)
-      .orderBy("display_ordinal", "asc")
-      .limit(limit + 1),
+    (tail
+      ? pageQuery.orderBy("display_ordinal", "desc")
+      : pageQuery.where("display_ordinal", ">=", fromOrdinal).orderBy("display_ordinal", "asc")
+    ).limit(limit + 1),
   ).rows;
   const hasMore = selected.length > limit;
-  const rows = selected.slice(0, limit).map((row) => ({
+  const page = selected.slice(0, limit);
+  const rows = (tail ? page.toReversed() : page).map((row) => ({
     displayOrdinal: row.display_ordinal,
     kind: parseDisplayRowKind(row.kind),
     revision: row.revision,
@@ -585,7 +596,7 @@ function readSessionTranscriptDisplayRowsSnapshot(
   return {
     generation: state.generation,
     kind: "ready",
-    ...(hasMore ? { nextOrdinal: fromOrdinal + rows.length } : {}),
+    ...(!tail && hasMore ? { nextOrdinal: fromOrdinal + rows.length } : {}),
     rows,
   };
 }
@@ -594,7 +605,7 @@ function readSessionTranscriptDisplayRowsSnapshot(
 export function readSessionTranscriptDisplayRowsInTransaction(
   db: DatabaseSync,
   sessionId: string,
-  params: { expectedGeneration: string; fromOrdinal: number; limit: number },
+  params: SessionTranscriptDisplayReadParams,
 ): SessionTranscriptDisplayReadResult {
   ensureOpenClawAgentDisplayRowSchema(db);
   if (db.isTransaction) {

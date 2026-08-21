@@ -128,7 +128,7 @@ describe("SQLite transcript display rows", () => {
   }
 
   function readPage(
-    params: { expectedGeneration: string; fromOrdinal: number; limit: number },
+    params: { expectedGeneration: string; fromOrdinal: number | "tail"; limit: number },
     sessionId = scope.sessionId,
   ) {
     return readSessionTranscriptDisplayRowsInTransaction(database().db, sessionId, params);
@@ -284,6 +284,20 @@ describe("SQLite transcript display rows", () => {
         limit: 10,
       }),
     ).toEqual({ generation, kind: "reset" });
+    expect(
+      readPage({
+        expectedGeneration: generation,
+        fromOrdinal: "tail",
+        limit: 2,
+      }),
+    ).toMatchObject({
+      generation,
+      kind: "ready",
+      rows: [
+        { displayOrdinal: 1, kind: "assistant" },
+        { displayOrdinal: 2, kind: "user" },
+      ],
+    });
     const normalizedBounds = readPage({
       expectedGeneration: generation,
       fromOrdinal: Number.NaN,

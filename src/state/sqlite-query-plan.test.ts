@@ -375,6 +375,21 @@ describe("sqlite hot query plans", () => {
     expect(displayOrdinalPlan).not.toContain("SCAN session_transcript_display_rows");
     expect(displayOrdinalPlan).not.toContain("USE TEMP B-TREE FOR ORDER BY");
 
+    const displayTailPlan = explainQueryPlan(
+      database.db,
+      `
+        SELECT row_id, row_version, revision, display_ordinal, source_event_seq, kind
+          FROM session_transcript_display_rows
+         WHERE session_id = ?
+         ORDER BY display_ordinal DESC
+         LIMIT 201
+      `,
+      ["session-1"],
+    );
+    expect(displayTailPlan).toContain("idx_agent_transcript_display_ordinal");
+    expect(displayTailPlan).not.toContain("SCAN session_transcript_display_rows");
+    expect(displayTailPlan).not.toContain("USE TEMP B-TREE FOR ORDER BY");
+
     const displayIdentityPlan = explainQueryPlan(
       database.db,
       `
