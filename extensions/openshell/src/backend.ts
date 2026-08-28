@@ -58,6 +58,10 @@ type PendingExec = {
   workspaceLease?: OpenShellWorkspaceLease;
 };
 
+function hasOpenShellWorkspaceLease(token: unknown): boolean {
+  return typeof token === "object" && token !== null && "workspaceLease" in token;
+}
+
 type OpenShellWorkspaceLease = {
   release: () => void;
 };
@@ -352,7 +356,7 @@ class OpenShellSandboxBackendImpl {
     }
     const runRemoteShellScript = (command: SandboxBackendCommandParams) =>
       this.params.execContext.config.mode === "mirror" &&
-      !(command.activityToken as PendingExec | undefined)?.workspaceLease
+      !hasOpenShellWorkspaceLease(command.activityToken)
         ? this.runWorkspaceOperation(() => this.runRemoteShellScript(command), command.signal)
         : this.runRemoteShellScript(command);
     const handle: OpenShellSandboxBackend = {
