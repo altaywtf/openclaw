@@ -90,6 +90,7 @@ type MockAllowlistResult = {
 type MockRegisteredExecApprovalRequest = {
   approvalId: string;
   approvalSlug: string;
+  deliveryRoute?: "approval-client" | "forwarder" | "turn-source" | "none";
   warningText: string;
   expiresAtMs: number;
   preResolvedDecision: string | null | undefined;
@@ -592,6 +593,7 @@ describe("processGatewayAllowlist", () => {
     createAndRegisterDefaultExecApprovalRequestMock.mockResolvedValue({
       approvalId: "req-1",
       approvalSlug: "slug-1",
+      deliveryRoute: "approval-client",
       warningText: "",
       expiresAtMs: Date.now() + 60_000,
       preResolvedDecision: null,
@@ -2880,6 +2882,30 @@ EOF`,
       expect(sendExecApprovalFollowupResultMock).not.toHaveBeenCalled();
     },
   );
+
+  it("returns the local approval prompt when a native chat has only a turn-source route", async () => {
+    createAndRegisterDefaultExecApprovalRequestMock.mockResolvedValueOnce({
+      approvalId: "req-1",
+      approvalSlug: "slug-1",
+      deliveryRoute: "turn-source",
+      warningText: "",
+      expiresAtMs: Date.now() + 60_000,
+      preResolvedDecision: undefined,
+      initiatingSurface: "origin",
+      sentApproverDms: false,
+      unavailableReason: null,
+    });
+    buildExecApprovalFollowupTargetMock.mockImplementation((value) => value);
+
+    const result = await runGatewayAllowlist({
+      command: "find . -maxdepth 1",
+      turnSourceChannel: "telegram",
+    });
+
+    expect(result.pendingResult?.details.status).toBe("approval-pending");
+    expect(resolveApprovalDecisionOrUndefinedMock).toHaveBeenCalledOnce();
+    expect(buildExecApprovalFollowupTargetMock).toHaveBeenCalledOnce();
+  });
 
   it.each([
     ["telegram"],

@@ -112,6 +112,7 @@ function buildExecApprovalRequestToolParams(
 }
 
 type ParsedDecision = { present: boolean; value: string | null };
+type ExecApprovalDeliveryRoute = "approval-client" | "forwarder" | "turn-source" | "none";
 
 function parseDecision(value: unknown): ParsedDecision {
   if (!value || typeof value !== "object") {
@@ -130,6 +131,15 @@ function parseExpiresAtMs(value: unknown): number | undefined {
   return asDateTimestampMs(value);
 }
 
+function parseDeliveryRoute(value: unknown): ExecApprovalDeliveryRoute | undefined {
+  return value === "approval-client" ||
+    value === "forwarder" ||
+    value === "turn-source" ||
+    value === "none"
+    ? value
+    : undefined;
+}
+
 function resolveDefaultExecApprovalExpiresAtMs(): number {
   return resolveExpiresAtMsFromDurationMs(DEFAULT_APPROVAL_TIMEOUT_MS) ?? 0;
 }
@@ -139,6 +149,7 @@ export type ExecApprovalRegistration = {
   id: string;
   expiresAtMs: number;
   finalDecision?: string | null;
+  deliveryRoute?: ExecApprovalDeliveryRoute;
 };
 
 class ExecApprovalRunAbortedError extends Error {
@@ -169,10 +180,16 @@ async function registerExecApprovalRequest(
   const id = parseString(registrationResult?.id) ?? params.id;
   const expiresAtMs =
     parseExpiresAtMs(registrationResult?.expiresAtMs) ?? resolveDefaultExecApprovalExpiresAtMs();
+  const deliveryRoute = parseDeliveryRoute(registrationResult?.deliveryRoute);
   if (decision.present) {
-    return { id, expiresAtMs, finalDecision: decision.value };
+    return {
+      id,
+      expiresAtMs,
+      finalDecision: decision.value,
+      ...(deliveryRoute ? { deliveryRoute } : {}),
+    };
   }
-  return { id, expiresAtMs };
+  return { id, expiresAtMs, ...(deliveryRoute ? { deliveryRoute } : {}) };
 }
 
 /** Uses a pre-resolved decision or waits for the registered approval id. */

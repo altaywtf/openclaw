@@ -123,6 +123,24 @@ describe("exec approval requests", () => {
     });
   });
 
+  it("preserves the gateway-selected approval delivery route", async () => {
+    vi.mocked(callGatewayTool).mockResolvedValue({
+      id: "approval-id",
+      deliveryRoute: "turn-source",
+    });
+
+    await expect(
+      registerExecApprovalRequestForHostOrThrow({
+        approvalId: "approval-id",
+        command: "echo hi",
+        workdir: "/tmp",
+        host: "gateway",
+        security: "allowlist",
+        ask: "on-miss",
+      }),
+    ).resolves.toMatchObject({ deliveryRoute: "turn-source" });
+  });
+
   it("distinguishes run abort cancellation from unchanged timeout fallback", async () => {
     vi.mocked(callGatewayTool)
       .mockResolvedValueOnce({ decision: null, terminalReason: "timeout" })

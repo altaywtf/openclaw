@@ -1128,6 +1128,7 @@ export async function processGatewayAllowlist(
     const {
       approvalId,
       approvalSlug,
+      deliveryRoute,
       warningText,
       expiresAtMs,
       preResolvedDecision,
@@ -1330,7 +1331,7 @@ export async function processGatewayAllowlist(
       };
     };
 
-    if (unavailableReason === null && shouldAwaitExecApprovalInline(params)) {
+    if (unavailableReason === null && shouldAwaitExecApprovalInline({ ...params, deliveryRoute })) {
       if (params.runId) {
         emitAgentEvent({
           runId: params.runId,

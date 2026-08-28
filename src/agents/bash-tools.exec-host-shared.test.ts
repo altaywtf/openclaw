@@ -691,6 +691,23 @@ describe("buildExecApprovalPendingToolResult", () => {
     await expect(createRoute(finalDecision, channel)).resolves.toMatchObject({ kind: "wait" });
   });
 
+  it("preserves the gateway-selected delivery route", async () => {
+    await expect(
+      createExecApprovalRequestRoute({
+        warnings: [],
+        approvalRunningNoticeMs: 1_000,
+        createApprovalSlug: (approvalId) => approvalId,
+        register: async (approvalId) => ({
+          id: approvalId,
+          expiresAtMs: 60_000,
+          deliveryRoute: "turn-source",
+        }),
+        askFallback: "deny",
+        requiresExplicitApproval: false,
+      }),
+    ).resolves.toMatchObject({ kind: "wait", deliveryRoute: "turn-source" });
+  });
+
   it("applies strict approval ordering to an inline route", async () => {
     await expect(
       createExecApprovalRequestRoute({

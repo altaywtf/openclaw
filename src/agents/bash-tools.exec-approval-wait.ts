@@ -1,7 +1,9 @@
 import { isNativeApprovalChannel, normalizeMessageChannel } from "../utils/message-channel.js";
+import type { ExecApprovalRegistration } from "./bash-tools.exec-approval-request.js";
 
 export function shouldAwaitExecApprovalInline(params: {
   turnSourceChannel?: string;
+  deliveryRoute?: ExecApprovalRegistration["deliveryRoute"];
   approvalFollowupMode?: "agent" | "direct";
   trigger?: string;
 }): boolean {
@@ -23,5 +25,8 @@ export function shouldAwaitExecApprovalInline(params: {
   // mirrors the webchat path that PR #85239 fixed; without it the agent run
   // terminates on the "approval-pending" tool result and the operator must
   // send a follow-up chat message to recover the turn (issue #93918).
-  return isNativeApprovalChannel(normalizeMessageChannel(params.turnSourceChannel));
+  return (
+    params.deliveryRoute === "approval-client" &&
+    isNativeApprovalChannel(normalizeMessageChannel(params.turnSourceChannel))
+  );
 }
