@@ -252,12 +252,36 @@ async function classifyFileAttachment(params: {
   const text = extracted?.text?.trim() ?? "";
   const extractedImages = extracted?.images ?? [];
   if (text) {
-    return { outcome: { kind: "extracted", text, images: extractedImages }, filename, mimeType };
+    return {
+      outcome: {
+        kind: "extracted",
+        text,
+        images: extractedImages,
+        ...(extracted.metadata ? { metadata: extracted.metadata } : {}),
+      },
+      filename,
+      mimeType,
+    };
   }
   if (extractedImages.length > 0) {
-    return { outcome: { kind: "rendered-to-images", images: extractedImages }, filename, mimeType };
+    return {
+      outcome: {
+        kind: "rendered-to-images",
+        images: extractedImages,
+        ...(extracted.metadata ? { metadata: extracted.metadata } : {}),
+      },
+      filename,
+      mimeType,
+    };
   }
-  return { outcome: { kind: "no-extractable-text" }, filename, mimeType };
+  return {
+    outcome: {
+      kind: "no-extractable-text",
+      ...(extracted.metadata ? { metadata: extracted.metadata } : {}),
+    },
+    filename,
+    mimeType,
+  };
 }
 
 async function extractFileContext(params: {
