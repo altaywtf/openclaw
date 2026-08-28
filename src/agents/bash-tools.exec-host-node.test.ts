@@ -774,6 +774,7 @@ describe("executeNodeHostCommand", () => {
       return {
         approvalId: "approval-1",
         approvalSlug: "slug-1",
+        deliveryRoute: "approval-client",
         warningText: "",
         expiresAtMs: Date.now() + 60_000,
         preResolvedDecision: null,
