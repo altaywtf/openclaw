@@ -592,6 +592,40 @@ async function createLeasedLifecycleWireClient(
 }
 
 describe("Codex app-server thread lifecycle bindings", () => {
+  it("preserves the stored reasoning effort when resume omits it", async () => {
+    const sessionFile = path.join(tempDir, "session-effort.jsonl");
+    const workspaceDir = path.join(tempDir, "workspace-effort");
+    const threadId = "thread-effort";
+    const request = vi.fn(async (method: string) => {
+      const response = threadStartResult(threadId);
+      if (method === "thread/start") {
+        return { ...response, reasoningEffort: "high" };
+      }
+      if (method === "thread/resume") {
+        const { reasoningEffort: _reasoningEffort, ...withoutReasoningEffort } = response;
+        return withoutReasoningEffort;
+      }
+      throw new Error(`unexpected method: ${method}`);
+    });
+    const common = {
+      client: { getInstanceId: () => "effort-client", request } as never,
+      params: createParams(sessionFile, workspaceDir),
+      cwd: workspaceDir,
+      dynamicTools: [],
+      appServer: createThreadLifecycleAppServerOptions(),
+      userMcpServersEnabled: false,
+    };
+
+    await startOrResumeThread(common);
+    await startOrResumeThread(common);
+
+    expect(request.mock.calls.map(([method]) => method)).toEqual(["thread/start", "thread/resume"]);
+    await expect(readCodexAppServerBinding(sessionFile)).resolves.toMatchObject({
+      threadId,
+      reasoningEffort: "high",
+    });
+  });
+
   it.each([false, true])(
     "resumes idle A with current policy while B stays active and catalog leases come and go (native model: %s)",
     async (nativeModelOwned) => {
