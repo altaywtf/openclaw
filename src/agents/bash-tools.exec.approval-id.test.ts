@@ -61,8 +61,6 @@ vi.mock("../utils/message-channel.js", () => {
   const isGatewayMessageChannel = (value: string) => Boolean(normalizeMessageChannel(value));
   return {
     INTERNAL_MESSAGE_CHANNEL,
-    isNativeApprovalChannel: (value?: string | null) =>
-      value === INTERNAL_MESSAGE_CHANNEL || value === "discord",
     isDeliverableMessageChannel: (value: string) => {
       const channel = normalizeMessageChannel(value);
       return Boolean(channel && channel !== INTERNAL_MESSAGE_CHANNEL && channel !== "tui");
@@ -208,7 +206,12 @@ async function writeExecApprovalsConfig(config: Record<string, unknown>) {
 }
 
 function acceptedApprovalResponse(params: unknown, deliveryRoute?: "approval-client") {
-  return { status: "accepted", id: (params as { id?: string })?.id, deliveryRoute };
+  return {
+    status: "accepted",
+    id: (params as { id?: string })?.id,
+    deliveryRoute,
+    originNativeRouteActive: deliveryRoute === "approval-client",
+  };
 }
 
 function getResultText(result: { content: Array<{ type?: string; text?: string }> }) {

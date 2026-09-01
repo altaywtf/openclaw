@@ -139,6 +139,9 @@ function parseDeliveryRoute(value: unknown): ExecApprovalDeliveryRoute | undefin
     ? value
     : undefined;
 }
+function parseOptionalBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
 
 function resolveDefaultExecApprovalExpiresAtMs(): number {
   return resolveExpiresAtMsFromDurationMs(DEFAULT_APPROVAL_TIMEOUT_MS) ?? 0;
@@ -150,6 +153,7 @@ export type ExecApprovalRegistration = {
   expiresAtMs: number;
   finalDecision?: string | null;
   deliveryRoute?: ExecApprovalDeliveryRoute;
+  originNativeRouteActive?: boolean;
 };
 
 class ExecApprovalRunAbortedError extends Error {
@@ -181,15 +185,14 @@ async function registerExecApprovalRequest(
   const expiresAtMs =
     parseExpiresAtMs(registrationResult?.expiresAtMs) ?? resolveDefaultExecApprovalExpiresAtMs();
   const deliveryRoute = parseDeliveryRoute(registrationResult?.deliveryRoute);
-  if (decision.present) {
-    return {
-      id,
-      expiresAtMs,
-      finalDecision: decision.value,
-      ...(deliveryRoute ? { deliveryRoute } : {}),
-    };
-  }
-  return { id, expiresAtMs, ...(deliveryRoute ? { deliveryRoute } : {}) };
+  const originNativeRouteActive = parseOptionalBoolean(registrationResult?.originNativeRouteActive);
+  const registration = {
+    id,
+    expiresAtMs,
+    ...(deliveryRoute ? { deliveryRoute } : {}),
+    ...(originNativeRouteActive === undefined ? {} : { originNativeRouteActive }),
+  };
+  return decision.present ? { ...registration, finalDecision: decision.value } : registration;
 }
 
 /** Uses a pre-resolved decision or waits for the registered approval id. */

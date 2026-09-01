@@ -422,6 +422,7 @@ export function hasActiveApprovalNativeRouteRuntime(params: {
   approvalKind: ChannelApprovalKind;
   channel?: string | null;
   accountId?: string | null;
+  request?: ApprovalRequest;
 }): boolean {
   return hasActiveApprovalNativeRouteRuntimeForState(defaultCoordinatorState, params);
 }
@@ -432,12 +433,22 @@ function hasActiveApprovalNativeRouteRuntimeForState(
     approvalKind: ChannelApprovalKind;
     channel?: string | null;
     accountId?: string | null;
+    request?: ApprovalRequest;
   },
 ): boolean {
   const channel = normalizeChannel(params.channel);
   const accountId = normalizeOptionalString(params.accountId);
+  const selection = params.request
+    ? resolveApprovalRouteSelection(state, {
+        approvalKind: params.approvalKind,
+        request: params.request,
+      })
+    : undefined;
   const matchingRuntimes = Array.from(state.activeRuntimes.values()).filter((runtime) => {
     if (!runtime.handledKinds.has(params.approvalKind)) {
+      return false;
+    }
+    if (selection && selection.verdicts.get(runtime.runtimeId)?.kind !== "selected") {
       return false;
     }
     if (channel && normalizeChannel(runtime.channel) !== channel) {

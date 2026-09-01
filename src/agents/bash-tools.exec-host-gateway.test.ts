@@ -130,6 +130,20 @@ const createAndRegisterDefaultExecApprovalRequestMock = vi.hoisted(() =>
       undefined,
   ),
 );
+function mockOriginNativeRouteActiveOnce(): void {
+  const register = createAndRegisterDefaultExecApprovalRequestMock.getMockImplementation();
+  if (!register) {
+    throw new Error("expected approval registration mock");
+  }
+  createAndRegisterDefaultExecApprovalRequestMock.mockImplementationOnce(async (params) => {
+    const registration = await register(params);
+    if (!registration) {
+      throw new Error("expected approval registration");
+    }
+    return { ...registration, originNativeRouteActive: true };
+  });
+}
+
 const buildExecApprovalPendingToolResultMock = vi.hoisted(() => vi.fn());
 const buildExecApprovalFollowupTargetMock = vi.hoisted(() =>
   vi.fn<BuildExecApprovalFollowupTargetMock>(() => null),
@@ -595,6 +609,7 @@ describe("processGatewayAllowlist", () => {
       approvalId: "req-1",
       approvalSlug: "slug-1",
       deliveryRoute: "approval-client",
+      originNativeRouteActive: false,
       warningText: "",
       expiresAtMs: Date.now() + 60_000,
       preResolvedDecision: null,
@@ -2871,7 +2886,7 @@ EOF`,
     });
 
     expect(result.pendingResult?.details.status).toBe("approval-pending");
-    expect(resolveApprovalDecisionOrUndefinedMock).not.toHaveBeenCalled();
+    expect(resolveApprovalDecisionOrUndefinedMock).toHaveBeenCalledOnce();
     expect(buildExecApprovalFollowupTargetMock).toHaveBeenCalledOnce();
   });
 
@@ -2888,6 +2903,7 @@ EOF`,
   ])(
     "waits inline for native chat approval (%s) so the exec tool returns real output (issue #93918)",
     async (turnSourceChannel) => {
+      mockOriginNativeRouteActiveOnce();
       resolveApprovalDecisionOrUndefinedMock.mockResolvedValue("allow-once");
       createExecApprovalDecisionStateMock.mockReturnValue({
         baseDecision: { timedOut: false },
@@ -2946,6 +2962,7 @@ EOF`,
   ])(
     "returns native chat approval denials (%s) as the foreground tool result (issue #93918)",
     async (turnSourceChannel) => {
+      mockOriginNativeRouteActiveOnce();
       resolveApprovalDecisionOrUndefinedMock.mockResolvedValue("deny");
       createExecApprovalDecisionStateMock.mockReturnValue({
         baseDecision: { timedOut: false },

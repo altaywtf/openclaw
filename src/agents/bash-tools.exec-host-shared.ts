@@ -91,6 +91,7 @@ type RegisteredExecApprovalRequestContext = {
   approvalId: string;
   approvalSlug: string;
   deliveryRoute: ExecApprovalRegistration["deliveryRoute"];
+  originNativeRouteActive: ExecApprovalRegistration["originNativeRouteActive"];
   warningText: string;
   expiresAtMs: number;
   preResolvedDecision: string | null | undefined;
@@ -315,6 +316,7 @@ async function createAndRegisterDefaultExecApprovalRequest(
     approvalId,
     approvalSlug,
     deliveryRoute: registration.deliveryRoute,
+    originNativeRouteActive: registration.originNativeRouteActive,
     warningText,
     expiresAtMs: registration.expiresAtMs ?? defaultExpiresAtMs,
     preResolvedDecision:

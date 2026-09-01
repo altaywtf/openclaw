@@ -123,10 +123,11 @@ describe("exec approval requests", () => {
     });
   });
 
-  it("preserves the gateway-selected approval delivery route", async () => {
+  it("preserves the gateway-selected approval routing facts", async () => {
     vi.mocked(callGatewayTool).mockResolvedValue({
       id: "approval-id",
       deliveryRoute: "turn-source",
+      originNativeRouteActive: false,
     });
 
     await expect(
@@ -138,7 +139,25 @@ describe("exec approval requests", () => {
         security: "allowlist",
         ask: "on-miss",
       }),
-    ).resolves.toMatchObject({ deliveryRoute: "turn-source" });
+    ).resolves.toMatchObject({ deliveryRoute: "turn-source", originNativeRouteActive: false });
+  });
+
+  it("ignores malformed origin-native route state", async () => {
+    vi.mocked(callGatewayTool).mockResolvedValue({
+      id: "approval-id",
+      originNativeRouteActive: "false",
+    });
+
+    await expect(
+      registerExecApprovalRequestForHostOrThrow({
+        approvalId: "approval-id",
+        command: "echo hi",
+        workdir: "/tmp",
+        host: "gateway",
+        security: "allowlist",
+        ask: "on-miss",
+      }),
+    ).resolves.not.toHaveProperty("originNativeRouteActive");
   });
 
   it("distinguishes run abort cancellation from unchanged timeout fallback", async () => {

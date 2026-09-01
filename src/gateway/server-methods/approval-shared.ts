@@ -346,6 +346,14 @@ export async function handlePendingApprovalRequest<
             params.requestEvent,
           ) ?? 0);
 
+    const originNativeRouteActive =
+      suppressDelivery || approvalClientsOnly
+        ? false
+        : (params.context.approvalEvents?.hasSelectedOriginRoute?.(
+            params.approvalKind ?? "exec",
+            params.requestEvent,
+          ) ?? false);
+
     const hasApprovalClients = suppressDelivery
       ? false
       : approvalClientConnIds !== null
@@ -444,6 +452,7 @@ export async function handlePendingApprovalRequest<
           // Agent-side timeouts use this to distinguish delivered prompts from
           // requests kept pending only because manual /approve routing may work.
           deliveryRoute,
+          originNativeRouteActive,
           createdAtMs: params.record.createdAtMs,
           expiresAtMs: params.record.expiresAtMs,
         },

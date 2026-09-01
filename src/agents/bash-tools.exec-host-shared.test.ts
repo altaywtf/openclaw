@@ -701,11 +701,16 @@ describe("buildExecApprovalPendingToolResult", () => {
           id: approvalId,
           expiresAtMs: 60_000,
           deliveryRoute: "turn-source",
+          originNativeRouteActive: false,
         }),
         askFallback: "deny",
         requiresExplicitApproval: false,
       }),
-    ).resolves.toMatchObject({ kind: "wait", deliveryRoute: "turn-source" });
+    ).resolves.toMatchObject({
+      kind: "wait",
+      deliveryRoute: "turn-source",
+      originNativeRouteActive: false,
+    });
   });
 
   it("applies strict approval ordering to an inline route", async () => {
