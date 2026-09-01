@@ -91,6 +91,7 @@ type MockRegisteredExecApprovalRequest = {
   approvalId: string;
   approvalSlug: string;
   deliveryRoute?: "approval-client" | "forwarder" | "turn-source" | "none";
+  originNativeRouteActive?: boolean;
   warningText: string;
   expiresAtMs: number;
   preResolvedDecision: string | null | undefined;
@@ -2847,6 +2848,31 @@ EOF`,
       { phase: "waiting-approval", approvalId: "req-1", toolCallId: "tool-inline" },
       { phase: "approval-resolved", approvalId: "req-1", toolCallId: "tool-inline" },
     ]);
+  });
+
+  it("returns the Telegram approval prompt when only a generic approval client is active", async () => {
+    createAndRegisterDefaultExecApprovalRequestMock.mockResolvedValueOnce({
+      approvalId: "req-1",
+      approvalSlug: "slug-1",
+      deliveryRoute: "approval-client",
+      originNativeRouteActive: false,
+      warningText: "",
+      expiresAtMs: Date.now() + 60_000,
+      preResolvedDecision: undefined,
+      initiatingSurface: "origin",
+      sentApproverDms: false,
+      unavailableReason: null,
+    });
+    buildExecApprovalFollowupTargetMock.mockImplementation((value) => value);
+
+    const result = await runGatewayAllowlist({
+      command: "find . -maxdepth 1",
+      turnSourceChannel: "telegram",
+    });
+
+    expect(result.pendingResult?.details.status).toBe("approval-pending");
+    expect(resolveApprovalDecisionOrUndefinedMock).not.toHaveBeenCalled();
+    expect(buildExecApprovalFollowupTargetMock).toHaveBeenCalledOnce();
   });
 
   it.each([
