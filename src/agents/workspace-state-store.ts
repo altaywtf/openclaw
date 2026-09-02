@@ -15,8 +15,10 @@ import {
 } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { resolveUserPath } from "../utils.js";
+import { retireWorkspaceFileCache } from "./workspace-file-cache.js";
 import {
   createWorkspaceStateIdentity,
+  resolveCanonicalWorkspacePath,
   resolveWorkspaceStateAliases,
   resolveWorkspaceStateIdentity,
   type WorkspaceStateIdentity,
@@ -82,6 +84,7 @@ export type WorkspaceStateSnapshot = {
 };
 
 type WorkspaceStateDeletionPlan = {
+  cacheRoot: string;
   lexicalAlias: WorkspaceStateIdentity;
   currentCanonicalIdentity: WorkspaceStateIdentity;
   pathEntryExisted: boolean;
@@ -518,9 +521,10 @@ export function replaceWorkspaceAttestation(params: {
 }
 
 function deleteWorkspaceRows(
-  database: ReturnType<typeof openOpenClawStateDatabase>,
-  workspaceKey: string,
-): void {
+  database: WorkspaceStateDatabaseHandle,
+  identity: WorkspaceStateIdentity,
+): string {
+  const workspaceKey = identity.workspaceKey;
   const kysely = getNodeSqliteKysely<WorkspaceStateDatabase>(database.db);
   const receiptRows = executeSqliteQuerySync(
     database.db,
@@ -574,6 +578,7 @@ function deleteWorkspaceRows(
     database.db,
     kysely.deleteFrom("workspace_path_aliases").where("workspace_key", "=", workspaceKey),
   );
+  return identity.workspacePath;
 }
 
 /** Clear expired state only when no concurrent writer refreshed the vanished workspace. */
@@ -610,7 +615,7 @@ export function clearExpiredWorkspaceStateForVanishedWorkspace(
         return preserveRecentState();
       }
     }
-    deleteWorkspaceRows(database, identity.workspaceKey);
+    deleteWorkspaceRows(database, identity);
     return true;
   });
 }
@@ -619,6 +624,7 @@ export function clearExpiredWorkspaceStateForVanishedWorkspace(
 export function prepareWorkspaceStateDeletion(workspaceDir: string): WorkspaceStateDeletionPlan {
   const aliases = resolveWorkspaceStateAliases(workspaceDir);
   return {
+    cacheRoot: resolveCanonicalWorkspacePath(workspaceDir),
     lexicalAlias: aliases[0]!,
     currentCanonicalIdentity: aliases.at(-1)!,
     pathEntryExisted: workspacePathEntryExists(workspaceDir),
@@ -629,9 +635,12 @@ export function deleteWorkspaceState(plan: WorkspaceStateDeletionPlan): void {
   // Delete-only cleanup must not recreate state after reset/uninstall removed
   // the canonical database successfully or partially.
   if (!existsSync(resolveOpenClawStateSqlitePath())) {
+    retireWorkspaceFileCache(plan.cacheRoot);
     return;
   }
-  runOpenClawStateWriteTransaction((database) => {
+  // A vanished alias resolves only from SQLite; retire the identity actually deleted.
+  // Keep eviction after commit so failed state deletion preserves cached content.
+  const deletedWorkspaceRoot = runOpenClawStateWriteTransaction((database) => {
     const { lexicalAlias, currentCanonicalIdentity } = plan;
     const kysely = getNodeSqliteKysely<WorkspaceStateDatabase>(database.db);
     const storedAlias = executeSqliteQueryTakeFirstSync(
@@ -667,17 +676,16 @@ export function deleteWorkspaceState(plan: WorkspaceStateDeletionPlan): void {
         workspaceDir: currentCanonicalIdentity.workspacePath,
         database,
       });
-      deleteWorkspaceRows(database, currentResolution.identity.workspaceKey);
-      return;
+      return deleteWorkspaceRows(database, currentResolution.identity);
     }
     if (storedIdentity) {
-      deleteWorkspaceRows(database, storedIdentity.workspaceKey);
-      return;
+      return deleteWorkspaceRows(database, storedIdentity);
     }
     const resolution = resolveWorkspaceIdentityFromDatabase({
       workspaceDir: currentCanonicalIdentity.workspacePath,
       database,
     });
-    deleteWorkspaceRows(database, resolution.identity.workspaceKey);
+    return deleteWorkspaceRows(database, resolution.identity);
   });
+  retireWorkspaceFileCache(deletedWorkspaceRoot);
 }

@@ -13,6 +13,11 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
+import {
+  readWorkspaceFileCache,
+  retireWorkspaceFileCache,
+  writeWorkspaceFileCache,
+} from "./workspace-file-cache.js";
 import { resolveWorkspaceStateIdentity } from "./workspace-state-identity.js";
 import {
   clearExpiredWorkspaceStateForVanishedWorkspace,
@@ -364,20 +369,59 @@ describe("workspace state store", () => {
     expect(staleAlias).toBeUndefined();
   });
 
-  it("deletes canonical state through a missing persisted alias", () => {
+  it("deletes canonical state and cache through a missing persisted alias", () => {
     const dir = workspaceDir();
     const alias = testState!.path("workspace-link");
+    const filePath = path.join(dir, "AGENTS.md");
     fs.symlinkSync(dir, alias, process.platform === "win32" ? "junction" : "dir");
     mergeWorkspaceSetupState(alias, { bootstrapSeededAt: "2026-07-16T01:00:00.000Z" }, 1_000);
+    writeWorkspaceFileCache({ filePath, content: "cached", identity: "identity" });
     fs.unlinkSync(alias);
 
     deleteState(alias);
 
     expect(readWorkspaceStateSnapshot(dir).setupExists).toBe(false);
+    expect(readWorkspaceFileCache(filePath, "identity")).toBeUndefined();
     const aliases = openOpenClawStateDatabase()
       .db.prepare("SELECT alias_key FROM workspace_path_aliases")
       .all();
     expect(aliases).toEqual([]);
+  });
+
+  it("keeps cached files when state deletion fails", () => {
+    const dir = workspaceDir();
+    const alias = testState!.path("workspace-link");
+    const filePath = path.join(dir, "AGENTS.md");
+    fs.symlinkSync(dir, alias, process.platform === "win32" ? "junction" : "dir");
+    mergeWorkspaceSetupState(alias, { bootstrapSeededAt: "2026-07-16T01:00:00.000Z" }, 1_000);
+    writeWorkspaceFileCache({ filePath, content: "cached", identity: "identity" });
+    const deletion = prepareWorkspaceStateDeletion(alias);
+    openOpenClawStateDatabase()
+      .db.prepare("UPDATE workspace_path_aliases SET alias_path = ? WHERE alias_path = ?")
+      .run(`${alias}-mismatch`, alias);
+
+    try {
+      expect(() => deleteWorkspaceState(deletion)).toThrow(/alias key collision/u);
+      expect(readWorkspaceFileCache(filePath, "identity")).toBe("cached");
+    } finally {
+      retireWorkspaceFileCache(dir);
+    }
+  });
+
+  it("retires canonical cached files after deleting through an alias", () => {
+    const dir = workspaceDir();
+    const alias = testState!.path("workspace-link");
+    const filePath = path.join(dir, "AGENTS.md");
+    fs.symlinkSync(dir, alias, process.platform === "win32" ? "junction" : "dir");
+    mergeWorkspaceSetupState(alias, { bootstrapSeededAt: "2026-07-16T01:00:00.000Z" }, 1_000);
+    writeWorkspaceFileCache({ filePath, content: "cached", identity: "identity" });
+    const deletion = prepareWorkspaceStateDeletion(alias);
+    fs.unlinkSync(alias);
+
+    deleteWorkspaceState(deletion);
+
+    expect(readWorkspaceStateSnapshot(dir).setupExists).toBe(false);
+    expect(readWorkspaceFileCache(filePath, "identity")).toBeUndefined();
   });
 
   it("clears expired setup-only state for a vanished workspace", () => {
@@ -435,6 +479,8 @@ describe("workspace state store", () => {
 
   it("does not recreate a missing database during delete-only cleanup", () => {
     const dir = workspaceDir();
+    const filePath = path.join(dir, "AGENTS.md");
+    writeWorkspaceFileCache({ filePath, content: "cached", identity: "identity" });
     const databasePath = resolveOpenClawStateSqlitePath();
     closeOpenClawStateDatabaseForTest();
     fs.rmSync(path.dirname(databasePath), { recursive: true, force: true });
@@ -443,6 +489,7 @@ describe("workspace state store", () => {
 
     expect(fs.existsSync(databasePath)).toBe(false);
     expect(fs.existsSync(path.dirname(databasePath))).toBe(false);
+    expect(readWorkspaceFileCache(filePath, "identity")).toBeUndefined();
   });
 
   it("deletes migration receipts owned by the workspace", () => {

@@ -8,6 +8,7 @@ import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { makeTempWorkspace, writeWorkspaceFile } from "../test-helpers/workspace.js";
 import { getOrLoadBootstrapFiles } from "./bootstrap-cache.js";
+import * as workspaceBootstrapRead from "./workspace-bootstrap-read.js";
 import { loadWorkspaceBootstrapFiles, DEFAULT_AGENTS_FILENAME } from "./workspace.js";
 
 describe("workspace bootstrap file caching", () => {
@@ -35,24 +36,47 @@ describe("workspace bootstrap file caching", () => {
     expect(agentsFile?.missing).toBe(false);
   };
 
-  it("returns cached content when mtime unchanged", async () => {
-    const content1 = "# Initial content";
+  it("evicts the oldest cached file after 64 empty entries", async () => {
+    const readFile = vi.spyOn(workspaceBootstrapRead, "readWorkspaceBootstrapFile");
+    try {
+      const workspaces: string[] = [];
+      for (let index = 0; index <= 64; index += 1) {
+        const dir = path.join(workspaceDir, String(index));
+        await fs.mkdir(dir);
+        await writeWorkspaceFile({ dir, name: DEFAULT_AGENTS_FILENAME, content: "" });
+        expectAgentsContent(await loadAgentsFile(dir), "");
+        workspaces.push(dir);
+      }
+      expect(readFile).toHaveBeenCalledTimes(65);
+
+      expectAgentsContent(await loadAgentsFile(workspaces[0]!), "");
+      expect(readFile).toHaveBeenCalledTimes(66);
+    } finally {
+      readFile.mockRestore();
+    }
+  });
+
+  it("shares one cache entry across canonical workspace aliases", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+    const realWorkspace = path.join(workspaceDir, "real");
+    const aliasWorkspace = path.join(workspaceDir, "alias");
+    await fs.mkdir(realWorkspace);
+    await fs.symlink(realWorkspace, aliasWorkspace, "dir");
     await writeWorkspaceFile({
-      dir: workspaceDir,
+      dir: realWorkspace,
       name: DEFAULT_AGENTS_FILENAME,
-      content: content1,
+      content: "# shared",
     });
-
-    // First load
-    const agentsFile1 = await loadAgentsFile(workspaceDir);
-    expectAgentsContent(agentsFile1, content1);
-
-    // Second load should use cached content (same mtime)
-    const agentsFile2 = await loadAgentsFile(workspaceDir);
-    expectAgentsContent(agentsFile2, content1);
-
-    // Verify both calls returned the same content without re-reading
-    expect(agentsFile1?.content).toBe(agentsFile2?.content);
+    const readFile = vi.spyOn(workspaceBootstrapRead, "readWorkspaceBootstrapFile");
+    try {
+      expectAgentsContent(await loadAgentsFile(realWorkspace), "# shared");
+      expectAgentsContent(await loadAgentsFile(aliasWorkspace), "# shared");
+      expect(readFile).toHaveBeenCalledTimes(1);
+    } finally {
+      readFile.mockRestore();
+    }
   });
 
   it("invalidates cache when mtime changes", async () => {
