@@ -1745,7 +1745,7 @@ src/agents/embedded-agent-runner/compaction-diagnostics.ts	5
 src/agents/embedded-agent-runner/compaction-hooks.ts	1
 src/agents/embedded-agent-runner/compaction-session-agent.ts	7
 src/agents/embedded-agent-runner/context-engine-maintenance.ts	3
-src/agents/embedded-agent-runner/delivery-evidence.ts	12
+src/agents/embedded-agent-runner/delivery-evidence.ts	11
 src/agents/embedded-agent-runner/direct-compaction-preparation.ts	1
 src/agents/embedded-agent-runner/empty-assistant-turn.ts	1
 src/agents/embedded-agent-runner/extensions.ts	1
@@ -2039,7 +2039,7 @@ src/agents/tools/cron-tool-schema.ts	1
 src/agents/tools/cron-tool-write.ts	2
 src/agents/tools/cron-tool.ts	13
 src/agents/tools/dashboard-tool.ts	3
-src/agents/tools/embedded-gateway-stub.ts	8
+src/agents/tools/embedded-gateway-stub.ts	7
 src/agents/tools/gateway-tool.ts	5
 src/agents/tools/gateway.ts	1
 src/agents/tools/goal-tools.ts	4
@@ -2753,7 +2753,7 @@ src/daemon/systemd-exec.ts	2
 src/daemon/systemd-install.ts	2
 src/daemon/systemd-lifecycle.ts	2
 src/daemon/systemd-runtime.ts	1
-src/entry.compile-cache.ts	3
+src/entry.compile-cache.ts	2
 src/entry.respawn.ts	1
 src/fleet/backup.runtime.ts	3
 src/fleet/service-support.runtime.ts	1
