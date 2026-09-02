@@ -8967,7 +8967,7 @@ describe("update-cli", () => {
 
     await updateCommand({ dryRun: true });
 
-    expect(serviceReadCommand).toHaveBeenCalledOnce();
+    expect(serviceReadCommand).toHaveBeenCalledTimes(2);
     const logs = getLogOutput();
     expect(logs).toContain(`Targeting managed gateway service package root: ${serviceRoot}`);
     expect(logs).toContain(
@@ -9051,7 +9051,7 @@ describe("update-cli", () => {
     { scenario: "non-Gateway command", command: "agent", sameNode: false, selected: false },
     { scenario: "symlink to current Node", command: "gateway", sameNode: true, selected: false },
   ])(
-    "plans service Node selection from one inspection ($scenario)",
+    "preserves planned service Node selection through admission reinspection ($scenario)",
     async ({ command, sameNode, selected }) => {
       const root = createCaseDir("openclaw-same-root");
       const entrypoint = await writeOpenClawPackageFixture(root, "2026.5.18");
@@ -9070,7 +9070,7 @@ describe("update-cli", () => {
 
       await updateCommand({ dryRun: true });
 
-      expect(serviceReadCommand).toHaveBeenCalledOnce();
+      expect(serviceReadCommand).toHaveBeenCalledTimes(2);
       const logs = getLogOutput();
       expect(logs).not.toContain("Targeting managed gateway service package root");
       if (selected) {
@@ -9379,6 +9379,12 @@ describe("update-cli", () => {
       meta: { lastTouchedVersion: "2026.5.14" },
     } as OpenClawConfig;
     vi.mocked(readConfigFileSnapshot)
+      .mockResolvedValueOnce({
+        ...baseSnapshot,
+        sourceConfig: preUpdateConfig,
+        config: preUpdateConfig,
+        hash: "pre-update-hash",
+      })
       .mockResolvedValueOnce({
         ...baseSnapshot,
         sourceConfig: preUpdateConfig,
