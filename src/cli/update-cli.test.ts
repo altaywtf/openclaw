@@ -4759,7 +4759,7 @@ describe("update-cli", () => {
 
     await updateCommand({ yes: true, restart: false });
 
-    expect(databasePreflightMocks.preflightOpenClawDatabaseSchemas).toHaveBeenCalledTimes(3);
+    expect(databasePreflightMocks.preflightOpenClawDatabaseSchemas).toHaveBeenCalledTimes(2);
     expect(packageInstallCommandCall()?.[0]).toContain("openclaw@9999.0.0");
   });
 
@@ -4894,6 +4894,129 @@ describe("update-cli", () => {
     );
   });
 
+  it("uses the stopped work-service profile when the caller-only database is newer", async () => {
+    const tempDir = tempDirs.make("openclaw-update-owned-schema-profile-");
+    const { nodeModules, entryPath } = await setupInstalledPackageRoot(tempDir);
+    const managedState = profileStateDir("work");
+    const callerState = profileStateDir("personal");
+    const managedConfigPath = path.join(managedState, "openclaw.json");
+    primeServiceCommand(["node", entryPath, "gateway", "run"], {
+      OPENCLAW_SERVICE_MARKER: "openclaw",
+      OPENCLAW_SERVICE_KIND: "gateway",
+      OPENCLAW_PROFILE: "work",
+      OPENCLAW_STATE_DIR: managedState,
+      OPENCLAW_CONFIG_PATH: managedConfigPath,
+    });
+    serviceLoaded.mockResolvedValue(true);
+    serviceReadRuntime.mockResolvedValue({ status: "stopped", state: "stopped" });
+    mockFileBackedPathExists();
+    mockNpmGlobalRoot(nodeModules);
+    vi.mocked(fetchNpmPackageTargetStatus).mockResolvedValue(
+      packageTargetStatus({ schemaVersions: { state: 3, agent: 11 } }),
+    );
+    vi.mocked(readConfigFileSnapshot).mockImplementation(async () =>
+      process.env.OPENCLAW_PROFILE === "work"
+        ? configSnapshot(baseConfig, { path: managedConfigPath })
+        : configSnapshot(baseConfig, { path: path.join(callerState, "openclaw.json") }),
+    );
+    const preflightStateDirs: Array<string | undefined> = [];
+    databasePreflightMocks.preflightOpenClawDatabaseSchemas.mockImplementation(({ env }) => {
+      preflightStateDirs.push(env.OPENCLAW_STATE_DIR);
+      return env.OPENCLAW_STATE_DIR === callerState
+        ? {
+            incompatible: [
+              {
+                kind: "state",
+                path: path.join(callerState, "state", "openclaw.sqlite"),
+                foundVersion: 4,
+                supportedVersion: 3,
+              },
+            ],
+            indeterminate: [],
+          }
+        : { incompatible: [], indeterminate: [] };
+    });
+
+    await withEnvAsync(
+      {
+        OPENCLAW_PROFILE: "personal",
+        OPENCLAW_STATE_DIR: callerState,
+        OPENCLAW_CONFIG_PATH: path.join(callerState, "openclaw.json"),
+      },
+      async () => {
+        await updateCommand({ yes: true });
+      },
+    );
+
+    expect(preflightStateDirs).toEqual([managedState, managedState]);
+    expect(packageInstallCommandCall()).toBeDefined();
+    expect(defaultRuntime.exit).not.toHaveBeenCalledWith(1);
+  });
+
+  it.each([
+    {
+      name: "unreadable",
+      snapshot: { raw: null, readError: { code: "EACCES" }, issues: [] },
+    },
+    {
+      name: "invalid",
+      snapshot: {
+        raw: "{\n",
+        readError: undefined,
+        issues: [{ path: "agents.defaults.memory", message: "invalid store configuration" }],
+      },
+    },
+  ])("refuses an owned service with $name config before store preflight", async (testCase) => {
+    const tempDir = tempDirs.make(`openclaw-update-owned-config-${testCase.name}-`);
+    const { nodeModules, entryPath } = await setupInstalledPackageRoot(tempDir);
+    const managedState = profileStateDir("work");
+    const callerState = profileStateDir("personal");
+    const managedConfigPath = path.join(managedState, "openclaw.json");
+    primeServiceCommand(["node", entryPath, "gateway", "run"], {
+      OPENCLAW_SERVICE_MARKER: "openclaw",
+      OPENCLAW_SERVICE_KIND: "gateway",
+      OPENCLAW_PROFILE: "work",
+      OPENCLAW_STATE_DIR: managedState,
+      OPENCLAW_CONFIG_PATH: managedConfigPath,
+    });
+    serviceLoaded.mockResolvedValue(true);
+    serviceReadRuntime.mockResolvedValue({ status: "stopped", state: "stopped" });
+    mockFileBackedPathExists();
+    mockNpmGlobalRoot(nodeModules);
+    vi.mocked(fetchNpmPackageTargetStatus).mockResolvedValue(
+      packageTargetStatus({ schemaVersions: { state: 3, agent: 11 } }),
+    );
+    vi.mocked(readConfigFileSnapshot).mockImplementation(async () =>
+      process.env.OPENCLAW_PROFILE === "work"
+        ? configSnapshot({} as OpenClawConfig, {
+            path: managedConfigPath,
+            valid: false,
+            ...testCase.snapshot,
+          })
+        : configSnapshot(baseConfig, { path: path.join(callerState, "openclaw.json") }),
+    );
+
+    await withEnvAsync(
+      {
+        OPENCLAW_PROFILE: "personal",
+        OPENCLAW_STATE_DIR: callerState,
+        OPENCLAW_CONFIG_PATH: path.join(callerState, "openclaw.json"),
+      },
+      async () => {
+        await expect(updateCommand({ yes: true })).rejects.toEqual(new ExitError(1));
+      },
+    );
+
+    expect(getErrorOutput()).toContain("managed Gateway config");
+    expect(databasePreflightMocks.preflightOpenClawDatabaseSchemas).not.toHaveBeenCalled();
+    expect(packageInstallCommandCall()).toBeUndefined();
+    expectNoSideEffects(
+      cleanupStaleManagedServiceUpdateHandoffs,
+      launchdUpdateCleanupMocks.disableCurrentOpenClawUpdateLaunchdJob,
+      serviceStop,
+    );
+  });
+
   it("refuses a service-profile package target before any mutation", async () => {
     const { pkgRoot } = await setupInstalledPackageRoot(createCaseDir("schema-package"), "1.0.0");
     const entrypoint = path.join(pkgRoot, "dist", "index.js");
@@ -4907,19 +5030,17 @@ describe("update-cli", () => {
     vi.mocked(fetchNpmPackageTargetStatus).mockResolvedValue(
       packageTargetStatus({ schemaVersions: { state: 3, agent: 11 } }),
     );
-    databasePreflightMocks.preflightOpenClawDatabaseSchemas
-      .mockReturnValueOnce({ incompatible: [], indeterminate: [] })
-      .mockReturnValueOnce({
-        incompatible: [
-          {
-            kind: "agent",
-            path: "/tmp/openclaw/agents/main/agent/openclaw-agent.sqlite",
-            foundVersion: 12,
-            supportedVersion: 11,
-          },
-        ],
-        indeterminate: [],
-      });
+    databasePreflightMocks.preflightOpenClawDatabaseSchemas.mockReturnValueOnce({
+      incompatible: [
+        {
+          kind: "agent",
+          path: "/tmp/openclaw/agents/main/agent/openclaw-agent.sqlite",
+          foundVersion: 12,
+          supportedVersion: 11,
+        },
+      ],
+      indeterminate: [],
+    });
 
     await withEnvAsync(
       { INVOCATION_ID: "gateway-invocation", OPENCLAW_GATEWAY_PORT: "19999" },
@@ -4931,7 +5052,7 @@ describe("update-cli", () => {
     );
 
     expect(serviceStop).not.toHaveBeenCalled();
-    expect(databasePreflightMocks.preflightOpenClawDatabaseSchemas.mock.calls[1]?.[0].env).toEqual(
+    expect(databasePreflightMocks.preflightOpenClawDatabaseSchemas.mock.calls[0]?.[0].env).toEqual(
       expect.objectContaining({ OPENCLAW_STATE_DIR: profileStateDir() }),
     );
     expect(packageInstallCommandCall()).toBeUndefined();
@@ -4960,6 +5081,49 @@ describe("update-cli", () => {
       }),
     );
     expect(defaultRuntime.exit).not.toHaveBeenCalled();
+  });
+
+  it("refuses a package target that changes after service stop before preparation", async () => {
+    const tempDir = tempDirs.make("openclaw-update-package-schema-race-");
+    const { nodeModules, entryPath } = await setupInstalledPackageRoot(tempDir);
+    primeServiceCommand(["node", entryPath, "gateway", "run"], {
+      OPENCLAW_SERVICE_MARKER: "openclaw",
+      OPENCLAW_SERVICE_KIND: "gateway",
+      OPENCLAW_STATE_DIR: profileStateDir(),
+    });
+    serviceLoaded.mockResolvedValue(true);
+    serviceReadRuntime.mockResolvedValue({
+      status: "running",
+      pid: gatewayFixturePid,
+      state: "running",
+    });
+    serviceStop.mockImplementationOnce(async () => {
+      serviceReadRuntime.mockResolvedValue({ status: "stopped", state: "stopped" });
+    });
+    mockFileBackedPathExists();
+    mockNpmGlobalRoot(nodeModules);
+    vi.mocked(fetchNpmPackageTargetStatus).mockResolvedValue(
+      packageTargetStatus({ schemaVersions: { state: 3, agent: 11 } }),
+    );
+    databasePreflightMocks.preflightOpenClawDatabaseSchemas.mockImplementation(() =>
+      serviceStop.mock.calls.length === 0
+        ? { incompatible: [], indeterminate: [] }
+        : {
+            incompatible: [],
+            indeterminate: [
+              { kind: "state", path: "/tmp/openclaw.sqlite", reason: "database busy" },
+            ],
+          },
+    );
+
+    await expect(updateCommand({ yes: true })).rejects.toEqual(new ExitError(1));
+
+    expect(serviceStop).toHaveBeenCalledOnce();
+    expect(packageInstallCommandCall()).toBeUndefined();
+    expectNoSideEffects(
+      cleanupStaleManagedServiceUpdateHandoffs,
+      launchdUpdateCleanupMocks.disableCurrentOpenClawUpdateLaunchdJob,
+    );
   });
 
   it("refuses a service-profile git target before any mutation", async () => {
@@ -5025,6 +5189,10 @@ describe("update-cli", () => {
     await expect(updateCommand({ yes: true })).rejects.toEqual(new ExitError(1));
 
     expectNoSideEffects(serviceStop, serviceRestart);
+    expectNoSideEffects(
+      cleanupStaleManagedServiceUpdateHandoffs,
+      launchdUpdateCleanupMocks.disableCurrentOpenClawUpdateLaunchdJob,
+    );
     expect(defaultRuntime.exit).not.toHaveBeenCalled();
   });
 
@@ -7866,7 +8034,7 @@ describe("update-cli", () => {
     expect(serviceStop).toHaveBeenCalled();
   });
 
-  it("disarms legacy launchd updater jobs before stopping the gateway", async () => {
+  it("disarms legacy launchd updater jobs after schema-safe stop and before replacement", async () => {
     const tempDir = tempDirs.make("openclaw-update-launchd-loop-");
     const { nodeModules } = await setupInstalledPackageRoot(tempDir);
     mockRunningManagedGateway();
@@ -7879,8 +8047,17 @@ describe("update-cli", () => {
     const cleanupOrder =
       launchdUpdateCleanupMocks.disableCurrentOpenClawUpdateLaunchdJob.mock.invocationCallOrder[0];
     const serviceStopOrder = serviceStop.mock.invocationCallOrder[0];
-    expect(requireValue(cleanupOrder, "launchd updater cleanup order")).toBeLessThan(
-      requireValue(serviceStopOrder, "service stop order"),
+    const npmInstallCallIndex = vi
+      .mocked(runCommandWithTimeout)
+      .mock.calls.findIndex(
+        (call) => Array.isArray(call[0]) && call[0][0] === "npm" && call[0][1] === "i",
+      );
+    const npmInstallOrder =
+      vi.mocked(runCommandWithTimeout).mock.invocationCallOrder[npmInstallCallIndex];
+    const requiredCleanupOrder = requireValue(cleanupOrder, "launchd updater cleanup order");
+    expect(requireValue(serviceStopOrder, "service stop order")).toBeLessThan(requiredCleanupOrder);
+    expect(requiredCleanupOrder).toBeLessThan(
+      requireValue(npmInstallOrder, "package replacement order"),
     );
   });
 

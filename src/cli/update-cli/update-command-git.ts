@@ -149,7 +149,6 @@ export function createBeforeGitMutation(params: {
         formatSchemaRefusalLines(preStopSchemas).join("\n"),
       );
     }
-    await params.prepareMutableUpdate();
     await params.stopManagedService(params.roots);
     const preManagedServiceStop = params.getPreManagedServiceStop();
     const postStopSchemas = checkTargetDatabaseSchemas(
@@ -162,6 +161,7 @@ export function createBeforeGitMutation(params: {
         formatSchemaRefusalLines(postStopSchemas).join("\n"),
       );
     }
+    await params.prepareMutableUpdate();
     // Git's deferred prepare phase owns the task suspension. Once mutation
     // starts, only a verified recovery may re-enable persistent autostart.
     preManagedServiceStop?.windowsTaskAutoStartRecovery?.beginMutation();

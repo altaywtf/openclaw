@@ -219,6 +219,9 @@ export async function executeMutableUpdate(params: {
     } catch (err) {
       params.stop();
       await recoverStoppedService();
+      if (err instanceof UpdatePreMutationError) {
+        throw err;
+      }
       throw new Error(`Failed to capture managed gateway update state: ${String(err)}`, {
         cause: err,
       });
@@ -282,7 +285,6 @@ export async function executeMutableUpdate(params: {
       );
     }
     if (params.updateInstallKind === "package") {
-      await params.prepareMutableUpdate(getOwnedManagedUpdateEnv());
       await stopManagedServiceBeforeMutableUpdate();
       const postStopPackageSchemaPreflight = checkTargetDatabaseSchemas(
         params.packageTargetSchemaVersions,
@@ -294,6 +296,7 @@ export async function executeMutableUpdate(params: {
           formatSchemaRefusalLines(postStopPackageSchemaPreflight).join("\n"),
         );
       }
+      await params.prepareMutableUpdate(getOwnedManagedUpdateEnv());
     }
     preManagedServiceStop?.windowsTaskAutoStartRecovery?.beginMutation();
     result =

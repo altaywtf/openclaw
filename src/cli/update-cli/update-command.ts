@@ -55,11 +55,7 @@ import { assertOpenClawStateWriteAllowedAtPath } from "../../state/openclaw-stat
 import { VERSION } from "../../version.js";
 import { resolveCliName } from "../cli-name.js";
 import { createUpdateProgress } from "./progress.js";
-import {
-  checkTargetDatabaseSchemas,
-  formatSchemaRefusalLines,
-  hasSchemaRefusal,
-} from "./schema-preflight.js";
+import { checkTargetDatabaseSchemas } from "./schema-preflight.js";
 import {
   DEFAULT_PACKAGE_NAME,
   createGlobalCommandRunner,
@@ -531,17 +527,15 @@ async function updateCommandInternal(
   }
 
   const preflightConfig = configSnapshot.sourceConfig ?? configSnapshot.config;
-  const packageSchemaPreflight = checkTargetDatabaseSchemas(packageTargetSchemaVersions, {
-    config: preflightConfig,
-    env: process.env,
-  });
-  if (!opts.dryRun && hasSchemaRefusal(packageSchemaPreflight)) {
-    await refuseUpdate(
-      "database-schema-preflight",
-      formatSchemaRefusalLines(packageSchemaPreflight).join("\n"),
-    );
-    return;
-  }
+  // Mutating updates inspect the managed service first, then run this check from
+  // its captured profile. A dry-run cannot enter mutable service inspection, so
+  // its preview remains caller-scoped.
+  const packageSchemaPreflight = opts.dryRun
+    ? checkTargetDatabaseSchemas(packageTargetSchemaVersions, {
+        config: preflightConfig,
+        env: process.env,
+      })
+    : { incompatible: [], indeterminate: [] };
 
   if (opts.dryRun) {
     printUpdateDryRun({

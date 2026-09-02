@@ -2,6 +2,7 @@ import { readConfigFileSnapshot } from "../../config/config.js";
 import type { ConfigFileSnapshot } from "../../config/types.openclaw.js";
 import type { PluginInstallRecord } from "../../config/types.plugins.js";
 import { loadInstalledPluginIndexInstallRecords } from "../../plugins/installed-plugin-index-records.js";
+import { UpdatePreMutationError } from "./shared.js";
 import {
   resolveOwnedManagedUpdateEnv,
   stripGatewayServiceMarkerEnv,
@@ -35,6 +36,19 @@ function resolveOwnedManagedUpdateContextEnv(params: {
       serviceDefinitionEnv: stopState.serviceDefinitionEnv,
       invocationCwd: params.invocationCwd,
     }),
+  );
+}
+
+function assertReadableOwnedManagedConfig(configSnapshot: ConfigFileSnapshot): void {
+  if (configSnapshot.valid && !configSnapshot.readError) {
+    return;
+  }
+  const detail = configSnapshot.readError?.code
+    ? `read failed (${configSnapshot.readError.code})`
+    : "configuration is invalid";
+  throw new UpdatePreMutationError(
+    "managed-service-preflight",
+    `Update refused: could not safely inspect managed Gateway config at ${configSnapshot.path}: ${detail}. No changes were made.`,
   );
 }
 
@@ -81,6 +95,7 @@ export async function captureOwnedManagedUpdateContext(params: {
   stopState.serviceEnv = env;
   return await withOwnedManagedUpdateEnv(env, async () => {
     const configSnapshot = await readConfigFileSnapshot({ skipPluginValidation: true });
+    assertReadableOwnedManagedConfig(configSnapshot);
     const pluginInstallRecords = await loadInstalledPluginIndexInstallRecords({ env });
     return { env, configSnapshot, pluginInstallRecords };
   });
@@ -98,6 +113,7 @@ export async function captureOwnedManagedUpdatePreflightContext(params: {
   }
   return await withOwnedManagedUpdateEnv(env, async () => {
     const configSnapshot = await readConfigFileSnapshot({ skipPluginValidation: true });
+    assertReadableOwnedManagedConfig(configSnapshot);
     return { env, configSnapshot };
   });
 }
