@@ -1,17 +1,32 @@
 /* @vitest-environment jsdom */
 
-import { render } from "lit";
+import { html, render } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { availableSidebarSlots, sidebarPanelDefinitions } from "./chat-pane-embedded-panels.ts";
+import {
+  availableSidebarSlots,
+  sidebarPanelActions,
+  sidebarPanelDefinitions,
+} from "./chat-pane-embedded-panels.ts";
 import type { SessionDiscussionPanelConfig } from "./components/session-discussion-panel.ts";
 
-function discussionSlots(discussionAvailable: boolean) {
+type PanelTestOptions = {
+  dashboard?: ReturnType<typeof html>;
+  canvasCommentAvailable?: boolean;
+  canvasCommentMode?: boolean;
+  onToggleCanvasComment?: () => void;
+};
+
+function panelDefinitions(discussionAvailable: boolean, options: PanelTestOptions = {}) {
   const discussion = {} as SessionDiscussionPanelConfig;
-  const definitions = sidebarPanelDefinitions({
+  return sidebarPanelDefinitions({
     discussion,
     discussionAvailable,
+    ...options,
   } as Parameters<typeof sidebarPanelDefinitions>[0]);
-  return availableSidebarSlots(definitions);
+}
+
+function discussionSlots(discussionAvailable: boolean) {
+  return availableSidebarSlots(panelDefinitions(discussionAvailable));
 }
 
 afterEach(() => {
@@ -25,6 +40,25 @@ describe("chat pane embedded panels", () => {
 
   it("offers Discussion after the provider reports it available", () => {
     expect(discussionSlots(true)).toContain("discussion");
+  });
+
+  it("offers the Canvas commenter from the Dashboard panel header", () => {
+    const onToggleCanvasComment = vi.fn();
+    const definitions = panelDefinitions(false, {
+      dashboard: html`<div>dashboard</div>`,
+      canvasCommentAvailable: true,
+      canvasCommentMode: true,
+      onToggleCanvasComment,
+    });
+    const action = sidebarPanelActions(definitions).dashboard;
+    const container = document.createElement("div");
+
+    render(action, container);
+    const button = container.querySelector<HTMLButtonElement>("button[data-canvas-comment-toggle]");
+
+    expect(button?.getAttribute("aria-pressed")).toBe("true");
+    button?.click();
+    expect(onToggleCanvasComment).toHaveBeenCalledOnce();
   });
 
   it("enumerates a structural loading variant for every side-panel tab", async () => {

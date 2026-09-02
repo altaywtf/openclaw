@@ -189,6 +189,22 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
       },
       dashboard:
         !this.compact && board.hasBoard ? this.renderBoardPanel(board, sidebarLayout) : nothing,
+      canvasCommentAvailable:
+        !this.compact &&
+        board.snapshot.widgets.some(
+          (widget) =>
+            widget.tabId === board.activeTabId &&
+            widget.contentKind === "html" &&
+            widget.grantState !== "pending" &&
+            widget.grantState !== "rejected",
+        ),
+      canvasCommentMode:
+        this.canvasCommentTarget ===
+        `${this.resolveBoardSessionKey(board.snapshot.sessionKey)}\u0000${board.activeTabId}`,
+      onToggleCanvasComment: () => {
+        const target = `${this.resolveBoardSessionKey(board.snapshot.sessionKey)}\u0000${board.activeTabId}`;
+        this.canvasCommentTarget = this.canvasCommentTarget === target ? "" : target;
+      },
       workspace: renderSessionWorkspaceRail(sessionWorkspace, { embedded: true }),
       tasks: renderBackgroundTasksRail(backgroundTasks, { embedded: true }),
       detailOpen: this.presented && sidebarLayout.open === true && detailSlotOpen(sidebarLayout),

@@ -44,6 +44,9 @@ type SidebarPanelDefinitionParams = {
     target: Extract<ControlUiFocusBuildTarget, { kind: "desktop" }>,
   ) => void;
   dashboard: TemplateResult | typeof nothing;
+  canvasCommentAvailable: boolean;
+  canvasCommentMode: boolean;
+  onToggleCanvasComment: () => void;
   workspace: TemplateResult | typeof nothing;
   tasks: TemplateResult | typeof nothing;
   detailOpen: boolean;
@@ -90,6 +93,27 @@ const SIDEBAR_PANEL_LOADING_VARIANTS = {
   terminal: "terminal",
   workspace: "files",
 } satisfies Record<SidebarSlotId, PanelLoadingSkeletonVariant>;
+
+function renderCanvasCommentAction(params: {
+  available: boolean;
+  active: boolean;
+  onToggle: () => void;
+}): TemplateResult {
+  const label = t(params.active ? "chat.board.stopCommenting" : "chat.board.commentOnCanvas");
+  return html`<openclaw-tooltip .content=${label}>
+    <button
+      class=${`rail-header__action ${params.active ? "rail-header__action--active" : ""}`}
+      type="button"
+      data-canvas-comment-toggle
+      aria-label=${label}
+      aria-pressed=${String(params.active)}
+      ?disabled=${!params.available}
+      @click=${params.onToggle}
+    >
+      ${icons.mousePointer2}
+    </button>
+  </openclaw-tooltip>`;
+}
 
 /** One ordered declaration for every chat side-panel slot. */
 export function sidebarPanelDefinitions(
@@ -287,6 +311,15 @@ export function sidebarPanelDefinitions(
     }),
     definePanel("dashboard", "dashboard", icons.layoutDashboard, params?.dashboard ?? null, {
       available: params?.dashboard !== nothing,
+      ...(params
+        ? {
+            headerAction: renderCanvasCommentAction({
+              available: params.canvasCommentAvailable,
+              active: params.canvasCommentMode,
+              onToggle: params.onToggleCanvasComment,
+            }),
+          }
+        : {}),
     }),
   ];
 }

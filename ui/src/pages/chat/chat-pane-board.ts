@@ -333,6 +333,7 @@ export abstract class ChatPaneBoard extends ChatPaneHistory {
 
   protected renderBoardPanel(board: ResolvedBoardView, layout: SidebarLayout) {
     const sessionKey = this.resolveBoardSessionKey(board.snapshot.sessionKey);
+    const commentTarget = `${sessionKey}\u0000${board.activeTabId}`;
     const shouldRender = board.hasBoard && Boolean(sessionKey);
     const boardActive = isSidebarSlotVisible(layout, "dashboard") && this.visuallyPresented;
     const renderSurface = (active: boolean) =>
@@ -342,6 +343,10 @@ export abstract class ChatPaneBoard extends ChatPaneHistory {
         activeTabId: board.activeTabId,
         canMutate: board.provider.canMutate,
         canGrant: board.provider.canGrant,
+        commentMode: this.canvasCommentTarget === commentTarget,
+        onCommentCaptured: () => {
+          this.canvasCommentTarget = "";
+        },
         callbacks: {
           appViewGeneration: board.provider.appViewGeneration,
           applyOps: (ops) => board.provider.applyOps(ops),
