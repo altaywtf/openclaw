@@ -5335,6 +5335,46 @@ describe("update-cli", () => {
     expectNoSideEffects(serviceStop, cleanupStaleManagedServiceUpdateHandoffs);
   });
 
+  it("refuses a redirected package update when the managed service disappears before admission", async () => {
+    const shellRoot = createCaseDir("openclaw-schema-redirect-drift-shell-root");
+    const serviceRoot = tempDirs.make("openclaw-schema-redirect-drift-service-root-");
+    const entryPath = await writeOpenClawPackageFixture(serviceRoot, "2026.5.18", {
+      entrySource: "export {};\n",
+      inventory: true,
+    });
+    const managedState = profileStateDir("work");
+    const managedDefinition = {
+      programArguments: [process.execPath, entryPath, "gateway", "run"],
+      environment: {
+        OPENCLAW_SERVICE_MARKER: "openclaw",
+        OPENCLAW_SERVICE_KIND: "gateway",
+        OPENCLAW_PROFILE: "work",
+        OPENCLAW_STATE_DIR: managedState,
+        OPENCLAW_CONFIG_PATH: path.join(managedState, "openclaw.json"),
+      },
+    };
+    mockPackageInstallStatus(shellRoot);
+    serviceReadCommand
+      .mockResolvedValueOnce({ ...managedDefinition, managedDefinition })
+      .mockResolvedValue(null);
+    vi.mocked(fetchNpmPackageTargetStatus).mockResolvedValue(
+      packageTargetStatus({ schemaVersions: { state: 3, agent: 11 } }),
+    );
+
+    await expect(updateCommand({ dryRun: true })).rejects.toThrow(
+      "managed Gateway service changed before update admission",
+    );
+
+    expect(serviceReadCommand).toHaveBeenCalledTimes(2);
+    expect(databasePreflightMocks.preflightOpenClawDatabaseSchemas).not.toHaveBeenCalled();
+    expectNoSideEffects(
+      serviceStop,
+      cleanupStaleManagedServiceUpdateHandoffs,
+      launchdUpdateCleanupMocks.disableCurrentOpenClawUpdateLaunchdJob,
+    );
+    expect(packageInstallCommandCall()).toBeUndefined();
+  });
+
   it.each([
     {
       name: "unreadable",

@@ -65,7 +65,13 @@ function resolveTargetDatabaseSchemaContexts(params: {
   // A redirected service root belongs to another installation. Its package
   // replacement must not adopt state selected by the caller's shell install.
   if (params.managedServiceRootRedirect) {
-    return params.managed ? [params.managed] : [];
+    if (!params.managed) {
+      throw new UpdatePreMutationError(
+        "managed-service-preflight",
+        "The managed Gateway service changed before update admission. Re-run the update so its package root and state can be inspected together.",
+      );
+    }
+    return [params.managed];
   }
   assertReadableCallerUpdateConfig(params.caller.configSnapshot);
   const caller = {
