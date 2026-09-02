@@ -1631,7 +1631,6 @@ src/agents/agent-run-terminal-delivery.ts	1
 src/agents/agent-run-terminal-error.ts	1
 src/agents/agent-run-terminal-outcome.ts	2
 src/agents/agent-run-terminal-receipt.ts	1
-src/agents/agent-run-terminal-reply.ts	3
 src/agents/agent-runtime-config.ts	1
 src/agents/agent-scope-config.ts	7
 src/agents/agent-tool-definition-adapter.ts	4
@@ -1932,7 +1931,7 @@ src/agents/run-termination.ts	3
 src/agents/run-timeout-attribution.ts	1
 src/agents/run-wait.ts	8
 src/agents/runtime-plan/build.ts	4
-src/agents/runtime-plan/tools.ts	4
+src/agents/runtime-plan/tools.ts	3
 src/agents/runtime/proxy.ts	7
 src/agents/sandbox-paths.ts	1
 src/agents/sandbox-tool-policy.ts	1
