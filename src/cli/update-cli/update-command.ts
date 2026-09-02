@@ -525,9 +525,8 @@ async function updateCommandInternal(
     }
   }
 
-  const preflightConfig = configSnapshot.sourceConfig ?? configSnapshot.config;
   const callerDatabaseSchemaContext = {
-    config: preflightConfig,
+    configSnapshot,
     env: { ...process.env },
   };
   const packageSchemaPreflight = opts.dryRun
@@ -535,6 +534,7 @@ async function updateCommandInternal(
         async ({ inspectDryRunTargetDatabaseSchemas }) =>
           await inspectDryRunTargetDatabaseSchemas({
             root,
+            updateInstallKind,
             shouldRestart,
             jsonMode: Boolean(opts.json),
             timeoutMs: updateStepTimeoutMs,

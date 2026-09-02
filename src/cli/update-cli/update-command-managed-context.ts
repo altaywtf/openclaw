@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { readConfigFileSnapshot } from "../../config/config.js";
 import type { ConfigFileSnapshot } from "../../config/types.openclaw.js";
 import type { PluginInstallRecord } from "../../config/types.plugins.js";
@@ -39,7 +40,12 @@ function resolveOwnedManagedUpdateContextEnv(params: {
   );
 }
 
-function assertReadableOwnedManagedConfig(configSnapshot: ConfigFileSnapshot): void {
+function assertReadableUpdateConfig(params: {
+  configSnapshot: ConfigFileSnapshot;
+  label: string;
+  reason: "database-schema-preflight" | "managed-service-preflight";
+}): void {
+  const { configSnapshot } = params;
   if (configSnapshot.valid && !configSnapshot.readError) {
     return;
   }
@@ -47,8 +53,39 @@ function assertReadableOwnedManagedConfig(configSnapshot: ConfigFileSnapshot): v
     ? `read failed (${configSnapshot.readError.code})`
     : "configuration is invalid";
   throw new UpdatePreMutationError(
-    "managed-service-preflight",
-    `Update refused: could not safely inspect managed Gateway config at ${configSnapshot.path}: ${detail}. No changes were made.`,
+    params.reason,
+    `Update refused: could not safely inspect ${params.label} at ${configSnapshot.path}: ${detail}. No changes were made.`,
+  );
+}
+
+function assertReadableOwnedManagedConfig(configSnapshot: ConfigFileSnapshot): void {
+  assertReadableUpdateConfig({
+    configSnapshot,
+    label: "managed Gateway config",
+    reason: "managed-service-preflight",
+  });
+}
+
+export function assertReadableCallerUpdateConfig(configSnapshot: ConfigFileSnapshot): void {
+  assertReadableUpdateConfig({
+    configSnapshot,
+    label: "caller OpenClaw config",
+    reason: "database-schema-preflight",
+  });
+}
+
+function callerConfigSnapshotMatches(
+  expected: ConfigFileSnapshot,
+  current: ConfigFileSnapshot,
+): boolean {
+  return (
+    current.path === expected.path &&
+    current.exists === expected.exists &&
+    current.raw === expected.raw &&
+    current.hash === expected.hash &&
+    isDeepStrictEqual(current.includedPaths ?? [], expected.includedPaths ?? []) &&
+    isDeepStrictEqual(current.includeProvenance ?? [], expected.includeProvenance ?? []) &&
+    isDeepStrictEqual(current.sourceConfig, expected.sourceConfig)
   );
 }
 
@@ -115,5 +152,26 @@ export async function captureOwnedManagedUpdatePreflightContext(params: {
     const configSnapshot = await readConfigFileSnapshot({ skipPluginValidation: true });
     assertReadableOwnedManagedConfig(configSnapshot);
     return { env, configSnapshot };
+  });
+}
+
+/** Re-read the exact caller config before final store admission. */
+export async function recaptureCallerUpdateConfig(params: {
+  expected: ConfigFileSnapshot;
+  env: NodeJS.ProcessEnv;
+}): Promise<ConfigFileSnapshot> {
+  return await withOwnedManagedUpdateEnv(params.env, async () => {
+    const current = await readConfigFileSnapshot({
+      skipPluginValidation: true,
+      observe: false,
+    });
+    assertReadableCallerUpdateConfig(current);
+    if (!callerConfigSnapshotMatches(params.expected, current)) {
+      throw new UpdatePreMutationError(
+        "database-schema-preflight",
+        `Update refused: caller OpenClaw config changed during update admission at ${params.expected.path}. No changes were made.`,
+      );
+    }
+    return current;
   });
 }

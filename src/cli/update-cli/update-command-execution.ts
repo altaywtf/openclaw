@@ -1,3 +1,4 @@
+import type { ConfigFileSnapshot } from "../../config/types.openclaw.js";
 import { ScheduledTaskAutoStartRecoveryError } from "../../daemon/schtasks-update-recovery.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import type { DevUpdateTarget } from "../../infra/update-dev-target.js";
@@ -27,8 +28,10 @@ import {
 import { createBeforeGitMutation, updateGitInstall } from "./update-command-git.js";
 import { handoffUpdateFromGateway } from "./update-command-handoff.js";
 import {
+  assertReadableCallerUpdateConfig,
   captureOwnedManagedUpdateContext,
   captureOwnedManagedUpdatePreflightContext,
+  recaptureCallerUpdateConfig,
   type OwnedManagedUpdateContext,
   type OwnedManagedUpdatePreflightContext,
 } from "./update-command-managed-context.js";
@@ -55,16 +58,21 @@ type MutableUpdateExecutionResult = {
 };
 
 function resolveTargetDatabaseSchemaContexts(params: {
-  caller: TargetDatabaseSchemaContext;
+  caller: { configSnapshot: ConfigFileSnapshot; env: NodeJS.ProcessEnv };
   managed?: TargetDatabaseSchemaContext;
   managedServiceRootRedirect: ManagedServiceRootRedirect | null;
 }): TargetDatabaseSchemaContext[] {
-  if (!params.managed) {
-    return [params.caller];
-  }
   // A redirected service root belongs to another installation. Its package
   // replacement must not adopt state selected by the caller's shell install.
-  return params.managedServiceRootRedirect ? [params.managed] : [params.caller, params.managed];
+  if (params.managedServiceRootRedirect) {
+    return params.managed ? [params.managed] : [];
+  }
+  assertReadableCallerUpdateConfig(params.caller.configSnapshot);
+  const caller = {
+    config: params.caller.configSnapshot.sourceConfig,
+    env: params.caller.env,
+  };
+  return params.managed ? [caller, params.managed] : [caller];
 }
 
 function assertReadOnlyManagedServiceInspection(params: {
@@ -152,20 +160,21 @@ async function inspectOwnedManagedUpdatePreflight(params: {
 /** Dry-run reads the same caller/service stores as mutation without acquiring write authority. */
 export async function inspectDryRunTargetDatabaseSchemas(params: {
   root: string;
+  updateInstallKind: "git" | "package" | "unknown";
   shouldRestart: boolean;
   jsonMode: boolean;
   timeoutMs: number;
   invocationCwd?: string;
   supportedVersions?: OpenClawSchemaVersions;
-  callerDatabaseSchemaContext: TargetDatabaseSchemaContext;
+  callerDatabaseSchemaContext: { configSnapshot: ConfigFileSnapshot; env: NodeJS.ProcessEnv };
   managedServiceRootRedirect: ManagedServiceRootRedirect | null;
 }): Promise<ReturnType<typeof checkTargetDatabaseSchemasForContexts>> {
-  if (!params.supportedVersions) {
+  if (params.updateInstallKind === "unknown") {
     return { incompatible: [], indeterminate: [] };
   }
   const inspected = await inspectOwnedManagedUpdatePreflight({
     root: params.root,
-    updateInstallKind: "package",
+    updateInstallKind: params.updateInstallKind,
     shouldRestart: params.shouldRestart,
     jsonMode: params.jsonMode,
     timeoutMs: params.timeoutMs,
@@ -211,20 +220,21 @@ export async function executeMutableUpdate(params: {
   managedServiceRootRedirect: ManagedServiceRootRedirect | null;
   invocationCwd?: string;
   recoveryState: UpdateCommandRecoveryState;
-  callerDatabaseSchemaContext: TargetDatabaseSchemaContext;
+  callerDatabaseSchemaContext: { configSnapshot: ConfigFileSnapshot; env: NodeJS.ProcessEnv };
   prepareMutableUpdate: (env?: NodeJS.ProcessEnv) => Promise<void>;
 }): Promise<MutableUpdateExecutionResult | null> {
   let preManagedServiceStop: PreManagedServiceStop | undefined;
   let inspectedOwnedManagedUpdatePreflightStop: PreManagedServiceStop | undefined;
   let ownedManagedUpdateContext: OwnedManagedUpdateContext | undefined;
   let ownedManagedUpdatePreflightContext: OwnedManagedUpdatePreflightContext | undefined;
+  let callerDatabaseSchemaContext = params.callerDatabaseSchemaContext;
   const getTargetDatabaseSchemaContexts = () => {
     const managedConfigSnapshot =
       ownedManagedUpdateContext?.configSnapshot ??
       ownedManagedUpdatePreflightContext?.configSnapshot;
     const managedEnv = ownedManagedUpdateContext?.env ?? ownedManagedUpdatePreflightContext?.env;
     return resolveTargetDatabaseSchemaContexts({
-      caller: params.callerDatabaseSchemaContext,
+      caller: callerDatabaseSchemaContext,
       managed:
         managedConfigSnapshot && managedEnv
           ? {
@@ -237,6 +247,18 @@ export async function executeMutableUpdate(params: {
   };
   const getOwnedManagedUpdateEnv = () =>
     ownedManagedUpdateContext?.env ?? ownedManagedUpdatePreflightContext?.env;
+  const recaptureCallerDatabaseSchemaContext = async () => {
+    if (params.managedServiceRootRedirect) {
+      return;
+    }
+    callerDatabaseSchemaContext = {
+      ...callerDatabaseSchemaContext,
+      configSnapshot: await recaptureCallerUpdateConfig({
+        expected: callerDatabaseSchemaContext.configSnapshot,
+        env: callerDatabaseSchemaContext.env,
+      }),
+    };
+  };
   let recoveryEnv: NodeJS.ProcessEnv | undefined;
   const originalRecovery = () =>
     params.installKind === "git"
@@ -427,6 +449,7 @@ export async function executeMutableUpdate(params: {
     }
     if (params.updateInstallKind === "package") {
       await stopManagedServiceBeforeMutableUpdate();
+      await recaptureCallerDatabaseSchemaContext();
       const postStopPackageSchemaPreflight = checkTargetDatabaseSchemasForContexts(
         params.packageTargetSchemaVersions,
         getTargetDatabaseSchemaContexts(),
@@ -479,6 +502,7 @@ export async function executeMutableUpdate(params: {
                     stopManagedService: stopManagedServiceBeforeMutableUpdate,
                     getPreManagedServiceStop: () => preManagedServiceStop,
                     getDatabaseSchemaContexts: getTargetDatabaseSchemaContexts,
+                    recaptureCallerDatabaseSchemaContext,
                     prepareMutableUpdate: () =>
                       params.prepareMutableUpdate(getOwnedManagedUpdateEnv()),
                     switchToGit: params.switchToGit,
