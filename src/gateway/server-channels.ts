@@ -41,6 +41,7 @@ import {
   type PluginRuntimeCapabilityLease,
 } from "../plugins/capability-lease.js";
 import { withPluginHttpRouteRegistry } from "../plugins/http-registry.js";
+import { runPluginCleanup } from "../plugins/plugin-instance-scope.js";
 import type { PluginRegistry } from "../plugins/registry.js";
 import type { PluginRuntimeChannel } from "../plugins/runtime/types-channel.js";
 import { runOutsideGatewayRootWorkAdmission } from "../process/gateway-work-admission.js";
@@ -86,7 +87,16 @@ function waitForChannelStartupHandoff(): Promise<void> {
 }
 
 type ChannelRuntimeStore = {
+  startFence?: { paused: boolean };
   aborts: Map<string, AbortController>;
+  owners: Map<
+    string,
+    {
+      plugin: NonNullable<ReturnType<typeof getChannelPlugin>>;
+      config: OpenClawConfig;
+      abort: AbortController;
+    }
+  >;
   capabilityLeases: Map<string, PluginRuntimeCapabilityLease>;
   starting: Map<string, Promise<void>>;
   stops: Map<string, ChannelAccountStopState>;
@@ -148,6 +158,7 @@ type GatewayStartupTrace = {
 function createRuntimeStore(): ChannelRuntimeStore {
   return {
     aborts: new Map(),
+    owners: new Map(),
     capabilityLeases: new Map(),
     starting: new Map(),
     stops: new Map(),
@@ -244,6 +255,9 @@ type ChannelManagerOptions = {
 
 type StopChannelOptions = {
   manual?: boolean;
+  /** Replacement must observe settled ownership before a successor can start. */
+  strict?: boolean;
+  onStopped?: (accountId: string) => void;
 };
 
 type ChannelAccountStopOutcome = { status: "fulfilled" } | { status: "rejected"; error: unknown };
@@ -269,7 +283,9 @@ async function waitForDeferredAccountStart(
 
 export type ChannelManager = {
   getRuntimeSnapshot: () => ChannelRuntimeSnapshot;
-  pauseChannelStarts: () => (outcome: "published" | "rollback") => void;
+  pauseChannelStarts: (
+    channelIds: Iterable<ChannelId>,
+  ) => (outcome: "published" | "rollback") => void;
   startChannels: () => Promise<void>;
   startChannel: (
     channel: ChannelId,
@@ -305,7 +321,6 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
   } = opts;
 
   const channelStores = new Map<ChannelId, ChannelRuntimeStore>();
-  let channelStartPause: ReturnType<ChannelManager["pauseChannelStarts"]> | undefined;
   const restarts = new Map<string, RetrySupervisor>();
   // Tracks accounts that were manually stopped so we don't auto-restart them.
   const manuallyStopped = new Set<string>();
@@ -475,6 +490,7 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
         continue;
       }
       store.runtimes.delete(id);
+      store.owners.delete(id);
       clearActiveCredentialDegradedOwner("account", restartKey(channelId, normalizeAccountId(id)));
       restarts.delete(restartKey(channelId, id));
       manuallyStopped.delete(restartKey(channelId, id));
@@ -495,9 +511,10 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
     accountId?: string,
     optsValue: StartChannelOptions = {},
   ): Promise<ReadonlyMap<string, ChannelAccountStartOutcome>> => {
-    const registry = getPluginHttpRouteRegistry?.();
+    const store = getStore(channelId);
+    const startFence = store.startFence;
     const assertStartCurrent = () => {
-      if (channelStartPause || registry !== getPluginHttpRouteRegistry?.()) {
+      if (startFence?.paused || store.startFence !== startFence) {
         throw new Error("Channel plugins are reloading; retry the start after reload completes.");
       }
     };
@@ -513,7 +530,6 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
     const { preserveRestartAttempts = false, preserveManualStop = false } = optsValue;
     const cfg = getRuntimeConfig();
     resetDirectoryCache({ cfg, channel: channelId, accountId });
-    const store = getStore(channelId);
     const accountIds = accountId
       ? [accountId]
       : await measureStartup(`channels.${channelId}.list-accounts`, () =>
@@ -630,6 +646,7 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
         const abort = new AbortController();
         const capabilityLease = createPluginRuntimeCapabilityLease("channel account");
         store.aborts.set(id, abort);
+        store.owners.set(id, { plugin, config: cfg, abort });
         store.capabilityLeases.set(id, capabilityLease);
         let handedOffTask = false;
         const log = ensureChannelLog(channelId);
@@ -1084,6 +1101,9 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
               if (store.aborts.get(id) === abort) {
                 store.aborts.delete(id);
               }
+              if (store.owners.get(id)?.abort === abort && !store.stops.has(id)) {
+                store.owners.delete(id);
+              }
               // Terminal paths (give-up, terminal disconnect, manual stop) end
               // here without a restart; leave no unaborted lifetime behind.
               abort.abort();
@@ -1112,6 +1132,7 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
           }
           if (!handedOffTask && store.aborts.get(id) === abort) {
             store.aborts.delete(id);
+            store.owners.delete(id);
           }
           if (store.starting.get(id) === startGate.promise) {
             store.starting.delete(id);
@@ -1154,7 +1175,10 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
     const knownIds = new Set<string>(
       accountId
         ? [accountId]
-        : [...lifecycleIds, ...(plugin ? plugin.config.listAccountIds(cfg) : [])],
+        : [
+            ...lifecycleIds,
+            ...(plugin ? runPluginCleanup(plugin, () => plugin.config.listAccountIds(cfg)) : []),
+          ],
     );
 
     // Gate replacement starts before teardown begins. Failures still reject only
@@ -1171,44 +1195,49 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
         ): Promise<ChannelAccountStopOutcome> => {
           const abort = store.aborts.get(id);
           const task = store.tasks.get(id);
-          if (!abort && !task && !plugin?.gateway?.stopAccount) {
+          const owner = store.owners.get(id);
+          const ownedPlugin = owner?.plugin;
+          const ownedConfig = owner?.config ?? getRuntimeConfig();
+          if (!abort && !task && !ownedPlugin?.gateway?.stopAccount) {
             return previousOutcome;
           }
           abort?.abort();
           const log = ensureChannelLog(channelId);
           const runtime = ensureChannelRuntime(channelId);
           let outcome: ChannelAccountStopOutcome = { status: "fulfilled" };
-          if (plugin?.gateway?.stopAccount) {
+          if (ownedPlugin?.gateway?.stopAccount) {
             // The start task can settle before stopAccount. Shutdown routes need
             // their own lease, bounded by this stop attempt rather than that task.
             const capabilityLease = createPluginRuntimeCapabilityLease("channel account stop");
             try {
-              const account = plugin.config.resolveAccount(cfg, id);
               // A plugin stopAccount that never settles must not wedge every
               // stop-driven flow (health monitor sweeps, thaw recovery, reload).
               // Bound it like the task teardown below; the timed-out path flows
               // into the existing recoveryStopTimedOut two-call restart contract.
               let stopAttemptAbandoned = false;
-              const runStopAccount = plugin.gateway.stopAccount.bind(plugin.gateway, {
-                cfg,
-                accountId: id,
-                account,
-                runtime,
-                abortSignal: abort?.signal ?? new AbortController().signal,
-                log,
-                getStatus: () => getRuntime(channelId, id),
-                setStatus: (next) => {
-                  // A stop we abandoned may settle after a replacement started;
-                  // its late writes must not repaint or tear down that account.
-                  setRuntime(
-                    channelId,
-                    id,
-                    stopAttemptAbandoned
-                      ? sanitizeAbortedTaskStatusPatch(next, getRuntime(channelId, id))
-                      : next,
-                  );
-                },
-              });
+              const runStopAccount = () =>
+                runPluginCleanup(ownedPlugin, () =>
+                  ownedPlugin.gateway!.stopAccount!({
+                    cfg: ownedConfig,
+                    accountId: id,
+                    account: ownedPlugin.config.resolveAccount(ownedConfig, id),
+                    runtime,
+                    abortSignal: abort?.signal ?? new AbortController().signal,
+                    log,
+                    getStatus: () => getRuntime(channelId, id),
+                    setStatus: (next) => {
+                      // A stop we abandoned may settle after a replacement started;
+                      // its late writes must not repaint or tear down that account.
+                      setRuntime(
+                        channelId,
+                        id,
+                        stopAttemptAbandoned
+                          ? sanitizeAbortedTaskStatusPatch(next, getRuntime(channelId, id))
+                          : next,
+                      );
+                    },
+                  }),
+                );
               const routeRegistry = getPluginHttpRouteRegistry?.();
               const stopAccountAttempt = (
                 routeRegistry
@@ -1230,6 +1259,14 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
               );
               if (!stopAccountSettled) {
                 stopAttemptAbandoned = true;
+                if (optsLocal.strict) {
+                  outcome = {
+                    status: "rejected",
+                    error: new Error(
+                      `Channel ${channelId}/${id} stopAccount did not settle; replacement was not applied.`,
+                    ),
+                  };
+                }
                 log.warn?.(
                   `[${id}] stopAccount exceeded ${CHANNEL_STOP_ABORT_TIMEOUT_MS}ms; continuing stop`,
                 );
@@ -1246,6 +1283,14 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
             CHANNEL_STOP_ABORT_TIMEOUT_MS,
           );
           if (!stoppedCleanly) {
+            if (optsLocal.strict) {
+              outcome = {
+                status: "rejected",
+                error: new Error(
+                  `Channel ${channelId}/${id} still owns running work; replacement was not applied.`,
+                ),
+              };
+            }
             log.warn?.(
               `[${id}] channel stop exceeded ${CHANNEL_STOP_ABORT_TIMEOUT_MS}ms after abort; continuing shutdown`,
             );
@@ -1294,6 +1339,16 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
           if (store.tasks.get(id) === task) {
             store.tasks.delete(id);
           }
+          // Queued stops still need the original ownedPlugin and config. Only the
+          // final successful teardown can release that owner, including retries.
+          const latestStop = store.stops.get(id);
+          if (
+            latestStop?.status === "stopping" &&
+            latestStop.attempt === stopAttempt &&
+            store.owners.get(id) === owner
+          ) {
+            store.owners.delete(id);
+          }
           setStoppedRuntime(channelId, id, {
             restartPending: false,
             lastStopAt: Date.now(),
@@ -1309,6 +1364,9 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
         const stopAttempt = previousStop.then(runStopAttempt);
         store.stops.set(id, { status: "stopping", attempt: stopAttempt });
         const outcome = await stopAttempt;
+        if (outcome.status === "fulfilled") {
+          optsLocal.onStopped?.(id);
+        }
         const latestStop = store.stops.get(id);
         if (latestStop?.status === "stopping" && latestStop.attempt === stopAttempt) {
           if (outcome.status === "rejected") {
@@ -1480,16 +1538,27 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
 
   return {
     getRuntimeSnapshot,
-    pauseChannelStarts: () => {
-      const previous = channelStartPause;
-      const release: ReturnType<ChannelManager["pauseChannelStarts"]> = (outcome) => {
-        // Failed replacement can retain a fence; a cancelled retry must restore it.
-        if (channelStartPause === release) {
-          channelStartPause = outcome === "published" ? undefined : previous;
+    pauseChannelStarts: (channelIds) => {
+      const reservations = [...new Set(channelIds)].map((channelId) => {
+        const store = getStore(channelId);
+        const previous = store.startFence;
+        const fence = { paused: true };
+        store.startFence = fence;
+        return { store, previous, fence };
+      });
+      return (outcome) => {
+        for (const { store, previous, fence } of reservations) {
+          if (store.startFence === fence && fence.paused) {
+            // Publication keeps the token so delayed predecessor preparation stays stale.
+            // A cancelled retry restores an earlier failed replacement's pause.
+            if (outcome === "published") {
+              fence.paused = false;
+            } else {
+              store.startFence = previous;
+            }
+          }
         }
       };
-      channelStartPause = release;
-      return release;
     },
     startChannels,
     startChannel: startChannelInternal,

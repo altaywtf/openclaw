@@ -84,6 +84,7 @@ const CURRENT_TRAIN_METHODS = [
   "canvas.document.view",
   "diagnostics.lanes",
   "plugins.inspect",
+  "plugins.reload",
   "device.pair.setupStatus",
   "openclaw.setup.activate.start",
   "exec.approval.grants.list",

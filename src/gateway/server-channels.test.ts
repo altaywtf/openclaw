@@ -27,6 +27,7 @@ import {
   runtimeForLogger,
 } from "../logging/subsystem.js";
 import { registerPluginHttpRoute } from "../plugins/http-registry.js";
+import { PluginInstance } from "../plugins/plugin-instance.js";
 import { createEmptyPluginRegistry, type PluginRegistry } from "../plugins/registry.js";
 import { getActivePluginRegistry, setActivePluginRegistry } from "../plugins/runtime.js";
 import { createRuntimeChannel } from "../plugins/runtime/runtime-channel.js";
@@ -758,6 +759,39 @@ describe("server-channels auto restart", () => {
     expect(account?.lastError).toBeNull();
   });
 
+  it("admits only host-owned account cleanup after a plugin quiesces", async () => {
+    const stopAccount = vi.fn(async (_ctx: ChannelGatewayContext<TestAccount>) => {});
+    const instance = new PluginInstance("discord");
+    const plugin = instance.wrap(
+      createTestPlugin({
+        startAccount: async (ctx) =>
+          new Promise<void>((resolve) => {
+            ctx.abortSignal.addEventListener("abort", () => resolve(), { once: true });
+          }),
+        stopAccount,
+      }),
+    );
+    installTestRegistry(plugin);
+    const manager = createManager();
+    await manager.startChannels();
+    await flushMicrotasks();
+    instance.quiesce();
+    expect(() => plugin.config.resolveAccount({}, DEFAULT_ACCOUNT_ID)).toThrow(
+      "reloaded or disabled",
+    );
+    await manager.stopChannel("discord", undefined, { strict: true });
+    expect(stopAccount).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        accountId: DEFAULT_ACCOUNT_ID,
+        account: { enabled: true, configured: true },
+      }),
+    );
+    expect(() => plugin.config.resolveAccount({}, DEFAULT_ACCOUNT_ID)).toThrow(
+      "reloaded or disabled",
+    );
+    await instance.dispose();
+  });
+
   it("records starting on every start and preserves explicit blocked over connected ready", async () => {
     const lifecycleAtHandoff: Array<ChannelAccountSnapshot["lifecycle"]> = [];
     const startAccount = vi.fn(async (ctx: ChannelGatewayContext<TestAccount>) => {
@@ -962,6 +996,11 @@ describe("server-channels auto restart", () => {
       restartPending: false,
       lastError: "second stop failed",
     });
+
+    await manager.stopChannel("discord", DEFAULT_ACCOUNT_ID);
+    expect(stopAccount).toHaveBeenCalledTimes(3);
+    await manager.startChannel("discord", DEFAULT_ACCOUNT_ID);
+    expect(startAccount).toHaveBeenCalledTimes(2);
   });
 
   it("keeps a timed-out stop hook failure authoritative after late task settlement", async () => {
@@ -2838,28 +2877,29 @@ describe("server-channels auto restart", () => {
     });
     let registry = installTestRegistry(createTestPlugin({ startAccount }));
     const manager = createManager({ getPluginHttpRouteRegistry: () => registry });
-    const firstPause = manager.pauseChannelStarts();
+    const firstPause = manager.pauseChannelStarts(["discord"]);
     firstPause("rollback");
     await manager.startChannel("discord", "default");
     await waitForImmediate();
     expect(startAccount).toHaveBeenCalledOnce();
     await manager.stopChannel("discord", undefined, { manual: false });
 
-    const failedPause = manager.pauseChannelStarts();
-    const cancelledRetry = manager.pauseChannelStarts();
+    const failedPause = manager.pauseChannelStarts(["discord"]);
+    const cancelledRetry = manager.pauseChannelStarts(["discord"]);
     cancelledRetry("rollback");
     await expect(manager.startChannel("discord", "default")).rejects.toThrow(
       "plugins are reloading; retry",
     );
-    const publishedRetry = manager.pauseChannelStarts();
+    const publishedRetry = manager.pauseChannelStarts(["discord"]);
     registry = installTestRegistry(createTestPlugin({ startAccount }));
     publishedRetry("published");
     // Late settlement cannot reinstate an old pause or release a newer one.
+    publishedRetry("rollback");
     cancelledRetry("rollback");
     await manager.startChannel("discord", "default");
     await waitForImmediate();
     expect(startAccount).toHaveBeenCalledTimes(2);
-    const latestPause = manager.pauseChannelStarts();
+    const latestPause = manager.pauseChannelStarts(["discord"]);
     failedPause("published");
     await expect(manager.startChannel("discord", "default")).rejects.toThrow(
       "plugins are reloading; retry",
@@ -2867,20 +2907,30 @@ describe("server-channels auto restart", () => {
     latestPause("rollback");
   });
 
-  it.each(["list-accounts", "runtime"])(
-    "fences starts awaiting %s and concurrent starts across plugin replacement",
-    async (phase) => {
+  it.each(
+    (["list-accounts", "runtime"] as const).flatMap((phase) =>
+      [false, true].map((retained) => ({ phase, retained })),
+    ),
+  )(
+    "preserves pending-start ownership across $phase preparation (retained: $retained)",
+    async ({ phase, retained }) => {
       const preparing = createDeferred();
       const release = createDeferred();
       const cleanupStarted = createDeferred();
       const releaseCleanup = createDeferred();
-      if (phase === "runtime") {
+      if (phase === "runtime" && !retained) {
         hoisted.startChannelApprovalHandlerBootstrap.mockResolvedValueOnce(async () => {
           cleanupStarted.resolve();
           await releaseCleanup.promise;
         });
       }
-      const originalStart = vi.fn(async () => {});
+      const originalStart = vi.fn(
+        async ({ abortSignal }: ChannelGatewayContext<TestAccount>) => {
+          await new Promise<void>((resolve) => {
+            abortSignal.addEventListener("abort", () => resolve(), { once: true });
+          });
+        },
+      );
       const replacementStart = vi.fn(
         async ({ abortSignal }: ChannelGatewayContext<TestAccount>) => {
           await new Promise<void>((resolve) => {
@@ -2888,13 +2938,18 @@ describe("server-channels auto restart", () => {
           });
         },
       );
-      let registry = installTestRegistry(createTestPlugin({ startAccount: originalStart }));
+      const originalPlugin = createTestPlugin({ startAccount: originalStart });
+      let registry = installTestRegistry(
+        originalPlugin,
+        createTestPlugin({ id: "slack", startAccount: replacementStart }),
+      );
       const manager = createManager({
+        channelIds: ["discord", "slack"],
         getPluginHttpRouteRegistry: () => registry,
         startupTrace: {
           measure: async (name, run) => {
             const result = await run();
-            if (name.endsWith(`.${phase}`)) {
+            if (name === `channels.discord.${phase}`) {
               preparing.resolve();
               await release.promise;
             }
@@ -2903,40 +2958,63 @@ describe("server-channels auto restart", () => {
         },
       });
       const original = manager.startChannel("discord");
-      const rejected = expect(original).rejects.toThrow("plugins are reloading; retry");
+      const completion = original.then(
+        (result) => ({ result }),
+        (error: unknown) => ({ error }),
+      );
+      let replacements: Array<ReturnType<ChannelManager["startChannel"]>> = [];
       await preparing.promise;
-      const resume = manager.pauseChannelStarts();
+      const target = retained ? "slack" : "discord";
+      const resume = manager.pauseChannelStarts([target]);
       try {
-        await expect(manager.startChannel("discord", "default")).rejects.toThrow(
+        await expect(manager.startChannel(target, "default")).rejects.toThrow(
           "plugins are reloading; retry",
         );
-        await manager.stopChannel("discord", undefined, { manual: false });
-        registry = installTestRegistry(createTestPlugin({ startAccount: replacementStart }));
+        if (!retained) {
+          await manager.stopChannel("discord", undefined, { manual: false });
+        }
+        registry = installTestRegistry(
+          retained ? originalPlugin : createTestPlugin({ startAccount: replacementStart }),
+          createTestPlugin({ id: "slack", startAccount: replacementStart }),
+        );
         resume("published");
-        const replacements = [
-          manager.startChannel("discord", "default"),
-          manager.startChannel("discord", "default"),
-        ];
+        replacements = retained
+          ? []
+          : [
+              manager.startChannel("discord", "default"),
+              manager.startChannel("discord", "default"),
+            ];
         await flushMicrotasks();
         release.resolve();
-        if (phase === "runtime") {
+        if (phase === "runtime" && !retained) {
           await cleanupStarted.promise;
           await waitForImmediate();
           expect(replacementStart).not.toHaveBeenCalled();
           releaseCleanup.resolve();
         }
-        await rejected;
+        if (retained) {
+          expect(await completion).toEqual({
+            result: new Map([["default", { status: "handed-off" }]]),
+          });
+        } else {
+          expect(await completion).toMatchObject({
+            error: { message: expect.stringContaining("plugins are reloading; retry") },
+          });
+        }
         const outcomes = await Promise.all(replacements);
-        expect(outcomes.map((result) => result.get("default"))).toContainEqual({
-          status: "handed-off",
-        });
+        if (!retained) {
+          expect(outcomes.map((result) => result.get("default"))).toContainEqual({
+            status: "handed-off",
+          });
+        }
         await waitForImmediate();
-        expect(originalStart).not.toHaveBeenCalled();
-        expect(replacementStart).toHaveBeenCalledOnce();
+        expect(originalStart).toHaveBeenCalledTimes(retained ? 1 : 0);
+        expect(replacementStart).toHaveBeenCalledTimes(retained ? 0 : 1);
       } finally {
         resume("rollback");
         release.resolve();
         releaseCleanup.resolve();
+        await Promise.allSettled([original, ...replacements]);
       }
     },
   );
