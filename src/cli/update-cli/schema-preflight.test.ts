@@ -13,7 +13,7 @@ import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
-import { checkTargetDatabaseSchemas } from "./schema-preflight.js";
+import { checkTargetDatabaseSchemasForContexts } from "./schema-preflight.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
@@ -23,6 +23,35 @@ afterEach(() => {
 });
 
 describe("target-release database schema preflight", () => {
+  it.runIf(process.platform !== "win32")(
+    "deduplicates caller and managed aliases of one physical database",
+    () => {
+      const stateDir = fs.realpathSync.native(tempDirs.make("openclaw-update-union-state-"));
+      const aliasRoot = tempDirs.make("openclaw-update-union-alias-");
+      const stateAlias = path.join(aliasRoot, "state-link");
+      fs.symlinkSync(stateDir, stateAlias, "dir");
+      const statePath = openOpenClawStateDatabase({
+        env: { OPENCLAW_STATE_DIR: stateDir },
+      }).path;
+      closeOpenClawStateDatabaseForTest();
+      const { DatabaseSync } = requireNodeSqlite();
+      const state = new DatabaseSync(statePath);
+      state.exec("PRAGMA user_version = 9;");
+      state.close();
+      const config = {} as OpenClawConfig;
+
+      const result = checkTargetDatabaseSchemasForContexts({ state: 3, agent: 11 }, [
+        { config, env: { OPENCLAW_STATE_DIR: stateDir } },
+        { config, env: { OPENCLAW_STATE_DIR: stateAlias } },
+      ]);
+
+      expect(result.incompatible).toEqual([
+        expect.objectContaining({ kind: "state", path: statePath, foundVersion: 9 }),
+      ]);
+      expect(result.indeterminate).toEqual([]);
+    },
+  );
+
   it("refuses v2026.8.1 before mutating v2026.7.1-2 shared state when an agent store is unreadable", () => {
     const stateDir = fs.realpathSync.native(tempDirs.make("openclaw-update-7-to-8-state-"));
     const env = { OPENCLAW_STATE_DIR: stateDir };
@@ -39,10 +68,10 @@ describe("target-release database schema preflight", () => {
     fs.writeFileSync(agentPath, "damaged v2026.7.1-2 agent store\n");
     const stateBefore = fs.readFileSync(statePath);
 
-    const result = checkTargetDatabaseSchemas(
+    const result = checkTargetDatabaseSchemasForContexts(
       // Published v2026.8.1 supports state schema 15 and agent schema 19.
       { state: 15, agent: 19 },
-      { config, env },
+      [{ config, env }],
     );
 
     expect(result.incompatible).toEqual([]);
@@ -82,11 +111,11 @@ describe("target-release database schema preflight", () => {
       bytes: fs.readFileSync(pathname),
       mtimeNs: fs.statSync(pathname, { bigint: true }).mtimeNs,
     }));
-    const result = checkTargetDatabaseSchemas(
+    const result = checkTargetDatabaseSchemasForContexts(
       // v2026.7.1-2 supports state/agent schema 1. The reported upgrade to
       // v2026.8.1 advances them to state 15 and agent 19.
       { state: 1, agent: 1 },
-      { config, env },
+      [{ config, env }],
     );
 
     const incompatibleAgentPaths = result.incompatible
@@ -133,7 +162,7 @@ describe("target-release database schema preflight", () => {
       });
     }
 
-    const result = checkTargetDatabaseSchemas({ state: 1, agent: 1 }, { config, env });
+    const result = checkTargetDatabaseSchemasForContexts({ state: 1, agent: 1 }, [{ config, env }]);
 
     expect(result.incompatible.filter((database) => database.kind === "agent")).toEqual(
       expect.arrayContaining(

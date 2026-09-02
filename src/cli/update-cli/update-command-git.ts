@@ -18,9 +18,10 @@ import type { OpenClawSchemaVersions } from "../../state/openclaw-schema-version
 import { splitShellArgs } from "../../utils/shell-argv.js";
 import { createUpdateProgress } from "./progress.js";
 import {
-  checkTargetDatabaseSchemas,
+  checkTargetDatabaseSchemasForContexts,
   formatSchemaRefusalLines,
   hasSchemaRefusal,
+  type TargetDatabaseSchemaContext,
 } from "./schema-preflight.js";
 import {
   createGlobalCommandRunner,
@@ -128,7 +129,7 @@ export function createBeforeGitMutation(params: {
   shouldRestart: boolean;
   stopManagedService: (roots: readonly string[]) => Promise<void>;
   getPreManagedServiceStop: () => PreManagedServiceStop | undefined;
-  getDatabaseSchemaContext: () => Parameters<typeof checkTargetDatabaseSchemas>[1];
+  getDatabaseSchemaContexts: () => readonly TargetDatabaseSchemaContext[];
   prepareMutableUpdate: () => Promise<void>;
   switchToGit: boolean;
 }): BeforeGitMutation {
@@ -139,9 +140,9 @@ export function createBeforeGitMutation(params: {
         `Update refused: could not inspect the target's schema support (${target.metadataUnreadable}). Retry, or see ${OPENCLAW_DATABASE_SCHEMA_DOCS_URL}.`,
       );
     }
-    const preStopSchemas = checkTargetDatabaseSchemas(
+    const preStopSchemas = checkTargetDatabaseSchemasForContexts(
       target?.schemaVersions,
-      params.getDatabaseSchemaContext(),
+      params.getDatabaseSchemaContexts(),
     );
     if (hasSchemaRefusal(preStopSchemas)) {
       throw new UpdatePreMutationError(
@@ -151,9 +152,9 @@ export function createBeforeGitMutation(params: {
     }
     await params.stopManagedService(params.roots);
     const preManagedServiceStop = params.getPreManagedServiceStop();
-    const postStopSchemas = checkTargetDatabaseSchemas(
+    const postStopSchemas = checkTargetDatabaseSchemasForContexts(
       target?.schemaVersions,
-      params.getDatabaseSchemaContext(),
+      params.getDatabaseSchemaContexts(),
     );
     if (hasSchemaRefusal(postStopSchemas)) {
       throw new UpdatePreMutationError(
