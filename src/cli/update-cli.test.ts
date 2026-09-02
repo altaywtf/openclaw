@@ -7182,6 +7182,28 @@ describe("update-cli", () => {
     },
   );
 
+  it("refuses Windows package updates from gateway ancestry before changing task autostart", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    suspendScheduledTaskAutoStartForUpdate.mockResolvedValue(true);
+    await mockPackageInstallAtCaseDir("openclaw-update-windows-ancestry-refusal");
+    mockRunningManagedGateway();
+    mockFileBackedPathExists();
+    mockGetSelfAndAncestorPidsSync.mockReturnValue(
+      new Set<number>([process.pid, gatewayFixturePid]),
+    );
+    try {
+      await expect(invokeUpdateCli({ yes: true })).rejects.toEqual(new ExitError(1));
+
+      expect(getErrorOutput()).toContain(`Gateway PID ${gatewayFixturePid} is an ancestor`);
+      expect(suspendScheduledTaskAutoStartForUpdate).not.toHaveBeenCalled();
+      expect(resumeScheduledTaskAutoStartAfterUpdate).not.toHaveBeenCalled();
+      expectNoSideEffects(serviceStop, serviceStart, serviceRestart);
+      expect(packageInstallCommandCall()).toBeUndefined();
+    } finally {
+      platformSpy.mockRestore();
+    }
+  });
+
   it("stops a running managed gateway before package replacement", async () => {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
     const processOnSpy = vi.spyOn(process, "on");

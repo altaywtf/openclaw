@@ -523,6 +523,10 @@ export async function maybeStopManagedServiceBeforeMutableUpdate(params: {
       ...(windowsTaskAutoStartRecovery ? { windowsTaskAutoStartRecovery } : {}),
     };
   }
+  const blockMessage = gatewayAncestryBlockMessage(serviceState.runtime?.pid);
+  if (blockMessage) {
+    return { ...inspected, running: true, blockMessage };
+  }
   if (!params.jsonMode) {
     const message = `Stopping managed gateway service before ${params.updateInstallKind} update...`;
     defaultRuntime.log(theme.muted(message));
