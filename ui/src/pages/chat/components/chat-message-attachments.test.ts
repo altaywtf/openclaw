@@ -962,7 +962,7 @@ describe("attachment sidebar source ownership", () => {
     container.remove();
   });
 
-  it("re-resolves an open local sidebar attachment after the connection epoch changes", async () => {
+  it("re-resolves an open local sidebar attachment after the selected session changes", async () => {
     const source = "/tmp/openclaw/clip.mp3";
     const container = document.body.appendChild(document.createElement("div"));
     const mediaResult = (ticket: string) => ({
@@ -991,6 +991,7 @@ describe("attachment sidebar source ownership", () => {
             },
           ],
           {
+            assistantMediaScope: "agent:main:main",
             connectionEpoch: 1,
             localMediaPreviewRoots: ["/tmp/openclaw"],
             onRequestUpdate: transcriptUpdate,
@@ -1015,7 +1016,8 @@ describe("attachment sidebar source ownership", () => {
     subscribers.add(sidebarUpdate);
     expect(
       sidebarContent?.resolveSource?.(sidebarUpdate, {
-        connectionEpoch: 2,
+        assistantMediaScope: "agent:research:main",
+        connectionEpoch: 1,
         localMediaPreviewRoots: ["/tmp/openclaw"],
         resolveAssistantMedia: secondResolver,
       }),
@@ -1024,7 +1026,8 @@ describe("attachment sidebar source ownership", () => {
 
     expect(
       sidebarContent?.resolveSource?.(sidebarUpdate, {
-        connectionEpoch: 2,
+        assistantMediaScope: "agent:research:main",
+        connectionEpoch: 1,
         localMediaPreviewRoots: ["/tmp/openclaw"],
         resolveAssistantMedia: secondResolver,
       }),

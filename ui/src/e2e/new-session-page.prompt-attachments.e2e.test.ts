@@ -449,28 +449,11 @@ suite.define(() => {
       const message = "testing if dual prompts show";
       const source = "media://inbound/initial-prompt.png";
       const imageBytes = await readFile(path.join(process.cwd(), "ui/public/apple-touch-icon.png"));
-      let releaseMedia!: () => void;
-      const mediaGate = new Promise<void>((resolve) => {
-        releaseMedia = resolve;
-      });
-      let metadataRequested = false;
       await page.route("**/__openclaw__/assistant-media?**", async (route) => {
         const url = new URL(route.request().url());
         expect(url.searchParams.get("source")).toBe(source);
-        const metadata = url.searchParams.get("meta") === "1";
-        metadataRequested ||= metadata;
-        await mediaGate;
-        await route.fulfill(
-          metadata
-            ? {
-                json: {
-                  available: true,
-                  mediaTicket: "initial-prompt-ticket",
-                  mediaTicketExpiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
-                },
-              }
-            : { contentType: "image/png", body: imageBytes },
-        );
+        expect(url.searchParams.get("mediaTicket")).toBe("initial-prompt-ticket");
+        await route.fulfill({ contentType: "image/png", body: imageBytes });
       });
       const authoritative = {
         role: "user",
@@ -485,8 +468,13 @@ suite.define(() => {
         },
       };
       const gateway = await installMockGateway(page, {
-        deferredMethods: ["chat.startup"],
+        deferredMethods: ["assistant.media.get", "chat.startup"],
         methodResponses: {
+          "assistant.media.get": {
+            available: true,
+            mediaTicket: "initial-prompt-ticket",
+            mediaTicketExpiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+          },
           "sessions.create": {
             key: sessionKey,
             runId,
@@ -556,7 +544,8 @@ suite.define(() => {
         await durableBubble.waitFor({ timeout: 10_000 });
         await expect.poll(() => durableBubble.count()).toBe(1);
         await expect.poll(() => promptBubbles.count()).toBe(1);
-        await expect.poll(() => metadataRequested).toBe(true);
+        const mediaRequest = await gateway.waitForRequest("assistant.media.get");
+        expect(mediaRequest.params).toEqual({ source, sessionKey });
         await expect.poll(() => userImage.getAttribute("data-initial-image-node")).toBe("true");
         await expect.poll(() => userImage.getAttribute("src")).toBe(initialImageSrc);
         expect((await userImage.screenshot({ animations: "disabled" })).equals(initialPixels)).toBe(
@@ -575,7 +564,7 @@ suite.define(() => {
         await expect.poll(() => durableBubble.count()).toBe(1);
         await pollLocatorText(userRow).toContain(message);
         await pollLocatorText(userRow).not.toContain("Attached image");
-        releaseMedia();
+        await gateway.resolveDeferred("assistant.media.get");
         await expect.poll(() => userImage.getAttribute("src")).toContain("initial-prompt-ticket");
         await expectDecodedThumbnail(userImage, 180);
         expect(await userImage.getAttribute("data-initial-image-node")).toBe("true");

@@ -333,6 +333,7 @@ function resolveAttachmentSource(
     resolveAssistantMedia,
     connectionEpoch,
     options.assistantMediaScope,
+    options.localMediaPreviewRoots,
   );
   if (assistantAvailability.status !== "available") {
     return {

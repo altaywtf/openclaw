@@ -8,6 +8,40 @@ async function flushAvailabilityResolution() {
 }
 
 describe("assistant attachment availability", () => {
+  it("preserves bootstrap root rejection only without a selected session", async () => {
+    const resolver = vi.fn(async () => ({
+      available: true as const,
+      mediaTicket: "ticket-research",
+      mediaTicketExpiresAt: new Date(Date.now() + 90_000).toISOString(),
+    }));
+    const source = "/tmp/research-agent/private.pdf";
+
+    expect(
+      resolveAssistantAttachmentAvailability(
+        source,
+        "/openclaw",
+        undefined,
+        resolver,
+        1,
+        undefined,
+        ["/tmp/default-agent"],
+      ),
+    ).toMatchObject({ status: "unavailable", recoverable: false });
+    expect(
+      resolveAssistantAttachmentAvailability(
+        source,
+        "/openclaw",
+        undefined,
+        resolver,
+        1,
+        "agent:research:main",
+        ["/tmp/default-agent"],
+      ).status,
+    ).toBe("checking");
+    await flushAvailabilityResolution();
+    expect(resolver).toHaveBeenCalledWith(source);
+  });
+
   it("scopes cached media tickets to the selected session", async () => {
     const source = `/tmp/openclaw/${crypto.randomUUID()}.png`;
     const expiresAt = new Date(Date.now() + 90_000).toISOString();

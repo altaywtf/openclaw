@@ -145,6 +145,7 @@ class MessageImageResourceDirective extends AsyncDirective {
       options?.resolveAssistantMedia,
       options?.connectionEpoch,
       options?.assistantMediaScope,
+      options?.localMediaPreviewRoots,
     );
     const decodeFailed = this.retained?.status === "unavailable";
     // Tickets authorize new reads, not already decoded pixels. Only this

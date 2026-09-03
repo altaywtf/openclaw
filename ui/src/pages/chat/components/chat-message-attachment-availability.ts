@@ -1,6 +1,9 @@
 import { t } from "../../../i18n/index.ts";
 import { formatUiExternalText } from "../../../lib/format-error.ts";
-import { isLocalAssistantAttachmentSource } from "./chat-message-local-media.ts";
+import {
+  isLocalAssistantAttachmentSource,
+  isLocalAttachmentPreviewAllowed,
+} from "./chat-message-local-media.ts";
 import {
   isChatMediaResourceCurrent,
   notifyChatMediaResourceSubscribers,
@@ -44,9 +47,24 @@ export function resolveAssistantAttachmentAvailability(
   resolveMedia: AssistantMediaResolver | undefined,
   connectionEpoch: number | undefined,
   assistantMediaScope?: string,
+  localMediaPreviewRoots: readonly string[] = [],
 ): AssistantAttachmentAvailability {
   if (!isLocalAssistantAttachmentSource(source)) {
     return { status: "available" };
+  }
+  // Session-scoped Gateway resolution is authoritative because bootstrap roots
+  // only describe the default agent. Preserve the legacy guard for renderers
+  // that do not have a selected session identity.
+  if (
+    !assistantMediaScope &&
+    localMediaPreviewRoots.length > 0 &&
+    !isLocalAttachmentPreviewAllowed(source, localMediaPreviewRoots)
+  ) {
+    return createUnavailableAssistantAttachment(
+      t("chat.attachments.outsideAllowedFolders"),
+      false,
+      { recoverable: false },
+    );
   }
   if (!resolveMedia) {
     return createUnavailableAssistantAttachment(t("chat.attachments.unavailable"), false, {

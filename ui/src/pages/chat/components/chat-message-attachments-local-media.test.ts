@@ -38,6 +38,7 @@ describe("local assistant attachment media", () => {
           renderAssistantAttachments(
             [{ type: "attachment", attachment: { kind, label, mimeType, url: source } }],
             {
+              assistantMediaScope: "agent:research:attachment-test",
               authToken: "must-not-be-forwarded",
               localMediaPreviewRoots: ["/tmp/default-agent"],
               onRequestUpdate: rerender,

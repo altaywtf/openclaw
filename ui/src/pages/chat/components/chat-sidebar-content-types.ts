@@ -55,6 +55,7 @@ type AttachmentSidebarSource = {
 };
 
 export type AttachmentSidebarRuntime = {
+  assistantMediaScope?: string;
   connectionEpoch?: number;
   authToken?: string | null;
   localMediaPreviewRoots: readonly string[];
