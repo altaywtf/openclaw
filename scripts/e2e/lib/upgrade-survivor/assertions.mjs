@@ -978,10 +978,18 @@ function assertSessionMetadataMigrated(stateDir) {
     [LEGACY_SESSION_GROUP_ID, group],
   ];
   for (const [sessionId, entry] of migratedSessions) {
-    assert(
-      !Object.hasOwn(entry ?? {}, "sessionFile"),
-      `legacy session row retained retired sessionFile metadata for ${sessionId}`,
-    );
+    const expectedPath = path.join(agentSessionsDir, `${sessionId}.jsonl`);
+    if (sessionRepairMode === "jsonl") {
+      assert(
+        entry?.sessionFile === expectedPath,
+        `legacy session row no longer points at its migrated transcript for ${sessionId}`,
+      );
+    } else {
+      assert(
+        !Object.hasOwn(entry ?? {}, "sessionFile"),
+        `legacy session row retained retired sessionFile metadata for ${sessionId}`,
+      );
+    }
   }
   if (source !== "file") {
     const dbPath = path.join(stateDir, "agents", "main", "agent", "openclaw-agent.sqlite");
