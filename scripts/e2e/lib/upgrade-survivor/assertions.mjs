@@ -567,11 +567,16 @@ function assertConfigSurvived() {
     const discord = config.channels?.discord;
     assert(discord?.enabled === true, "discord enabled flag changed");
     const stage = process.env.OPENCLAW_UPGRADE_SURVIVOR_ASSERT_STAGE || "survival";
-    const discordAllowFrom =
-      stage === "baseline" ? (discord.allowFrom ?? discord.dm?.allowFrom) : discord.allowFrom;
-    const discordDmPolicy =
-      stage === "baseline" ? (discord.dmPolicy ?? discord.dm?.policy) : discord.dmPolicy;
-    if (stage !== "baseline") {
+    const acceptsLegacyDiscordDm =
+      stage === "baseline" ||
+      process.env.OPENCLAW_UPGRADE_SURVIVOR_DISCORD_DM_CONFIG_MODE === "legacy";
+    const discordAllowFrom = acceptsLegacyDiscordDm
+      ? (discord.allowFrom ?? discord.dm?.allowFrom)
+      : discord.allowFrom;
+    const discordDmPolicy = acceptsLegacyDiscordDm
+      ? (discord.dmPolicy ?? discord.dm?.policy)
+      : discord.dmPolicy;
+    if (!acceptsLegacyDiscordDm) {
       assert(!Object.hasOwn(discord, "dm"), "legacy Discord DM config survived update");
     }
     assert(discordDmPolicy === "allowlist", "discord DM policy changed");

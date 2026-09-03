@@ -43,6 +43,7 @@ openclaw_resolve_frozen_upgrade_survivor_capabilities() {
 
   export OPENCLAW_UPGRADE_SURVIVOR_EXEC_APPROVALS_MODE="required" \
     OPENCLAW_UPGRADE_SURVIVOR_CLAWHUB_REQUEST_DIALECT="current" \
+    OPENCLAW_UPGRADE_SURVIVOR_DISCORD_DM_CONFIG_MODE="canonical" \
     OPENCLAW_UPGRADE_SURVIVOR_SESSION_REPAIR_MODE="sqlite"
 
   openclaw_frozen_target_omissions_authorized || authorization_status=$?
@@ -64,6 +65,14 @@ openclaw_resolve_frozen_upgrade_survivor_capabilities() {
     git -C "$source_root" show "$OPENCLAW_SELECTED_SHA:src/plugins/clawhub.ts" 2>/dev/null |
       grep -Fq 'from "../infra/clawhub.js"'; then
     export OPENCLAW_UPGRADE_SURVIVOR_CLAWHUB_REQUEST_DIALECT="legacy"
+  fi
+
+  # Older upgrade-survivor contracts accepted either Discord DM shape after
+  # repair. Keep asserting the policy and allowlist; only the retired-shape
+  # absence is unavailable until the selected contract requires it.
+  if git -C "$source_root" show "$OPENCLAW_SELECTED_SHA:scripts/e2e/lib/upgrade-survivor/assertions.mjs" 2>/dev/null |
+    grep -Fq 'const discordDmPolicy = discord.dmPolicy ?? discord.dm?.policy;'; then
+    export OPENCLAW_UPGRADE_SURVIVOR_DISCORD_DM_CONFIG_MODE="legacy"
   fi
 
   export OPENCLAW_UPGRADE_SURVIVOR_SESSION_REPAIR_MODE
