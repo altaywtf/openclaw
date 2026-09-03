@@ -5822,10 +5822,15 @@ describe("active-memory plugin", () => {
   it("does not allocate transcript artifacts for default SQLite recall", async () => {
     const mkdtempSpy = vi.spyOn(fs, "mkdtemp");
 
-    await runPromptBuild({ prompt: "what wings should i order? temp transcript path" });
+    const result = await runPromptBuild({
+      prompt: "what wings should i order? temp transcript path",
+    });
 
     expect(mkdtempSpy).not.toHaveBeenCalled();
     await expectPathMissing(path.join(stateDir, "plugins", "active-memory", "transcripts"));
+    expect(hoisted.cleanupSessionLifecycleArtifacts).toHaveBeenCalledTimes(1);
+    expect(hoisted.sessionStore[lastEmbeddedSessionKey()]).toBeUndefined();
+    expectPrependContextContains(result, "lemon pepper wings");
   });
 
   it("persists subagent transcripts in a separate directory when enabled", async () => {
