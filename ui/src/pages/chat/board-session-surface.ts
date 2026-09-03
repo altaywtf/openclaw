@@ -24,6 +24,7 @@ type BoardSessionSurfaceProps = {
   canGrant: boolean;
   commentMode?: boolean;
   commentAnnotations?: readonly CanvasElementAnnotation[];
+  commentEpoch?: number;
   onAnnotationAdded?: (event: CanvasElementAnnotationEvent) => void;
   callbacks: BoardViewCallbacks;
   widgetFrameUrl: BoardWidgetFrameUrl;
@@ -75,6 +76,7 @@ function renderBoardView(props: BoardSessionSurfaceProps) {
         .canGrant=${props.canGrant}
         .commentMode=${props.commentMode}
         .commentAnnotations=${props.commentAnnotations ?? []}
+        .commentEpoch=${props.commentEpoch ?? 0}
         @canvas-annotation-added=${props.onAnnotationAdded}
       ></openclaw-board-view>
     </div>
