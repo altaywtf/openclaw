@@ -965,14 +965,14 @@ async function buildResponsesPayload(
         codeModeControlJson?.status === "waiting" &&
         "runId" in codeModeControlJson &&
         typeof codeModeControlJson.runId === "string" &&
-        hasDeclaredTool(body, "wait")
+        hasDeclaredTool(toolDeclarationBody, "wait")
       ) {
         return buildToolCallEventsWithArgs("wait", { runId: codeModeControlJson.runId });
       }
       if (
         toolJson?.status === "waiting" &&
         typeof toolJson.runId === "string" &&
-        hasDeclaredTool(body, "wait")
+        hasDeclaredTool(toolDeclarationBody, "wait")
       ) {
         return buildToolCallEventsWithArgs("wait", { runId: toolJson.runId });
       }
@@ -984,7 +984,7 @@ async function buildResponsesPayload(
       if (nextCheckpoint > 1 && !QA_RESTART_RECOVERY_PROMPT_RE.test(allInputText)) {
         return buildAssistantEvents("RESTART-CODE-MODE-WAIT-FAIL");
       }
-      if (hasDeclaredTool(body, "exec")) {
+      if (hasDeclaredTool(toolDeclarationBody, "exec")) {
         const encodedTarget = encodeCodeModeTarget("qa_restart_wait", {});
         return buildToolCallEventsWithArgs("exec", {
           language: "javascript",
