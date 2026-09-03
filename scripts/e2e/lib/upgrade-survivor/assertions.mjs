@@ -15,6 +15,11 @@ import {
 import { assertUpgradeVolumeMigrated, seedUpgradeVolume } from "./sqlite-volume.mjs";
 
 const command = process.argv[2];
+const execApprovalsMode = process.env.OPENCLAW_UPGRADE_SURVIVOR_EXEC_APPROVALS_MODE || "required";
+assertStrict.ok(
+  execApprovalsMode === "required" || execApprovalsMode === "omitted",
+  "OPENCLAW_UPGRADE_SURVIVOR_EXEC_APPROVALS_MODE must be required or omitted",
+);
 const SCENARIOS = new Set([
   "base",
   "mobile-pairing-reconnect",
@@ -385,7 +390,9 @@ function seedState() {
   });
   // Volume imports start in per-agent JSON; other scenarios cover the older shared-store move.
   seedLegacySessionMetadata(stateDir, scenario === "sqlite-volume");
-  seedLegacyExecApprovalPolicy(stateDir);
+  if (execApprovalsMode === "required") {
+    seedLegacyExecApprovalPolicy(stateDir);
+  }
   if (scenario === "meeting-transcripts-sqlite") {
     seedLegacyMeetingTranscripts(stateDir);
   }
@@ -1729,7 +1736,10 @@ if (command === "list-scenarios") {
 } else if (command === "seed") {
   seedState();
 } else if (command === "assert-exec-approvals") {
-  if (!["watchos-direct-node", "mobile-pairing-reconnect"].includes(getScenario())) {
+  if (
+    execApprovalsMode === "required" &&
+    !["watchos-direct-node", "mobile-pairing-reconnect"].includes(getScenario())
+  ) {
     assertExecApprovalPolicySurvived(
       requireEnv("OPENCLAW_STATE_DIR"),
       process.env.OPENCLAW_UPGRADE_SURVIVOR_ASSERT_STAGE || "survival",
