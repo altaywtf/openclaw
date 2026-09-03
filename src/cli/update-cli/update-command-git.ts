@@ -130,7 +130,7 @@ export function createBeforeGitMutation(params: {
   stopManagedService: (roots: readonly string[]) => Promise<void>;
   getPreManagedServiceStop: () => PreManagedServiceStop | undefined;
   getDatabaseSchemaContexts: () => readonly TargetDatabaseSchemaContext[];
-  recaptureCallerDatabaseSchemaContext: () => Promise<void>;
+  recaptureFinalDatabaseSchemaContexts: () => Promise<void>;
   prepareMutableUpdate: () => Promise<void>;
   switchToGit: boolean;
 }): BeforeGitMutation {
@@ -152,7 +152,7 @@ export function createBeforeGitMutation(params: {
       );
     }
     await params.stopManagedService(params.roots);
-    await params.recaptureCallerDatabaseSchemaContext();
+    await params.recaptureFinalDatabaseSchemaContexts();
     const preManagedServiceStop = params.getPreManagedServiceStop();
     const postStopSchemas = checkTargetDatabaseSchemasForContexts(
       target?.schemaVersions,

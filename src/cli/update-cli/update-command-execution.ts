@@ -35,6 +35,7 @@ import {
   captureOwnedManagedUpdateContext,
   captureOwnedManagedUpdatePreflightContext,
   recaptureCallerUpdateConfig,
+  recaptureOwnedManagedUpdateConfig,
   type OwnedManagedUpdateContext,
   type OwnedManagedUpdatePreflightContext,
 } from "./update-command-managed-context.js";
@@ -271,6 +272,25 @@ export async function executeMutableUpdate(params: {
       }),
     };
   };
+  const recaptureFinalDatabaseSchemaContexts = async () => {
+    await recaptureCallerDatabaseSchemaContext();
+    const managedContext = ownedManagedUpdateContext ?? ownedManagedUpdatePreflightContext;
+    if (!managedContext) {
+      return;
+    }
+    const configSnapshot = await recaptureOwnedManagedUpdateConfig({
+      expected: managedContext.configSnapshot,
+      env: managedContext.env,
+    });
+    if (ownedManagedUpdateContext) {
+      ownedManagedUpdateContext = { ...ownedManagedUpdateContext, configSnapshot };
+    } else if (ownedManagedUpdatePreflightContext) {
+      ownedManagedUpdatePreflightContext = {
+        ...ownedManagedUpdatePreflightContext,
+        configSnapshot,
+      };
+    }
+  };
   let recoveryEnv: NodeJS.ProcessEnv | undefined;
   const originalRecovery = () =>
     params.installKind === "git"
@@ -472,7 +492,7 @@ export async function executeMutableUpdate(params: {
     }
     if (params.updateInstallKind === "package") {
       await stopManagedServiceBeforeMutableUpdate();
-      await recaptureCallerDatabaseSchemaContext();
+      await recaptureFinalDatabaseSchemaContexts();
       const postStopPackageSchemaPreflight = checkTargetDatabaseSchemasForContexts(
         params.packageTargetSchemaVersions,
         getTargetDatabaseSchemaContexts(),
@@ -525,7 +545,7 @@ export async function executeMutableUpdate(params: {
                     stopManagedService: stopManagedServiceBeforeMutableUpdate,
                     getPreManagedServiceStop: () => preManagedServiceStop,
                     getDatabaseSchemaContexts: getTargetDatabaseSchemaContexts,
-                    recaptureCallerDatabaseSchemaContext,
+                    recaptureFinalDatabaseSchemaContexts,
                     prepareMutableUpdate: () =>
                       params.prepareMutableUpdate(getOwnedManagedUpdateEnv()),
                     switchToGit: params.switchToGit,

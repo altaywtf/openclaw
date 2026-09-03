@@ -74,7 +74,7 @@ export function assertReadableCallerUpdateConfig(configSnapshot: ConfigFileSnaps
   });
 }
 
-function callerConfigSnapshotMatches(
+function updateConfigSnapshotMatches(
   expected: ConfigFileSnapshot,
   current: ConfigFileSnapshot,
 ): boolean {
@@ -166,10 +166,31 @@ export async function recaptureCallerUpdateConfig(params: {
       observe: false,
     });
     assertReadableCallerUpdateConfig(current);
-    if (!callerConfigSnapshotMatches(params.expected, current)) {
+    if (!updateConfigSnapshotMatches(params.expected, current)) {
       throw new UpdatePreMutationError(
         "database-schema-preflight",
         `Update refused: caller OpenClaw config changed during update admission at ${params.expected.path}. No changes were made.`,
+      );
+    }
+    return current;
+  });
+}
+
+/** Re-read the exact managed Gateway config before final store admission. */
+export async function recaptureOwnedManagedUpdateConfig(params: {
+  expected: ConfigFileSnapshot;
+  env: NodeJS.ProcessEnv;
+}): Promise<ConfigFileSnapshot> {
+  return await withOwnedManagedUpdateEnv(params.env, async () => {
+    const current = await readConfigFileSnapshot({
+      skipPluginValidation: true,
+      observe: false,
+    });
+    assertReadableOwnedManagedConfig(current);
+    if (!updateConfigSnapshotMatches(params.expected, current)) {
+      throw new UpdatePreMutationError(
+        "database-schema-preflight",
+        `Update refused: managed Gateway config changed during update admission at ${params.expected.path}. No changes were made.`,
       );
     }
     return current;
