@@ -99,7 +99,7 @@ describe("dashboards index", () => {
     );
   });
 
-  it("passes the row identity and change marker to the preview", () => {
+  it("passes the row identity to the preview", () => {
     const load = vi.fn(async () => null);
     const container = renderInto(
       routeData([{ ...deployMonitor, agentId: "main", updatedAt: 42 }]),
@@ -107,11 +107,10 @@ describe("dashboards index", () => {
     );
 
     const preview = container.querySelector<
-      HTMLElement & { sessionKey: string; agentId?: string; version: number; load?: unknown }
+      HTMLElement & { sessionKey: string; agentId?: string; load?: unknown }
     >("openclaw-dashboard-preview");
     expect(preview?.sessionKey).toBe(deployMonitor.key);
     expect(preview?.agentId).toBe("main");
-    expect(preview?.version).toBe(42);
     expect(preview?.load).toBe(load);
   });
 

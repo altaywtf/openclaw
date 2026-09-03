@@ -21,7 +21,7 @@ core feature, owned by the thread, stored with the agent, and they survive
 
 Open `/dashboards` to browse dashboard-enabled threads as a card gallery. Each
 card carries a thumbnail drawn from the board's own layout — the widgets on its
-first tab, at their real sizes and positions, labeled by title — so a dashboard
+first tab, at their stored sizes and positions, labeled by title — so a dashboard
 is recognizable before it opens. Thumbnails load as cards scroll into view and
 need no extra setup. Search by thread or author, filter by author, and sort by
 last update, creation time, or title. The **View** toggle in the page header

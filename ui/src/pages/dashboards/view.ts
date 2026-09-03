@@ -24,7 +24,7 @@ export type DashboardsRouteData = {
   mainKey: string;
 };
 
-export type DashboardsSort = "updated" | "created" | "title";
+type DashboardsSort = "updated" | "created" | "title";
 
 export type DashboardGalleryFilters = {
   query: string;
@@ -35,7 +35,7 @@ export type DashboardGalleryFilters = {
 export type DashboardGalleryState = {
   filters: DashboardGalleryFilters;
   view: DashboardsView;
-  loadPreview?: DashboardPreviewLoader;
+  loadPreview?: DashboardPreviewLoader | null;
 };
 
 export type DashboardGalleryHandlers = {
@@ -65,7 +65,7 @@ const NOOP_HANDLERS: DashboardGalleryHandlers = {
 };
 
 function isDashboardsSort(value: string): value is DashboardsSort {
-  return (DASHBOARD_SORTS as readonly string[]).includes(value);
+  return value === "updated" || value === "created" || value === "title";
 }
 
 function dashboardAuthor(row: DashboardRow, fallbackAgentId: string) {
@@ -136,7 +136,6 @@ function renderPreview(row: DashboardRow, state: DashboardGalleryState) {
   return html`<openclaw-dashboard-preview
     .sessionKey=${row.key}
     .agentId=${row.agentId}
-    .version=${row.updatedAt ?? 0}
     .load=${state.loadPreview}
   ></openclaw-dashboard-preview>`;
 }

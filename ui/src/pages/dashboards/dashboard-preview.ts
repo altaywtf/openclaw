@@ -5,11 +5,9 @@ import { t } from "../../i18n/index.ts";
 import { layout, type BoardGridRect } from "../../lib/board/grid.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 
-export type DashboardPreviewRequest = {
+type DashboardPreviewRequest = {
   sessionKey: string;
   agentId?: string;
-  /** Row change marker (updatedAt); a new value invalidates the cached snapshot. */
-  version: number;
 };
 
 /** Resolves the board snapshot for one dashboard; `null` means no preview is available. */
@@ -36,7 +34,7 @@ type PreviewWidget = BoardGridRect & {
   kind: BoardSnapshot["widgets"][number]["contentKind"];
 };
 
-export function dashboardPreviewWidgets(snapshot: BoardSnapshot): PreviewWidget[] {
+function dashboardPreviewWidgets(snapshot: BoardSnapshot): PreviewWidget[] {
   const tabs = snapshot.tabs.toSorted((left, right) => left.position - right.position);
   const focusTab = tabs[PREVIEW_FOCUS_TAB_INDEX]?.tabId;
   const widgets = snapshot.widgets.filter((widget) => !focusTab || widget.tabId === focusTab);
@@ -91,13 +89,13 @@ function renderWidget(widget: PreviewWidget) {
 class DashboardPreview extends OpenClawLightDomElement {
   @property({ attribute: false }) sessionKey = "";
   @property({ attribute: false }) agentId?: string;
-  @property({ attribute: false }) version = 0;
-  @property({ attribute: false }) load?: DashboardPreviewLoader;
+  @property({ attribute: false }) load?: DashboardPreviewLoader | null;
 
   /** `undefined` while loading, `null` when the board cannot be previewed. */
   @state() private snapshot?: BoardSnapshot | null;
   private observer?: IntersectionObserver;
   private loadedKey?: string;
+  private loadedBy?: DashboardPreviewLoader;
 
   override connectedCallback() {
     super.connectedCallback();
@@ -110,7 +108,7 @@ class DashboardPreview extends OpenClawLightDomElement {
   }
 
   override updated(changed: PropertyValues<this>) {
-    if (changed.has("sessionKey") || changed.has("version") || changed.has("load")) {
+    if (changed.has("sessionKey") || changed.has("agentId") || changed.has("load")) {
       this.scheduleLoad();
     }
   }
@@ -144,28 +142,35 @@ class DashboardPreview extends OpenClawLightDomElement {
 
   private async fetchSnapshot(): Promise<void> {
     const load = this.load;
-    if (!load || !this.sessionKey) {
+    if (!this.sessionKey || load === null) {
       this.loadedKey = undefined;
+      this.loadedBy = undefined;
       this.snapshot = null;
       return;
     }
-    const key = `${this.sessionKey}@${this.version}`;
-    if (this.loadedKey === key) {
+    if (!load) {
+      this.loadedKey = undefined;
+      this.loadedBy = undefined;
+      this.snapshot = undefined;
+      return;
+    }
+    const key = `${this.agentId ?? ""}\u0000${this.sessionKey}`;
+    if (this.loadedKey === key && this.loadedBy === load) {
       return;
     }
     this.loadedKey = key;
+    this.loadedBy = load;
     this.snapshot = undefined;
     let snapshot: BoardSnapshot | null;
     try {
       snapshot = await load({
         sessionKey: this.sessionKey,
         agentId: this.agentId,
-        version: this.version,
       });
     } catch {
       snapshot = null;
     }
-    if (this.loadedKey === key) {
+    if (this.loadedKey === key && this.loadedBy === load) {
       this.snapshot = snapshot;
     }
   }

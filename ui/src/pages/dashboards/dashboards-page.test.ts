@@ -52,6 +52,10 @@ function routeData(sessionRow: GatewaySessionRow): DashboardsRouteData {
 function connectedContext(
   request: (method: string, params: unknown) => Promise<unknown>,
   methods: string[] = ["board.get"],
+  events?: {
+    listener?: Parameters<ApplicationContext["gateway"]["subscribeEvents"]>[0];
+    snapshotListener?: Parameters<ApplicationContext["gateway"]["subscribe"]>[0];
+  },
 ): ApplicationContext {
   return {
     basePath: "",
@@ -60,6 +64,24 @@ function connectedContext(
         client: { request },
         phase: "connected",
         hello: { features: { methods } },
+      },
+      subscribe: (listener: Parameters<ApplicationContext["gateway"]["subscribe"]>[0]) => {
+        events && (events.snapshotListener = listener);
+        return () => {
+          if (events?.snapshotListener === listener) {
+            events.snapshotListener = undefined;
+          }
+        };
+      },
+      subscribeEvents: (
+        listener: Parameters<ApplicationContext["gateway"]["subscribeEvents"]>[0],
+      ) => {
+        events && (events.listener = listener);
+        return () => {
+          if (events?.listener === listener) {
+            events.listener = undefined;
+          }
+        };
       },
     },
     sessions: {
@@ -114,7 +136,11 @@ describe("DashboardsPage", () => {
     const selectionState = { selectedId: "main", scopeId: null as string | null };
     const context = {
       basePath: "",
-      gateway: { snapshot: { client: {}, phase: "connected", hello: null } },
+      gateway: {
+        snapshot: { client: {}, phase: "connected", hello: null },
+        subscribe: () => () => undefined,
+        subscribeEvents: () => () => undefined,
+      },
       sessions: {
         listSnapshot(query: SessionListOptions) {
           return snapshots.get(queryKey(query))!;
@@ -220,7 +246,11 @@ describe("DashboardsPage", () => {
     const list = vi.fn(async () => second);
     const context = {
       basePath: "",
-      gateway: { snapshot: { client: {}, phase: "connected", hello: null } },
+      gateway: {
+        snapshot: { client: {}, phase: "connected", hello: null },
+        subscribe: () => () => undefined,
+        subscribeEvents: () => () => undefined,
+      },
       sessions: {
         list,
         listSnapshot: () => snapshot,
@@ -382,6 +412,128 @@ describe("DashboardsPage", () => {
       expect(element.querySelectorAll(".dashboard-row svg g")).toHaveLength(1),
     );
     expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries a transient preview failure instead of caching it", async () => {
+    const board = {
+      sessionKey: "agent:main:dashboard:one",
+      revision: 1,
+      tabs: [{ tabId: "main", title: "Main", position: 0, chatDock: "hidden" }],
+      widgets: [
+        {
+          name: "recovered",
+          tabId: "main",
+          title: "Recovered",
+          contentKind: "html",
+          sizeW: 12,
+          sizeH: 3,
+          position: 0,
+          grantState: "none",
+          revision: 1,
+        },
+      ],
+    };
+    const request = vi
+      .fn<(method: string, params: unknown) => Promise<unknown>>()
+      .mockRejectedValueOnce(new Error("disconnected"))
+      .mockResolvedValue(board);
+    const element = mountPage(
+      connectedContext(request),
+      routeData(row("agent:main:dashboard:one", "One")),
+    );
+
+    await vi.waitFor(() => expect(element.textContent).toContain("Preview unavailable"));
+    element.querySelector<HTMLButtonElement>('[data-dashboards-view="list"]')?.click();
+    await vi.waitFor(() => expect(element.textContent).toContain("Recovered"));
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears preview snapshots across a same-client reconnect", async () => {
+    const firstBoard = {
+      sessionKey: "agent:main:dashboard:one",
+      revision: 1,
+      tabs: [{ tabId: "main", title: "Main", position: 0, chatDock: "hidden" }],
+      widgets: [
+        {
+          name: "status",
+          tabId: "main",
+          title: "Before reconnect",
+          contentKind: "html",
+          sizeW: 12,
+          sizeH: 3,
+          position: 0,
+          grantState: "none",
+          revision: 1,
+        },
+      ],
+    };
+    const secondBoard = {
+      ...firstBoard,
+      revision: 2,
+      widgets: [{ ...firstBoard.widgets[0], title: "After reconnect", revision: 2 }],
+    };
+    let currentBoard = firstBoard;
+    const request = vi.fn(async () => currentBoard);
+    const events: {
+      snapshotListener?: Parameters<ApplicationContext["gateway"]["subscribe"]>[0];
+    } = {};
+    const context = connectedContext(request, ["board.get"], events);
+    const element = mountPage(context, routeData(row("agent:main:dashboard:one", "One")));
+
+    await vi.waitFor(() => expect(element.textContent).toContain("Before reconnect"));
+    currentBoard = secondBoard;
+    context.gateway.snapshot.phase = "reconnecting";
+    context.gateway.snapshot.hello = null;
+    events.snapshotListener?.(context.gateway.snapshot);
+    context.gateway.snapshot.phase = "connected";
+    context.gateway.snapshot.hello = { features: { methods: ["board.get"] } } as never;
+    events.snapshotListener?.(context.gateway.snapshot);
+    await vi.waitFor(() => expect(element.textContent).toContain("After reconnect"));
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("refreshes a global board preview from its observer-scoped board.changed event", async () => {
+    const events: {
+      listener?: Parameters<ApplicationContext["gateway"]["subscribeEvents"]>[0];
+      snapshotListener?: Parameters<ApplicationContext["gateway"]["subscribe"]>[0];
+    } = {};
+    const firstBoard = {
+      sessionKey: "agent:work:global",
+      revision: 1,
+      tabs: [{ tabId: "main", title: "Main", position: 0, chatDock: "hidden" }],
+      widgets: [
+        {
+          name: "status",
+          tabId: "main",
+          title: "Old layout",
+          contentKind: "html",
+          sizeW: 12,
+          sizeH: 3,
+          position: 0,
+          grantState: "none",
+          revision: 1,
+        },
+      ],
+    };
+    const secondBoard = {
+      ...firstBoard,
+      revision: 2,
+      widgets: [{ ...firstBoard.widgets[0], title: "Fresh layout", revision: 2 }],
+    };
+    const request = vi.fn().mockResolvedValueOnce(firstBoard).mockResolvedValue(secondBoard);
+    const element = mountPage(
+      connectedContext(request, ["board.get"], events),
+      routeData({ ...row("global", "Global"), agentId: "work" }),
+    );
+
+    await vi.waitFor(() => expect(element.textContent).toContain("Old layout"));
+    events.listener?.({
+      type: "event",
+      event: "board.changed",
+      payload: { sessionKey: "agent:work:global", revision: 2 },
+    });
+    await vi.waitFor(() => expect(element.textContent).toContain("Fresh layout"));
+    expect(request).toHaveBeenCalledTimes(2);
   });
 
   it("falls back to a placeholder when the gateway does not serve boards", async () => {
