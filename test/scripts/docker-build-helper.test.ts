@@ -2742,6 +2742,12 @@ docker_e2e_docker_run_cmd run demo
     expect(publishedRunner).toContain(
       "run_plugin_fixture_phase assert-prepublish-requests assert_prepublish_plugin_install 1",
     );
+    expectTextToIncludeAll(publishedRunner, [
+      "companion_survivor_scenario() {",
+      '[ "$SCENARIO" = "watchos-direct-node" ] || [ "$SCENARIO" = "mobile-pairing-reconnect" ]',
+      "run_plugin_fixture_phase() {",
+      "companion_survivor_scenario && return 0",
+    ]);
     expect(publishedRunner).toContain(
       "phase assert-prepublish-recovery-requests assert_prepublish_plugin_install",
     );
