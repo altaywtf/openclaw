@@ -198,12 +198,25 @@ const FROZEN_EXTENDED_STABLE_2026_6_33_LAYOUT = {
   ]),
 };
 
+const FROZEN_EXTENDED_STABLE_2026_7_33_LAYOUT = {
+  id: "extended-stable-2026.7.33",
+  findings: FROZEN_EXTENDED_STABLE_2026_6_33_LAYOUT.findings,
+};
+
 const FROZEN_RELEASE_SECURITY_INVENTORY_POLICIES = new Map<string, PluginSecurityInventoryPolicy>([
   ["release/2026.9.1", CURRENT_SECURITY_INVENTORY_POLICY],
   [
     "extended-stable/2026.6.33",
     {
       layout: FROZEN_EXTENDED_STABLE_2026_6_33_LAYOUT,
+      optionalPackedFindingCounts: FROZEN_RELEASE_OPTIONAL_REVIEWED_PACKED_FINDING_COUNTS,
+      requiredSourceFindingCounts: FROZEN_RELEASE_REQUIRED_REVIEWED_SOURCE_FINDING_COUNTS,
+    },
+  ],
+  [
+    "extended-stable/2026.7.33",
+    {
+      layout: FROZEN_EXTENDED_STABLE_2026_7_33_LAYOUT,
       optionalPackedFindingCounts: FROZEN_RELEASE_OPTIONAL_REVIEWED_PACKED_FINDING_COUNTS,
       requiredSourceFindingCounts: FROZEN_RELEASE_REQUIRED_REVIEWED_SOURCE_FINDING_COUNTS,
     },

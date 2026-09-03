@@ -231,6 +231,9 @@ describe("scripts/lib/plugin-npm-security-scan.mts", () => {
     expect(resolveReviewedSourceLayout(frozenLegacy, "extended-stable/2026.6.33")?.id).toBe(
       "extended-stable-2026.6.33",
     );
+    expect(resolveReviewedSourceLayout(frozenLegacy, "extended-stable/2026.7.33")?.id).toBe(
+      "extended-stable-2026.7.33",
+    );
     expect(
       resolveReviewedSourceLayout(frozenLegacy.slice(0, -1), "extended-stable/2026.6.33"),
     ).toBeUndefined();
