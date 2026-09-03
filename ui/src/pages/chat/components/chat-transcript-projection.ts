@@ -132,6 +132,9 @@ export function projectChatTranscript(
     streamStartedAt: props.streamStartedAt,
     queue: props.queue,
     pendingInputs: props.pendingInputs,
+    pendingInputsWaitingForWorkspaceSync:
+      activeSession?.placement?.state === "draining" ||
+      activeSession?.placement?.state === "reconciling",
     showToolCalls: props.showToolCalls,
     persistCommentary: props.persistCommentary,
     runWorking: Boolean(props.runWorking),
