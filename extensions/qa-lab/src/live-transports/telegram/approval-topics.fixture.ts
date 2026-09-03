@@ -5,11 +5,24 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import type { createChannelApprovalHandlerFromCapability } from "openclaw/plugin-sdk/approval-handler-runtime";
 import type { SystemAgentApprovalRequest } from "openclaw/plugin-sdk/approval-runtime";
-import type { sendMessageTelegram } from "../../../../telegram/runtime-api.js";
+import {
+  fetchWithSsrFGuard,
+  ssrfPolicyFromHttpBaseUrlAllowedOrigin,
+} from "openclaw/plugin-sdk/ssrf-runtime";
+import { readQaJsonResponse } from "../../ignored-response-body.js";
 import type { QaSuiteRuntimeEnv } from "../../suite-runtime-types.js";
 import type { TelegramUserbotUpdate } from "./userbot-driver.runtime.js";
 
 type CreateHandler = typeof createChannelApprovalHandlerFromCapability;
+type Delivery = { chatId: string; messageId: string };
+// The installed sender owns options and results; the fixture observes only its delivery receipts.
+type ObservedSend = (
+  to: string,
+  text: string,
+  options: Record<string, unknown> & {
+    onDeliveryResult?: (delivery: Delivery) => Promise<void> | void;
+  },
+) => Promise<unknown>;
 type Observation = Pick<TelegramUserbotUpdate, "kind" | "messageId" | "forumTopicId" | "text">;
 type CaseProof = {
   target: "channel" | "dm";
@@ -46,6 +59,7 @@ export async function proveTelegramApprovalTopics(params: {
     throw new Error("Approval topic proof requires the leased Telegram Test Server DM adapter.");
   }
   const token: string = configuredToken;
+  const botApiPolicy = ssrfPolicyFromHttpBaseUrlAllowedOrigin(apiRoot);
 
   // The harness checkout can differ from the SUT. Resolve both runtime owners from its installed bin.
   const command = process.env.OPENCLAW_NPM_TELEGRAM_SUT_COMMAND;
@@ -78,11 +92,11 @@ export async function proveTelegramApprovalTopics(params: {
     await import(
       pathToFileURL(path.join(packageRoot, "dist/extensions/telegram/channel-plugin-api.js")).href
     );
-  const telegramRuntime: { sendMessageTelegram: typeof sendMessageTelegram } = await import(
+  const telegramRuntime: { sendMessageTelegram: ObservedSend } = await import(
     pathToFileURL(path.join(packageRoot, "dist/extensions/telegram/runtime-api.js")).href
   );
-  const deliveries = new Map<string, { chatId: string; messageId: string }>();
-  const sendMessage: typeof sendMessageTelegram = (to, text, options) =>
+  const deliveries = new Map<string, Delivery>();
+  const sendMessage: ObservedSend = (to, text, options) =>
     telegramRuntime.sendMessageTelegram(to, text, {
       ...options,
       onDeliveryResult: async (delivery) => {
@@ -110,17 +124,29 @@ export async function proveTelegramApprovalTopics(params: {
     passed: false,
   };
   const artifact = path.join(env.outputDir, "telegram-approval-terminal-topics.json");
-  async function botApi(method: string, body: Record<string, unknown>, cleanup = false) {
+  async function botApi<T>(method: string, body: Record<string, unknown>, cleanup = false) {
     try {
-      const timeout = AbortSignal.timeout(20_000);
-      const response = await fetch(`${apiRoot}/bot${token}/${method}`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-        signal: signal && !cleanup ? AbortSignal.any([signal, timeout]) : timeout,
+      const { response, release } = await fetchWithSsrFGuard({
+        url: `${apiRoot}/bot${token}/${method}`,
+        init: {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        },
+        policy: botApiPolicy,
+        // The lease token is in the path: keep requests local and out of HTTP captures.
+        maxRedirects: 0,
+        capture: false,
+        timeoutMs: 20_000,
+        signal: cleanup ? undefined : signal,
+        auditContext: "qa-lab-telegram-approval-topics",
       });
-      const result = await response.json();
-      if (!response.ok || result.ok !== true) {
+      const result = await readQaJsonResponse<{ ok: unknown; result: T }>(
+        response,
+        release,
+        "Telegram Test Server",
+      );
+      if (result.ok !== true) {
         throw new Error("Bot API request failed");
       }
       return result.result;
@@ -131,11 +157,12 @@ export async function proveTelegramApprovalTopics(params: {
   }
   const terminalText = "❌ OpenClaw change denied. No change was made.";
   try {
-    proof.privateTopicsEnabled = (await botApi("getMe", {})).has_topics_enabled === true;
+    proof.privateTopicsEnabled =
+      (await botApi<{ has_topics_enabled?: boolean }>("getMe", {})).has_topics_enabled === true;
     if (!proof.privateTopicsEnabled) {
       throw new Error("Leased bot has no private-topic capability; no bot settings were changed.");
     }
-    const topic = await botApi("createForumTopic", {
+    const topic = await botApi<{ message_thread_id: number }>("createForumTopic", {
       chat_id: chatId,
       name: `QA approvals ${randomUUID()}`,
     });
