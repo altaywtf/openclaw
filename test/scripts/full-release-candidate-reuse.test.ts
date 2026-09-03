@@ -22,7 +22,7 @@ import {
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 const NOW = Date.parse("2026-08-28T12:00:00Z");
-const EXPIRES_AT = "2026-09-04T12:00:00Z";
+const EXPIRES_AT = "2099-09-04T12:00:00Z";
 const REPOSITORY = "openclaw/openclaw";
 const CONTRACT_SCRIPT = resolve("scripts/full-release-candidate-contract.mjs");
 const SCRIPT = resolve("scripts/full-release-candidate-reuse.mjs");
