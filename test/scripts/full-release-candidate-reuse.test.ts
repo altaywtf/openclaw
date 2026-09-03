@@ -25,12 +25,7 @@ const NOW = Date.parse("2026-08-28T12:00:00Z");
 const EXPIRES_AT = "2026-09-04T12:00:00Z";
 const REPOSITORY = "openclaw/openclaw";
 const CONTRACT_SCRIPT = resolve("scripts/full-release-candidate-contract.mjs");
-// CLI children must use the same clock as the fixed-expiry artifact fixtures.
-const SCRIPT_ARGS = [
-  "--import",
-  `data:text/javascript,Date.now=()=>${NOW}`,
-  resolve("scripts/full-release-candidate-reuse.mjs"),
-];
+const SCRIPT_ARGS = [resolve("scripts/full-release-candidate-reuse.mjs")];
 const WORKFLOW_PATH = ".github/workflows/full-release-validation.yml";
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
