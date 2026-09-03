@@ -237,6 +237,11 @@ describe("chat pane board shell", () => {
 
     pane.syncRetainedBoardSession(pane.resolveBoardView());
     expect(pane.state.sidebarLayout.expanded).toBe(true);
+    expect(
+      pane.state.sidebarLayout.columns.flatMap(
+        (column) => column.panels.find((panel) => panel.id === column.activePanelId)?.slot,
+      ),
+    ).toContain("dashboard");
 
     pane.state.sidebarLayout = { ...pane.state.sidebarLayout, expanded: false };
     pane.syncRetainedBoardSession(pane.resolveBoardView());

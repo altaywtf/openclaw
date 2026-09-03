@@ -40,7 +40,7 @@ describe("AppSidebar catalog row lifecycle", () => {
         expected,
       );
       expect(row?.querySelector("a")?.getAttribute("href")).toBe(
-        "/dashboard/main/adopted-title?nav=collapsed",
+        "/dashboard/main/adopted-title?dashboard=expanded&nav=collapsed",
       );
     },
   );

@@ -305,14 +305,16 @@ export class AppSidebarSessionNavigationElement extends AppSidebarBase {
 
   sidebarSessionHref(session: SidebarRecentSession): string {
     // Build links only for rendered rows, after full-roster projection and pagination.
+    const face = resolveSessionPreferredFace(session);
     return sessionNavigationTarget({
-      face: resolveSessionPreferredFace(session),
+      face,
       sessionKey: session.key,
       fallbackAgentId: this.selectedAgentIdForSessions(),
       basePath: this.context?.basePath ?? "",
       row: session,
       mainKey: this.context ? this.sessionMainKey() : undefined,
       preferenceDerivedFace: true,
+      dashboardExpanded: face === "dashboard",
     }).href;
   }
 
@@ -333,6 +335,7 @@ export class AppSidebarSessionNavigationElement extends AppSidebarBase {
       row,
       mainKey: this.sessionMainKey(),
       preferenceDerivedFace: true,
+      dashboardExpanded: face === "dashboard",
       navigationKey: sessionKey,
     });
     runSessionNavigationIntent(this, {

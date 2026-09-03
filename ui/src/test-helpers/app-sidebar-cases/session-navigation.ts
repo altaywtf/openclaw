@@ -4,6 +4,28 @@ import { SESSION_NAVIGATION_INTENT_EVENT } from "../../lib/sessions/navigation-h
 import { createGateway, createSessions, mountSidebar } from "../app-sidebar.ts";
 
 describe("AppSidebar retained session navigation", () => {
+  it("opens dashboard sessions in the expanded dashboard presentation", async () => {
+    const gateway = createGateway({} as GatewayBrowserClient);
+    const sessions = createSessions("main", ["agent:main:a", "agent:main:b"]);
+    sessions.state.result!.sessions[1]!.boardFace = "dashboard";
+    const { sidebar } = await mountSidebar(gateway, sessions);
+    const navigation = vi.fn();
+    sidebar.onNavigate = navigation;
+
+    (sidebar as typeof sidebar & { selectSession: (key: string) => void }).selectSession(
+      "agent:main:b",
+    );
+
+    expect(navigation).toHaveBeenCalledWith("dashboard", {
+      pathname: "/dashboard/main/b",
+      search: "?dashboard=expanded",
+    });
+    const href = Array.from(sidebar.querySelectorAll<HTMLAnchorElement>("a"))
+      .find((link) => link.getAttribute("href")?.startsWith("/dashboard/main/b"))
+      ?.getAttribute("href");
+    expect(new URL(href!, "http://openclaw.test").searchParams.get("dashboard")).toBe("expanded");
+  });
+
   it("cancels a pending retained navigation when a newer session wins", async () => {
     let pendingCommit: (() => boolean) | undefined;
     const handleIntent = (event: Event) => {
