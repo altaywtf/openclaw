@@ -98,6 +98,12 @@ describe("Control UI assistant media e2e", () => {
         expect(researchTicketed.status).toBe(200);
         expect(await researchTicketed.text()).toBe("research media\n");
 
+        await writeSessionStore({ entries: {} });
+        const revokedResearchTicket = await fetch(
+          `${route}?source=${encodeURIComponent(researchFile)}&mediaTicket=${encodeURIComponent(researchPayload.mediaTicket ?? "")}`,
+        );
+        expect(revokedResearchTicket.status).toBe(401);
+
         const withoutTicket = await fetch(`${route}?source=${sourceParam}`);
         expect(withoutTicket.status).toBe(401);
 

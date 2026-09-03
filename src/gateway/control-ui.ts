@@ -73,6 +73,7 @@ import {
   isControlUiApprovalDocumentPath,
   isControlUiFocusDocumentPath,
 } from "./control-ui-routing.js";
+import { resolveControlUiSessionAccess } from "./control-ui-session-access.js";
 import { normalizeControlUiBasePath } from "./control-ui-shared.js";
 import {
   isControlUiFileUnmodified,
@@ -93,6 +94,7 @@ import {
   writeByteHeaders,
 } from "./http-byte-range.js";
 import { authorizeControlUiReadRequestOrReply } from "./http-utils.js";
+import type { GatewayWsClient } from "./server/ws-types.js";
 import { isTerminalConfigEnabled } from "./terminal/enabled.js";
 
 const ROOT_PREFIX = "/";
@@ -273,6 +275,8 @@ type AssistantMediaTicketPayload = {
   scope: typeof CONTROL_UI_ASSISTANT_MEDIA_TICKET_SCOPE;
   source: string;
   agentId?: string;
+  connId?: string;
+  sessionKey?: string;
   exp: number;
 };
 
@@ -282,7 +286,11 @@ function signAssistantMediaTicketPayload(encodedPayload: string): string {
     .digest("base64url");
 }
 
-function createAssistantMediaTicket(source: string, agentId?: string, nowMs = Date.now()) {
+function createAssistantMediaTicket(
+  source: string,
+  authority?: { agentId?: string; connId?: string; sessionKey?: string },
+  nowMs = Date.now(),
+) {
   const now = asDateTimestampMs(nowMs);
   if (now === undefined) {
     return {};
@@ -294,7 +302,9 @@ function createAssistantMediaTicket(source: string, agentId?: string, nowMs = Da
   const payload: AssistantMediaTicketPayload = {
     scope: CONTROL_UI_ASSISTANT_MEDIA_TICKET_SCOPE,
     source,
-    ...(agentId ? { agentId } : {}),
+    ...(authority?.agentId ? { agentId: authority.agentId } : {}),
+    ...(authority?.connId ? { connId: authority.connId } : {}),
+    ...(authority?.sessionKey ? { sessionKey: authority.sessionKey } : {}),
     exp,
   };
   const encodedPayload = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
@@ -334,6 +344,8 @@ function verifyAssistantMediaTicket(
       payload.scope !== CONTROL_UI_ASSISTANT_MEDIA_TICKET_SCOPE ||
       payload.source !== source ||
       (payload.agentId !== undefined && typeof payload.agentId !== "string") ||
+      (payload.connId !== undefined && typeof payload.connId !== "string") ||
+      (payload.sessionKey !== undefined && typeof payload.sessionKey !== "string") ||
       typeof payload.exp !== "number" ||
       !Number.isFinite(payload.exp) ||
       payload.exp < now
@@ -344,6 +356,8 @@ function verifyAssistantMediaTicket(
       scope: CONTROL_UI_ASSISTANT_MEDIA_TICKET_SCOPE,
       source,
       ...(payload.agentId ? { agentId: payload.agentId } : {}),
+      ...(payload.connId ? { connId: payload.connId } : {}),
+      ...(payload.sessionKey ? { sessionKey: payload.sessionKey } : {}),
       exp: payload.exp,
     };
   } catch {
@@ -462,13 +476,13 @@ async function resolveAssistantMediaAvailability(
 async function resolveAssistantMediaCapability(
   source: string,
   localRoots: readonly string[],
-  agentId?: string,
+  authority?: { agentId?: string; connId?: string; sessionKey?: string },
 ): Promise<AssistantMediaCapability> {
   const availability = await resolveAssistantMediaAvailability(source, localRoots);
   if (!availability.available) {
     return availability;
   }
-  const ticket = createAssistantMediaTicket(source, agentId);
+  const ticket = createAssistantMediaTicket(source, authority);
   return {
     ...availability,
     ...(ticket.mediaTicket && ticket.mediaTicketExpiresAt ? ticket : {}),
@@ -479,7 +493,7 @@ async function resolveAssistantMediaCapability(
 export async function resolveControlUiAssistantMedia(
   source: string,
   config: OpenClawConfig,
-  agentId?: string,
+  authority: { agentId: string; connId: string; sessionKey?: string },
 ): Promise<AssistantMediaGetResult> {
   const normalizedSource = normalizeAssistantMediaSource(source);
   if (!normalizedSource) {
@@ -487,8 +501,8 @@ export async function resolveControlUiAssistantMedia(
   }
   const capability = await resolveAssistantMediaCapability(
     normalizedSource,
-    getAgentScopedMediaLocalRoots(config, agentId),
-    agentId,
+    getAgentScopedMediaLocalRoots(config, authority.agentId),
+    authority,
   );
   if (!capability.available) {
     return capability;
@@ -518,6 +532,7 @@ export async function handleControlUiAssistantMediaRequest(
     trustedProxies?: string[];
     allowRealIpFallback?: boolean;
     rateLimiter?: AuthRateLimiter;
+    clients?: ReadonlySet<GatewayWsClient>;
   },
 ): Promise<boolean> {
   const urlRaw = req.url;
@@ -553,13 +568,33 @@ export async function handleControlUiAssistantMediaRequest(
   ) {
     return true;
   }
-  const agentId = verifiedMediaTicket?.agentId ?? opts?.agentId;
+  let agentId = verifiedMediaTicket?.agentId ?? opts?.agentId;
+  if (verifiedMediaTicket?.connId) {
+    const client = [...(opts?.clients ?? [])].find(
+      (candidate) =>
+        candidate.connId === verifiedMediaTicket.connId && !candidate.invalidatedReason,
+    );
+    if (!client) {
+      respondPlainText(res, 401, "Unauthorized");
+      return true;
+    }
+    if (verifiedMediaTicket.sessionKey) {
+      const access = opts?.config
+        ? resolveControlUiSessionAccess(verifiedMediaTicket.sessionKey, opts.config, client)
+        : null;
+      if (!access || access.agentId !== verifiedMediaTicket.agentId) {
+        respondPlainText(res, 401, "Unauthorized");
+        return true;
+      }
+      agentId = access.agentId;
+    }
+  }
   const localRoots = opts?.config
     ? getAgentScopedMediaLocalRoots(opts.config, agentId)
     : getDefaultLocalRootsCore();
 
   if (isMetaRequest) {
-    sendJson(res, 200, await resolveAssistantMediaCapability(source, localRoots, agentId));
+    sendJson(res, 200, await resolveAssistantMediaCapability(source, localRoots, { agentId }));
     return true;
   }
 

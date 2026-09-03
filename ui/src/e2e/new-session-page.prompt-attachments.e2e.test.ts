@@ -573,7 +573,7 @@ suite.define(() => {
         );
         await captureUiProof(suite, page, "initial-image-canonical-ready.png");
       } finally {
-        releaseMedia();
+        await gateway.resolveDeferred("assistant.media.get");
       }
     });
   });

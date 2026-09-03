@@ -18,14 +18,14 @@ import {
   type ControlUiGitHubPreviewIdentity,
   type ControlUiGitHubPreviewTarget,
 } from "../control-ui-github-preview.js";
+import {
+  resolveControlUiSessionAccess,
+  type ControlUiSessionAccess,
+} from "../control-ui-session-access.js";
 import { parseControlUiSessionPullRequestsSubscribeParams } from "../control-ui-session-pr-subscriptions.js";
 import { resolveControlUiAssistantMedia } from "../control-ui.js";
 import { requestCurrentGitHubOAuthRefresh } from "../github-oauth-lifecycle.js";
-import { resolveRequestedSessionAgentId as resolveRequestedGlobalAgentId } from "../session-request-agent.js";
-import { createSessionListEntryFilter } from "../session-sharing.js";
-import { buildGatewaySessionRow } from "../session-utils.js";
 import { resolveAgentIdOrRespondError } from "./agent-id-shared.js";
-import { loadSessionEntriesForTarget } from "./sessions-shared.js";
 import type {
   GatewayClient,
   GatewayRequestContext,
@@ -87,28 +87,16 @@ async function prepareControlUiGitHubIdentity(
   };
 }
 
-type SessionPreviewSource = {
-  sessionKey: string;
-  title?: string;
-  derivedTitle?: string;
-  agentId: string;
-  kind?: string;
-  channel?: string;
-  updatedAt?: number | null;
-  lastMessagePreview?: string;
-  archived?: boolean;
-};
-
 type LoadSessionPreview = (
   sessionKey: string,
   context: GatewayRequestContext,
   client: GatewayClient | null,
-) => SessionPreviewSource | null | Promise<SessionPreviewSource | null>;
+) => ControlUiSessionAccess | null | Promise<ControlUiSessionAccess | null>;
 
 type LoadAssistantMedia = (
   source: string,
   context: GatewayRequestContext,
-  agentId: string,
+  authority: { agentId: string; connId: string; sessionKey?: string },
 ) => Promise<AssistantMediaGetResult>;
 
 const SESSION_PREVIEW_TEXT_MAX_CHARS = 200;
@@ -149,13 +137,13 @@ function parseAssistantMediaParams(
 async function loadAssistantMedia(
   source: string,
   context: GatewayRequestContext,
-  agentId: string,
+  authority: { agentId: string; connId: string; sessionKey?: string },
 ): Promise<AssistantMediaGetResult> {
   const cfg = context.getRuntimeConfig();
-  return await resolveControlUiAssistantMedia(source, cfg, agentId);
+  return await resolveControlUiAssistantMedia(source, cfg, authority);
 }
 
-function projectSessionPreview(source: SessionPreviewSource | null): ControlUiSessionPreview {
+function projectSessionPreview(source: ControlUiSessionAccess | null): ControlUiSessionPreview {
   if (!source) {
     return { status: "unavailable" };
   }
@@ -186,48 +174,8 @@ function loadControlUiSessionPreview(
   sessionKey: string,
   context: GatewayRequestContext,
   client: GatewayClient | null,
-): SessionPreviewSource | null {
-  const cfg = context.getRuntimeConfig();
-  const requestedAgent = resolveRequestedGlobalAgentId(cfg, sessionKey);
-  if (!requestedAgent.ok) {
-    return null;
-  }
-  const { target, storePath, store, entry } = loadSessionEntriesForTarget({
-    key: sessionKey,
-    cfg,
-    ...(requestedAgent.agentId ? { agentId: requestedAgent.agentId } : {}),
-  });
-  if (!entry) {
-    return null;
-  }
-  // Hover previews must not reveal more than sessions.list: apply the same
-  // incognito/draft sharing predicate so a member cannot preview-by-key a
-  // session the sidebar hides from them.
-  const entryFilter = createSessionListEntryFilter({ client, cfg });
-  if (entryFilter && !entryFilter(target.canonicalKey, entry)) {
-    return null;
-  }
-  const row = buildGatewaySessionRow({
-    cfg,
-    storePath,
-    store,
-    key: target.canonicalKey,
-    entry,
-    includeDerivedTitles: true,
-    includeLastMessage: true,
-    skipTranscriptUsageFallback: true,
-  });
-  return {
-    sessionKey: row.key,
-    agentId: row.agentId ?? target.agentId,
-    title: row.displayName,
-    derivedTitle: row.derivedTitle,
-    kind: row.kind,
-    channel: row.channel,
-    updatedAt: row.updatedAt,
-    lastMessagePreview: row.lastMessagePreview,
-    archived: row.archived,
-  };
+): ControlUiSessionAccess | null {
+  return resolveControlUiSessionAccess(sessionKey, context.getRuntimeConfig(), client);
 }
 
 export function createControlUiHandlers(
@@ -247,7 +195,17 @@ export function createControlUiHandlers(
         return;
       }
       const cfg = context.getRuntimeConfig();
+      const connId = client?.connId?.trim();
+      if (!connId) {
+        respond(
+          true,
+          { available: false, reason: "Client unavailable", code: "client_unavailable" },
+          undefined,
+        );
+        return;
+      }
       let agentId = resolveAssistantIdentity({ cfg }).agentId;
+      let sessionKey: string | undefined;
       if (parsed.sessionKey) {
         const session = await loadSessionPreview(parsed.sessionKey, context, client);
         if (!session) {
@@ -259,8 +217,17 @@ export function createControlUiHandlers(
           return;
         }
         agentId = session.agentId;
+        sessionKey = session.sessionKey;
       }
-      respond(true, await loadMedia(parsed.source, context, agentId), undefined);
+      respond(
+        true,
+        await loadMedia(parsed.source, context, {
+          agentId,
+          connId,
+          ...(sessionKey ? { sessionKey } : {}),
+        }),
+        undefined,
+      );
     },
     "controlUi.githubPreview": async (options) => {
       const { params, respond, context } = options;
