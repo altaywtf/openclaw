@@ -14,6 +14,7 @@ import {
   lifecycleRuntimeLogs,
   service,
   stubEmptyGatewayEnv,
+  withUnsupportedGatewayService,
 } from "./test-helpers/lifecycle-core-harness.js";
 
 const loadConfig = vi.fn<() => OpenClawConfig>(() => ({
@@ -118,18 +119,6 @@ function stubServiceGatewayTokenEnv() {
       SERVICE_GATEWAY_TOKEN: "service-token",
     },
   });
-}
-
-async function withUnsupportedGatewayService(
-  run: (unsupportedService: GatewayService) => Promise<void>,
-) {
-  const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("aix");
-  try {
-    const { resolveGatewayService } = await import("../../daemon/service.js");
-    await run(resolveGatewayService());
-  } finally {
-    platformSpy.mockRestore();
-  }
 }
 
 function expectUnsupportedServiceCheckFailure() {
