@@ -159,7 +159,7 @@ function extractUpgradeSurvivorPayload(script: string) {
   return quoted.slice(1, end + 1).replaceAll(`'"'"'`, "'");
 }
 
-function runTypedOnboardingDriver(dialect: string) {
+function runTypedOnboardingDriver(mode: "interactive" | "required", dialect: string) {
   const source = readFileSync(RELEASE_TYPED_ONBOARDING_SCENARIO_PATH, "utf8");
   const start = source.indexOf("send() {");
   const end = source.indexOf("\nopenclaw_e2e_install_package", start);
@@ -208,6 +208,7 @@ drive_typed_onboarding
       encoding: "utf8",
       env: {
         ...process.env,
+        OPENCLAW_FROZEN_TARGET_ONBOARD_SESSION_MEMORY_HOOK_MODE: mode,
         OPENCLAW_TEST_ONBOARD_LOG: transcriptPath,
       },
     },
@@ -2795,13 +2796,23 @@ docker_e2e_docker_run_cmd run demo
       publishedRunner.indexOf("phase assert-prepublish-requests assert_prepublish_plugin_install"),
     );
     expect(publishedRunner).toContain(
-      "run_plugin_fixture_phase assert-prepublish-requests assert_prepublish_plugin_install 1",
+      [
+        'if [ "$SCENARIO" = "watchos-direct-node" ]; then',
+        "    phase assert-prepublish-idle assert_prepublish_fixture_idle",
+        "  else",
+        "    phase assert-prepublish-requests assert_prepublish_plugin_install 1",
+        "  fi",
+      ].join("\n"),
     );
     expect(publishedRunner).toContain(
-      "phase assert-prepublish-recovery-requests assert_prepublish_plugin_install",
+      [
+        'if [ "$SCENARIO" = "watchos-direct-node" ]; then',
+        "      phase assert-prepublish-recovery-idle assert_prepublish_fixture_idle",
+        "    else",
+        "      phase assert-prepublish-recovery-requests assert_prepublish_plugin_install",
+        "    fi",
+      ].join("\n"),
     );
-    expect(publishedRunner).not.toContain("assert-prepublish-idle");
-    expect(publishedRunner).not.toContain("assert-prepublish-recovery-idle");
     expect(publishedRunner).not.toContain('if [ "$candidate_version" = "2026.6.35" ]; then');
     expect(publishedRunner).toContain(
       'local tarball="$fixture_root/openclaw-brave-plugin-${candidate_version}.tgz"',
@@ -2855,7 +2866,7 @@ docker_e2e_docker_run_cmd run demo
     );
     expect(publishedRunner).toContain(
       [
-        'if [ "$SCENARIO" = "watchos-direct-node" ] || [ "$SCENARIO" = "mobile-pairing-reconnect" ]; then',
+        'if [ "$SCENARIO" = "watchos-direct-node" ]; then',
         "  unset OPENAI_API_KEY DISCORD_BOT_TOKEN TELEGRAM_BOT_TOKEN",
         "else",
         '  export OPENAI_API_KEY="sk-openclaw-upgrade-survivor"',
@@ -3008,15 +3019,19 @@ docker_e2e_docker_run_cmd run demo
   });
 
   it("keeps real-TTY onboarding drivers aligned with the guided prompt sequence", () => {
-    const current = runTypedOnboardingDriver("current");
+    const current = runTypedOnboardingDriver("required", "current");
     expect(current.status, current.stderr).toBe(0);
     expect(current.stdout.trim().split("\n")).toEqual(["continue", "enter", "enter", "search"]);
 
-    const legacy = runTypedOnboardingDriver("legacy");
+    const requiredLegacy = runTypedOnboardingDriver("required", "legacy");
+    expect(requiredLegacy.status).not.toBe(0);
+    expect(requiredLegacy.stderr).toContain("unexpected typed onboarding transition");
+
+    const legacy = runTypedOnboardingDriver("interactive", "legacy");
     expect(legacy.status, legacy.stderr).toBe(0);
     expect(legacy.stdout.trim().split("\n")).toEqual(["continue", "search", "hooks", "enter"]);
 
-    const unknown = runTypedOnboardingDriver("unknown");
+    const unknown = runTypedOnboardingDriver("required", "unknown");
     expect(unknown.status).not.toBe(0);
     expect(unknown.stderr).toContain("unexpected typed onboarding transition");
     expect(unknown.stderr).toContain("fixture onboarding transcript");
@@ -6268,16 +6283,100 @@ source "$ROOT_DIR/scripts/lib/docker-e2e-logs.sh"
     expect(pluginBinding).not.toContain('readFileSync(logPath, "utf8")');
   });
 
-  it("runs the frozen bundle-MCP client from a writable legacy source root", () => {
-    const runner = readFileSync(AGENT_BUNDLE_MCP_TOOLS_DOCKER_E2E_PATH, "utf8");
-
-    expect(runner).toContain('LEGACY_CLIENT_ROOT="/tmp/openclaw-frozen-agent-bundle-mcp-tools"');
-    expect(runner).toContain('-v "$SOURCE_ROOT/scripts/e2e:$LEGACY_CLIENT_ROOT/scripts/e2e:ro"');
-    expect(runner).toContain("ln -s /app/dist");
-    expect(runner).toContain("ln -s /app/node_modules");
-    expect(runner).not.toContain(
-      '-v "$SOURCE_ROOT/scripts/e2e/agent-bundle-mcp-tools-docker-client.ts:/app/$CLIENT_PATH:ro"',
+  it("mounts the committed frozen bundle-MCP client tree and cleans its extraction", () => {
+    const root = tempDirs.make("openclaw-frozen-agent-bundle-mcp-tools-");
+    const sourceRoot = join(root, "source");
+    const clientPath = join(sourceRoot, "scripts/e2e/agent-bundle-mcp-tools-docker-client.ts");
+    const runtimePath = join(sourceRoot, "src/agents/agent-bundle-mcp-runtime.ts");
+    mkdirSync(dirname(clientPath), { recursive: true });
+    mkdirSync(dirname(runtimePath), { recursive: true });
+    writeFileSync(clientPath, "COMMITTED\n");
+    writeFileSync(runtimePath, "");
+    execFileSync("git", ["init", "-q"], { cwd: sourceRoot });
+    execFileSync("git", ["add", "."], { cwd: sourceRoot });
+    execFileSync(
+      "git",
+      [
+        "-c",
+        "user.name=OpenClaw Test",
+        "-c",
+        "user.email=test@openclaw.invalid",
+        "commit",
+        "-q",
+        "-m",
+        "fixture",
+      ],
+      { cwd: sourceRoot },
     );
+    const selectedSha = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: sourceRoot,
+      encoding: "utf8",
+    }).trim();
+    writeFileSync(clientPath, "DIRTY\n");
+
+    const binDir = join(root, "bin");
+    const markerLog = join(root, "marker.log");
+    const mountLog = join(root, "mount.log");
+    const taskTmp = join(root, "tmp");
+    mkdirSync(taskTmp);
+    writeExecutables(binDir, {
+      docker: `#!/bin/bash
+set -euo pipefail
+if [[ "$1" == "image" && "$2" == "inspect" ]]; then
+  exit 0
+fi
+if [[ "$1" == "rm" ]]; then
+  exit 0
+fi
+if [[ "$1" != "run" ]]; then
+  echo "unexpected fake Docker command: $*" >&2
+  exit 2
+fi
+mounted_scripts=""
+for arg in "$@"; do
+  case "$arg" in
+    *:/tmp/openclaw-frozen-agent-bundle-mcp-tools/scripts/e2e:ro)
+      mounted_scripts="\${arg%:/tmp/openclaw-frozen-agent-bundle-mcp-tools/scripts/e2e:ro}"
+      ;;
+  esac
+done
+if [[ -z "$mounted_scripts" ]]; then
+  echo "legacy scripts/e2e mount not found" >&2
+  exit 2
+fi
+marker="$(cat "$mounted_scripts/agent-bundle-mcp-tools-docker-client.ts")"
+printf '%s\\n' "$marker" >"$OPENCLAW_TEST_MARKER_LOG"
+printf '%s\\n' "$mounted_scripts" >"$OPENCLAW_TEST_MOUNT_LOG"
+if [[ "$marker" != "COMMITTED" ]]; then
+  echo "expected committed legacy client marker COMMITTED, got $marker" >&2
+  exit 42
+fi
+`,
+    });
+
+    const result = spawnSync("bash", [AGENT_BUNDLE_MCP_TOOLS_DOCKER_E2E_PATH], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${binDir}:${process.env.PATH}`,
+        TMPDIR: taskTmp,
+        OPENCLAW_ALLOW_FROZEN_TARGET_SCENARIO_OMISSIONS: "1",
+        OPENCLAW_DOCKER_E2E_DISABLE_RESOURCE_LIMITS: "1",
+        OPENCLAW_DOCKER_E2E_REPO_ROOT: sourceRoot,
+        OPENCLAW_DOCKER_E2E_SELECTED_SHA: selectedSha,
+        OPENCLAW_SKIP_DOCKER_BUILD: "1",
+        OPENCLAW_TEST_MARKER_LOG: markerLog,
+        OPENCLAW_TEST_MOUNT_LOG: mountLog,
+        OPENCLAW_TOOLING_SHA: "f".repeat(40),
+      },
+    });
+
+    expect(readFileSync(markerLog, "utf8")).toBe("COMMITTED\n");
+    expect(result.status, result.stderr || result.stdout).toBe(0);
+    const mountedScripts = readFileSync(mountLog, "utf8").trim();
+    expect(mountedScripts).not.toBe(join(sourceRoot, "scripts/e2e"));
+    expect(existsSync(mountedScripts)).toBe(false);
   });
 
   it("keeps Open WebUI Docker E2E resource-guarded", () => {
