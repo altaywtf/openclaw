@@ -47,7 +47,8 @@ vi.mock("../plugins/provider-runtime.js", () => ({
   resolveProviderSyntheticAuthWithPlugin: vi.fn(),
 }));
 
-vi.mock("./provider-auth-aliases.js", () => ({
+vi.mock("./provider-auth-aliases.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./provider-auth-aliases.js")>()),
   resolveProviderAuthAliasMap: () => ({ "proof-alias": "openai" }),
   resolveProviderIdForAuth: (provider: string) => provider.trim().toLowerCase(),
 }));

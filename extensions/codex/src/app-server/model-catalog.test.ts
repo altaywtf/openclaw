@@ -20,7 +20,8 @@ vi.mock("./models.js", () => ({
 const rpc = vi.hoisted(() => ({ request: vi.fn() }));
 vi.mock("./request.js", () => ({
   withCodexAppServerJsonClient: vi.fn(
-    (_options: unknown, run: (request: unknown, client: unknown) => unknown) => run(rpc.request),
+    (_options: unknown, run: (request: unknown, client: unknown) => unknown) =>
+      run(rpc.request, undefined),
   ),
 }));
 let owner: ReturnType<typeof createCodexAppServerModelCatalog>;

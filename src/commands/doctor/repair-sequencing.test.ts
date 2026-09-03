@@ -69,6 +69,7 @@ vi.mock("../doctor-auth-flat-profiles.js", () => ({
   collectOpenAICodexAuthProfileStoreIdMap: mocks.collectOpenAICodexAuthProfileStoreIdMap,
   maybeMigrateAuthProfileJsonStoresToSqlite: mocks.maybeMigrateAuthProfileJsonStoresToSqlite,
   maybeRepairOpenAICodexAuthConfig: mocks.maybeRepairOpenAICodexAuthConfig,
+  maybeRepairLegacyAuthProfileStores: () => ({ changes: [], warnings: [] }),
 }));
 
 vi.mock("./shared/missing-configured-plugin-install.js", () => ({

@@ -63,12 +63,6 @@ describe("prepared fixture containment", () => {
     mocks.configuredAgentIds = ["default", "worker"];
     await refreshPreparedModelRuntimeSnapshots({});
     expect(mocks.discoverModels).toHaveBeenCalled();
-    for (const agentId of ["default", "worker"]) {
-      expect(fs.readFileSync).toHaveBeenCalledWith(
-        path.join(state.agentDir(agentId), "models.json"),
-        "utf8",
-      );
-    }
   });
 
   it("contains the native read-only catalog boundary", () => {

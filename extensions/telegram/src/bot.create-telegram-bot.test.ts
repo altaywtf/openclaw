@@ -2242,6 +2242,7 @@ describe("createTelegramBot", () => {
           providerId: "openai",
           methodId: "device-code",
           modelAccess: "already-visible",
+          authRefresh: "refreshed",
           profiles: [{ profileId: "openai:codex", provider: "openai", mode: "oauth" }],
         };
       });

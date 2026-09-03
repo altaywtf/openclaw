@@ -33,6 +33,7 @@ vi.mock("../model-auth.js", () => ({
   resolveModelAuthMode,
 }));
 vi.mock("../model-runtime-aliases.js", () => ({
+  resolveNativeLoginCliRuntime: () => undefined,
   resolveCliRuntimeExecutionProvider,
 }));
 vi.mock("../../plugins/cli-backends.runtime.js", () => ({

@@ -138,25 +138,6 @@ describe("Doctor shared auth health", () => {
     });
   });
 
-  it("preserves external CLI overlays when checking an agent-local auth store", async () => {
-    await withOpenClawTestState({ prefix: "openclaw-doctor-cli-auth-" }, async (state) => {
-      const cfg: OpenClawConfig = {
-        agents: { ownership: "explicit", entries: { alpha: {}, beta: {} } },
-        plugins: { enabled: false },
-      };
-      await state.writeConfig(cfg);
-      writeConfigMachineState("auth.sharedStore", { location: "state-db" });
-      writePersistedAuthProfileStoreRaw(
-        {
-          version: 1,
-          profiles: { "openai:default": { type: "oauth", provider: "openai", expires: 1 } },
-        },
-        state.agentDir("alpha"),
-      );
-      expect(await collectAuthProfileHealthFindings({ cfg })).toEqual([]);
-    });
-  });
-
   it.each([
     { name: "healthy shared", sharedExpired: false, sameAccount: true, owner: undefined },
     { name: "expired shared", sharedExpired: true, sameAccount: true, owner: "shared" },

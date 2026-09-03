@@ -769,6 +769,7 @@ export async function loadRunOverflowCompactionHarness(): Promise<{
   }));
 
   vi.doMock("../model-runtime-aliases.js", () => ({
+    resolveNativeLoginCliRuntime: () => undefined,
     isCliRuntimeAliasForProvider: ({
       runtime,
       provider,

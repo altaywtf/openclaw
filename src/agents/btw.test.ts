@@ -204,6 +204,7 @@ vi.mock("./model-auth.js", () => ({
 }));
 
 vi.mock("./model-runtime-aliases.js", () => ({
+  resolveNativeLoginCliRuntime: () => undefined,
   isCliRuntimeAliasForProvider: ({ runtime, provider }: { runtime?: string; provider?: string }) =>
     runtime === "claude-cli" && provider === "anthropic",
   resolveCliRuntimeExecutionProvider: ({

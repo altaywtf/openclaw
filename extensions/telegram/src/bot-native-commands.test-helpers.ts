@@ -14,7 +14,10 @@ import type {
 import type { MockFn } from "openclaw/plugin-sdk/plugin-test-runtime";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { vi } from "vitest";
-import type { TelegramNativeCommandDeps } from "./bot-native-command-deps.runtime.js";
+import {
+  defaultTelegramNativeCommandDeps,
+  type TelegramNativeCommandDeps,
+} from "./bot-native-command-deps.runtime.js";
 import { registerTelegramNativeCommands } from "./bot-native-commands.js";
 
 resetPluginRuntimeStateForTest();
@@ -177,6 +180,7 @@ export function createNativeCommandsHarness(params?: {
   const readChannelAllowFromStore: AnyAsyncMock =
     params?.readChannelAllowFromStore ?? vi.fn(async () => params?.storeAllowFrom ?? []);
   const telegramDeps = {
+    runProviderChannelLoginFlow: defaultTelegramNativeCommandDeps.runProviderChannelLoginFlow,
     getRuntimeConfig: vi.fn(() => cfg),
     readChannelAllowFromStore:
       readChannelAllowFromStore as TelegramNativeCommandDeps["readChannelAllowFromStore"],

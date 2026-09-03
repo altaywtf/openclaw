@@ -19,6 +19,7 @@ import {
   createNativeCommandTestParams,
   createTelegramPrivateCommandContext,
   type NativeCommandTestParams,
+  stubTelegramProviderLoginFlow,
 } from "./bot-native-commands.fixture-test-support.js";
 export { runWithTelegramUpdateProcessingFrame } from "./bot-processing-outcome.js";
 
@@ -277,7 +278,7 @@ type TelegramPluginCommandSpecs = Array<{
   description: string;
   acceptsArgs?: boolean;
 }>;
-type TelegramLoginFlow = NonNullable<TelegramNativeCommandDeps["runModelsAuthLoginFlow"]>;
+export type TelegramLoginFlow = Parameters<typeof stubTelegramProviderLoginFlow>[0];
 
 export function registerAndResolveStatusHandler(params: {
   cfg: OpenClawConfig;
@@ -360,7 +361,9 @@ function registerAndResolveCommandHandlerBase(params: {
       await sendMessage(100, text, {});
       return { messageId: "999", chatId: "100" };
     }),
-    ...(runModelsAuthLoginFlow ? { runModelsAuthLoginFlow } : {}),
+    runProviderChannelLoginFlow: runModelsAuthLoginFlow
+      ? stubTelegramProviderLoginFlow(runModelsAuthLoginFlow)
+      : defaultTelegramNativeCommandDeps.runProviderChannelLoginFlow,
   };
   withPluginRuntimeRegistryScope(activePluginRegistry, () => {
     for (const spec of pluginCommandSpecs ?? []) {

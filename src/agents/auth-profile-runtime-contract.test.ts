@@ -106,7 +106,7 @@ describe("Auth profile runtime contract - embedded OpenClaw and CLI adapter", ()
     [AUTH_PROFILE_RUNTIME_CONTRACT.codexCliProvider, AUTH_PROFILE_RUNTIME_CONTRACT.openAiProvider],
     [
       AUTH_PROFILE_RUNTIME_CONTRACT.codexHarnessProvider,
-      AUTH_PROFILE_RUNTIME_CONTRACT.codexHarnessProvider,
+      AUTH_PROFILE_RUNTIME_CONTRACT.openAiProvider,
     ],
   ] as const)(
     "resolves %s through the provider auth alias resolver using contract metadata",

@@ -10,6 +10,7 @@ import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import type { SessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TelegramNativeCommandDeps } from "./bot-native-command-deps.runtime.js";
+import type { TelegramLoginFlow } from "./bot-native-command-executors.test-support.js";
 import {
   createTelegramGroupCommandContext,
   stubTelegramProviderLoginFlow,
@@ -144,7 +145,7 @@ describe("registerTelegramNativeCommands /login", () => {
 
   it("handles /login codex by sending the device code before login completes", async () => {
     let loginParams: ModelsAuthLoginFlowOptions | undefined;
-    const loginFlow = vi.fn(async (params: ModelsAuthLoginFlowOptions) => {
+    const loginFlow = vi.fn<TelegramLoginFlow>(async (params) => {
       loginParams = params;
       await params.prompter.deviceCode?.({
         title: "OpenAI Codex device code",
@@ -192,7 +193,7 @@ describe("registerTelegramNativeCommands /login", () => {
   });
 
   it("handles /login xai with the same tap-to-copy device-code flow", async () => {
-    const loginFlow = vi.fn(async (params: ModelsAuthLoginFlowOptions) => {
+    const loginFlow = vi.fn<TelegramLoginFlow>(async (params) => {
       await params.prompter.deviceCode?.({
         title: "xAI OAuth",
         code: "XAI-ABCD",
@@ -234,11 +235,11 @@ describe("registerTelegramNativeCommands /login", () => {
   });
 
   it("reports saved auth when provider model access could not be enabled", async () => {
-    const loginFlow = vi.fn(async () => ({
+    const loginFlow = vi.fn<TelegramLoginFlow>(async () => ({
       providerId: "xai",
       methodId: "oauth",
       modelAccess: "failed" as const,
-      profiles: [{ profileId: "xai:owner", provider: "xai", mode: "oauth" as const }],
+      profiles: [{ profileId: "xai:owner", provider: "xai", mode: "oauth" }],
     }));
     const { handler, sendMessage } = registerLoginCommand({
       cfg: {
@@ -257,7 +258,7 @@ describe("registerTelegramNativeCommands /login", () => {
   });
 
   it("hands guided secret login to the masked Control UI wizard", async () => {
-    const loginFlow = vi.fn();
+    const loginFlow = vi.fn<TelegramLoginFlow>();
     const { handler, sendMessage } = registerLoginCommand({
       cfg: {
         commands: { native: true, ownerAllowFrom: ["200"] },
@@ -280,7 +281,7 @@ describe("registerTelegramNativeCommands /login", () => {
     const allowDeviceCode = createDeferred<void>();
     const finishLogin = createDeferred<void>();
     let loginCompleted = false;
-    const loginFlow = vi.fn(async (params: ModelsAuthLoginFlowOptions) => {
+    const loginFlow = vi.fn<TelegramLoginFlow>(async (params) => {
       await params.prompter.note("Preparing Codex login…");
       await allowDeviceCode.promise;
       if (!params.prompter.deviceCode) {
@@ -345,7 +346,7 @@ describe("registerTelegramNativeCommands /login", () => {
 
   it("routes the login button through the non-blocking native login flow", async () => {
     const finishLogin = createDeferred<void>();
-    const loginFlow = vi.fn(async (params: ModelsAuthLoginFlowOptions) => {
+    const loginFlow = vi.fn<TelegramLoginFlow>(async (params) => {
       await params.prompter.deviceCode?.({
         title: "OpenAI Codex device code",
         code: "BUTTON-CODE",
@@ -411,7 +412,7 @@ describe("registerTelegramNativeCommands /login", () => {
   });
 
   it("rejects group /login codex without sending the device code publicly", async () => {
-    const loginFlow = vi.fn(async (params: ModelsAuthLoginFlowOptions) => {
+    const loginFlow = vi.fn<TelegramLoginFlow>(async (params) => {
       await params.prompter.note("URL: https://auth.openai.com/codex/device\nCode: SECRET");
       return {
         providerId: "openai",
@@ -443,7 +444,7 @@ describe("registerTelegramNativeCommands /login", () => {
   });
 
   it("rejects /login for authorized senders who are not owners", async () => {
-    const loginFlow = vi.fn(async () => ({
+    const loginFlow = vi.fn<TelegramLoginFlow>(async () => ({
       providerId: "openai",
       methodId: "device-code",
       profiles: [],
@@ -469,7 +470,7 @@ describe("registerTelegramNativeCommands /login", () => {
 
   it("dedupes active /login flows for the same Telegram thread", async () => {
     const deferred = createDeferred<void>();
-    const loginFlow = vi.fn(async (params: ModelsAuthLoginFlowOptions) => {
+    const loginFlow = vi.fn<TelegramLoginFlow>(async (params) => {
       await params.prompter.deviceCode?.({
         title: "OpenAI Codex device code",
         code: "FIRST-CODE",
@@ -510,7 +511,7 @@ describe("registerTelegramNativeCommands /login", () => {
   });
 
   it("releases a failed flow before any device code is delivered", async () => {
-    const loginFlow = vi.fn(async () => {
+    const loginFlow = vi.fn<TelegramLoginFlow>(async () => {
       throw new Error("device-code request failed");
     });
     const { handler, sendMessage } = registerLoginCommand({
@@ -534,7 +535,7 @@ describe("registerTelegramNativeCommands /login", () => {
 
   it("does not report auth failure when only the terminal notification fails", async () => {
     const runtime: RuntimeEnv = { error: vi.fn(), exit: vi.fn(), log: vi.fn() };
-    const loginFlow = vi.fn(async (params: ModelsAuthLoginFlowOptions) => {
+    const loginFlow = vi.fn<TelegramLoginFlow>(async (params) => {
       await params.prompter.deviceCode?.({ title: "Codex login", code: "SUCCESS-CODE" });
       return {
         providerId: "openai",
@@ -569,7 +570,7 @@ describe("registerTelegramNativeCommands /login", () => {
   it("blocks provider prompts and terminal messages after Telegram stops", async () => {
     const shutdown = new AbortController();
     let loginSettled = false;
-    const loginFlow = vi.fn(async (params: ModelsAuthLoginFlowOptions) => {
+    const loginFlow = vi.fn<TelegramLoginFlow>(async (params) => {
       await params.prompter.deviceCode?.({ title: "Codex login", code: "ABORT-CODE" });
       if (!params.signal) {
         throw new Error("expected login owner signal");
@@ -615,7 +616,7 @@ describe("registerTelegramNativeCommands /login", () => {
     const pollingCycle = new AbortController();
     const finishLogin = createDeferred<void>();
     let loginSignal: AbortSignal | undefined;
-    const loginFlow = vi.fn(async (params: ModelsAuthLoginFlowOptions) => {
+    const loginFlow = vi.fn<TelegramLoginFlow>(async (params) => {
       loginSignal = params.signal;
       await params.prompter.deviceCode?.({ title: "Codex login", code: "RESTART-CODE" });
       await finishLogin.promise;
