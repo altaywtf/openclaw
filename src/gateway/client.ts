@@ -31,6 +31,10 @@ import { logDebug, logError } from "../logger.js";
 import { redactToolPayloadText } from "../logging/redact.js";
 import { registerSecretValueForRedaction } from "../logging/secret-redaction-registry.js";
 import type { DeviceAuthEntry } from "../shared/device-auth.js";
+import {
+  resolveGatewayClientDeviceFamily,
+  resolveGatewayClientPlatform,
+} from "../shared/gateway-client-platform.js";
 import { VERSION } from "../version.js";
 
 export {
@@ -137,6 +141,7 @@ export class GatewayClient {
 
   constructor(opts: GatewayClientOptions) {
     const { deviceAuthScope, preparedDeviceAuth, sharedStateMode, ...baseOptions } = opts;
+    const usesRuntimePlatform = baseOptions.platform === undefined;
     const suppressOriginDeviceAuth = Boolean(
       deviceAuthScope && (baseOptions.token?.trim() || baseOptions.password?.trim()),
     );
@@ -146,6 +151,10 @@ export class GatewayClient {
     this.#client = new BaseGatewayClient({
       ...baseOptions,
       clientVersion: baseOptions.clientVersion ?? VERSION,
+      platform: baseOptions.platform ?? resolveGatewayClientPlatform(process.platform),
+      deviceFamily:
+        baseOptions.deviceFamily ??
+        (usesRuntimePlatform ? resolveGatewayClientDeviceFamily(process.platform) : undefined),
       hostDeps: createOpenClawGatewayClientHostDeps(
         baseOptions.hostDeps,
         deviceAuthScope,
