@@ -13,7 +13,10 @@ import { resolveThreadSessionKeys } from "openclaw/plugin-sdk/routing";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { expect, vi } from "vitest";
 import type { RegisterTelegramHandlerParams } from "./bot-handlers.types.js";
-import type { TelegramNativeCommandDeps } from "./bot-native-command-deps.runtime.js";
+import {
+  defaultTelegramNativeCommandDeps,
+  type TelegramNativeCommandDeps,
+} from "./bot-native-command-deps.runtime.js";
 import { createConfiguredBindingRoute } from "./bot-native-command-dispatch.test-support.js";
 import {
   createNativeCommandTestParams,

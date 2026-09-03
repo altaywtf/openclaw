@@ -586,8 +586,9 @@ describe("registerTelegramNativeCommands /login", () => {
           );
         });
         throw new Error("unreachable");
-      } catch {
+      } catch (error) {
         await params.prompter.note("Trouble with device code login?", "OAuth help");
+        throw error;
       } finally {
         loginSettled = true;
       }
@@ -658,7 +659,7 @@ describe("registerTelegramNativeCommands /login", () => {
         updatedAt: 1,
       },
     });
-    const runModelsAuthLoginFlow = vi.fn(async (opts: ModelsAuthLoginFlowOptions) => {
+    const runModelsAuthLoginFlow = vi.fn<TelegramLoginFlow>(async (opts) => {
       await opts.prompter.deviceCode?.({
         title: "OpenAI Codex device code",
         code: "ABCD-EFGH",
@@ -743,7 +744,7 @@ describe("registerTelegramNativeCommands /login", () => {
       },
     };
     loginSessionMocks.loadSessionStore.mockReturnValue(sessionStore);
-    const runModelsAuthLoginFlow = vi.fn(async (opts: ModelsAuthLoginFlowOptions) => {
+    const runModelsAuthLoginFlow = vi.fn<TelegramLoginFlow>(async (opts) => {
       await opts.prompter.deviceCode?.({ title: "OpenAI Codex device code", code: "SWITCH" });
       await finishLogin.promise;
       return {
@@ -786,7 +787,7 @@ describe("registerTelegramNativeCommands /login", () => {
     const finishLogin = createDeferred<void>();
     let sessionStore: Record<string, SessionEntry> = {};
     loginSessionMocks.loadSessionStore.mockImplementation(() => sessionStore);
-    const runModelsAuthLoginFlow = vi.fn(async (opts: ModelsAuthLoginFlowOptions) => {
+    const runModelsAuthLoginFlow = vi.fn<TelegramLoginFlow>(async (opts) => {
       await opts.prompter.deviceCode?.({
         title: "OpenAI Codex device code",
         code: "NEW-SESSION",
@@ -850,7 +851,7 @@ describe("registerTelegramNativeCommands /login", () => {
     const finishLogin = createDeferred<void>();
     let sessionStore: Record<string, SessionEntry> = {};
     loginSessionMocks.loadSessionStore.mockImplementation(() => sessionStore);
-    const runModelsAuthLoginFlow = vi.fn(async (opts: ModelsAuthLoginFlowOptions) => {
+    const runModelsAuthLoginFlow = vi.fn<TelegramLoginFlow>(async (opts) => {
       await opts.prompter.deviceCode?.({
         title: "OpenAI Codex device code",
         code: "LATER-USER-SELECTION",
