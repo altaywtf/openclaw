@@ -16,7 +16,7 @@ import {
   sidebarPanelTemplates,
 } from "./chat-pane-embedded-panels.ts";
 import { resolveChatPaneDesktopTarget } from "./chat-pane-placement.ts";
-import type { ResolvedBoardView } from "./chat-pane-shared.ts";
+import { CHAT_COMPOSER_TEXTAREA_SELECTOR, type ResolvedBoardView } from "./chat-pane-shared.ts";
 import { renderSidebarRegion, sidebarRegionCallbacks } from "./chat-pane-sidebar-layout.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
 import { renderChat, type ChatProps } from "./chat-view.ts";
@@ -232,6 +232,15 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
         layout: sidebarLayout,
         closePanelSlot,
         openPanelSlot,
+        prefillComposer: (draft) => {
+          state.handleChatDraftChange(draft, []);
+          state.requestUpdate?.();
+          queueMicrotask(() => {
+            this.querySelector<HTMLTextAreaElement>(CHAT_COMPOSER_TEXTAREA_SELECTOR)?.focus({
+              preventScroll: true,
+            });
+          });
+        },
         forgetDiscussionUrl: () => this.sessionDiscussionOpenUrls.delete(state.sessionKey.trim()),
         resizePanel: (columnId, size) =>
           this.commitSidebarPanelResize(sidebarLayout, columnId, size),

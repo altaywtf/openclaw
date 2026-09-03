@@ -107,6 +107,7 @@ export function sidebarRegionCallbacks(params: {
   layout: SidebarLayout;
   closePanelSlot: (slot: SidebarSlotId) => void;
   openPanelSlot: (slot: SidebarSlotId) => void;
+  prefillComposer: (draft: string) => void;
   forgetDiscussionUrl: () => void;
   resizePanel: (columnId: string, size: number) => void;
   setPanelOpen: (open: boolean) => void;
@@ -128,6 +129,7 @@ export function sidebarRegionCallbacks(params: {
       params.closePanelSlot(slot);
     },
     openSlot: params.openPanelSlot,
+    prefillComposer: params.prefillComposer,
     reorderPanel: (panelId, targetPanelId, placement) =>
       state.updateSidebarLayout(reorderPanel(layout, panelId, targetPanelId, placement)),
     resizePanel: params.resizePanel,
@@ -172,26 +174,25 @@ export function renderSidebarRegion(params: {
     (definition) => definition.slot === activePanelSlot,
   )?.loading;
   return html`<div
-    class="sidebar-region ${collapsed && panelOpen ? "sidebar-region--narrow" : ""} ${
-      panelOpen && params.layout.expanded ? "sidebar-region--expanded" : ""
-    } ${panelOpen && sidebarDock(params.layout) === "bottom" ? "sidebar-region--bottom" : ""}"
+    class="sidebar-region ${collapsed && panelOpen ? "sidebar-region--narrow" : ""} ${panelOpen &&
+    params.layout.expanded
+      ? "sidebar-region--expanded"
+      : ""} ${panelOpen && sidebarDock(params.layout) === "bottom" ? "sidebar-region--bottom" : ""}"
   >
-    ${
-      regionError !== undefined
-        ? regionError === null
-          ? (regionLoading ?? null)
-          : null
-        : html`<openclaw-chat-sidebar-region
-            .layout=${params.layout}
-            .panelDefinitions=${panelDefinitions}
-            .panelTemplates=${panelTemplates ?? params.panelTemplates}
-            .panelActions=${params.panelActions}
-            .availableSlots=${params.availableSlots}
-            .callbacks=${params.callbacks}
-            .narrow=${params.narrow}
-            .availableWidth=${params.availableWidth}
-          ></openclaw-chat-sidebar-region>`
-    }
+    ${regionError !== undefined
+      ? regionError === null
+        ? (regionLoading ?? null)
+        : null
+      : html`<openclaw-chat-sidebar-region
+          .layout=${params.layout}
+          .panelDefinitions=${panelDefinitions}
+          .panelTemplates=${panelTemplates ?? params.panelTemplates}
+          .panelActions=${params.panelActions}
+          .availableSlots=${params.availableSlots}
+          .callbacks=${params.callbacks}
+          .narrow=${params.narrow}
+          .availableWidth=${params.availableWidth}
+        ></openclaw-chat-sidebar-region>`}
     <div class="sidebar-region__primary">${params.primary}</div>
     <div class="sidebar-region__right-runtime">${regionError ?? null}</div>
   </div>`;

@@ -216,7 +216,7 @@ export function sidebarPanelDefinitions(
     definePanel("workspace", "files", icons.fileText, workspaceContent, {
       shortcut: formatKeyboardShortcutCombo(KEYBOARD_SHORTCUT_COMBOS.workspaceFiles),
     }),
-    definePanel("companion", "companion", icons.bot, companion, {
+    definePanel("companion", "companion", icons.messageSquarePlus, companion, {
       shortcut: formatKeyboardShortcutCombo(KEYBOARD_SHORTCUT_COMBOS.sideChat),
       ...(params
         ? {
@@ -244,11 +244,9 @@ export function sidebarPanelDefinitions(
               ?disabled=${!params.connected || params.tasksLoading}
               @click=${params.onRefreshTasks}
             >
-              ${
-                params.tasksLoading
-                  ? html`<span class="btn__spinner" aria-hidden="true"></span>`
-                  : icons.refresh
-              }
+              ${params.tasksLoading
+                ? html`<span class="btn__spinner" aria-hidden="true"></span>`
+                : icons.refresh}
             </button>
           </openclaw-tooltip>`
         : undefined,

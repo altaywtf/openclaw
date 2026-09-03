@@ -32,6 +32,8 @@ import type {
   SidebarRegionCallbacks,
 } from "./chat-sidebar-region-types.ts";
 
+const DASHBOARD_PROMPT = "Create a dashboard ";
+
 function panelType(
   definitions: SidebarPanelDefinition[],
   slot: SidebarSlotId,
@@ -49,13 +51,11 @@ function renderPanelTypeOption(type: SidebarPanelDefinition, slotted = false) {
       >${type.icon}</span
     >
     <span class="side-panel-type-option__label">${type.label}</span>
-    ${
-      type.shortcut
-        ? html`<kbd slot=${slotted ? "details" : nothing} class="side-panel-type-option__shortcut"
-            >${type.shortcut}</kbd
-          >`
-        : nothing
-    }
+    ${type.shortcut
+      ? html`<kbd slot=${slotted ? "details" : nothing} class="side-panel-type-option__shortcut"
+          >${type.shortcut}</kbd
+        >`
+      : nothing}
   `;
 }
 
@@ -214,13 +214,11 @@ class ChatSidebarRegion extends OpenClawLightDomElement {
       this.layout.expanded ? "chat.sidePanel.restore" : "chat.sidePanel.expand",
     );
     return html`<div class="rail-header__actions side-panel__actions">
-      ${
-        panelActions
-          ? html`<span class="side-panel__action-group side-panel__action-group--content">
-              ${panelActions}
-            </span>`
-          : nothing
-      }
+      ${panelActions
+        ? html`<span class="side-panel__action-group side-panel__action-group--content">
+            ${panelActions}
+          </span>`
+        : nothing}
       ${this.renderDockControls()}
       <span class="side-panel__action-group side-panel__action-group--layout">
         <openclaw-tooltip .content=${expandLabel}>
@@ -262,15 +260,22 @@ class ChatSidebarRegion extends OpenClawLightDomElement {
         })}
       </div>`;
     }
+    const dashboard = panelType(this.panelDefinitions, "dashboard");
+    const panelTypes = [
+      ...this.panelTypes().filter((type) => type.slot !== "dashboard"),
+      dashboard,
+    ];
     return html`<div class="side-panel-empty side-panel-empty--selector">
-      <strong class="side-panel-empty__title">${t("chat.sidePanel.emptyTitle")}</strong>
       <div class="side-panel-empty__types" role="list">
-        ${this.panelTypes().map(
+        ${panelTypes.map(
           (type) => html`<button
             class="side-panel-empty__type"
             type="button"
             role="listitem"
-            @click=${() => this.callbacks?.openSlot(type.slot)}
+            @click=${() =>
+              type.slot === "dashboard"
+                ? this.callbacks?.prefillComposer(DASHBOARD_PROMPT)
+                : this.callbacks?.openSlot(type.slot)}
           >
             ${renderPanelTypeOption(type)}
           </button>`,
@@ -353,24 +358,23 @@ class ChatSidebarRegion extends OpenClawLightDomElement {
     const dock = sidebarDock(this.layout);
     const width = this.layout.expanded || dock === "bottom" ? "100%" : `${column?.width ?? 480}px`;
     const height = this.layout.expanded || dock === "right" ? "100%" : `${column?.height ?? 360}px`;
-    return html`${
-        !this.narrow && !this.layout.expanded && column ? this.renderDivider(column) : nothing
-      }
+    return html`${!this.narrow && !this.layout.expanded && column
+        ? this.renderDivider(column)
+        : nothing}
       <section
-        class="sidebar-column side-panel ${this.narrow ? "side-panel--narrow" : ""} ${
-          this.layout.expanded ? "side-panel--expanded" : ""
-        } ${dock === "bottom" ? "side-panel--bottom" : ""}"
+        class="sidebar-column side-panel ${this.narrow ? "side-panel--narrow" : ""} ${this.layout
+          .expanded
+          ? "side-panel--expanded"
+          : ""} ${dock === "bottom" ? "side-panel--bottom" : ""}"
         style=${styleMap({ width, height })}
         aria-label=${t("chat.sidePanel.label")}
       >
-        ${
-          column?.panels.length
-            ? this.renderHeader(column)
-            : html`<header class="rail-header side-panel__header side-panel__header--empty">
-                <strong class="side-panel__empty-header-title">${t("chat.sidePanel.label")}</strong>
-                ${this.renderHeaderActions(null)}
-              </header>`
-        }
+        ${column?.panels.length
+          ? this.renderHeader(column)
+          : html`<header class="rail-header side-panel__header side-panel__header--empty">
+              <strong class="side-panel__empty-header-title">${t("chat.sidePanel.label")}</strong>
+              ${this.renderHeaderActions(null)}
+            </header>`}
         ${this.renderBody(column)}
       </section>`;
   }
