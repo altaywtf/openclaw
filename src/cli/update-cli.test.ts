@@ -5375,6 +5375,53 @@ describe("update-cli", () => {
     expect(packageInstallCommandCall()).toBeUndefined();
   });
 
+  it("refuses a redirected package update when the managed service disappears after preflight", async () => {
+    const shellRoot = createCaseDir("openclaw-schema-redirect-late-drift-shell-root");
+    const serviceRoot = tempDirs.make("openclaw-schema-redirect-late-drift-service-root-");
+    const entryPath = await writeOpenClawPackageFixture(serviceRoot, "2026.5.18", {
+      entrySource: "export {};\n",
+      inventory: true,
+    });
+    const managedState = profileStateDir("work");
+    const managedDefinition = {
+      programArguments: [process.execPath, entryPath, "gateway", "run"],
+      environment: {
+        OPENCLAW_SERVICE_MARKER: "openclaw",
+        OPENCLAW_SERVICE_KIND: "gateway",
+        OPENCLAW_PROFILE: "work",
+        OPENCLAW_STATE_DIR: managedState,
+        OPENCLAW_CONFIG_PATH: path.join(managedState, "openclaw.json"),
+      },
+    };
+    mockPackageInstallStatus(shellRoot);
+    serviceReadCommand
+      .mockResolvedValueOnce({ ...managedDefinition, managedDefinition })
+      .mockResolvedValueOnce({ ...managedDefinition, managedDefinition })
+      .mockResolvedValueOnce({ ...managedDefinition, managedDefinition })
+      .mockResolvedValue(null);
+    serviceLoaded.mockResolvedValue(true);
+    serviceReadRuntime.mockResolvedValue({ status: "stopped", state: "stopped" });
+    vi.mocked(fetchNpmPackageTargetStatus).mockResolvedValue(
+      packageTargetStatus({ schemaVersions: { state: 3, agent: 11 } }),
+    );
+    databasePreflightMocks.preflightOpenClawDatabaseSchemas.mockReturnValue({
+      incompatible: [],
+      indeterminate: [],
+    });
+
+    await expect(updateCommand({ yes: true })).rejects.toEqual(new ExitError(1));
+
+    expect(serviceReadCommand).toHaveBeenCalledTimes(4);
+    expect(getErrorOutput()).toContain("Gateway service inspection is unavailable");
+    expect(databasePreflightMocks.preflightOpenClawDatabaseSchemas).toHaveBeenCalledOnce();
+    expectNoSideEffects(
+      serviceStop,
+      cleanupStaleManagedServiceUpdateHandoffs,
+      launchdUpdateCleanupMocks.disableCurrentOpenClawUpdateLaunchdJob,
+    );
+    expect(packageInstallCommandCall()).toBeUndefined();
+  });
+
   it.each([
     {
       name: "unreadable",
