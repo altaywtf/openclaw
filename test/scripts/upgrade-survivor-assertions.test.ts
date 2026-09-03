@@ -426,11 +426,21 @@ function createMigratedSessionFileStore(
 
 function writeMigratedSessionFiles(
   stateDir: string,
-  options: { includePrompt?: boolean } = {},
+  options: { includePrompt?: boolean; includeSessionFiles?: boolean } = {},
 ): void {
   const agentSessionsDir = join(stateDir, "agents", "main", "sessions");
   mkdirSync(agentSessionsDir, { recursive: true });
-  writeJson(join(agentSessionsDir, "sessions.json"), createMigratedSessionFileStore(options));
+  const store = createMigratedSessionFileStore(options);
+  if (options.includeSessionFiles) {
+    for (const [sessionKey, session] of Object.entries(store)) {
+      const sessionId = session.sessionId;
+      if (typeof sessionId !== "string") {
+        throw new TypeError(`missing fixture session id for ${sessionKey}`);
+      }
+      session.sessionFile = join(agentSessionsDir, `${sessionId}.jsonl`);
+    }
+  }
+  writeJson(join(agentSessionsDir, "sessions.json"), store);
   for (const sessionId of [
     "upgrade-main-session",
     "upgrade-direct-session",
@@ -1921,7 +1931,7 @@ process.stdout.write(sessionDir + "\\n");
       runSessionStateAssertion((stateDir) => {
         mkdirSync(join(stateDir, "agents", "main", "agent"), { recursive: true });
         writeLegacyCacheSessionState(stateDir, { empty: true });
-        writeMigratedSessionFiles(stateDir);
+        writeMigratedSessionFiles(stateDir, { includeSessionFiles: true });
         return { OPENCLAW_UPGRADE_SURVIVOR_SESSION_REPAIR_MODE: "jsonl" };
       }),
     ).not.toThrow();
