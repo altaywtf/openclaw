@@ -9,6 +9,7 @@ import {
 } from "../../infra/fs-safe.js";
 import { hasNodeErrorCode } from "../../infra/path-guards.js";
 import { createStagedInputPathMatcher } from "../../media/staged-inputs.js";
+import { runTasksWithConcurrency } from "../../utils/run-with-concurrency.js";
 import { activeWorkspaceHashContext, workspaceStatIdentity } from "./workspace-hash-memo.js";
 import {
   MAX_WORKSPACE_INVENTORY_ENTRIES,
@@ -26,6 +27,24 @@ import { isDerivedWorkspacePath } from "./workspace-path-exclusions.js";
 type WorkspaceFileSnapshot =
   | { type: "file"; mode: number; size: number; sha256: string }
   | { type: "unsupported" };
+
+const WORKSPACE_MANIFEST_IO_CONCURRENCY = 32;
+
+// Settle every started filesystem operation before propagating the first error.
+async function mapManifestEntries<T, R>(
+  entries: readonly T[],
+  inspect: (entry: T) => Promise<R>,
+): Promise<R[]> {
+  const result = await runTasksWithConcurrency({
+    tasks: entries.map((entry) => async () => await inspect(entry)),
+    limit: WORKSPACE_MANIFEST_IO_CONCURRENCY,
+    errorMode: "stop",
+  });
+  if (result.hasError) {
+    throw result.firstError;
+  }
+  return result.results;
+}
 
 function localPath(root: string, relative: string): string {
   return path.join(root, ...relative.split("/"));
@@ -127,6 +146,7 @@ export async function readActualWorkspaceManifestImpl(params: {
   let manifestPathBytes = 0;
   let traversedEntries = 0;
   let traversedPathBytes = 0;
+  let eligibleFileBytes = 0;
   const addEntry = (entry: (typeof rawEntries)[number], bytes = 0): void => {
     totalBytes += bytes;
     if (totalBytes > MAX_WORKSPACE_INVENTORY_TOTAL_BYTES) {
@@ -151,13 +171,22 @@ export async function readActualWorkspaceManifestImpl(params: {
       throw new Error("Gateway workspace manifest paths exceed their byte limit");
     }
   };
-  const addFile = async (relative: string): Promise<void> => {
+  const addFile = async (relative: string, statedSize: number): Promise<void> => {
+    eligibleFileBytes += statedSize;
+    if (eligibleFileBytes > MAX_WORKSPACE_INVENTORY_TOTAL_BYTES) {
+      throw new Error("Gateway workspace manifest exceeds its eligible byte limit");
+    }
+    const maxBytes = MAX_WORKSPACE_INVENTORY_TOTAL_BYTES - eligibleFileBytes + statedSize;
     const snapshot = await readWorkspaceFileSnapshotWithLimit(
       localPath(root, relative),
-      MAX_WORKSPACE_INVENTORY_TOTAL_BYTES - totalBytes,
+      maxBytes,
       root,
     );
     if (snapshot.type === "file") {
+      eligibleFileBytes += snapshot.size - statedSize;
+      if (eligibleFileBytes > MAX_WORKSPACE_INVENTORY_TOTAL_BYTES) {
+        throw new Error("Gateway workspace manifest exceeds its eligible byte limit");
+      }
       addEntry(
         {
           path: relative,
@@ -227,7 +256,7 @@ export async function readActualWorkspaceManifestImpl(params: {
       return "absent";
     }
     if (stats.isFile()) {
-      await addFile(relative);
+      await addFile(relative, stats.size);
       return "included";
     }
     return "absent";
@@ -238,53 +267,68 @@ export async function readActualWorkspaceManifestImpl(params: {
     const absoluteDirectory = relativeDirectory ? localPath(root, relativeDirectory) : root;
     let hasDerivedEntry = false;
     let hasNonDerivedEntry = false;
+    const directoryEntries = [];
     for await (const directoryEntry of await fs.opendir(absoluteDirectory)) {
-      const name = directoryEntry.name;
-      const relative = relativeDirectory ? `${relativeDirectory}/${name}` : name;
+      const relative = relativeDirectory
+        ? `${relativeDirectory}/${directoryEntry.name}`
+        : directoryEntry.name;
       checkTraversal(relative);
-      if (!relativeDirectory && name === ".git") {
+      directoryEntries.push({ directoryEntry, relative });
+    }
+    const inspected = await mapManifestEntries(
+      directoryEntries,
+      async ({ directoryEntry, relative }) => {
+        const name = directoryEntry.name;
+        if (!relativeDirectory && name === ".git") {
+          return { type: "ignored" as const };
+        }
+        if (isDerivedWorkspacePath(relative, await isStagedInput(relative))) {
+          return { type: "derived" as const };
+        }
+        const absolute = localPath(root, relative);
+        const stats = await fs.lstat(absolute);
+        if (stats.isDirectory() && !stats.isSymbolicLink()) {
+          return { type: "directory" as const, relative, stats };
+        }
+        if (stats.isSymbolicLink()) {
+          const target = await fs.readlink(absolute);
+          if (isPortableRootContainedSymlink(root, relative, target)) {
+            addEntry(
+              {
+                path: relative,
+                type: "symlink",
+                mode: 0o777,
+                target,
+              },
+              Buffer.byteLength(target),
+            );
+          }
+          return { type: "node" as const };
+        }
+        if (stats.isFile()) {
+          await addFile(relative, stats.size);
+        }
+        return { type: "node" as const };
+      },
+    );
+    for (const entry of inspected) {
+      if (entry.type === "ignored") {
         continue;
       }
-      if (isDerivedWorkspacePath(relative, await isStagedInput(relative))) {
+      if (entry.type === "derived") {
         hasDerivedEntry = true;
         continue;
       }
-      const absolute = localPath(root, relative);
-      const stats = await fs.lstat(absolute);
-      if (stats.isDirectory() && !stats.isSymbolicLink()) {
-        const child = await walk(relative);
-        if (child.included || params.preserveDirectories?.has(relative)) {
-          addEntry({ path: relative, type: "directory", mode: stats.mode & 0o777 });
+      if (entry.type === "directory") {
+        const child = await walk(entry.relative);
+        if (child.included || params.preserveDirectories?.has(entry.relative)) {
+          addEntry({ path: entry.relative, type: "directory", mode: entry.stats.mode & 0o777 });
           hasNonDerivedEntry = true;
         } else {
           hasDerivedEntry ||= child.hasDerivedEntry;
         }
-      } else if (stats.isSymbolicLink()) {
-        hasNonDerivedEntry = true;
-        const target = await fs.readlink(absolute);
-        if (!isPortableRootContainedSymlink(root, relative, target)) {
-          // Like other unsupported local nodes, an escaping symlink is retained
-          // as a conflict but omitted from the canonical cloud manifest.
-          continue;
-        }
-        addEntry(
-          {
-            path: relative,
-            type: "symlink",
-            mode: 0o777,
-            target,
-          },
-          Buffer.byteLength(target),
-        );
-      } else if (stats.isFile()) {
-        hasNonDerivedEntry = true;
-        await addFile(relative);
       } else {
         hasNonDerivedEntry = true;
-        // Special local nodes cannot be represented in a cloud manifest. They
-        // remain in place and are surfaced as conflicts when the worker changed
-        // the same path; omitting them lets that conflicted turn still finish.
-        continue;
       }
     }
     return {
@@ -302,13 +346,26 @@ export async function readActualWorkspaceManifestImpl(params: {
       .toSorted(
         (left, right) => right.depth - left.depth || left.relative.localeCompare(right.relative),
       );
-    for (const { relative } of paths) {
-      const state = await addIncludedPath(relative, includedNodes, derivedOnlyDirectories);
-      if (state === "included") {
-        includedNodes.add(relative);
-      } else if (state === "derived-only") {
-        derivedOnlyDirectories.add(relative);
+    for (let index = 0; index < paths.length;) {
+      const depth = paths[index]!.depth;
+      let end = index + 1;
+      while (end < paths.length && paths[end]!.depth === depth) {
+        end += 1;
       }
+      // Nodes at one depth cannot contain each other. Inspect them concurrently,
+      // then publish their states before any parent directory is evaluated.
+      const states = await mapManifestEntries(paths.slice(index, end), async ({ relative }) => ({
+        relative,
+        state: await addIncludedPath(relative, includedNodes, derivedOnlyDirectories),
+      }));
+      for (const { relative, state } of states) {
+        if (state === "included") {
+          includedNodes.add(relative);
+        } else if (state === "derived-only") {
+          derivedOnlyDirectories.add(relative);
+        }
+      }
+      index = end;
     }
   } else {
     await walk("");

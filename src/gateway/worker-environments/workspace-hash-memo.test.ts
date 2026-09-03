@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
 import {
@@ -14,6 +15,7 @@ import {
   withWorkerWorkspaceHashMemo,
   type WorkspaceHashMemo,
 } from "./workspace-hash-memo.js";
+import { MAX_WORKSPACE_INVENTORY_TOTAL_BYTES } from "./workspace-inventory-limits.js";
 import { MAX_RECONCILIATION_ENTRIES, type WorkerWorkspaceManifest } from "./workspace-manifest.js";
 import { preflightWorkspaceApply, readActualWorkspaceManifest } from "./workspace-reconcile.js";
 import { REMOTE_WORKSPACE_MANIFEST_JS } from "./workspace-sync-scripts.js";
@@ -73,6 +75,179 @@ describe("workspace hash memo", () => {
     );
     expect(nextReconcile.manifestRef).toBe(replacedManifestRef);
     expect(nextReconcileMetrics).toMatchObject({ contentHashCount: 1, memoHitCount: 0 });
+  });
+
+  it("bounds concurrent inspection across Git and full-tree manifest captures", async () => {
+    const root = await fs.realpath(tempDirs.make("openclaw-workspace-manifest-concurrency-"));
+    const fileCount = 64;
+    const files = Array.from(
+      { length: fileCount },
+      (_, index) => `${index.toString().padStart(3, "0")}.txt`,
+    );
+    await Promise.all(
+      files.map((entryPath) => fs.writeFile(path.join(root, entryPath), entryPath)),
+    );
+    const includePaths = new Set(files);
+    const originalOpen = fs.open.bind(fs);
+    let activeOpens = 0;
+    let peakActiveOpens = 0;
+    vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+      activeOpens += 1;
+      peakActiveOpens = Math.max(peakActiveOpens, activeOpens);
+      try {
+        // Yield one event-loop turn so concurrent scheduling is observable
+        // without asserting a machine-dependent wall-clock duration.
+        await new Promise<void>((resolve) => {
+          setImmediate(resolve);
+        });
+        return await originalOpen(...args);
+      } finally {
+        activeOpens -= 1;
+      }
+    });
+
+    const metrics = hashMetrics();
+    const manifestRefs = await withWorkspaceHashMemo(
+      new Map(),
+      async () => {
+        const refs: string[] = [];
+        for (let pass = 0; pass < 4; pass += 1) {
+          const actual = await readActualWorkspaceManifest({
+            root,
+            baseCommit: "a".repeat(40),
+            includePaths,
+          });
+          expect(actual.manifest.entries).toHaveLength(fileCount);
+          refs.push(actual.manifestRef);
+        }
+        return refs;
+      },
+      metrics,
+    );
+
+    expect(new Set(manifestRefs).size).toBe(1);
+    expect(metrics).toMatchObject({ contentHashCount: fileCount, memoHitCount: fileCount * 3 });
+    expect(peakActiveOpens).toBeGreaterThan(1);
+    expect(peakActiveOpens).toBeLessThanOrEqual(32);
+
+    peakActiveOpens = 0;
+    const fullTree = await withWorkspaceHashMemo(
+      new Map(),
+      async () => await readActualWorkspaceManifest({ root, baseCommit: "a".repeat(40) }),
+    );
+    expect(fullTree.manifestRef).toBe(manifestRefs[0]);
+    expect(peakActiveOpens).toBeGreaterThan(1);
+    expect(peakActiveOpens).toBeLessThanOrEqual(32);
+  });
+
+  it("accepts a file that grows after traversal when it remains within the byte budget", async () => {
+    const root = await fs.realpath(tempDirs.make("openclaw-workspace-manifest-growth-"));
+    const target = path.join(root, "growing.txt");
+    await fs.writeFile(target, "alpha");
+    const mutationHandle = await fs.open(target, "a");
+    const originalOpen = fs.open.bind(fs);
+    let mutated = false;
+    vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+      if (!mutated && String(args[0]) === target) {
+        mutated = true;
+        await mutationHandle.write("-expanded");
+        await mutationHandle.close();
+      }
+      return await originalOpen(...args);
+    });
+
+    const actual = await readActualWorkspaceManifest({ root, baseCommit: null });
+
+    expect(mutated).toBe(true);
+    expect(actual.manifest.entries).toEqual([
+      expect.objectContaining({ path: "growing.txt", size: Buffer.byteLength("alpha-expanded") }),
+    ]);
+  });
+
+  it("rejects aggregate stated file bytes before starting excess reads", async () => {
+    const root = await fs.realpath(tempDirs.make("openclaw-workspace-manifest-byte-limit-"));
+    const files = Array.from(
+      { length: 32 },
+      (_, index) => `${index.toString().padStart(3, "0")}.txt`,
+    );
+    await Promise.all(
+      files.map((entryPath) => fs.writeFile(path.join(root, entryPath), entryPath)),
+    );
+    const originalLstat = fs.lstat.bind(fs);
+    vi.spyOn(fs, "lstat").mockImplementation(async (...args) => {
+      const stats = await originalLstat(...args);
+      if (stats.isFile()) {
+        stats.size = MAX_WORKSPACE_INVENTORY_TOTAL_BYTES;
+      }
+      return stats;
+    });
+    const originalOpen = fs.open.bind(fs);
+    let startedReads = 0;
+    vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+      startedReads += 1;
+      return await originalOpen(...args);
+    });
+
+    await expect(
+      readActualWorkspaceManifest({
+        root,
+        baseCommit: "a".repeat(40),
+        includePaths: new Set(files),
+      }),
+    ).rejects.toThrow("Gateway workspace manifest exceeds its eligible byte limit");
+    expect(startedReads).toBe(1);
+  });
+
+  it("settles started inspections before propagating a concurrent failure", async () => {
+    const root = await fs.realpath(tempDirs.make("openclaw-workspace-manifest-settlement-"));
+    const files = Array.from(
+      { length: 64 },
+      (_, index) => `${index.toString().padStart(3, "0")}.txt`,
+    );
+    await Promise.all(
+      files.map((entryPath) => fs.writeFile(path.join(root, entryPath), entryPath)),
+    );
+    const initialBatchStarted = createDeferred();
+    const failureThrown = createDeferred();
+    const releaseStarted = createDeferred();
+    const originalOpen = fs.open.bind(fs);
+    let started = 0;
+    let settled = 0;
+    vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+      started += 1;
+      if (started === 32) {
+        initialBatchStarted.resolve();
+      }
+      if (path.basename(String(args[0])) === files[0]) {
+        await initialBatchStarted.promise;
+        failureThrown.resolve();
+        throw new Error("injected concurrent manifest failure");
+      }
+      await releaseStarted.promise;
+      try {
+        return await originalOpen(...args);
+      } finally {
+        settled += 1;
+      }
+    });
+
+    let rejectionObserved = false;
+    const capture = readActualWorkspaceManifest({
+      root,
+      baseCommit: "a".repeat(40),
+      includePaths: new Set(files),
+    }).catch((error: unknown) => {
+      rejectionObserved = true;
+      throw error;
+    });
+    await failureThrown.promise;
+    expect(rejectionObserved).toBe(false);
+    expect(settled).toBe(0);
+
+    releaseStarted.resolve();
+    await expect(capture).rejects.toThrow("injected concurrent manifest failure");
+    expect(started).toBe(32);
+    expect(settled).toBe(31);
   });
 
   it("reuses local workspace nodes within one preflight but not across fences", async () => {
