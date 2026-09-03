@@ -593,6 +593,7 @@ function assertConfig(params: {
   scenario: string;
   stage?: "baseline" | "survival";
   updateChannel?: string;
+  discordDmConfigMode?: "canonical" | "legacy";
 }): void {
   const root = mkdtempSync(join(tmpdir(), "openclaw-upgrade-survivor-config-"));
   try {
@@ -611,6 +612,7 @@ function assertConfig(params: {
         OPENCLAW_UPGRADE_SURVIVOR_CONFIG_COVERAGE_JSON: coveragePath,
         OPENCLAW_UPGRADE_SURVIVOR_SCENARIO: params.scenario,
         OPENCLAW_UPGRADE_SURVIVOR_ASSERT_STAGE: params.stage ?? "survival",
+        OPENCLAW_UPGRADE_SURVIVOR_DISCORD_DM_CONFIG_MODE: params.discordDmConfigMode ?? "canonical",
         OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL: params.updateChannel ?? "",
       },
       stdio: "pipe",
@@ -1527,6 +1529,40 @@ process.stdout.write(sessionDir + "\\n");
         scenario: "base",
       }),
     ).toThrow(/legacy Discord DM config survived/);
+  });
+
+  it("preserves a selected release's legacy Discord DM contract after update", () => {
+    const legacyConfig = {
+      channels: {
+        discord: {
+          enabled: true,
+          dm: { policy: "allowlist" as string, allowFrom: ["111111111111111111"] },
+          guilds: {
+            "222222222222222222": {
+              channels: { "333333333333333333": { requireMention: true } },
+            },
+          },
+          threadBindings: { idleHours: 72 },
+        },
+      },
+    };
+    expect(() =>
+      assertConfig({
+        acceptedIntents: ["discord-channel"],
+        config: legacyConfig,
+        discordDmConfigMode: "legacy",
+        scenario: "base",
+      }),
+    ).not.toThrow();
+    legacyConfig.channels.discord.dm.policy = "pairing";
+    expect(() =>
+      assertConfig({
+        acceptedIntents: ["discord-channel"],
+        config: legacyConfig,
+        discordDmConfigMode: "legacy",
+        scenario: "base",
+      }),
+    ).toThrow(/discord DM policy changed/);
   });
 
   it("requires canonical Discord DM config after update", () => {
