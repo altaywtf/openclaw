@@ -406,9 +406,16 @@ function replaceTranscriptSuffixForTest(
   scope: { agentId: string; sessionId: string; sessionKey: string; env: NodeJS.ProcessEnv },
   expectedEvents: readonly TranscriptEvent[],
   nextEvents: readonly TranscriptEvent[],
+  persistedPrefixLength = 0,
 ): void {
   const owner = openOpenClawAgentDatabase(scope);
-  const plan = prepareSqliteTranscriptSuffixMutation(owner, scope, expectedEvents, nextEvents);
+  const plan = prepareSqliteTranscriptSuffixMutation(
+    owner,
+    scope,
+    expectedEvents,
+    nextEvents,
+    persistedPrefixLength,
+  );
   runOpenClawAgentWriteTransaction((database) => {
     replaceSqliteTranscriptSuffixInTransaction(database, scope, plan);
   }, scope);
@@ -658,6 +665,33 @@ describe("SQLite exact transcript suffix replacement", () => {
       });
       expect(snapshot().raw).toHaveLength(2);
       expect(sessionTranscriptIndexNeedsReconcile(db, scope.sessionId)).toBe(false);
+    });
+  });
+
+  it("preserves retained row timestamps when an already-dirty projection needs reconciliation", async () => {
+    await withRewriteFixture(async ({ db, snapshot, scope }) => {
+      db.prepare(
+        "UPDATE transcript_events SET created_at = 303 WHERE session_id = ? AND seq = 2",
+      ).run(scope.sessionId);
+      db.prepare(
+        "UPDATE transcript_event_identities SET created_at = 303 WHERE session_id = ? AND event_id = ?",
+      ).run(scope.sessionId, "answer");
+      db.prepare(
+        "UPDATE session_transcript_index_state SET needs_rebuild = 1 WHERE session_id = ?",
+      ).run(scope.sessionId);
+      const retainedAnswer = { ...rewriteEvents[2], parentId: "root" };
+
+      replaceTranscriptSuffixForTest(scope, rewriteEvents, [rewriteEvents[0], retainedAnswer], 1);
+
+      expect(snapshot().raw).toEqual([
+        expect.objectContaining({ seq: 0 }),
+        expect.objectContaining({ created_at: 303, seq: 1 }),
+      ]);
+      await waitForSessionTranscriptIndexReconcile(scope);
+      expect(snapshot().identities).toEqual([
+        expect.objectContaining({ seq: 0 }),
+        expect.objectContaining({ created_at: 303, event_id: "answer", seq: 1 }),
+      ]);
     });
   });
 });
