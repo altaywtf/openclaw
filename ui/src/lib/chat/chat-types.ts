@@ -13,7 +13,7 @@ import type { SenderIdentity } from "./sender-label.ts";
 
 export type { HumanMention };
 
-export type BrowserAnnotationAttachment = {
+type BrowserAnnotationAttachment = {
   modelContext: string;
   title: string;
   displayUrl: string;
