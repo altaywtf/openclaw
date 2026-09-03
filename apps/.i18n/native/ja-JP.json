@@ -1954,7 +1954,6 @@
     "native.apple.1ab06582cc6559e9": "暗号化なし",
     "native.apple.1acad147c34f0ed1": "Gateway 接続が変更されました。OpenClaw を再起動して再接続してください。",
     "native.apple.1b206a7a4565f60b": "CUAデーモン",
-    "native.apple.1b26941acb04dc80": "マイクを利用できません — 再接続して Talk を再開してください",
     "native.apple.1b3766cbf8893e51": "ネイティブ WebRTC",
     "native.apple.1b3e61030f599963": "エージェントアクションを実行するには OpenClaw の一時停止を解除してください。",
     "native.apple.1b4ad7a0172fb147": "より速く",
