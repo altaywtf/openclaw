@@ -521,6 +521,37 @@ export async function resolveControlUiAssistantMedia(
   };
 }
 
+/**
+ * Resolve the live authority behind a verified media ticket. Returns null once
+ * the minting WebSocket connection is gone or the ticket's session is no
+ * longer visible to that connection. Untied tickets and non-ticket requests
+ * keep the Gateway's default agent.
+ */
+function resolveAssistantMediaTicketAuthority(
+  ticket: AssistantMediaTicketPayload | null,
+  opts?: { config?: OpenClawConfig; agentId?: string; clients?: ReadonlySet<GatewayWsClient> },
+): { agentId?: string } | null {
+  if (!ticket?.connId) {
+    return { agentId: ticket?.agentId ?? opts?.agentId };
+  }
+  const client = [...(opts?.clients ?? [])].find(
+    (candidate) => candidate.connId === ticket.connId && !candidate.invalidatedReason,
+  );
+  if (!client) {
+    return null;
+  }
+  if (!ticket.sessionKey) {
+    return { agentId: ticket.agentId };
+  }
+  const access = opts?.config
+    ? resolveControlUiSessionAccess(ticket.sessionKey, opts.config, client)
+    : null;
+  if (!access || access.agentId !== ticket.agentId) {
+    return null;
+  }
+  return { agentId: access.agentId };
+}
+
 export async function handleControlUiAssistantMediaRequest(
   req: IncomingMessage,
   res: ServerResponse,
@@ -568,27 +599,12 @@ export async function handleControlUiAssistantMediaRequest(
   ) {
     return true;
   }
-  let agentId = verifiedMediaTicket?.agentId ?? opts?.agentId;
-  if (verifiedMediaTicket?.connId) {
-    const client = [...(opts?.clients ?? [])].find(
-      (candidate) =>
-        candidate.connId === verifiedMediaTicket.connId && !candidate.invalidatedReason,
-    );
-    if (!client) {
-      respondPlainText(res, 401, "Unauthorized");
-      return true;
-    }
-    if (verifiedMediaTicket.sessionKey) {
-      const access = opts?.config
-        ? resolveControlUiSessionAccess(verifiedMediaTicket.sessionKey, opts.config, client)
-        : null;
-      if (!access || access.agentId !== verifiedMediaTicket.agentId) {
-        respondPlainText(res, 401, "Unauthorized");
-        return true;
-      }
-      agentId = access.agentId;
-    }
+  const authority = resolveAssistantMediaTicketAuthority(verifiedMediaTicket, opts);
+  if (!authority) {
+    respondPlainText(res, 401, "Unauthorized");
+    return true;
   }
+  const agentId = authority.agentId;
   const localRoots = opts?.config
     ? getAgentScopedMediaLocalRoots(opts.config, agentId)
     : getDefaultLocalRootsCore();
@@ -603,6 +619,12 @@ export async function handleControlUiAssistantMediaRequest(
     const resolvedReference = await resolveMediaReferenceLocalPathInfo(source);
     const localPath = resolvedReference.path;
     await assertLocalMediaAllowed(localPath, localRoots);
+    // Path and root resolution were awaited above; the ticket's connection or
+    // session may have been revoked meanwhile. Recheck before touching the file.
+    if (!resolveAssistantMediaTicketAuthority(verifiedMediaTicket, opts)) {
+      respondPlainText(res, 401, "Unauthorized");
+      return true;
+    }
     let opened = await openLocalFileSafely({ filePath: localPath });
     byteStream = createGatewayByteStream(res, opened.handle, () => respondControlUiNotFound(res));
     const sniffLength = Math.min(opened.stat.size, 8192);

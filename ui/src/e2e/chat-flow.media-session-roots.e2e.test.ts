@@ -1,7 +1,10 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, it } from "vitest";
-import { defaultControlUiFeatureMethods } from "../test-helpers/control-ui-e2e.ts";
+import {
+  controlUiSessionUrl,
+  defaultControlUiFeatureMethods,
+} from "../test-helpers/control-ui-e2e.ts";
 import { createChatFlowE2eSuite, installMockGateway } from "./chat-flow.test-support.ts";
 
 const suite = createChatFlowE2eSuite();
@@ -48,7 +51,7 @@ suite.define(() => {
     });
 
     try {
-      await page.goto(`${suite.server.baseUrl}chat`);
+      await page.goto(controlUiSessionUrl(suite.server.baseUrl, sessionKey));
       const image = page.getByAltText("Research report");
       await image.waitFor({ state: "visible", timeout: 10_000 });
       const request = await gateway.waitForRequest("assistant.media.get");

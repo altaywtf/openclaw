@@ -56,6 +56,7 @@ const actionlessEmptyStateAllowlist = new Set<OfferedSlotLabel>([
 function coldOpenScenario(): ControlUiMockGatewayScenario {
   return {
     featureMethods: [
+      "assistant.media.get",
       "browser.request",
       "chat.metadata",
       "chat.startup",
@@ -70,6 +71,11 @@ function coldOpenScenario(): ControlUiMockGatewayScenario {
       "terminal.open",
     ],
     methodResponses: {
+      "assistant.media.get": {
+        available: true,
+        mediaTicket: "ticket-browser-screenshot",
+        mediaTicketExpiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+      },
       "browser.request": {
         cases: [
           { match: { method: "GET", path: "/tabs" }, response: { running: false, tabs: [] } },
@@ -448,8 +454,13 @@ suite.define(() => {
         route.fulfill({ body: ONE_PIXEL_PNG, contentType: "image/png" }),
       );
       const gateway = await installMockGateway(page, {
-        featureMethods: ["browser.request", "chat.metadata", "chat.startup"],
+        featureMethods: ["assistant.media.get", "browser.request", "chat.metadata", "chat.startup"],
         methodResponses: {
+          "assistant.media.get": {
+            available: true,
+            mediaTicket: "ticket-browser-screenshot",
+            mediaTicketExpiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+          },
           "browser.request": {
             cases: [
               {

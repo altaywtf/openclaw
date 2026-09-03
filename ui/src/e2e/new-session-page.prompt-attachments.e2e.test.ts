@@ -494,6 +494,7 @@ suite.define(() => {
           },
         },
       });
+      let mediaResolved = false;
       try {
         await page.goto(`${suite.server.baseUrl}new`);
         const composer = page.locator(".new-session-page__message");
@@ -565,6 +566,7 @@ suite.define(() => {
         await pollLocatorText(userRow).toContain(message);
         await pollLocatorText(userRow).not.toContain("Attached image");
         await gateway.resolveDeferred("assistant.media.get");
+        mediaResolved = true;
         await expect.poll(() => userImage.getAttribute("src")).toContain("initial-prompt-ticket");
         await expectDecodedThumbnail(userImage, 180);
         expect(await userImage.getAttribute("data-initial-image-node")).toBe("true");
@@ -573,7 +575,9 @@ suite.define(() => {
         );
         await captureUiProof(suite, page, "initial-image-canonical-ready.png");
       } finally {
-        await gateway.resolveDeferred("assistant.media.get");
+        if (!mediaResolved) {
+          await gateway.resolveDeferred("assistant.media.get").catch(() => undefined);
+        }
       }
     });
   });

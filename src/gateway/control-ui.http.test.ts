@@ -41,9 +41,11 @@ import {
   handleControlUiAssistantMediaRequest,
   handleControlUiAvatarRequest,
   handleControlUiHttpRequest,
+  resolveControlUiAssistantMedia,
 } from "./control-ui.js";
 import { setControlUiPluginAuthCookieForRequest } from "./http-auth-utils.js";
 import { resolveSharedGatewaySessionGeneration } from "./server/ws-shared-generation.js";
+import type { GatewayWsClient } from "./server/ws-types.js";
 import { makeMockHttpResponse } from "./test-http-response.js";
 
 type PlaybackTranscodeResolution = Awaited<
@@ -69,6 +71,24 @@ const resolvePlaybackModeForSourceMock = vi.hoisted(() => vi.fn<PlaybackModeForS
 const resolvePlaybackTranscodeMock = vi.hoisted(() =>
   vi.fn(async (): Promise<PlaybackTranscodeResolution> => ({ kind: "passthrough" })),
 );
+// Pass-through spies on the assistant media file boundary so ticket revocation
+// races can be injected between root validation and the local file open.
+const openLocalFileSafelyMock = vi.hoisted(() => vi.fn());
+const assertLocalMediaAllowedMock = vi.hoisted(() => vi.fn());
+const resolveControlUiSessionAccessMock = vi.hoisted(() => vi.fn());
+vi.mock("../infra/fs-safe.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../infra/fs-safe.js")>();
+  openLocalFileSafelyMock.mockImplementation(actual.openLocalFileSafely);
+  return { ...actual, openLocalFileSafely: openLocalFileSafelyMock };
+});
+vi.mock("../media/local-media-access.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../media/local-media-access.js")>();
+  assertLocalMediaAllowedMock.mockImplementation(actual.assertLocalMediaAllowed);
+  return { ...actual, assertLocalMediaAllowed: assertLocalMediaAllowedMock };
+});
+vi.mock("./control-ui-session-access.js", () => ({
+  resolveControlUiSessionAccess: resolveControlUiSessionAccessMock,
+}));
 vi.mock("../infra/dev-install-branch.js", () => ({
   resolveDevInstallGitBranch: async () => devInstallBranchMock.branch,
 }));
@@ -301,6 +321,8 @@ describe("handleControlUiHttpRequest", () => {
     distinctHeaders?: IncomingMessage["headersDistinct"];
     trustedProxies?: string[];
     remoteAddress?: string;
+    config?: OpenClawConfig;
+    clients?: ReadonlySet<GatewayWsClient>;
   }) {
     const { res, end, setHeader } = makeMockHttpResponse();
     const handled = await handleControlUiAssistantMediaRequest(
@@ -323,6 +345,8 @@ describe("handleControlUiHttpRequest", () => {
         ...(params.basePath ? { basePath: params.basePath } : {}),
         ...(params.auth ? { auth: params.auth } : {}),
         ...(params.trustedProxies ? { trustedProxies: params.trustedProxies } : {}),
+        ...(params.config ? { config: params.config } : {}),
+        ...(params.clients ? { clients: params.clients } : {}),
       },
     );
     return { res, end, setHeader, handled };
@@ -1070,6 +1094,76 @@ describe("handleControlUiHttpRequest", () => {
       await fs.rm(filePath, { force: true });
     }
   });
+
+  it.each([
+    {
+      revocation: "the minting connection is invalidated",
+      sessionKey: undefined,
+      revoke: (client: { invalidatedReason?: string }) => {
+        client.invalidatedReason = "closed";
+      },
+    },
+    {
+      revocation: "the ticket session becomes hidden",
+      sessionKey: "agent:main:main",
+      revoke: () => {
+        resolveControlUiSessionAccessMock.mockReturnValue(null);
+      },
+    },
+  ])(
+    "rejects ticketed assistant media before opening the file when $revocation mid-redemption",
+    async ({ sessionKey, revoke }) => {
+      await withAllowedAssistantMediaRoot({
+        prefix: "ui-media-ticket-race-",
+        fn: async (tmpRoot) => {
+          const filePath = path.join(tmpRoot, "photo.png");
+          await fs.writeFile(filePath, REAL_PNG);
+          const config = {} as OpenClawConfig;
+          const client = { connId: "ticket-race-conn" } as { invalidatedReason?: string };
+          const clients = new Set([client as unknown as GatewayWsClient]);
+          resolveControlUiSessionAccessMock.mockReturnValue({
+            sessionKey: sessionKey ?? "agent:main:main",
+            agentId: "main",
+          });
+          const minted = await resolveControlUiAssistantMedia(filePath, config, {
+            agentId: "main",
+            connId: "ticket-race-conn",
+            ...(sessionKey ? { sessionKey } : {}),
+          });
+          expect(minted.available).toBe(true);
+          const mediaTicket = minted.available ? minted.mediaTicket : "";
+          const url = `/__openclaw__/assistant-media?source=${encodeURIComponent(filePath)}&mediaTicket=${encodeURIComponent(mediaTicket)}`;
+
+          // Control: the ticket serves bytes while its authority is intact.
+          openLocalFileSafelyMock.mockClear();
+          const intact = await runAssistantMediaRequest({ url, method: "GET", config, clients });
+          expect(intact.handled).toBe(true);
+          expect(intact.res.statusCode).toBe(200);
+          expect(openLocalFileSafelyMock).toHaveBeenCalledTimes(1);
+
+          // Race: revoke authority while root validation is still awaited.
+          const actualLocalMediaAccess = await vi.importActual<
+            typeof import("../media/local-media-access.js")
+          >("../media/local-media-access.js");
+          assertLocalMediaAllowedMock.mockImplementationOnce(async (localPath, roots) => {
+            revoke(client);
+            return await actualLocalMediaAccess.assertLocalMediaAllowed(localPath, roots);
+          });
+          openLocalFileSafelyMock.mockClear();
+          try {
+            const revoked = await runAssistantMediaRequest({ url, method: "GET", config, clients });
+            expect(revoked.handled).toBe(true);
+            expect(revoked.res.statusCode).toBe(401);
+            expect(revoked.end).toHaveBeenCalledWith("Unauthorized");
+            expect(assertLocalMediaAllowedMock).toHaveBeenCalled();
+            expect(openLocalFileSafelyMock).not.toHaveBeenCalled();
+          } finally {
+            resolveControlUiSessionAccessMock.mockReset();
+          }
+        },
+      });
+    },
+  );
 
   it("rejects assistant local media outside allowed preview roots", async () => {
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-ui-media-blocked-"));
