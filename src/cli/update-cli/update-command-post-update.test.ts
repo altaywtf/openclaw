@@ -7,6 +7,7 @@ import type { UpdateRunResult } from "../../infra/update-runner.js";
 import { defaultRuntime } from "../../runtime.js";
 import {
   createManagedServiceIdentityFixture,
+  createScriptActivationFixture,
   successfulPluginUpdate,
   validConfigSnapshot,
 } from "./update-command-post-update.test-support.js";
@@ -19,11 +20,12 @@ const mocks = vi.hoisted(() => ({
   leaseActive: false,
   loadPluginRecords: vi.fn(),
   markSentinelFailure: vi.fn(async () => undefined),
-  prepareRestartScript: vi.fn(async () => null),
+  prepareRestartScript: vi.fn<typeof import("./restart-helper.js").prepareRestartScript>(),
   printResult: vi.fn(),
   readConfig: vi.fn(),
   createServiceConfigIO: vi.fn(),
   readServiceState: vi.fn(),
+  restartHealth: vi.fn(),
   restartService: vi.fn<typeof import("./update-command-service.js").maybeRestartService>(
     async () => "ok",
   ),
@@ -84,8 +86,16 @@ vi.mock("./update-command-fresh-doctor.js", () => ({
 vi.mock("./update-command-plugins.js", () => ({
   updatePluginsAfterCoreUpdate: mocks.updatePlugins,
 }));
-vi.mock("./restart-helper.js", () => ({
+vi.mock("./restart-helper.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./restart-helper.js")>()),
   prepareRestartScript: mocks.prepareRestartScript,
+}));
+vi.mock("../daemon-cli/restart-health.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../daemon-cli/restart-health.js")>()),
+  waitForGatewayHealthyRestart: mocks.restartHealth,
+}));
+vi.mock("./update-command-config-snapshot.js", () => ({
+  createUpdateConfigSnapshot: async () => undefined,
 }));
 vi.mock("./update-command-service.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./update-command-service.js")>()),
@@ -197,6 +207,7 @@ describe("successful update finalization ordering", () => {
     vi.clearAllMocks();
     mocks.leaseActive = false;
     mocks.loadPluginRecords.mockResolvedValue({});
+    mocks.prepareRestartScript.mockResolvedValue(null);
     mocks.revalidateService.mockImplementation(async ({ root, preManagedServiceStop }) => ({
       kind: "owned",
       root,
@@ -668,6 +679,64 @@ describe("successful update finalization ordering", () => {
       vi.unstubAllEnvs();
       identity.restore();
     });
+
+    it.each(
+      (["npm", "git"] as const).flatMap((mode) =>
+        [
+          { outcome: "accepted", body: "exit 0", intentional: false, goal: "verify-running" },
+          { outcome: "refused", body: "exit 78", intentional: false, goal: "preserve" },
+          { outcome: "interrupted", body: "kill -TERM $$", intentional: false, goal: "preserve" },
+          { outcome: "intentional stop", body: "exit 0", intentional: true, goal: "preserve" },
+        ].map((scenario) => Object.assign({ mode }, scenario)),
+      ),
+    )(
+      "retains the $goal repair goal after $mode script activation ($outcome)",
+      async ({ mode, body, intentional, goal }) => {
+        const root = await fs.realpath(tempDirs.make("openclaw-script-repair-goal-"));
+        vi.stubEnv("OPENCLAW_UPDATE_RUN_HANDOFF", "1");
+        const { entrypoint, script, activated, params } = await createScriptActivationFixture({
+          root,
+          mode,
+          body,
+          intentional,
+        });
+        mocks.prepareRestartScript.mockResolvedValueOnce(script);
+        mocks.readServiceState.mockResolvedValue({
+          installed: true,
+          loadState: { status: "loaded" },
+          env: { HOME: identity.home },
+          command: { programArguments: [process.execPath, entrypoint, "gateway"] },
+        });
+        mocks.restartHealth.mockResolvedValue({
+          healthy: false,
+          runtime: { status: "stopped" },
+          staleGatewayPids: [],
+          portUsage: { port: 18789, status: "free", listeners: [], hints: [] },
+        });
+        const actual = await vi.importActual<typeof import("./update-command-service.js")>(
+          "./update-command-service.js",
+        );
+        mocks.restartService.mockImplementationOnce(actual.maybeRestartService);
+        const failure = await finishUpdate(params).catch((error: unknown) => error);
+        expect(failure).toMatchObject({
+          name: "UpdateCommandFailure",
+          exitCode: 79,
+          result: {
+            status: "error",
+            reason: "restart-unhealthy",
+            recovery: { serviceRestartSafe: false, reason: "runtime-verification-failed" },
+          },
+          automaticTriage: { gateway: goal, installationRoot: root },
+        });
+        await expect(fs.stat(activated)).resolves.toBeDefined();
+        expect(mocks.restartHealth).toHaveBeenCalled();
+        expect(mocks.writeSentinel).toHaveBeenCalledOnce();
+        expect(mocks.markSentinelFailure).toHaveBeenCalledWith(
+          expect.objectContaining({ reason: "restart-unhealthy" }),
+        );
+        expectFailureReport("restart-unhealthy", true);
+      },
+    );
 
     it.each([
       ["unknown", true],

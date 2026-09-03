@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => ({
   doctorCommand: vi.fn<typeof import("../../commands/doctor.js").doctorCommand>(),
   runDaemonInstall: vi.fn<typeof import("../daemon-cli.js").runDaemonInstall>(),
   runDaemonRestart: vi.fn<typeof import("../daemon-cli.js").runDaemonRestart>(),
-  runRestartScript: vi.fn(async () => undefined),
+  runRestartScript: vi.fn(async () => false),
   waitForGatewayHealthyRestart: vi.fn(),
 }));
 
@@ -86,7 +86,10 @@ describe("maybeRestartService", () => {
       }),
     ).resolves.toBe("ok");
 
-    expect(mocks.runRestartScript).toHaveBeenCalledWith("/tmp/openclaw-configured-ui-restart.sh");
+    expect(mocks.runRestartScript).toHaveBeenCalledWith(
+      "/tmp/openclaw-configured-ui-restart.sh",
+      1_000,
+    );
     expect(mocks.waitForGatewayHealthyRestart).toHaveBeenCalledWith(
       expect.objectContaining({ expectedBuildId: "new-build" }),
     );
