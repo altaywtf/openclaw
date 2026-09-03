@@ -371,8 +371,8 @@ export async function inspectGatewayPortHealth(params: {
     return { portUsage, healthy: false };
   }
   const expectedListenerPid = params.expectedListenerPid;
-  const listenerOwnershipVerified =
-    expectedListenerPid !== undefined &&
+  const listenerOwnershipAccepted =
+    expectedListenerPid === undefined ||
     allListenersOwnedByRuntimePid(portUsage.listeners, expectedListenerPid);
   const reachability = await confirmGatewayReachable({
     port: params.port,
@@ -380,19 +380,24 @@ export async function inspectGatewayPortHealth(params: {
     ...(params.config ? { config: params.config } : {}),
     ...(params.configuredProbe ? { configuredProbe: params.configuredProbe } : {}),
     env: process.env,
-    allowDeviceIdentityRequired: listenerOwnershipVerified,
+    allowDeviceIdentityRequired: expectedListenerPid !== undefined && listenerOwnershipAccepted,
   });
   const pluginUnavailable =
+    listenerOwnershipAccepted &&
     params.includePluginHealth === true &&
     (reachability.activatedPluginErrors.length > 0 || reachability.unavailablePlugins.length > 0);
   return {
     portUsage,
-    healthy: reachability.reachable && !pluginUnavailable,
+    healthy: listenerOwnershipAccepted && reachability.reachable && !pluginUnavailable,
     ...(reachability.probeError ? { probeError: reachability.probeError } : {}),
-    ...(params.includePluginHealth === true && reachability.activatedPluginErrors.length > 0
+    ...(listenerOwnershipAccepted &&
+    params.includePluginHealth === true &&
+    reachability.activatedPluginErrors.length > 0
       ? { activatedPluginErrors: reachability.activatedPluginErrors }
       : {}),
-    ...(params.includePluginHealth === true && reachability.unavailablePlugins.length > 0
+    ...(listenerOwnershipAccepted &&
+    params.includePluginHealth === true &&
+    reachability.unavailablePlugins.length > 0
       ? { unavailablePlugins: reachability.unavailablePlugins }
       : {}),
   };
