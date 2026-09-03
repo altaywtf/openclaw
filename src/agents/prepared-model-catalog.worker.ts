@@ -12,8 +12,10 @@ import { listRuntimePluginIdsFromRegistry } from "../plugins/active-runtime-regi
 import { normalizePluginsConfig } from "../plugins/config-state.js";
 import { isManifestPluginAvailableForControlPlane } from "../plugins/manifest-contract-eligibility.js";
 import { restorePluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
-import { planRuntimePluginDiscovery } from "../plugins/provider-discovery.js";
-import { resolveProviderSyntheticAuthWithPlugin } from "../plugins/provider-runtime.js";
+import {
+  planRuntimePluginDiscovery,
+  resolveRuntimePluginDiscoveryProviders,
+} from "../plugins/provider-discovery.js";
 import { manifestPluginResolvesRuntimeModelCatalogAugment } from "../plugins/providers.js";
 import { withPluginRuntimeGenerationScope } from "../plugins/runtime/generation-scope.js";
 import {
@@ -41,6 +43,7 @@ import { createPreparedInboundRegistryLoader } from "./prepared-model-runtime.in
 import { prepareOwnedPluginLoadContext } from "./prepared-model-runtime.plugin-context.js";
 import {
   resolveManifestNativeAuthRuntime,
+  resolvePreparedSyntheticAuth,
   scopeSyntheticAuthProviderRefs,
 } from "./prepared-model-runtime.synthetic-auth.js";
 import { resolveProviderIdForAuth } from "./provider-auth-aliases.js";
@@ -191,6 +194,26 @@ export async function runPreparedModelCatalogWorkerRequest(
         ),
       ),
     );
+    // Discovery entries that alias a canonical id (Codex answers for openai) hold native-login
+    // facts the runtime registry does not; owner-scoped plugin lookups would ask only the id's
+    // owning plugin and miss them. Resolve them once per request under this generation.
+    const syntheticAuthPluginIds = prepared.pluginGeneration.pluginMetadataSnapshot.plugins
+      .filter((plugin) => (plugin.syntheticAuthRefs?.length ?? 0) > 0)
+      .map((plugin) => plugin.id);
+    const syntheticAuthDiscoveryProviders =
+      syntheticAuthPluginIds.length > 0
+        ? await withPluginRuntimeGenerationScope(pluginGenerationScope, () =>
+            resolveRuntimePluginDiscoveryProviders({
+              config: value.input.config,
+              env: value.input.env ?? process.env,
+              workspaceDir: value.input.workspaceDir,
+              pluginMetadataSnapshot: prepared.pluginGeneration.pluginMetadataSnapshot,
+              onlyPluginIds: syntheticAuthPluginIds,
+              discoveryEntriesOnly: true,
+              includeSyntheticAuthProviders: true,
+            }),
+          )
+        : [];
     const resolveSyntheticAuth = (providerIds: readonly string[]) =>
       withPluginRuntimeGenerationScope(pluginGenerationScope, () =>
         resolveAmbientAgentCredentialsForDiscovery({
@@ -216,16 +239,15 @@ export async function runPreparedModelCatalogWorkerRequest(
           ),
           ...(value.input.workspaceDir ? { workspaceDir: value.input.workspaceDir } : {}),
           resolveSyntheticAuth: (provider) =>
-            resolveProviderSyntheticAuthWithPlugin({
-              provider,
+            resolvePreparedSyntheticAuth({
               config: value.input.config,
-              workspaceDir: value.input.workspaceDir,
-              env: value.input.env,
-              context: {
-                config: value.input.config,
-                provider,
-                providerConfig: value.input.config.models?.providers?.[provider],
-              },
+              provider,
+              providers: [
+                ...syntheticAuthDiscoveryProviders,
+                ...(pluginGenerationScope.pluginRegistry?.providers.map(
+                  (entry) => entry.provider,
+                ) ?? []),
+              ],
             }),
         }),
       );
