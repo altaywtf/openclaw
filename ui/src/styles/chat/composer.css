@@ -407,6 +407,24 @@
   min-width: 0;
 }
 
+/* The preview is presentation only: the textarea below remains the sole draft
+   owner for selection, IME, dictation, history, and slash-command behavior. */
+.agent-chat__composer-markdown-preview {
+  --chat-text: var(--text-strong);
+  --chat-text-size: var(--chat-composer-editor-size);
+
+  max-height: min(28dvh, calc(var(--chat-composer-editor-line) * 9));
+  padding: var(--chat-composer-editor-inset-block) 0 10px;
+  overflow: hidden;
+  border-bottom: 1px solid var(--chat-composer-hairline);
+  pointer-events: none;
+  user-select: none;
+}
+
+.agent-chat__composer-markdown-preview:not([hidden]) + textarea {
+  margin-top: 6px;
+}
+
 .agent-chat__composer-combobox > :is(textarea, input) {
   --control-ui-touch-input-size: var(--chat-composer-editor-size);
 

@@ -5037,6 +5037,9 @@ describe("chat slash menu accessibility", () => {
     expect(container.querySelector(".agent-chat__skill-token")).toBeNull();
     expect(container.querySelector(".agent-chat__composer-draft-overlay")).toBeNull();
     expect(textarea.classList.contains("agent-chat__composer-textarea--rich")).toBe(false);
+    expect(
+      container.querySelector<HTMLElement>(".agent-chat__composer-markdown-preview")?.hidden,
+    ).toBe(true);
 
     textarea.setSelectionRange(8, 8);
     textarea.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
@@ -5050,6 +5053,23 @@ describe("chat slash menu accessibility", () => {
     expect(keydownComposer(container, "ArrowLeft").defaultPrevented).toBe(false);
     expect(keydownComposer(container, "Backspace").defaultPrevented).toBe(false);
     expect(textarea.value).toBe("Use $prose_writer: next");
+  });
+
+  it("previews Markdown formatting without replacing the native draft input", () => {
+    const draft =
+      "> A quoted note\n\n**Bold direction** with `inline code`\n\n- First task\n- Second task";
+    const { container } = createReactiveDraftHarness();
+    inputDraftAtEnd(container, draft);
+
+    const preview = container.querySelector(".agent-chat__composer-markdown-preview");
+    expect(preview?.querySelector("blockquote")?.textContent).toContain("A quoted note");
+    expect(preview?.querySelector("strong")?.textContent).toBe("Bold direction");
+    expect(preview?.querySelector("code")?.textContent).toBe("inline code");
+    expect(Array.from(preview?.querySelectorAll("li") ?? [], (item) => item.textContent)).toEqual([
+      "First task",
+      "Second task",
+    ]);
+    expect(getComposerTextarea(container).value).toBe(draft);
   });
 
   it("fills a selected $ skill without submitting the surrounding prompt", async () => {
