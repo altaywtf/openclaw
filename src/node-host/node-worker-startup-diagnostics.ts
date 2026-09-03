@@ -1,5 +1,9 @@
 import { createSubsystemLogger } from "../logging/subsystem.js";
-import { parseNodeWorkerStartupMessage } from "../worker/node-supervisor-protocol.js";
+import {
+  NODE_WORKER_STARTUP_PHASES,
+  parseNodeWorkerStartupMessage,
+  type NodeWorkerStartupMessage,
+} from "../worker/node-supervisor-protocol.js";
 import type { NodeWorkerSupervisorIdentity } from "./node-worker-supervisor-contract.js";
 
 const log = createSubsystemLogger("node-host/worker-startup");
@@ -10,10 +14,10 @@ export function createNodeWorkerStartupDiagnostics(
   receivedAtMs: number,
 ) {
   let gateRecorded = false;
-  let helloAtMs: number | undefined;
-  let inferenceRecorded = false;
+  let nextPhase = 0;
+  let lastWorkerTimeMs = 0;
   const record = (
-    phase: "launch-received" | "start-gate-opened" | "hello-ready" | "first-inference",
+    phase: "launch-received" | "start-gate-opened" | NodeWorkerStartupMessage["phase"],
     nodeTimeMs: number,
     workerTimeMs?: number,
   ) => {
@@ -51,21 +55,13 @@ export function createNodeWorkerStartupDiagnostics(
         !message ||
         message.runId !== identity.runId ||
         message.turnId !== identity.launchId ||
-        inferenceRecorded
+        message.phase !== NODE_WORKER_STARTUP_PHASES[nextPhase] ||
+        message.workerTimeMs < lastWorkerTimeMs
       ) {
         return;
       }
-      if (message.phase === "hello-ready") {
-        if (helloAtMs !== undefined) {
-          return;
-        }
-        helloAtMs = message.workerTimeMs;
-      } else {
-        if (helloAtMs === undefined || message.workerTimeMs < helloAtMs) {
-          return;
-        }
-        inferenceRecorded = true;
-      }
+      nextPhase++;
+      lastWorkerTimeMs = message.workerTimeMs;
       // Node and child clocks have different origins. Only compare each clock
       // with itself; IPC arrival is not the worker's event timestamp.
       record(message.phase, performance.now(), message.workerTimeMs);

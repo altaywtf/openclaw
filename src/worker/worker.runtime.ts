@@ -194,8 +194,14 @@ export async function runWorkerDescriptor(
     initialAckedSeq: descriptor.assignment.liveEvents.ackedSeq,
   });
   const inference = new WorkerInferenceProxyClient(connection);
+  let transportOpened = false;
   const unsubscribeState = connection.onStateChange((state) => {
-    if (state.kind === "fenced") {
+    if (state.kind === "admitting" && !transportOpened) {
+      // Record the first open only: time until hello includes admission retries,
+      // and later reconnects must not reset this turn's startup boundary.
+      transportOpened = true;
+      reportStartup("transport-open");
+    } else if (state.kind === "fenced") {
       abortController.abort(new Error(`worker fenced: ${state.reason}`));
     } else if (state.kind === "failed") {
       abortController.abort(state.error);
@@ -205,6 +211,7 @@ export async function runWorkerDescriptor(
   try {
     let hello: WorkerHelloOk;
     try {
+      reportStartup("connection-start");
       hello = await connection.start();
     } catch (error) {
       const fenced = fencedResult(connection.state);

@@ -39,7 +39,9 @@ it("accepts only bounded closed startup frames", () => {
     phase: "hello-ready",
     workerTimeMs: 1.5,
   };
-  expect(parseNodeWorkerStartupMessage(message)).toEqual(message);
+  for (const phase of ["connection-start", "transport-open", "hello-ready", "first-inference"]) {
+    expect(parseNodeWorkerStartupMessage({ ...message, phase })).toEqual({ ...message, phase });
+  }
   for (const invalid of [
     { ...message, runId: "r".repeat(257) },
     { ...message, turnId: "t".repeat(257) },
@@ -78,15 +80,25 @@ it("correlates real IPC with the current turn, bounds duplicates, and keeps canc
   const send = (message) => new Promise((resolve) => process.send(message, resolve));
   const frame = {
     type: "openclaw-worker-startup-v1", runId: descriptor.assignment.runId,
-    turnId: descriptor.assignment.turnId, phase: "hello-ready", workerTimeMs: 10,
+    turnId: descriptor.assignment.turnId, phase: "connection-start", workerTimeMs: 2,
   };
   if (previousStartup) await send(previousStartup);
   await send({ ...frame, phase: "first-inference", workerTimeMs: 20 });
-  await send({ ...frame, runId: "wrong-run" });
-  await send({ ...frame, turnId: "wrong-turn" });
-  await send({ ...frame, extra: descriptor.admission.credential });
+  await send({ ...frame, phase: "hello-ready", workerTimeMs: 10 });
+  await send({ ...frame, phase: "transport-open", workerTimeMs: 5 });
+  await send({ ...frame, runId: "wrong-run", workerTimeMs: 100 });
+  await send({ ...frame, turnId: "wrong-turn", workerTimeMs: 101 });
+  await send({ ...frame, extra: descriptor.admission.credential, workerTimeMs: 102 });
   await send(frame);
   for (let count = 0; count < 20; count++) await send(frame);
+  await send({ ...frame, phase: "hello-ready", workerTimeMs: 10 });
+  await send({ ...frame, phase: "transport-open", workerTimeMs: 1 });
+  const opened = { ...frame, phase: "transport-open", workerTimeMs: 5 };
+  for (let count = 0; count < 20; count++) await send(opened);
+  await send({ ...frame, phase: "hello-ready", workerTimeMs: 4 });
+  const hello = { ...frame, phase: "hello-ready", workerTimeMs: 10 };
+  for (let count = 0; count < 20; count++) await send(hello);
+  await send(opened);
   await send({ ...frame, phase: "first-inference", workerTimeMs: 9 });
   if (mode === "startup-hold") return;
   previousStartup = { ...frame, phase: "first-inference", workerTimeMs: 20 };
@@ -95,8 +107,8 @@ it("correlates real IPC with the current turn, bounds duplicates, and keeps canc
 } else if (mode === "admission-rearm") {`,
     ),
   );
-  const events = () => {
-    logTestApi.drainFileLogQueueSyncForTests();
+  const events = async () => {
+    await logTestApi.flushFileLogQueueForTests();
     return fs
       .readFileSync(logFile, "utf8")
       .trim()
@@ -118,9 +130,9 @@ it("correlates real IPC with the current turn, bounds duplicates, and keeps canc
   try {
     owner = await supervisor.launch(input, TEST_WORKER_ENDPOINT);
     expect((await waitForNodeWorkerTerminal(supervisor, input.launchId)).state).toBe("completed");
-    const count = events().length;
+    const count = (await events()).length;
     await supervisor.launch(input, TEST_WORKER_ENDPOINT);
-    expect(events()).toHaveLength(count);
+    expect(await events()).toHaveLength(count);
     const second = next("startup-second");
     expect(await supervisor.launch(second, TEST_WORKER_ENDPOINT)).toMatchObject({
       worker: owner.worker,
@@ -128,8 +140,8 @@ it("correlates real IPC with the current turn, bounds duplicates, and keeps canc
     await waitForNodeWorkerTerminal(supervisor, second.launchId);
     const cancelled = next("startup-cancelled", "startup-hold");
     await supervisor.launch(cancelled, TEST_WORKER_ENDPOINT);
-    await vi.waitFor(() =>
-      expect(events()).toContainEqual(
+    await vi.waitFor(async () =>
+      expect(await events()).toContainEqual(
         expect.objectContaining({
           launchId: cancelled.launchId,
           phase: "hello-ready",
@@ -145,10 +157,12 @@ it("correlates real IPC with the current turn, bounds duplicates, and keeps canc
     await waitForNodeWorkerTerminal(supervisor, final.launchId);
 
     for (const launch of [input, second, cancelled, final]) {
-      const observed = events().filter((event) => event.launchId === launch.launchId);
+      const observed = (await events()).filter((event) => event.launchId === launch.launchId);
       expect(observed.map((event) => event.phase)).toEqual([
         "launch-received",
         ...(launch === input || launch === final ? ["start-gate-opened"] : []),
+        "connection-start",
+        "transport-open",
         "hello-ready",
         ...(launch === cancelled ? [] : ["first-inference"]),
       ]);
@@ -161,7 +175,9 @@ it("correlates real IPC with the current turn, bounds duplicates, and keeps canc
       }
       const nodeTimes = observed.map((event) => Number(event.nodeTimeMs));
       expect(nodeTimes).toEqual(nodeTimes.toSorted((a, b) => a - b));
-      expect(observed.find((event) => event.phase === "hello-ready")?.workerTimeMs).toBe(10);
+      expect(observed.flatMap((event) => event.workerTimeMs ?? [])).toEqual(
+        launch === cancelled ? [2, 5, 10] : [2, 5, 10, 20],
+      );
     }
     expect(fs.readFileSync(logFile, "utf8")).not.toContain(input.descriptor.admission.credential);
   } finally {
