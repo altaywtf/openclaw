@@ -39,7 +39,7 @@ describe("assistant attachment availability", () => {
       ).status,
     ).toBe("checking");
     await flushAvailabilityResolution();
-    expect(resolver).toHaveBeenCalledWith(source);
+    expect(resolver).toHaveBeenCalledWith(source, "agent:research:main");
   });
 
   it("scopes cached media tickets to the selected session", async () => {

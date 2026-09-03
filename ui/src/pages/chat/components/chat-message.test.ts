@@ -4653,7 +4653,7 @@ describe("grouped chat rendering", () => {
     expect(actionSkeleton?.getAttribute("aria-hidden")).toBe("true");
 
     await flushAssistantAttachmentAvailabilityChecks();
-    expect(resolveAssistantMedia).toHaveBeenCalledWith(source);
+    expect(resolveAssistantMedia).toHaveBeenCalledWith(source, undefined);
     expect(
       container.querySelector(".chat-assistant-attachment-card__status-meta")?.textContent,
     ).toContain("Unavailable");

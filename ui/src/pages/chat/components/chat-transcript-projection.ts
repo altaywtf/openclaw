@@ -646,7 +646,6 @@ export function projectChatTranscript(
     (props.localMediaPreviewRoots ?? []).join("\u0000"),
     props.assistantAttachmentAuthToken,
     props.connectionEpoch,
-    props.resolveAssistantMedia,
     props.canvasPluginSurfaceUrl,
     props.embedSandboxMode ?? "scripts",
     props.allowExternalEmbedUrls ?? false,

@@ -110,13 +110,14 @@ export async function resolveChatArtifactDownload(
 
 /** Resolve a local chat media source through the pane's authenticated Gateway connection. */
 export async function resolveChatAssistantMedia(
-  state: { connected: boolean; client?: GatewayBrowserClient | null; sessionKey: string },
+  state: { connected: boolean; client?: GatewayBrowserClient | null },
   source: string,
+  sessionKey: string,
 ) {
   if (!state.connected || !state.client) {
     return null;
   }
-  return await resolveAssistantMedia(state.client, source, state.sessionKey);
+  return await resolveAssistantMedia(state.client, source, sessionKey);
 }
 
 export function dismissChatError(state: {

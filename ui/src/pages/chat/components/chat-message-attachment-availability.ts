@@ -147,7 +147,7 @@ export function resolveAssistantAttachmentAvailability(
     };
   };
   const pending = Promise.resolve()
-    .then(() => resolveMedia(source))
+    .then(() => resolveMedia(source, assistantMediaScope))
     .then((payload): AssistantAttachmentAvailability => {
       if (!payload) {
         throw new Error("Attachment metadata unavailable");

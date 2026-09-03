@@ -61,7 +61,7 @@ describe("local assistant attachment media", () => {
       if (!(media instanceof HTMLAnchorElement)) {
         expect(media).toMatchObject({ authToken: null });
       }
-      expect(resolveAssistantMedia).toHaveBeenCalledWith(source);
+      expect(resolveAssistantMedia).toHaveBeenCalledWith(source, "agent:research:attachment-test");
       expect(fetchMock).not.toHaveBeenCalled();
     },
   );

@@ -145,9 +145,9 @@ describe("resolveChatAssistantMedia", () => {
         {
           connected: true,
           client: { request } as never,
-          sessionKey: "agent:main:research-chat",
         },
         "/tmp/openclaw/image.png",
+        "agent:main:research-chat",
       ),
     ).resolves.toMatchObject({ mediaTicket: "ticket-chat-media" });
     expect(request).toHaveBeenCalledWith(
@@ -157,8 +157,9 @@ describe("resolveChatAssistantMedia", () => {
     );
     await expect(
       resolveChatAssistantMedia(
-        { connected: false, client: { request } as never, sessionKey: "agent:main:offline" },
+        { connected: false, client: { request } as never },
         "/tmp/x",
+        "agent:main:offline",
       ),
     ).resolves.toBeNull();
     expect(request).toHaveBeenCalledTimes(1);

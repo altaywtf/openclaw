@@ -153,6 +153,37 @@ describe("chat transcript invalidation", () => {
     },
   );
 
+  it("keeps settled rows idle when the assistant media resolver callback is recreated", async () => {
+    const props = {
+      ...threadProps("pane-media-resolver-identity", "agent:main:main", [
+        {
+          role: "assistant",
+          content: "Stable reply",
+          timestamp: 1_000,
+          __openclaw: { id: "stable-media-resolver-row" },
+        },
+      ]),
+      resolveAssistantMedia: vi.fn(async () => null),
+    };
+    const transcript = createTestTranscript();
+    const container = document.body.appendChild(document.createElement("div"));
+    const rerender = () => {
+      render(renderChatThread(props, transcript), container);
+      transcript.hostUpdated();
+    };
+
+    rerender();
+    transcript.hostConnected();
+    await flushDeferredRowPrune();
+    const renderGroup = vi.spyOn(chatMessage, "renderMessageGroup");
+
+    props.resolveAssistantMedia = vi.fn(async () => null);
+    rerender();
+
+    expect(renderGroup).not.toHaveBeenCalled();
+    transcript.hostDisconnected();
+  });
+
   it("keeps built row identities across an A to B to A presentation reset", () => {
     const paneId = "pane-session-items";
     const messagesA = [{ role: "assistant", content: "session A", timestamp: 1_000 }];
@@ -337,7 +368,8 @@ describe("chat transcript invalidation", () => {
             ...threadProps("pane-local-media-roots", state.sessionKey, messages),
             connectionEpoch: state.connectionEpoch,
             localMediaPreviewRoots: state.localMediaPreviewRoots,
-            resolveAssistantMedia: (mediaSource) => resolveChatAssistantMedia(state, mediaSource),
+            resolveAssistantMedia: (mediaSource, sessionKey = state.sessionKey) =>
+              resolveChatAssistantMedia(state, mediaSource, sessionKey),
             onRequestUpdate: renderPane,
           },
           transcript,

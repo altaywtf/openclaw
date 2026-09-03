@@ -33,7 +33,10 @@ export type ArtifactDownloadResolver = (params: {
   artifactId: string;
 }) => Promise<{ url: string; expiresAt?: string } | null>;
 
-export type AssistantMediaResolver = (source: string) => Promise<AssistantMediaGetResult | null>;
+export type AssistantMediaResolver = (
+  source: string,
+  sessionKey?: string,
+) => Promise<AssistantMediaGetResult | null>;
 
 export type ImageRenderOptions = {
   canonicalMessageKey?: string;
