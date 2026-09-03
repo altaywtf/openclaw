@@ -323,19 +323,21 @@ function renderDashboardList(
     <div class="dashboards-results" role="status">
       ${t("dashboardsPage.resultCount", { count: String(visibleRows.length) })}
     </div>
-    ${visibleRows.length === 0
-      ? html`<div class="dashboards-no-results" data-dashboards-no-results>
-          <span aria-hidden="true">${icons.search}</span>
-          <strong>${t("dashboardsPage.noResultsTitle")}</strong>
-          <span>${t("dashboardsPage.noResultsDescription")}</span>
-        </div>`
-      : html`<div class="dashboards-${state.view}" data-dashboards-view=${state.view}>
-          ${repeat(
-            visibleRows,
-            (row) => row.key,
-            (row) => renderItem(data, row, state),
-          )}
-        </div>`}
+    ${
+      visibleRows.length === 0
+        ? html`<div class="dashboards-no-results" data-dashboards-no-results>
+            <span aria-hidden="true">${icons.search}</span>
+            <strong>${t("dashboardsPage.noResultsTitle")}</strong>
+            <span>${t("dashboardsPage.noResultsDescription")}</span>
+          </div>`
+        : html`<div class="dashboards-${state.view}" data-dashboards-view=${state.view}>
+            ${repeat(
+              visibleRows,
+              (row) => row.key,
+              (row) => renderItem(data, row, state),
+            )}
+          </div>`
+    }
   </section>`;
 }
 
@@ -366,12 +368,14 @@ export function renderDashboards(
       title: titleForRoute("dashboards"),
       subtitle: t("subtitles.dashboards"),
       actions: html`
-        ${data?.result
-          ? html`<div class="dashboards-header__count">
-              <strong>${data.result.sessions.length}</strong>
-              <span>${t("dashboardsPage.totalLabel")}</span>
-            </div>`
-          : nothing}
+        ${
+          data?.result
+            ? html`<div class="dashboards-header__count">
+                <strong>${data.result.sessions.length}</strong>
+                <span>${t("dashboardsPage.totalLabel")}</span>
+              </div>`
+            : nothing
+        }
         ${renderViewToggle(state.view, handlers)}
       `,
     })}
