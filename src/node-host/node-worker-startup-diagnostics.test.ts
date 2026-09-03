@@ -47,12 +47,11 @@ it("accepts only bounded closed startup frames", () => {
     { ...message, turnId: "turn\0" },
     { ...message, phase: "arbitrary-detail" },
     { ...message, credential: "must-not-project" },
-    ...[-1, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, "1"].map((workerTimeMs) => ({
-      ...message,
-      workerTimeMs,
-    })),
   ]) {
     expect(parseNodeWorkerStartupMessage(invalid)).toBeNull();
+  }
+  for (const workerTimeMs of [-1, Number.NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, "1"]) {
+    expect(parseNodeWorkerStartupMessage({ ...message, workerTimeMs })).toBeNull();
   }
 });
 
@@ -109,7 +108,10 @@ it("correlates real IPC with the current turn, bounds duplicates, and keeps canc
   const next = (turnId: string, prompt = "startup") => {
     const launch = testWorkerLaunchInput(workspaceDir, turnId, prompt);
     launch.descriptor.assignment.runId = `run-${turnId}`;
-    launch.descriptor.assignment.operationalRunInstance.runId = launch.descriptor.assignment.runId;
+    launch.descriptor.assignment.operationalRunInstance = {
+      ...launch.descriptor.assignment.operationalRunInstance,
+      runId: launch.descriptor.assignment.runId,
+    };
     return launch;
   };
   let owner: Awaited<ReturnType<typeof supervisor.launch>> | undefined;

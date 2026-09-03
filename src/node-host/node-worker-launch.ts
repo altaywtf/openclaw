@@ -83,7 +83,8 @@ export async function startNodeWorkerChild(
     });
   let adapter: NodeWorkerChildAdapter;
   let container: NodeWorkerContainerIdentity | undefined;
-  let startupOwner: NodeWorkerRunningChild | undefined;
+  // Child messages can arrive before transport preparation returns an owner.
+  let startupOwner: NodeWorkerRunningChild | undefined = undefined;
   try {
     const prepared = await prepareNodeWorkerLaunchTransport({
       bundleRoot: context.bundleRoot,

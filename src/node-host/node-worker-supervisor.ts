@@ -610,8 +610,7 @@ class NodeWorkerSupervisor {
         this.closePromise = undefined;
       }
     });
-    this.closePromise = closePromise;
-    return closePromise;
+    return (this.closePromise = closePromise);
   }
 
   private reconcileActiveTerminal(active: NodeWorkerObservedTerminal): NodeWorkerLaunchReceipt {
@@ -647,9 +646,7 @@ class NodeWorkerSupervisor {
   private async observeChild(active: NodeWorkerRunningChild): Promise<void> {
     const outcome = await observeNodeWorkerChildOutput(
       active,
-      (frame) => {
-        settleNodeWorkerTurn(active, frame, this.turns);
-      },
+      (frame) => settleNodeWorkerTurn(active, frame, this.turns),
       () => active.turn?.claim.launchId,
     );
     if (active.container) {
