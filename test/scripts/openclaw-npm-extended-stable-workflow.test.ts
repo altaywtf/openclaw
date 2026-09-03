@@ -489,6 +489,9 @@ describe("minimal npm extended-stable workflow", () => {
     );
     expect(verifyReleaseContents.if).toBeUndefined();
     expect(verifyReleaseContents.run).toContain('--tarball "$PREPARED_TARBALL_PATH"');
+    expect(verifyReleaseContents.run).toMatch(
+      /TSX_TSCONFIG_PATH="\$tooling_dir\/tsconfig\.json" \\\n\s+node --import "\$tooling_dir\/scripts\/tsx\.mjs" "\$tooling_dir\/scripts\/openclaw-npm-prepublish-verify\.ts"/,
+    );
 
     const save = step(preflight, "Save preflight build outputs");
     const setup = step(preflight, "Setup Node environment");
