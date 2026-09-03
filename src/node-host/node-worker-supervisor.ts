@@ -146,6 +146,7 @@ class NodeWorkerSupervisor {
     connectionEndpoint: WorkerConnectionEndpoint,
     signal?: AbortSignal,
   ): Promise<NodeWorkerLaunchReceipt> {
+    const receivedAtMs = performance.now();
     const input = validateNodeWorkerLaunchInput(structuredClone(rawInput));
     const descriptor = completeWorkerLaunchDescriptor(input.descriptor, connectionEndpoint);
     const planHash = nodeWorkerPlanHash(input);
@@ -174,6 +175,7 @@ class NodeWorkerSupervisor {
       descriptor,
       planHash,
       signal ? AbortSignal.any([signal, abort.signal]) : abort.signal,
+      receivedAtMs,
       workspace?.homeDir,
     ).finally(() => workspace?.release());
     const pending = { binding, launchId: input.launchId, planHash, abort, done };
@@ -192,6 +194,7 @@ class NodeWorkerSupervisor {
     descriptor: WorkerLaunchDescriptor,
     planHash: string,
     signal: AbortSignal,
+    receivedAtMs: number,
     homeDir?: string,
   ): Promise<NodeWorkerLaunchReceipt> {
     await this.initialize();
@@ -257,6 +260,7 @@ class NodeWorkerSupervisor {
         continue;
       }
       return await startNodeWorkerTurn({
+        receivedAtMs,
         active: owner,
         descriptor,
         claim: claimInput,
@@ -314,7 +318,7 @@ class NodeWorkerSupervisor {
         observeChild: (active) => this.observeChild(active),
         stopChild: (active, state) => this.stopChild(active, state),
       },
-      { input, descriptor, planHash, supervisor, signal, claim: claimInput },
+      { input, descriptor, planHash, supervisor, signal, claim: claimInput, receivedAtMs },
     );
     this.starting.set(input.launchId, startup);
     if (signal?.aborted) {

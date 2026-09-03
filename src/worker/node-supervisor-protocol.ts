@@ -11,6 +11,15 @@ const NODE_WORKER_RESULT_JSON_MAX_BYTES = 64 * 1024;
 const NODE_WORKER_ERROR_TEXT_MAX_BYTES = 4 * 1024;
 const NODE_WORKER_CONNECTION_FAILURE_CAUSE_MAX_BYTES = 64 * 1024;
 export const NODE_WORKER_CONNECTION_FAILURE_MESSAGE_TYPE = "openclaw-worker-connection-failure-v1";
+export const NODE_WORKER_STARTUP_MESSAGE_TYPE = "openclaw-worker-startup-v1";
+
+export type NodeWorkerStartupMessage = {
+  type: typeof NODE_WORKER_STARTUP_MESSAGE_TYPE;
+  runId: string;
+  turnId: string;
+  phase: "hello-ready" | "first-inference";
+  workerTimeMs: number;
+};
 
 export type NodeWorkerLaunchInput = {
   environmentSession: 1;
@@ -349,6 +358,30 @@ export function parseNodeWorkerConnectionFailureMessage(
   return {
     type: NODE_WORKER_CONNECTION_FAILURE_MESSAGE_TYPE,
     cause: value.cause,
+  };
+}
+
+export function parseNodeWorkerStartupMessage(value: unknown): NodeWorkerStartupMessage | null {
+  if (
+    !isRecord(value) ||
+    !hasExactOwnKeys(value, ["type", "runId", "turnId", "phase", "workerTimeMs"]) ||
+    value.type !== NODE_WORKER_STARTUP_MESSAGE_TYPE ||
+    !isIdentifier(value.runId) ||
+    !isIdentifier(value.turnId) ||
+    (value.phase !== "hello-ready" && value.phase !== "first-inference") ||
+    typeof value.workerTimeMs !== "number" ||
+    !Number.isFinite(value.workerTimeMs) ||
+    value.workerTimeMs < 0 ||
+    value.workerTimeMs > Number.MAX_SAFE_INTEGER
+  ) {
+    return null;
+  }
+  return {
+    type: NODE_WORKER_STARTUP_MESSAGE_TYPE,
+    runId: value.runId,
+    turnId: value.turnId,
+    phase: value.phase,
+    workerTimeMs: value.workerTimeMs,
   };
 }
 

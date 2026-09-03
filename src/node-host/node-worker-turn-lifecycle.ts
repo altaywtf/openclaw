@@ -78,6 +78,7 @@ export function settleNodeWorkerTurn(
 }
 
 export async function startNodeWorkerTurn({
+  receivedAtMs,
   active,
   descriptor,
   claim,
@@ -86,6 +87,7 @@ export async function startNodeWorkerTurn({
   cancel,
   stopChild,
 }: {
+  receivedAtMs: number;
   active: NodeWorkerRunningChild;
   descriptor: WorkerLaunchDescriptor;
   claim: NodeWorkerLaunchClaim;
@@ -104,7 +106,7 @@ export async function startNodeWorkerTurn({
   if (admitted.action === "replay") {
     return admitted.receipt;
   }
-  active.turn = createNodeWorkerActiveTurn(claim);
+  active.turn = createNodeWorkerActiveTurn(claim, receivedAtMs);
   const secrets = nodeWorkerDescriptorSecrets(descriptor);
   for (const value of secrets) {
     registerSecretValueForRedaction(value);
