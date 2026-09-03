@@ -190,6 +190,14 @@ const FROZEN_RELEASE_OPTIONAL_REVIEWED_PACKED_FINDING_COUNTS = new Map<string, n
   ["@openclaw/voice-call:dangerous-exec:dist/runtime-entry-<hash>.js", 1],
 ]);
 
+const FROZEN_EXTENDED_STABLE_2026_7_33_OPTIONAL_REVIEWED_PACKED_FINDING_COUNTS = new Map(
+  FROZEN_RELEASE_OPTIONAL_REVIEWED_PACKED_FINDING_COUNTS,
+);
+FROZEN_EXTENDED_STABLE_2026_7_33_OPTIONAL_REVIEWED_PACKED_FINDING_COUNTS.set(
+  "@openclaw/acpx:dangerous-exec:src/runtime-internals/mcp-proxy.test.ts",
+  3,
+);
+
 const FROZEN_EXTENDED_STABLE_2026_6_33_LAYOUT = {
   id: "extended-stable-2026.6.33",
   findings: new Map<string, number>([
@@ -217,7 +225,8 @@ const FROZEN_RELEASE_SECURITY_INVENTORY_POLICIES = new Map<string, PluginSecurit
     "extended-stable/2026.7.33",
     {
       layout: FROZEN_EXTENDED_STABLE_2026_7_33_LAYOUT,
-      optionalPackedFindingCounts: FROZEN_RELEASE_OPTIONAL_REVIEWED_PACKED_FINDING_COUNTS,
+      optionalPackedFindingCounts:
+        FROZEN_EXTENDED_STABLE_2026_7_33_OPTIONAL_REVIEWED_PACKED_FINDING_COUNTS,
       requiredSourceFindingCounts: FROZEN_RELEASE_REQUIRED_REVIEWED_SOURCE_FINDING_COUNTS,
     },
   ],
