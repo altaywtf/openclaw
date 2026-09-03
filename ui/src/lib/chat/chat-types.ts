@@ -19,6 +19,9 @@ export type BrowserAnnotationAttachment = {
   displayUrl: string;
   markedRegionCount: number;
   inspectedElement: boolean;
+  comment?: string;
+  selector?: string;
+  elementTag?: string;
 };
 
 export type ChatAttachment = {

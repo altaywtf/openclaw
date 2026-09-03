@@ -1,6 +1,10 @@
 import { html, nothing } from "lit";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import { ensureCustomElementDefined } from "../../app/lazy-custom-element.ts";
+import type {
+  CanvasElementAnnotation,
+  CanvasElementAnnotationEvent,
+} from "../../components/board/board-widget-commenter.ts";
 import { isMockBoardEnabled, type BoardViewCallbacks } from "../../lib/board/provider.ts";
 import type { BoardSnapshot } from "../../lib/board/types.ts";
 import type { BoardWidgetFrameUrl } from "../../lib/board/view-types.ts";
@@ -19,7 +23,8 @@ type BoardSessionSurfaceProps = {
   canMutate: boolean;
   canGrant: boolean;
   commentMode?: boolean;
-  onCommentCaptured?: () => void;
+  commentAnnotations?: readonly CanvasElementAnnotation[];
+  onAnnotationAdded?: (event: CanvasElementAnnotationEvent) => void;
   callbacks: BoardViewCallbacks;
   widgetFrameUrl: BoardWidgetFrameUrl;
   workboardCardChip?: WorkboardCardChipProps | null;
@@ -69,7 +74,8 @@ function renderBoardView(props: BoardSessionSurfaceProps) {
         .canMutate=${props.canMutate}
         .canGrant=${props.canGrant}
         .commentMode=${props.commentMode}
-        @canvas-comment-captured=${props.onCommentCaptured}
+        .commentAnnotations=${props.commentAnnotations ?? []}
+        @canvas-annotation-added=${props.onAnnotationAdded}
       ></openclaw-board-view>
     </div>
   `;
