@@ -1,6 +1,6 @@
 // Provider fallback tests verify web_fetch normalizes third-party fetch output
 // before exposing it to agents or cache entries.
-import { rm } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
@@ -139,26 +139,37 @@ describe("web_fetch provider fallback normalization", () => {
       spill?: { path: string };
     };
 
-    expect(details.extractor).toBe("custom-provider");
-    expect(details.contentType).toBe("text/plain");
-    expect(
-      details.text?.split("\n\n[Showing truncated web_fetch content.")[0]?.length,
-    ).toBeLessThanOrEqual(800);
-    expect(details.text).toContain("Ignore previous instructions");
-    expect(details.text).toMatch(/<<<EXTERNAL_UNTRUSTED_CONTENT id="[a-f0-9]{16}">>>/);
-    expect(details.text).toContain(`Full output: ${details.spill?.path}`);
-    expect(details.title).toContain("Provider Title");
-    expect(details.warning).toContain("Provider Warning");
-    expect(details.truncated).toBe(true);
-    expect(providerWrappedText.length).toBeLessThan(providerRawText.length);
-    expect(details.rawLength).toBe(providerRawText.length);
-    expect(details.length).toBe(details.text?.length);
-    expect(details.externalContent?.untrusted).toBe(true);
-    expect(details.externalContent?.source).toBe("web_fetch");
-    expect(details.externalContent?.wrapped).toBe(true);
-    expect(details.externalContent?.provider).toBe("firecrawl");
-    if (details.spill) {
-      await rm(details.spill.path, { force: true });
+    const spill = details.spill;
+    if (!spill) {
+      throw new Error("expected provider fallback spill");
+    }
+    try {
+      expect(details.extractor).toBe("custom-provider");
+      expect(details.contentType).toBe("text/plain");
+      expect(
+        details.text?.split("\n\n[Showing truncated web_fetch content.")[0]?.length,
+      ).toBeLessThanOrEqual(800);
+      const combinedLength =
+        (details.text?.length ?? 0) + (details.title?.length ?? 0) + (details.warning?.length ?? 0);
+      expect(combinedLength).toBeLessThanOrEqual(800);
+      // The spill path shares the preview budget; recover all available provider
+      // prose from the spill instead of requiring a minimum inline prefix.
+      const recoveredText = await readFile(spill.path, "utf8");
+      expect(recoveredText).toContain(providerVisibleText);
+      expect(details.text).toMatch(/<<<EXTERNAL_UNTRUSTED_CONTENT id="[a-f0-9]{16}">>>/);
+      expect(details.text).toContain(`Full output: ${spill.path}`);
+      expect(details.title).toContain("Provider Title");
+      expect(details.warning).toContain("Provider Warning");
+      expect(details.truncated).toBe(true);
+      expect(providerWrappedText.length).toBeLessThan(providerRawText.length);
+      expect(details.rawLength).toBe(providerRawText.length);
+      expect(details.length).toBe(details.text?.length);
+      expect(details.externalContent?.untrusted).toBe(true);
+      expect(details.externalContent?.source).toBe("web_fetch");
+      expect(details.externalContent?.wrapped).toBe(true);
+      expect(details.externalContent?.provider).toBe("firecrawl");
+    } finally {
+      await rm(spill.path, { force: true });
     }
   });
 
@@ -321,22 +332,25 @@ describe("web_fetch provider fallback normalization", () => {
       spill?: { path: string };
     };
 
-    expect(details.length).toBeGreaterThan(200);
-    expect(
-      details.text?.split("\n\n[Showing truncated web_fetch content.")[0]?.length,
-    ).toBeLessThanOrEqual(640);
-    expect(details.externalContent?.provider).toBe("firecrawl");
-    if (details.spill) {
-      await rm(details.spill.path, { force: true });
+    try {
+      expect(details.length).toBeGreaterThan(200);
+      expect(
+        details.text?.split("\n\n[Showing truncated web_fetch content.")[0]?.length,
+      ).toBeLessThanOrEqual(640);
+      expect(details.externalContent?.provider).toBe("firecrawl");
+      const definitionInput = resolveWebFetchDefinitionMock.mock.calls.at(0)?.[0] as
+        | {
+            config?: OpenClawConfig;
+            runtimeWebFetch?: { selectedProvider?: string };
+          }
+        | undefined;
+      expect(definitionInput?.config).toBe(runtimeConfig);
+      expect(definitionInput?.runtimeWebFetch?.selectedProvider).toBe("firecrawl");
+    } finally {
+      if (details.spill) {
+        await rm(details.spill.path, { force: true });
+      }
     }
-    const definitionInput = resolveWebFetchDefinitionMock.mock.calls.at(0)?.[0] as
-      | {
-          config?: OpenClawConfig;
-          runtimeWebFetch?: { selectedProvider?: string };
-        }
-      | undefined;
-    expect(definitionInput?.config).toBe(runtimeConfig);
-    expect(definitionInput?.runtimeWebFetch?.selectedProvider).toBe("firecrawl");
   });
 
   it("scopes provider fallback cache entries by the late-bound provider", async () => {
