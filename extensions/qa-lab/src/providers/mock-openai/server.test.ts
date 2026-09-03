@@ -7124,30 +7124,32 @@ Update and merge these partial structured summaries.`,
   it.each([
     {
       label: "direct body tools",
-      declarations: { tools: restartCheckpointTools },
-      additionalTools: undefined,
+      surface: "direct",
     },
     {
       label: "developer additional tools",
-      declarations: {},
-      additionalTools: restartCheckpointTools,
+      surface: "developer",
     },
   ])(
     "derives three restart checkpoints from request history without server counters via $label",
-    async ({ declarations, additionalTools }) => {
+    async ({ surface }) => {
       const server = await startMockServer();
       const prompt =
         "Code Mode restart wait QA check. Original prompt marker: RESTART-CODE-MODE-PROMPT.";
-      const declarationInput: Array<Record<string, unknown>> = additionalTools
-        ? [{ type: "additional_tools", role: "developer", tools: additionalTools }]
-        : [];
-      const input: Array<Record<string, unknown>> = [...declarationInput, makeUserInput(prompt)];
+      const withDeclarationSurface = (
+        tools: Array<Record<string, unknown>>,
+        input: Array<Record<string, unknown>>,
+      ) =>
+        surface === "direct"
+          ? { tools, input }
+          : { input: [{ type: "additional_tools", role: "developer", tools }, ...input] };
+      const input: Array<Record<string, unknown>> = [makeUserInput(prompt)];
 
       for (const checkpoint of [1, 2, 3]) {
-        const execPayload = await expectOpenAiNonStreamingResponsesJson(server, {
-          ...declarations,
-          input,
-        });
+        const execPayload = await expectOpenAiNonStreamingResponsesJson(
+          server,
+          withDeclarationSurface(restartCheckpointTools, input),
+        );
         const execCall = outputToolCall(execPayload, "exec");
         const execArgs = outputToolArgsFromItem(execCall);
         await expectRestartCheckpointExecution(execArgs, checkpoint);
@@ -7160,25 +7162,44 @@ Update and merge these partial structured summaries.`,
             JSON.stringify({ status: "waiting", runId }),
           ),
         );
-        const waitPayload = await expectOpenAiNonStreamingResponsesJson(server, {
-          ...declarations,
-          input,
-        });
+        const waitPayload = await expectOpenAiNonStreamingResponsesJson(
+          server,
+          withDeclarationSurface(restartCheckpointTools, input),
+        );
         const waitCall = outputToolCall(waitPayload, "wait");
         expect(outputToolArgsFromItem(waitCall)).toEqual({ runId });
         input.push(waitCall, makeUserInput(restartRecoveryPrompt));
       }
 
-      const finalPayload = await expectOpenAiNonStreamingResponsesJson(server, {
-        ...declarations,
-        input,
-      });
+      const finalPayload = await expectOpenAiNonStreamingResponsesJson(
+        server,
+        withDeclarationSurface(restartCheckpointTools, input),
+      );
       expect(outputText(finalPayload)).toBe("unsafeVisible=false\nRESTART-CODE-MODE-WAIT-OK");
 
-      const freshPayload = await expectOpenAiNonStreamingResponsesJson(server, {
-        ...declarations,
-        input: [...declarationInput, makeUserInput(prompt)],
-      });
+      const unsafePayload = await expectOpenAiNonStreamingResponsesJson(
+        server,
+        withDeclarationSurface(
+          [
+            ...restartCheckpointTools,
+            {
+              type: "function",
+              name: "qa_restart_unsafe_probe",
+              parameters: { type: "object" },
+            },
+          ],
+          input,
+        ),
+      );
+      expect(
+        outputToolArgsFromItem(outputToolCall(unsafePayload, "qa_restart_unsafe_probe")),
+      ).toEqual({});
+      expect(outputItems(unsafePayload).map((item) => item.type)).toEqual(["function_call"]);
+
+      const freshPayload = await expectOpenAiNonStreamingResponsesJson(
+        server,
+        withDeclarationSurface(restartCheckpointTools, [makeUserInput(prompt)]),
+      );
       expect(outputToolArgsFromItem(outputToolCall(freshPayload, "exec")).code).toContain(
         "CHECKPOINT-1",
       );

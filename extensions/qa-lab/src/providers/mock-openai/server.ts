@@ -1005,7 +1005,7 @@ async function buildResponsesPayload(
     if (!QA_RESTART_RECOVERY_PROMPT_RE.test(allInputText)) {
       return buildAssistantEvents("RESTART-CODE-MODE-WAIT-FAIL");
     }
-    if (hasToolDefinition(body, "qa_restart_unsafe_probe")) {
+    if (hasToolDefinition(toolDeclarationBody, "qa_restart_unsafe_probe")) {
       return buildToolCallEventsWithArgs("qa_restart_unsafe_probe", {});
     }
     return buildAssistantEvents(QA_RESTART_FINAL_TEXT);
