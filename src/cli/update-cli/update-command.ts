@@ -541,6 +541,9 @@ async function updateCommandInternal(
             timeoutMs: updateStepTimeoutMs,
             invocationCwd,
             supportedVersions: packageTargetSchemaVersions,
+            channel,
+            devTarget,
+            gitTargetRoot: switchToGit ? resolveGitInstallDir() : root,
             callerDatabaseSchemaContext,
             managedServiceRootRedirect,
           }).catch(async (error: unknown) => {

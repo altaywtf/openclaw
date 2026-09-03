@@ -9,6 +9,7 @@ import {
 import { readCurrentGitUpdateRecovery } from "../../infra/update-runner-git-recovery.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
 import { defaultRuntime } from "../../runtime.js";
+import { OPENCLAW_DATABASE_SCHEMA_DOCS_URL } from "../../state/openclaw-database-preflight.js";
 import type { OpenClawSchemaVersions } from "../../state/openclaw-schema-versions.js";
 import { createUpdateProgress } from "./progress.js";
 import {
@@ -23,7 +24,11 @@ import {
   UpdatePreMutationError,
   type UpdateCommandOptions,
 } from "./shared.js";
-import { createBeforeGitMutation, updateGitInstall } from "./update-command-git.js";
+import {
+  createBeforeGitMutation,
+  inspectGitDryRunTargetSchemaVersions,
+  updateGitInstall,
+} from "./update-command-git.js";
 import {
   formatUpdateAncestryBlockMessage,
   formatUpdateGatewayServiceProcessBlockMessage,
@@ -90,30 +95,24 @@ function assertReadOnlyManagedServiceInspection(params: {
   updateInstallKind: "git" | "package";
 }): void {
   const { preManagedServiceStop } = params;
-  if (
-    preManagedServiceStop?.blockMessage &&
-    preManagedServiceStop.serviceUpdateVerdict?.kind !== "unavailable"
-  ) {
-    throw new UpdatePreMutationError(
-      "managed-service-preflight",
-      formatUpdateAncestryBlockMessage(preManagedServiceStop.blockMessage),
-    );
-  }
-  if (
+  const gatewayProcessBlock =
     shouldBlockMutableUpdateFromGatewayServiceEnv({ preManagedServiceStop }) &&
     (!preManagedServiceStop?.inspected ||
-      preManagedServiceStop.serviceUpdateVerdict?.kind === "unavailable")
-  ) {
+      preManagedServiceStop.serviceUpdateVerdict?.kind === "unavailable");
+  if (preManagedServiceStop?.blockMessage) {
+    const message =
+      gatewayProcessBlock && preManagedServiceStop.serviceUpdateVerdict?.kind === "unavailable"
+        ? formatUpdateGatewayServiceProcessBlockMessage(
+            params.updateInstallKind === "git" ? "Git updates" : "Package updates",
+          )
+        : formatUpdateAncestryBlockMessage(preManagedServiceStop.blockMessage);
+    throw new UpdatePreMutationError("managed-service-preflight", message);
+  }
+  if (gatewayProcessBlock) {
     const updateLabel = params.updateInstallKind === "git" ? "Git updates" : "Package updates";
     throw new UpdatePreMutationError(
       "managed-service-preflight",
       formatUpdateGatewayServiceProcessBlockMessage(updateLabel),
-    );
-  }
-  if (preManagedServiceStop?.blockMessage) {
-    throw new UpdatePreMutationError(
-      "managed-service-preflight",
-      formatUpdateAncestryBlockMessage(preManagedServiceStop.blockMessage),
     );
   }
 }
@@ -172,6 +171,9 @@ export async function inspectDryRunTargetDatabaseSchemas(params: {
   timeoutMs: number;
   invocationCwd?: string;
   supportedVersions?: OpenClawSchemaVersions;
+  channel: "stable" | "extended-stable" | "beta" | "dev";
+  devTarget?: DevUpdateTarget;
+  gitTargetRoot?: string;
   callerDatabaseSchemaContext: { configSnapshot: ConfigFileSnapshot; env: NodeJS.ProcessEnv };
   managedServiceRootRedirect: ManagedServiceRootRedirect | null;
 }): Promise<ReturnType<typeof checkTargetDatabaseSchemasForContexts>> {
@@ -187,8 +189,24 @@ export async function inspectDryRunTargetDatabaseSchemas(params: {
     invocationCwd: params.invocationCwd,
   });
   const managed = inspected.ownedManagedUpdatePreflightContext;
+  let supportedVersions = params.supportedVersions;
+  if (params.updateInstallKind === "git") {
+    const target = await inspectGitDryRunTargetSchemaVersions({
+      root: params.gitTargetRoot ?? params.root,
+      timeoutMs: params.timeoutMs,
+      channel: params.channel,
+      devTarget: params.devTarget,
+    });
+    if (target.metadataUnreadable) {
+      throw new UpdatePreMutationError(
+        "target-metadata-preflight",
+        `Update refused: could not inspect the target's schema support (${target.metadataUnreadable}). Retry, or see ${OPENCLAW_DATABASE_SCHEMA_DOCS_URL}.`,
+      );
+    }
+    supportedVersions = target.schemaVersions;
+  }
   return checkTargetDatabaseSchemasForContexts(
-    params.supportedVersions,
+    supportedVersions,
     resolveTargetDatabaseSchemaContexts({
       caller: params.callerDatabaseSchemaContext,
       managed: managed
@@ -426,36 +444,28 @@ export async function executeMutableUpdate(params: {
       });
     }
 
-    if (
-      preManagedServiceStop?.blockMessage &&
-      preManagedServiceStop.serviceUpdateVerdict?.kind !== "unavailable"
-    ) {
-      params.stop();
-      throw new UpdatePreMutationError(
-        "managed-service-preflight",
-        formatUpdateAncestryBlockMessage(preManagedServiceStop.blockMessage),
-      );
-    }
-
-    if (
+    const gatewayProcessBlock =
       shouldBlockMutableUpdateFromGatewayServiceEnv({ preManagedServiceStop }) &&
       (phase !== "inspect" ||
         !preManagedServiceStop?.inspected ||
-        preManagedServiceStop.serviceUpdateVerdict?.kind === "unavailable")
-    ) {
+        preManagedServiceStop.serviceUpdateVerdict?.kind === "unavailable");
+    if (preManagedServiceStop?.blockMessage) {
+      const message =
+        gatewayProcessBlock && preManagedServiceStop.serviceUpdateVerdict?.kind === "unavailable"
+          ? formatUpdateGatewayServiceProcessBlockMessage(
+              params.updateInstallKind === "git" ? "Git updates" : "Package updates",
+            )
+          : formatUpdateAncestryBlockMessage(preManagedServiceStop.blockMessage);
+      params.stop();
+      throw new UpdatePreMutationError("managed-service-preflight", message);
+    }
+
+    if (gatewayProcessBlock) {
       params.stop();
       const updateLabel = params.updateInstallKind === "git" ? "Git updates" : "Package updates";
       throw new UpdatePreMutationError(
         "managed-service-preflight",
         formatUpdateGatewayServiceProcessBlockMessage(updateLabel),
-      );
-    }
-
-    if (preManagedServiceStop?.blockMessage) {
-      params.stop();
-      throw new UpdatePreMutationError(
-        "managed-service-preflight",
-        formatUpdateAncestryBlockMessage(preManagedServiceStop.blockMessage),
       );
     }
   };

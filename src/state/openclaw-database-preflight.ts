@@ -1,4 +1,4 @@
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { formatErrorMessage } from "../infra/errors.js";
@@ -8,6 +8,7 @@ import {
   getNodeSqliteKysely,
 } from "../infra/kysely-sync.js";
 import { openNodeSqliteDatabase, resolveImmutableSqliteFileUri } from "../infra/node-sqlite.js";
+import { hasNodeErrorCode } from "../infra/path-guards.js";
 import { assertSqliteIntegrity } from "../infra/sqlite-integrity.js";
 import {
   collectSqliteSchemaIssues,
@@ -339,8 +340,25 @@ export function preflightOpenClawDatabaseSchemas(options: {
   const statePath = path.resolve(resolveOpenClawStateSqlitePath(options.env));
   let registeredDatabases: ReturnType<typeof readRegisteredAgentDatabases> = [];
   let stateDatabase: DatabaseSync | undefined;
+  const inspectCandidatePresence = (
+    databasePath: string,
+  ): { status: "present" | "absent" } | { status: "indeterminate"; reason: string } => {
+    try {
+      statSync(databasePath);
+      return { status: "present" };
+    } catch (error) {
+      return hasNodeErrorCode(error, "ENOENT") || hasNodeErrorCode(error, "ENOTDIR")
+        ? { status: "absent" }
+        : { status: "indeterminate", reason: formatErrorMessage(error) };
+    }
+  };
+  const statePresence = inspectCandidatePresence(statePath);
+  if (statePresence.status === "indeterminate") {
+    result.indeterminate.push({ kind: "state", path: statePath, reason: statePresence.reason });
+    return result;
+  }
   try {
-    if (existsSync(statePath)) {
+    if (statePresence.status === "present") {
       stateDatabase = openNodeSqliteDatabase(statePath, {
         readOnly: true,
       });
@@ -432,7 +450,12 @@ export function preflightOpenClawDatabaseSchemas(options: {
   const inspectedAgentTargets = new Set<string>();
   for (const row of inspectionTargets) {
     const agentPath = row.path;
-    if (!existsSync(agentPath)) {
+    const presence = inspectCandidatePresence(agentPath);
+    if (presence.status === "absent") {
+      continue;
+    }
+    if (presence.status === "indeterminate") {
+      result.indeterminate.push({ kind: "agent", path: agentPath, reason: presence.reason });
       continue;
     }
     let agentDatabase: DatabaseSync | undefined;

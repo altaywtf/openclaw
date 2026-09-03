@@ -595,6 +595,7 @@ const runPostCorePluginConvergenceSpy = vi.spyOn(
 );
 const { registerUpdateCli } = await import("./update-cli.js");
 const { updateCommand } = await import("./update-cli/update-command.js");
+const { inspectGitDryRunTargetSchemaVersions } = await import("./update-cli/update-command-git.js");
 
 async function invokeUpdateCli(opts: Parameters<typeof updateCommand>[0]) {
   const program = new Command();
@@ -2046,35 +2047,19 @@ describe("update-cli", () => {
       serviceReadCommand.mockRejectedValue(new Error("inspection-secret-canary"));
 
       const command = invokeUpdateCli({ yes: true, json: true, restart });
-      if (restart) {
-        await expect(command).rejects.toEqual(new ExitError(1));
-      } else {
-        await command;
-      }
+      await expect(command).rejects.toEqual(new ExitError(1));
 
-      if (restart) {
-        expect(runGatewayUpdate).not.toHaveBeenCalled();
-        expect(packageInstallCommandCall()).toBeUndefined();
-        expect(defaultRuntime.exit).not.toHaveBeenCalled();
-        expect(getErrorOutput()).toContain(
-          "Gateway service inspection is unavailable. Refusing to mutate code",
-        );
-        expect(getErrorOutput()).toContain("gateway status --deep");
-        expect(getErrorOutput()).toContain("stop the Gateway manually before the update");
-        expect(lastWriteJsonCall()).not.toMatchObject({ status: "ok" });
-      } else {
-        if (kind === "package") {
-          expectPackageInstallSpec("openclaw@9999.0.0");
-        } else {
-          expect(runGatewayUpdate).toHaveBeenCalledOnce();
-        }
-        expect(defaultRuntime.exit).not.toHaveBeenCalledWith(1);
-        expect(getErrorOutput()).toContain(
-          "Gateway service management skipped: inspection is unavailable",
-        );
-        expect(getErrorOutput()).toContain("gateway status --deep");
-        expect(lastWriteJsonCall()).toMatchObject({ status: "ok" });
-      }
+      expect(runGatewayUpdate).not.toHaveBeenCalled();
+      expect(packageInstallCommandCall()).toBeUndefined();
+      expect(defaultRuntime.exit).not.toHaveBeenCalled();
+      expect(getErrorOutput()).toContain(
+        "Gateway service inspection is unavailable. Refusing to mutate code",
+      );
+      expect(getErrorOutput()).toContain("managed service ownership cannot be verified");
+      expect(getErrorOutput()).toContain("retry");
+      expect(getErrorOutput()).not.toContain("--no-restart");
+      expect(getErrorOutput()).not.toContain("stop the Gateway manually");
+      expect(lastWriteJsonCall()).not.toMatchObject({ status: "ok" });
       expectNoSideEffects(
         serviceStop,
         serviceStart,
@@ -4885,6 +4870,220 @@ describe("update-cli", () => {
     expect(serviceStop).not.toHaveBeenCalled();
     expect(packageInstallCommandCall()).toBeUndefined();
     expect(defaultRuntime.exit).not.toHaveBeenCalledWith(1);
+  });
+
+  it("uses the selected Git target schema metadata during dry-run", async () => {
+    const targetSha = "b".repeat(40);
+    const targetSchemas = { state: 3, agent: 9 };
+    vi.mocked(runCommandWithTimeout).mockImplementation(async (argv) => {
+      if (
+        argv[0] === "git" &&
+        argv[3] === "rev-parse" &&
+        argv[4] === "--abbrev-ref" &&
+        argv[5] === "--symbolic-full-name"
+      ) {
+        return commandResult({ stdout: "origin/main\n" });
+      }
+      if (argv[0] === "git" && argv[3] === "rev-parse" && argv[4] === "--abbrev-ref") {
+        return commandResult({ stdout: "main\n" });
+      }
+      if (argv[0] === "git" && argv[3] === "remote") {
+        return commandResult({ stdout: "origin\n" });
+      }
+      if (argv[0] === "git" && argv[3] === "ls-remote") {
+        return commandResult({ stdout: `${targetSha}\trefs/heads/main\n` });
+      }
+      if (argv[0] === "git" && argv[3] === "rev-parse" && argv[4] === "@{upstream}") {
+        return commandResult({ stdout: `${targetSha}\n` });
+      }
+      if (argv[0] === "git" && argv[3] === "show" && argv[4] === `${targetSha}:package.json`) {
+        return commandResult({
+          stdout: JSON.stringify({ openclaw: { schemaVersions: targetSchemas } }),
+        });
+      }
+      return commandResult();
+    });
+    databasePreflightMocks.preflightOpenClawDatabaseSchemas.mockImplementation(
+      ({ supportedVersions }) =>
+        supportedVersions.agent === targetSchemas.agent
+          ? {
+              incompatible: [
+                {
+                  kind: "agent",
+                  path: "/tmp/openclaw/agents/main/agent/openclaw-agent.sqlite",
+                  agentId: "main",
+                  foundVersion: 11,
+                  supportedVersion: targetSchemas.agent,
+                },
+              ],
+              indeterminate: [],
+            }
+          : { incompatible: [], indeterminate: [] },
+    );
+
+    await updateCommand({ dryRun: true, channel: "dev" });
+
+    expect(databasePreflightMocks.preflightOpenClawDatabaseSchemas).toHaveBeenCalledWith(
+      expect.objectContaining({ supportedVersions: targetSchemas }),
+    );
+    expect(getLogOutput()).toContain("Would refuse update: agent database");
+    expect(runGatewayUpdate).not.toHaveBeenCalled();
+    expectNoSideEffects(serviceStop, serviceRestart);
+  });
+
+  it("refuses Git dry-run when the selected remote target is not locally inspectable", async () => {
+    const localSha = "b".repeat(40);
+    const remoteSha = "c".repeat(40);
+    vi.mocked(runCommandWithTimeout).mockImplementation(async (argv) => {
+      if (
+        argv[0] === "git" &&
+        argv[3] === "rev-parse" &&
+        argv[4] === "--abbrev-ref" &&
+        argv[5] === "--symbolic-full-name"
+      ) {
+        return commandResult({ stdout: "origin/main\n" });
+      }
+      if (argv[0] === "git" && argv[3] === "rev-parse" && argv[4] === "--abbrev-ref") {
+        return commandResult({ stdout: "main\n" });
+      }
+      if (argv[0] === "git" && argv[3] === "remote") {
+        return commandResult({ stdout: "origin\n" });
+      }
+      if (argv[0] === "git" && argv[3] === "ls-remote") {
+        return commandResult({ stdout: `${remoteSha}\trefs/heads/main\n` });
+      }
+      if (argv[0] === "git" && argv[3] === "rev-parse" && argv[4] === "@{upstream}") {
+        return commandResult({ stdout: `${localSha}\n` });
+      }
+      return commandResult();
+    });
+
+    await expect(updateCommand({ dryRun: true, channel: "dev" })).rejects.toEqual(new ExitError(1));
+
+    expect(getErrorOutput()).toContain("current remote target origin/main is not available");
+    expect(databasePreflightMocks.preflightOpenClawDatabaseSchemas).not.toHaveBeenCalled();
+    expect(runGatewayUpdate).not.toHaveBeenCalled();
+    expectNoSideEffects(serviceStop, serviceRestart);
+  });
+
+  it("uses the newest remote release tag during a detached stable dry-run", async () => {
+    const oldSha = "a".repeat(40);
+    const tagObjectSha = "b".repeat(40);
+    const targetSha = "c".repeat(40);
+    const targetSchemas = { state: 3, agent: 11 };
+    vi.mocked(runCommandWithTimeout).mockImplementation(async (argv) => {
+      if (argv[0] === "git" && argv[3] === "remote") {
+        return commandResult({ stdout: "origin\n" });
+      }
+      if (argv[0] === "git" && argv[3] === "ls-remote" && argv[4] === "--tags") {
+        return commandResult({
+          stdout: [
+            `${oldSha}\trefs/tags/v2026.8.1`,
+            `${tagObjectSha}\trefs/tags/v2026.9.1`,
+            `${targetSha}\trefs/tags/v2026.9.1^{}`,
+          ].join("\n"),
+        });
+      }
+      if (argv[0] === "git" && argv[3] === "show" && argv[4] === `${targetSha}:package.json`) {
+        return commandResult({
+          stdout: JSON.stringify({ openclaw: { schemaVersions: targetSchemas } }),
+        });
+      }
+      return commandResult();
+    });
+
+    await expect(
+      inspectGitDryRunTargetSchemaVersions({
+        root: process.cwd(),
+        timeoutMs: 1_000,
+        channel: "stable",
+      }),
+    ).resolves.toEqual({ schemaVersions: targetSchemas });
+
+    expect(
+      commandCalls().some(
+        ([argv]) =>
+          argv[0] === "git" &&
+          argv.includes("ls-remote") &&
+          argv.includes("--tags") &&
+          argv.includes("origin") &&
+          argv.includes("refs/tags/v*"),
+      ),
+    ).toBe(true);
+    expect(
+      commandCalls().some(
+        ([argv]) => argv[0] === "git" && argv.includes("tag") && argv.includes("--list"),
+      ),
+    ).toBe(false);
+    expect(commandCalls().some(([argv]) => argv[0] === "git" && argv.includes("@{upstream}"))).toBe(
+      false,
+    );
+    expectNoSideEffects(
+      databasePreflightMocks.preflightOpenClawDatabaseSchemas,
+      serviceStop,
+      serviceRestart,
+    );
+  });
+
+  it("does not fall through after the preferred remote branch changes", async () => {
+    const staleSha = "b".repeat(40);
+    const originSha = "c".repeat(40);
+    const alternateSha = "d".repeat(40);
+    vi.mocked(runCommandWithTimeout).mockImplementation(async (argv) => {
+      if (
+        argv[0] === "git" &&
+        argv[3] === "rev-parse" &&
+        argv[4] === "--abbrev-ref" &&
+        argv[5] === "HEAD"
+      ) {
+        return commandResult({ stdout: "feature\n" });
+      }
+      if (
+        argv[0] === "git" &&
+        argv[3] === "rev-parse" &&
+        argv[4] === "--abbrev-ref" &&
+        argv[5] === "--symbolic-full-name"
+      ) {
+        if (argv[6] === "main@{upstream}") {
+          return commandResult({ stdout: "origin/main\n" });
+        }
+        if (argv[6] === "refs/remotes/upstream/main") {
+          return commandResult({ stdout: "upstream/main\n" });
+        }
+      }
+      if (argv[0] === "git" && argv[3] === "remote") {
+        return commandResult({ stdout: "origin\nupstream\n" });
+      }
+      if (argv[0] === "git" && argv[3] === "ls-remote" && argv[5] === "origin") {
+        return commandResult({ stdout: `${originSha}\trefs/heads/main\n` });
+      }
+      if (argv[0] === "git" && argv[3] === "ls-remote" && argv[5] === "upstream") {
+        return commandResult({ stdout: `${alternateSha}\trefs/heads/main\n` });
+      }
+      if (argv[0] === "git" && argv[3] === "rev-parse" && argv[4] === "main@{upstream}") {
+        return commandResult({ stdout: `${staleSha}\n` });
+      }
+      if (
+        argv[0] === "git" &&
+        argv[3] === "rev-parse" &&
+        argv[4] === "refs/remotes/upstream/main"
+      ) {
+        return commandResult({ stdout: `${alternateSha}\n` });
+      }
+      return commandResult();
+    });
+
+    await expect(updateCommand({ dryRun: true, channel: "dev" })).rejects.toEqual(new ExitError(1));
+
+    expect(getErrorOutput()).toContain("current remote target origin/main is not available");
+    expect(
+      commandCalls().some(
+        ([argv]) => argv[0] === "git" && argv.includes("refs/remotes/upstream/main"),
+      ),
+    ).toBe(false);
+    expect(databasePreflightMocks.preflightOpenClawDatabaseSchemas).not.toHaveBeenCalled();
+    expect(runGatewayUpdate).not.toHaveBeenCalled();
+    expectNoSideEffects(serviceStop, serviceRestart);
   });
 
   it("refuses an incompatible git target before stopping the service", async () => {
