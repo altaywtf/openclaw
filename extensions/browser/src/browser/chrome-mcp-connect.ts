@@ -54,6 +54,8 @@ async function createRealSession(
     args: options.args,
     stderr: "pipe",
   });
+  // Drain before initialize so startup output cannot block readiness or lose failure diagnostics.
+  const getStderr = drainStderr(transport);
   const client = new Client(
     {
       name: "openclaw-browser",
@@ -61,7 +63,6 @@ async function createRealSession(
     },
     {},
   );
-  let getStderr = () => "";
   const session: ChromeMcpSession = {
     client,
     transport,
@@ -75,7 +76,6 @@ async function createRealSession(
         (async () => {
           await client.connect(transport);
           await refreshChromeMcpCleanupProcess(requireSession());
-          getStderr = drainStderr(transport);
           const tools = await client.listTools();
           if (!tools.tools.some((tool) => tool.name === "list_pages")) {
             throw new Error("Chrome MCP server did not expose the expected navigation tools.");
