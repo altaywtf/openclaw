@@ -31,6 +31,7 @@ import {
 } from "./lib/managed-child-process.mts";
 import { parsePositiveInt } from "./lib/numeric-options.mjs";
 import { assertRealOutputRoot } from "./lib/output-root-guard.mjs";
+import { sanitizeBundlerHelperDtsExportTree } from "./lib/sanitize-bundler-helper-dts-exports.mts";
 import {
   TSDOWN_PACKAGE_CONFIG_GROUP,
   TSDOWN_UNIFIED_CONFIG_GROUP,
@@ -1907,7 +1908,11 @@ export async function runTsdownBuild(argv: string[] = process.argv.slice(2)): Pr
   if (!plan) {
     return 1;
   }
-  return executeTsdownBuildPlan(plan);
+  const code = await executeTsdownBuildPlan(plan);
+  if (code === 0) {
+    sanitizeBundlerHelperDtsExportTree(path.join(process.cwd(), "dist"));
+  }
+  return code;
 }
 
 if (isDirectRunUrl(process.argv[1], import.meta.url)) {
