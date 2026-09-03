@@ -56,7 +56,7 @@ describe("upgrade survivor config recipe command resolution", () => {
         mkdirSync(join(candidateRoot, dirname(legacyClawHubPath)), { recursive: true });
         writeFileSync(join(candidateRoot, legacyClawHubPath), 'from "../infra/clawhub.js";\n');
         execFileSync("git", ["init", "--quiet"], { cwd: candidateRoot });
-        execFileSync("git", ["add", legacyDoctorPath], { cwd: candidateRoot });
+        execFileSync("git", ["add", legacyDoctorPath, legacyClawHubPath], { cwd: candidateRoot });
         execFileSync(
           "git",
           [
