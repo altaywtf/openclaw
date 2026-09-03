@@ -6,6 +6,8 @@ import * as agentEn from "./en-agents.ts";
 export const en: TranslationMap & {
   configPage: TranslationMap;
   configView: TranslationMap;
+  // Lazy en-dashboards.ts assigns into this namespace.
+  dashboardsPage: TranslationMap;
   debug: TranslationMap & { overlay: TranslationMap };
   // Lazy en-devices.ts assigns into this namespace.
   devices: TranslationMap;
@@ -973,35 +975,8 @@ export const en: TranslationMap & {
     checkoutRemoteLocked: "Devices and cloud run in a worktree",
     local: "Local",
   },
-  dashboardsPage: {
-    emptyTitle: "No dashboards yet",
-    emptyDescription: "Dashboards created in your tasks will appear here.",
-    loadError: "Could not load dashboards: {error}",
-    openFocusMode: "Open in focus mode",
-    live: "Live",
-    byAuthor: "By {author}",
-    updated: "Updated {time}",
-    updatedUnknown: "Update time unknown",
-    created: "Created {time}",
-    createdUnknown: "Creation time unknown",
-    totalLabel: "dashboards",
-    searchLabel: "Search dashboards",
-    searchPlaceholder: "Search dashboards…",
-    authorFilter: "Author",
-    allAuthors: "All authors",
-    sortLabel: "Sort",
-    sortUpdated: "Recently updated",
-    sortCreated: "Recently created",
-    sortTitle: "Title A–Z",
-    viewLabel: "View",
-    viewCards: "Cards",
-    viewList: "List",
-    previewEmpty: "No widgets yet",
-    previewUnavailable: "Preview unavailable",
-    resultCount: "{count} dashboards",
-    noResultsTitle: "No matching dashboards",
-    noResultsDescription: "Try another search or author.",
-  },
+  // Lazy: en-dashboards.ts registers this page-only copy with its route chunk.
+  dashboardsPage: {},
   dashboardDocument: {
     close: "Close dashboard",
     missingSession: "No dashboard session was specified.",

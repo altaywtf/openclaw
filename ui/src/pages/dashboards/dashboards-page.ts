@@ -241,18 +241,18 @@ class DashboardsPage extends OpenClawLightDomElement {
       if (this.previewCache.size >= PREVIEW_CACHE_LIMIT) {
         this.previewCache.clear();
       }
-      let pending: Promise<BoardSnapshot | null>;
-      pending = client
+      const pending: Promise<BoardSnapshot | null> = client
         .request<BoardSnapshot>("board.get", {
           sessionKey: request.sessionKey,
           ...(request.agentId ? { agentId: request.agentId } : {}),
+          prepareViews: false,
         })
-        .then((snapshot) => {
+        .then((board) => {
           const entry = this.previewCache.get(key);
           if (entry?.pending === pending) {
-            entry.eventKey = previewCacheKey({ sessionKey: snapshot.sessionKey });
+            entry.eventKey = previewCacheKey({ sessionKey: board.sessionKey });
           }
-          return snapshot;
+          return board;
         })
         .catch((): null => {
           if (this.previewCache.get(key)?.pending === pending) {

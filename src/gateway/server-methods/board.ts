@@ -140,11 +140,20 @@ export function createBoardHandlers(
       async (invocation) => {
         const { params: boardParams, respond, context, client } = invocation;
         try {
-          const authority = captureBoardRequestAuthority(invocation);
           const boardSession = resolveBoardSession(boardParams, context, respond);
           if (!boardSession) {
             return;
           }
+          // Metadata-only consumers must not mint view tickets or start the
+          // sandbox host merely to inspect stored board layout.
+          if (boardParams.prepareViews === false) {
+            respond(
+              true,
+              projectBoardSnapshot(store.getSnapshot(boardSession), boardSession.agentId),
+            );
+            return;
+          }
+          const authority = captureBoardRequestAuthority(invocation);
           const { snapshot, htmlViewMetadata } =
             store.getSnapshotWithHtmlViewMetadata(boardSession);
           let sandboxPort = context.getMcpAppSandboxPort?.();

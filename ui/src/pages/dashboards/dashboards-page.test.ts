@@ -66,7 +66,9 @@ function connectedContext(
         hello: { features: { methods } },
       },
       subscribe: (listener: Parameters<ApplicationContext["gateway"]["subscribe"]>[0]) => {
-        events && (events.snapshotListener = listener);
+        if (events) {
+          events.snapshotListener = listener;
+        }
         return () => {
           if (events?.snapshotListener === listener) {
             events.snapshotListener = undefined;
@@ -76,7 +78,9 @@ function connectedContext(
       subscribeEvents: (
         listener: Parameters<ApplicationContext["gateway"]["subscribeEvents"]>[0],
       ) => {
-        events && (events.listener = listener);
+        if (events) {
+          events.listener = listener;
+        }
         return () => {
           if (events?.listener === listener) {
             events.listener = undefined;
@@ -404,6 +408,7 @@ describe("DashboardsPage", () => {
     expect(request).toHaveBeenCalledWith("board.get", {
       sessionKey: "agent:main:dashboard:one",
       agentId: "main",
+      prepareViews: false,
     });
 
     element.querySelector<HTMLButtonElement>('[data-dashboards-view="list"]')?.click();
@@ -449,28 +454,27 @@ describe("DashboardsPage", () => {
   });
 
   it("clears preview snapshots across a same-client reconnect", async () => {
+    const firstWidget = {
+      name: "status",
+      tabId: "main",
+      title: "Before reconnect",
+      contentKind: "html",
+      sizeW: 12,
+      sizeH: 3,
+      position: 0,
+      grantState: "none",
+      revision: 1,
+    };
     const firstBoard = {
       sessionKey: "agent:main:dashboard:one",
       revision: 1,
       tabs: [{ tabId: "main", title: "Main", position: 0, chatDock: "hidden" }],
-      widgets: [
-        {
-          name: "status",
-          tabId: "main",
-          title: "Before reconnect",
-          contentKind: "html",
-          sizeW: 12,
-          sizeH: 3,
-          position: 0,
-          grantState: "none",
-          revision: 1,
-        },
-      ],
+      widgets: [firstWidget],
     };
     const secondBoard = {
       ...firstBoard,
       revision: 2,
-      widgets: [{ ...firstBoard.widgets[0], title: "After reconnect", revision: 2 }],
+      widgets: [{ ...firstWidget, title: "After reconnect", revision: 2 }],
     };
     let currentBoard = firstBoard;
     const request = vi.fn(async () => currentBoard);
@@ -497,28 +501,27 @@ describe("DashboardsPage", () => {
       listener?: Parameters<ApplicationContext["gateway"]["subscribeEvents"]>[0];
       snapshotListener?: Parameters<ApplicationContext["gateway"]["subscribe"]>[0];
     } = {};
+    const firstWidget = {
+      name: "status",
+      tabId: "main",
+      title: "Old layout",
+      contentKind: "html",
+      sizeW: 12,
+      sizeH: 3,
+      position: 0,
+      grantState: "none",
+      revision: 1,
+    };
     const firstBoard = {
       sessionKey: "agent:work:global",
       revision: 1,
       tabs: [{ tabId: "main", title: "Main", position: 0, chatDock: "hidden" }],
-      widgets: [
-        {
-          name: "status",
-          tabId: "main",
-          title: "Old layout",
-          contentKind: "html",
-          sizeW: 12,
-          sizeH: 3,
-          position: 0,
-          grantState: "none",
-          revision: 1,
-        },
-      ],
+      widgets: [firstWidget],
     };
     const secondBoard = {
       ...firstBoard,
       revision: 2,
-      widgets: [{ ...firstBoard.widgets[0], title: "Fresh layout", revision: 2 }],
+      widgets: [{ ...firstWidget, title: "Fresh layout", revision: 2 }],
     };
     const request = vi.fn().mockResolvedValueOnce(firstBoard).mockResolvedValue(secondBoard);
     const element = mountPage(

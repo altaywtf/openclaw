@@ -2,8 +2,11 @@ import type { BoardSnapshot } from "@openclaw/gateway-protocol";
 import { html, nothing, svg, type PropertyValues } from "lit";
 import { property, state } from "lit/decorators.js";
 import { t } from "../../i18n/index.ts";
+import { registerDashboardsEnglish } from "../../i18n/locales/en-dashboards.ts";
 import { layout, type BoardGridRect } from "../../lib/board/grid.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
+
+registerDashboardsEnglish();
 
 type DashboardPreviewRequest = {
   sessionKey: string;
@@ -107,7 +110,7 @@ class DashboardPreview extends OpenClawLightDomElement {
     super.disconnectedCallback();
   }
 
-  override updated(changed: PropertyValues<this>) {
+  override willUpdate(changed: PropertyValues<this>) {
     if (changed.has("sessionKey") || changed.has("agentId") || changed.has("load")) {
       this.scheduleLoad();
     }

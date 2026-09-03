@@ -1,4 +1,5 @@
 import path from "node:path";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it } from "vitest";
 import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
@@ -114,9 +115,13 @@ suite.define(() => {
         gateway
           .getRequests("board.get")
           .then((requests) =>
-            requests.filter((request) => request.params?.sessionKey === selectedSessionKey),
+            requests.filter(
+              (request) =>
+                isRecord(request.params) && request.params.sessionKey === selectedSessionKey,
+            ),
           );
       expect(await releaseRequests()).toHaveLength(1);
+      expect((await releaseRequests())[0]?.params).toMatchObject({ prepareViews: false });
       if (proofDir) {
         await page.screenshot({ path: path.join(proofDir, "01-gallery.png") });
       }

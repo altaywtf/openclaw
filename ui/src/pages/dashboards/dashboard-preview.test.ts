@@ -123,7 +123,7 @@ describe("dashboard preview", () => {
     resolveSecond?.({
       ...snapshot,
       revision: 4,
-      widgets: [{ ...snapshot.widgets[0], title: "Fresh layout", revision: 4 }],
+      widgets: [widget("revenue", "main", 8, 4, 0, { title: "Fresh layout", revision: 4 })],
     });
     await vi.waitFor(() => expect(element.textContent).toContain("Fresh layout"));
     resolveFirst?.(snapshot);
