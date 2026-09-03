@@ -113,6 +113,7 @@ describe("release-check", () => {
 
       copyFileSync("appcast.xml", join(root, "appcast.xml"));
       mkdirSync(join(root, "src/shared"), { recursive: true });
+      mkdirSync(join(root, "src/worker"), { recursive: true });
       const packedRoot = join(root, "package");
       const packedFiles = {
         "package.json": packageJson,
