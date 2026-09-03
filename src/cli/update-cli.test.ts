@@ -110,6 +110,9 @@ const windowsOfflineProbe = vi.hoisted(() => vi.fn(async () => null));
 const databasePreflightMocks = vi.hoisted(() => ({
   preflightOpenClawDatabaseSchemas: vi.fn(),
 }));
+const coordinatorFixture = vi.hoisted(() => ({
+  runtimeDirectory: undefined as string | undefined,
+}));
 const restartHealthTestControl = vi.hoisted(() => ({
   snapshot: undefined as unknown,
 }));
@@ -182,6 +185,13 @@ vi.mock("../state/openclaw-database-preflight.js", () => ({
   OPENCLAW_DATABASE_SCHEMA_DOCS_URL: "https://docs.openclaw.ai/reference/database-schemas",
   preflightOpenClawDatabaseSchemas: databasePreflightMocks.preflightOpenClawDatabaseSchemas,
 }));
+
+vi.mock("../infra/state-database-coordinator.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../infra/state-database-coordinator.js")>();
+  const { createIsolatedStateCoordinator } =
+    await import("../../test/helpers/state-database-coordinator.js");
+  return createIsolatedStateCoordinator(actual, () => coordinatorFixture.runtimeDirectory);
+});
 
 vi.mock("../state/openclaw-state-ownership.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../state/openclaw-state-ownership.js")>()),
@@ -1746,6 +1756,8 @@ describe("update-cli", () => {
   };
 
   beforeEach(async () => {
+    // Plugin leases and sentinels initialize real SQLite; keep their coordinator outside test state.
+    coordinatorFixture.runtimeDirectory = tempDirs.make("openclaw-update-coordinators-");
     const gatewayEntrypoint = await import("../daemon/gateway-entrypoint.js");
     const actualGatewayEntrypoint = await vi.importActual<
       typeof import("../daemon/gateway-entrypoint.js")
@@ -1923,6 +1935,7 @@ describe("update-cli", () => {
   });
 
   afterEach(async () => {
+    coordinatorFixture.runtimeDirectory = undefined;
     vi.restoreAllMocks();
     if (tempDirsToCleanup.size === 0) {
       return;
@@ -2029,23 +2042,37 @@ describe("update-cli", () => {
     expectNoSideEffects(serviceStart, serviceRestart, runDaemonInstall, runDaemonRestart);
   });
 
-  it.each([
-    { kind: "git", restart: false },
-    { kind: "git", restart: true },
-    { kind: "package", restart: false },
-    { kind: "package", restart: true },
-  ] as const)(
-    "handles $kind with restart=$restart when service inspection is unavailable",
-    async ({ kind, restart }) => {
+  it.each(
+    (
+      [
+        { kind: "git", restart: false },
+        { kind: "git", restart: true },
+        { kind: "package", restart: false },
+        { kind: "package", restart: true },
+      ] as const
+    ).flatMap(({ kind, restart }) =>
+      [true, false].flatMap((json) =>
+        [false, true].map((userBus) => ({ kind, restart, json, userBus })),
+      ),
+    ),
+  )(
+    "handles $kind with restart=$restart when service inspection is unavailable (json=$json, userBus=$userBus)",
+    async ({ kind, restart, json, userBus }) => {
       if (kind === "package") {
         await mockPackageInstallAtCaseDir();
         mockCurrentProcessFreshDoctor();
       } else {
         mockGitUpdateAfterMutation();
       }
-      serviceReadCommand.mockRejectedValue(new Error("inspection-secret-canary"));
+      const error = new Error("inspection-secret-canary", {
+        cause: new Error("Failed to connect to user scope bus: inspection-cause-secret-canary"),
+      });
+      if (userBus) {
+        Object.assign(error, { code: "SYSTEMD_USER_BUS_UNAVAILABLE" });
+      }
+      serviceReadCommand.mockRejectedValue(error);
 
-      const command = invokeUpdateCli({ yes: true, json: true, restart });
+      const command = invokeUpdateCli({ yes: true, json, restart });
       if (restart) {
         await expect(command).rejects.toEqual(new ExitError(1));
       } else {
@@ -2061,7 +2088,6 @@ describe("update-cli", () => {
         );
         expect(getErrorOutput()).toContain("gateway status --deep");
         expect(getErrorOutput()).toContain("stop the Gateway manually before the update");
-        expect(lastWriteJsonCall()).not.toMatchObject({ status: "ok" });
       } else {
         if (kind === "package") {
           expectPackageInstallSpec("openclaw@9999.0.0");
@@ -2073,7 +2099,19 @@ describe("update-cli", () => {
           "Gateway service management skipped: inspection is unavailable",
         );
         expect(getErrorOutput()).toContain("gateway status --deep");
-        expect(lastWriteJsonCall()).toMatchObject({ status: "ok" });
+      }
+      if (json) {
+        expect(lastWriteJsonCall()).toMatchObject({ status: restart ? "error" : "ok" });
+        if (restart && userBus) {
+          expect(lastWriteJsonCall()).toMatchObject({
+            steps: expect.arrayContaining([
+              expect.objectContaining({ stderrTail: expect.stringMatching(/user.*D-Bus/i) }),
+            ]),
+          });
+        }
+      } else {
+        expect(defaultRuntime.writeJson).not.toHaveBeenCalled();
+        expect(getLogOutput()).toContain(restart ? "Update Result: ERROR" : "Update Result: OK");
       }
       expectNoSideEffects(
         serviceStop,
@@ -2084,7 +2122,17 @@ describe("update-cli", () => {
         prepareRestartScript,
         runRestartScript,
       );
-      expect(getErrorOutput()).not.toContain("inspection-secret-canary");
+      if (userBus) {
+        expect(getErrorOutput()).toMatch(/user.*D-Bus/i);
+      } else {
+        expect(getErrorOutput()).not.toMatch(/user.*D-Bus/i);
+      }
+      const published = [
+        getErrorOutput(),
+        getLogOutput(),
+        JSON.stringify(lastWriteJsonCall()),
+      ].join("\n");
+      expect(published).not.toContain("secret-canary");
     },
   );
 
