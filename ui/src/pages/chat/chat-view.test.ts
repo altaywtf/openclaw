@@ -4234,12 +4234,12 @@ describe("chat composer sizing", () => {
   it("keeps a bottom-anchored transcript pinned when the rich preview appears", () => {
     const container = renderChatView({});
     const textarea = getComposerTextarea(container);
-    const thread = requireElement<HTMLElement>(container, ".chat-thread", "chat thread");
-    const preview = requireElement<HTMLElement>(
+    const thread = requireElement(container, ".chat-thread", "chat thread") as HTMLElement;
+    const preview = requireElement(
       container,
       ".agent-chat__composer-markdown-preview",
       "composer preview",
-    );
+    ) as HTMLElement;
     Object.defineProperties(thread, {
       clientHeight: { configurable: true, value: 500 },
       scrollHeight: { configurable: true, get: () => (preview.hidden ? 1_000 : 1_120) },
