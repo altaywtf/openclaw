@@ -29,13 +29,14 @@ export function syncComposerMarkdownPreview(textarea: HTMLTextAreaElement, draft
     // The textarea remains the only editable draft owner. Its adjacent inert
     // preview follows the same lifecycle without involving pane rerenders.
     preview = document.createElement("div");
-    preview.className = "agent-chat__composer-markdown-preview chat-text";
+    preview.className = "agent-chat__composer-markdown-preview";
     preview.setAttribute("aria-hidden", "true");
     preview.setAttribute("inert", "");
     textarea.before(preview);
   }
 
   const rendered = renderComposerMarkdownPreview(draft);
+  preview.classList.toggle("chat-text", rendered.length > 0);
   preview.hidden = rendered.length === 0;
   preview.dir = detectTextDirection(draft);
   preview.innerHTML = rendered;

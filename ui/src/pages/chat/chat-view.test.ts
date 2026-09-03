@@ -5040,6 +5040,7 @@ describe("chat slash menu accessibility", () => {
     expect(
       container.querySelector<HTMLElement>(".agent-chat__composer-markdown-preview")?.hidden,
     ).toBe(true);
+    expect(container.querySelector(".agent-chat__composer-markdown-preview.chat-text")).toBeNull();
 
     textarea.setSelectionRange(8, 8);
     textarea.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
