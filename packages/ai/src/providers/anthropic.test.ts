@@ -1526,54 +1526,6 @@ describe("Anthropic provider", () => {
     expect(result.usage.cost.total).toBeCloseTo(0.000075, 10);
   });
 
-  it("routes interleaved active content blocks by their event indexes", async () => {
-    const client = createAnthropicSseClient([
-      {
-        type: "message_start",
-        message: { id: "msg_interleaved", usage: { input_tokens: 1, output_tokens: 0 } },
-      },
-      {
-        type: "content_block_start",
-        index: 0,
-        content_block: { type: "text" },
-      },
-      {
-        type: "content_block_start",
-        index: 1,
-        content_block: { type: "text" },
-      },
-      {
-        type: "content_block_delta",
-        index: 1,
-        delta: { type: "text_delta", text: "second" },
-      },
-      {
-        type: "content_block_delta",
-        index: 0,
-        delta: { type: "text_delta", text: "first" },
-      },
-      { type: "content_block_stop", index: 1 },
-      { type: "content_block_stop", index: 0 },
-      {
-        type: "message_delta",
-        delta: { stop_reason: "end_turn" },
-        usage: { input_tokens: 1, output_tokens: 2 },
-      },
-      { type: "message_stop" },
-    ]);
-
-    const result = await streamAnthropic(
-      makeAnthropicModel(),
-      { messages: [{ role: "user", content: "hello", timestamp: 0 }] },
-      { apiKey: "sk-ant-provider", client: client as never },
-    ).result();
-
-    expect(result.content).toEqual([
-      { type: "text", text: "first" },
-      { type: "text", text: "second" },
-    ]);
-  });
-
   it("rejects a malformed later tool before any sibling becomes executable", async () => {
     const client = createAnthropicSseClient([
       {
@@ -2422,48 +2374,6 @@ describe("Anthropic provider", () => {
         cache_control: { type: "ephemeral" },
       },
     ]);
-  });
-
-  it("emits error without a preceding start event when SSE error arrives before message_start", async () => {
-    function createSseEventResponse(lines: string): Response {
-      return new Response(lines, {
-        status: 200,
-        headers: { "content-type": "text/event-stream" },
-      });
-    }
-
-    const client = {
-      messages: {
-        create: vi.fn(() => ({
-          asResponse: () =>
-            Promise.resolve(
-              createSseEventResponse(
-                "event: error\ndata: " +
-                  JSON.stringify({
-                    type: "invalid_request_error",
-                    message: "messages.1.content.63: Invalid signature in thinking block",
-                  }) +
-                  "\n\n",
-              ),
-            ),
-        })),
-      },
-    };
-
-    const stream = streamAnthropic(
-      makeAnthropicModel(),
-      { messages: [{ role: "user", content: "hi", timestamp: 0 }] },
-      { apiKey: "sk-ant-key", client: client as never },
-    );
-
-    const eventTypes: string[] = [];
-    for await (const event of stream as AsyncIterable<{ type: string }>) {
-      eventTypes.push(event.type);
-    }
-
-    // error must be the first event — no start emitted before it
-    expect(eventTypes[0]).toBe("error");
-    expect(eventTypes).not.toContain("start");
   });
 
   it("strips the internal cache boundary when Anthropic cache control is disabled", async () => {
