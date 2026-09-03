@@ -166,6 +166,18 @@ async function fixture() {
   };
 }
 
+function fixtureClockPreload(root: string): string {
+  const file = join(root, "fixture-clock.mjs");
+  // Child CLIs need the fixture epoch too; keep time advancing for discovery deadlines.
+  writeFileSync(
+    file,
+    `const startedAt = performance.now();
+Date.now = () => ${NOW} + Math.floor(performance.now() - startedAt);
+`,
+  );
+  return pathToFileURL(file).href;
+}
+
 describe("trusted full release candidate selection", () => {
   it("treats malformed metadata and workflow provenance as misses before selection", async () => {
     const { archive, manifest, metadata } = await fixture();
@@ -573,19 +585,23 @@ esac
     });
     writeFileSync(inputPath, JSON.stringify(fullReleaseCandidateManifestFixture().request));
     writeFileSync(artifactListingPath, JSON.stringify({ artifacts }));
-    const result = spawnSync(process.execPath, [SCRIPT, "discover", "--request-input", inputPath], {
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        FAKE_GH_ARTIFACT_LISTING: artifactListingPath,
-        FAKE_GH_CALL_LOG: callLogPath,
-        FAKE_GH_RESPONSES: responses,
-        GH_TOKEN: "test-token",
-        GITHUB_OUTPUT: outputPath,
-        PATH: `${bin}:${process.env.PATH}`,
+    const result = spawnSync(
+      process.execPath,
+      ["--import", fixtureClockPreload(root), SCRIPT, "discover", "--request-input", inputPath],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          FAKE_GH_ARTIFACT_LISTING: artifactListingPath,
+          FAKE_GH_CALL_LOG: callLogPath,
+          FAKE_GH_RESPONSES: responses,
+          GH_TOKEN: "test-token",
+          GITHUB_OUTPUT: outputPath,
+          PATH: `${bin}:${process.env.PATH}`,
+        },
+        timeout: 10_000,
       },
-      timeout: 10_000,
-    });
+    );
     expect(result.status, result.stderr).toBe(0);
     expect(readFileSync(outputPath, "utf8")).toContain(
       "reuse_reason=candidate evaluation exceeded the bounded scan",
@@ -665,22 +681,26 @@ globalThis.fetch = async (url) => {
 };
 `,
     );
-    const result = spawnSync(process.execPath, [SCRIPT, "discover", "--request-input", inputPath], {
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        FAKE_ARTIFACT_ARCHIVE: archivePath,
-        FAKE_ARTIFACT_METADATA: artifactMetadataPath,
-        FAKE_GH_ARTIFACT_LISTING: artifactListingPath,
-        FAKE_GH_WORKFLOW_JOBS: workflowJobsPath,
-        FAKE_GH_WORKFLOW_RUN: workflowRunPath,
-        GH_TOKEN: "test-token",
-        GITHUB_OUTPUT: outputPath,
-        NODE_OPTIONS: `--import=${pathToFileURL(fetchPreloadPath).href}`,
-        PATH: `${bin}:${process.env.PATH}`,
+    const result = spawnSync(
+      process.execPath,
+      ["--import", fixtureClockPreload(root), SCRIPT, "discover", "--request-input", inputPath],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          FAKE_ARTIFACT_ARCHIVE: archivePath,
+          FAKE_ARTIFACT_METADATA: artifactMetadataPath,
+          FAKE_GH_ARTIFACT_LISTING: artifactListingPath,
+          FAKE_GH_WORKFLOW_JOBS: workflowJobsPath,
+          FAKE_GH_WORKFLOW_RUN: workflowRunPath,
+          GH_TOKEN: "test-token",
+          GITHUB_OUTPUT: outputPath,
+          NODE_OPTIONS: `--import=${pathToFileURL(fetchPreloadPath).href}`,
+          PATH: `${bin}:${process.env.PATH}`,
+        },
+        timeout: 10_000,
       },
-      timeout: 10_000,
-    });
+    );
     expect(result.status, result.stderr).toBe(0);
     expect(readFileSync(outputPath, "utf8")).toContain(
       "reuse_reason=full release candidate package artifact is unavailable",
