@@ -32,6 +32,10 @@ const WEB_LOGIN_SURFACES = new Set(["control", "control-ui", "dashboard", "inter
 
 const activeProviderLoginFlows = createProviderLoginFlowRegistry();
 
+export function clearActiveProviderLoginFlowsForTest(): void {
+  activeProviderLoginFlows.clear();
+}
+
 function parseLoginCommand(
   commandBodyNormalized: string,
 ): { providerInput: string | undefined } | null {

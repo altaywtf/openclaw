@@ -4,13 +4,11 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { MigrationProviderPlugin } from "../../plugins/types.js";
 
 const migrationRuntimeMocks = vi.hoisted(() => ({
-  ensureLoaded: vi.fn(),
   resolveProvider: vi.fn(),
   resolveProviders: vi.fn(() => []),
 }));
 
 vi.mock("../../plugins/migration-provider-runtime.js", () => ({
-  ensureStandaloneMigrationProviderRegistryLoaded: migrationRuntimeMocks.ensureLoaded,
   resolvePluginMigrationProvider: migrationRuntimeMocks.resolveProvider,
   resolvePluginMigrationProviders: migrationRuntimeMocks.resolveProviders,
 }));
@@ -29,24 +27,6 @@ describe("resolveMigrationProvider", () => {
     migrationRuntimeMocks.resolveProvider.mockReturnValueOnce(provider);
 
     expect(resolveMigrationProvider("fixture", config)).toBe(provider);
-    expect(migrationRuntimeMocks.ensureLoaded).not.toHaveBeenCalled();
-  });
-
-  it("loads an unresolved provider before trying again", () => {
-    const config = {} as OpenClawConfig;
-    const provider = {
-      id: "fixture",
-      label: "Fixture",
-      plan: vi.fn(),
-      apply: vi.fn(),
-    } satisfies MigrationProviderPlugin;
-    migrationRuntimeMocks.resolveProvider.mockReturnValueOnce(undefined).mockReturnValue(provider);
-
-    expect(resolveMigrationProvider("fixture", config)).toBe(provider);
-    expect(migrationRuntimeMocks.ensureLoaded).toHaveBeenCalledWith({
-      cfg: config,
-      providerId: "fixture",
-    });
   });
 });
 

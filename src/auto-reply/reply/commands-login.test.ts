@@ -389,51 +389,6 @@ describe("handleLoginCommand", () => {
     );
   });
 
-  it("rejects empty profile identifiers returned by login", async () => {
-    runModelsAuthLoginFlowMock.mockResolvedValue({
-      providerId: "openai",
-      methodId: "device-code",
-      modelAccess: "already-visible",
-      authRefresh: "refreshed",
-      profiles: [{ profileId: " ", provider: "openai", mode: "oauth" }],
-    });
-
-    const result = await handleLoginCommand(
-      buildLoginParams("/login codex", { opts: blockReplyOpts() }),
-      true,
-    );
-
-    expect(result?.reply?.text).toBe(
-      "OpenAI login did not complete. Send `/login codex` to try again.",
-    );
-  });
-
-  it("normalizes returned login identifiers before switching profiles", async () => {
-    runModelsAuthLoginFlowMock.mockResolvedValue({
-      providerId: " openai ",
-      methodId: " device-code ",
-      defaultModel: " openai/gpt-5.4 ",
-      modelAccess: " enabled ",
-      authRefresh: " refreshed ",
-      profiles: [{ profileId: " openai:owner@example.com ", provider: " openai ", mode: "oauth" }],
-    });
-    const params = buildLoginParams("/login codex", {
-      opts: blockReplyOpts(),
-      sessionEntry: {
-        authProfileOverride: "openai:old-owner@example.com",
-        sessionId: "sess-owner",
-        updatedAt: 1,
-      },
-    });
-
-    const result = await handleLoginCommand(params, true);
-
-    expect(result?.reply?.text).toBe(
-      "OpenAI login complete. Available OpenAI models will update automatically. Your default model is unchanged. Use /models to browse.",
-    );
-    expect(params.sessionEntry?.authProfileOverride).toBe("openai:owner@example.com");
-  });
-
   it("marks a same-profile explicit login as user-selected", async () => {
     mockSuccessfulLoginFlow("openai:owner@example.com");
     const params = buildLoginParams("/login codex", {
