@@ -100,6 +100,7 @@ describe("Reef federated prompt E2E", () => {
         const currentTrust = hostTrust.values.get(peer);
         return currentTrust ? reefPeerIdentity(currentTrust) : undefined;
       },
+      new AbortController().signal,
     );
     const outcomes: string[] = [];
     let sequence = 0;

@@ -42,6 +42,7 @@ export class ReefFederationCoordinator {
     private readonly runtime: Pick<PluginRuntime, "gateway">,
     private readonly state: FederationState,
     private readonly currentPeerIdentity: (peer: string) => ReefPeerIdentity | undefined,
+    private readonly authoritySignal: AbortSignal,
   ) {}
 
   /** Validate, approve, and dispatch one remote prompt through canonical agent admission. */
@@ -137,6 +138,9 @@ export class ReefFederationCoordinator {
     });
     if (staleAuthority) {
       return this.recordDenial(frame, digest, staleAuthority, approvalId);
+    }
+    if (this.authoritySignal.aborted) {
+      return this.recordDenial(frame, digest, "grant-revoked", approvalId);
     }
 
     try {

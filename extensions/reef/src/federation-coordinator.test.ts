@@ -54,6 +54,7 @@ function promptFrame(
 }
 
 function fixture(fixtureOptions?: { allowAlways?: boolean; role?: ReefFederationMount["role"] }) {
+  const authority = new AbortController();
   let currentPeerIdentity = { ...mount.peerIdentity };
   let currentMount = {
     ...mount,
@@ -113,6 +114,7 @@ function fixture(fixtureOptions?: { allowAlways?: boolean; role?: ReefFederation
     { gateway: { isAvailable: async () => true, request: gatewayRequest } },
     state,
     () => ({ ...currentPeerIdentity }),
+    authority.signal,
   );
   const updateMount = (patch: Partial<ReefFederationMount>) => {
     currentMount = { ...currentMount, ...patch };
@@ -120,7 +122,15 @@ function fixture(fixtureOptions?: { allowAlways?: boolean; role?: ReefFederation
   const updatePeerIdentity = (patch: Partial<ReefPeerIdentity>) => {
     currentPeerIdentity = { ...currentPeerIdentity, ...patch };
   };
-  return { coordinator, request, state, proposals, updateMount, updatePeerIdentity };
+  return {
+    authority,
+    coordinator,
+    request,
+    state,
+    proposals,
+    updateMount,
+    updatePeerIdentity,
+  };
 }
 
 async function handle(
@@ -275,6 +285,20 @@ describe("Reef federation coordinator", () => {
       reason: "grant-revoked",
     });
     expect(rotated.request.mock.calls.some(([method]) => method === "agent")).toBe(false);
+  });
+
+  it("rejects an approved prompt when its Reef lifecycle closes", async () => {
+    const stopped = fixture();
+    stopped.request.mockImplementationOnce(async () => {
+      stopped.authority.abort();
+      return { id: "plugin:approval-1", decision: "allow-once" };
+    });
+
+    await expect(handle(stopped.coordinator)).resolves.toMatchObject({
+      type: "session.prompt.denied",
+      reason: "grant-revoked",
+    });
+    expect(stopped.request.mock.calls.some(([method]) => method === "agent")).toBe(false);
   });
 
   it("rejects a guest-side mount offered back to the host", async () => {

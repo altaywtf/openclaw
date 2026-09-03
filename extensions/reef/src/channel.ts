@@ -362,10 +362,15 @@ export const reefPlugin: ChannelPlugin<ReefAccount> = {
         handle: ctx.account.config.handle!,
       });
       const federation = new ReefFederationState(runtime);
-      const federationCoordinator = new ReefFederationCoordinator(runtime, federation, (peer) => {
-        const friend = trust.get(peer);
-        return friend && !friend.safetyNumberChanged ? reefPeerIdentity(friend) : undefined;
-      });
+      const federationCoordinator = new ReefFederationCoordinator(
+        runtime,
+        federation,
+        (peer) => {
+          const friend = trust.get(peer);
+          return friend && !friend.safetyNumberChanged ? reefPeerIdentity(friend) : undefined;
+        },
+        authority.signal,
+      );
       const federationTasks = new Map<string, Promise<void>>();
       const startFederatedPrompt = (
         request: ReefFederationPromptRequest,
