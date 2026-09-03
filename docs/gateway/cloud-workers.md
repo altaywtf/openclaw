@@ -125,6 +125,8 @@ Ready workers incur running-machine charges. Their fixed expiry starts at the ac
 
 Project setup uses the committed executable `.openclaw/worktree-setup.sh` under its existing authorization rules. Preparation keeps its workspace and HOME at fixed paths, so outputs such as virtual environments with absolute interpreter paths remain usable. Each fresh dedicated machine has its own filesystem; its prepared workspace is registered to that environment and bound to only one session. Session edits and enrollment credentials never update the reusable snapshot. Ordinary unprepared and shared-device workspaces retain their existing session isolation.
 
+Remote setup uses the provider's remaining project-command budget. Crabbox allows up to 15 minutes per command, including transport and preparation work; this does not extend the overall provisioning deadline or reserve expiry. Setup reports deadline expiry separately from interruption, and an incomplete preparation is never reused or rerun. Local [managed-worktree setup](/concepts/managed-worktrees#run-repository-setup) keeps its separate two-minute limit and can run before cloud dispatch.
+
 ### Warm images
 
 Warm images are on by default when a class is known from `settings.class` or the placement's `machineClass`, unless the profile declares a nonempty `setupEnv`. With no effective class and no explicit `warmImage`, provisioning stays cold without requiring `warmImage: false`. Placement overrides are resolved before choosing this default.

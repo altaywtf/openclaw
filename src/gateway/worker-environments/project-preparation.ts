@@ -200,23 +200,33 @@ export function createWorkerProjectPreparation(params: {
     }
   };
   const prepare: ProjectPreparation["prepare"] = async (transport) => {
+    if (!preparation) {
+      const result = await prepareSeed(transport);
+      requireCurrent();
+      return result;
+    }
+    if (!transport.runScriptWithBudget) {
+      throw new Error("Prepared workspaces require a provider command budget");
+    }
     const result = await prepareSeed(transport);
     requireCurrent();
-    if (!preparation || result.preparedWorkspace) {
+    if (result.preparedWorkspace) {
       preparedWorkspace = result.preparedWorkspace;
       return result;
     }
     // Seed transfer can outlive its caller. Repository code starts only under
     // the current provisioning owner, and never runs in a later session's HOME.
     const prepared: unknown = JSON.parse(
-      await transport.runScript(
-        createProjectSetupScript({
-          namespace: params.namespace,
-          seedKey,
-          preparationKey: preparation.key,
-          baseCommit: params.project.baseCommit,
-          setupRecipe: preparation.setupRecipe,
-        }),
+      await transport.runScriptWithBudget(
+        (timeoutMs) =>
+          createProjectSetupScript({
+            namespace: params.namespace,
+            seedKey,
+            preparationKey: preparation.key,
+            baseCommit: params.project.baseCommit,
+            setupRecipe: preparation.setupRecipe,
+            timeoutMs,
+          }),
         signal,
       ),
     );

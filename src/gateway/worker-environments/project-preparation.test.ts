@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -8,10 +8,20 @@ import {
   createWorkerProjectPreparation,
   readWorkerProjectSetupRecipe,
 } from "./project-preparation.js";
+import { createProjectSetupScript } from "./project-setup-script.js";
 import { prepareWorkerProjectSnapshot, workerProjectSeedKey } from "./workspace-git-base.js";
 import { parseWorkerWorkspaceManifest } from "./workspace-manifest.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+
+function expectSetupProcessStopped(pid: number) {
+  expect(Number.isSafeInteger(pid) && pid > 0).toBe(true);
+  const result = spawnSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" });
+  expect(result.error).toBeUndefined();
+  expect([0, 1]).toContain(result.status);
+  const state = result.stdout.trim();
+  expect(state === "" || state.startsWith("Z")).toBe(true);
+}
 
 async function fixture(setup?: string, symlink = false) {
   const root = await fs.realpath(tempDirs.make("project-preparation-"));
@@ -71,7 +81,19 @@ async function fixture(setup?: string, symlink = false) {
       setupAuthorized: true,
       requireCurrent,
     });
-  return { repository, home, project, seed, operation, preparedOperation, runScript, upload };
+  return {
+    repository,
+    home,
+    project,
+    seed,
+    operation,
+    preparedOperation,
+    runScript,
+    runScriptWithBudget(createScript: (timeoutMs: number) => string) {
+      return this.runScript(createScript(30_000));
+    },
+    upload,
+  };
 }
 
 describe("project checkout preparation", () => {
@@ -169,29 +191,49 @@ describe("project checkout preparation", () => {
     expect(await fs.readdir(path.dirname(f.seed))).toEqual([]);
   });
 
-  it("revokes retained callbacks when the provision owner changes during preparation", async () => {
-    const f = await fixture();
-    let current = true;
-    const operation = f.operation(() => {
-      if (!current) {
-        throw new Error("owner replaced");
-      }
-    });
-    await expect(
-      operation.project.prepare({
-        runScript: async (script) => {
-          const result = await f.runScript(script);
+  it.each(["inspection", "staging cleanup"])(
+    "revokes retained callbacks when the provision owner changes during %s",
+    async (stage) => {
+      const f = await fixture();
+      let current = true;
+      let temporaryRoot: string | undefined;
+      const remove = fs.rm.bind(fs);
+      const cleanup = vi.spyOn(fs, "rm").mockImplementation(async (...args) => {
+        await remove(...args);
+        if (stage === "staging cleanup" && args[0] === temporaryRoot) {
           current = false;
-          return result;
-        },
-        upload: f.upload,
-      }),
-    ).rejects.toThrow("owner replaced");
-    expect(operation.project.signal.aborted).toBe(true);
-    expect(f.upload).not.toHaveBeenCalled();
-    expect(() => operation.project.prepare(f)).toThrow("owner replaced");
-    operation.close();
-  });
+        }
+      });
+      const operation = f.operation(() => {
+        if (!current) {
+          throw new Error("owner replaced");
+        }
+      });
+      try {
+        await expect(
+          operation.project.prepare({
+            runScript: async (script) => {
+              const result = await f.runScript(script);
+              if (stage === "inspection") {
+                current = false;
+              }
+              return result;
+            },
+            upload: async (source, destination) => {
+              temporaryRoot = path.dirname(source);
+              await f.upload(source, destination);
+            },
+          }),
+        ).rejects.toThrow("owner replaced");
+        expect(operation.project.signal.aborted).toBe(true);
+        expect(f.upload).toHaveBeenCalledTimes(stage === "inspection" ? 0 : 1);
+        expect(() => operation.project.prepare(f)).toThrow("owner replaced");
+      } finally {
+        cleanup.mockRestore();
+        operation.close();
+      }
+    },
+  );
 
   it("runs the committed recipe once at stable workspace and HOME paths before reusing its source manifest", async () => {
     const f = await fixture(
@@ -270,13 +312,7 @@ printf '%s' "$!" > "$HOME/setup-child"
     try {
       expect((await operation.project.prepare(f)).preparedWorkspace).toBeDefined();
       const pid = Number(await fs.readFile(childFile, "utf8"));
-      let state: string;
-      try {
-        state = execFileSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).trim();
-      } catch {
-        state = "";
-      }
-      expect(state === "" || state.startsWith("Z")).toBe(true);
+      expectSetupProcessStopped(pid);
     } finally {
       operation.close();
       const pid = Number(await fs.readFile(childFile, "utf8").catch(() => ""));
@@ -315,6 +351,79 @@ printf '%s' "$!" > "$HOME/setup-child"
     },
   );
 
+  it.each([
+    ...[0, Number.NaN, Infinity, 2_147_483_648].map((timeoutMs) => ({
+      timeoutMs,
+      action: "true",
+      error: "command budget exhausted",
+      started: false,
+    })),
+    {
+      timeoutMs: 1_000,
+      action:
+        "node -e 'setTimeout(() => {}, 2000)' &\nprintf '%s' \"$!\" > \"$HOME/setup-child\"\nwait",
+      error: /timed out|command budget exhausted/u,
+      // The command includes verification: exhausted-before-spawn is valid under load.
+      started: undefined,
+    },
+    ...["SIGTERM", "SIGINT"].map((signal) => ({
+      timeoutMs: 30_000,
+      action: `kill -${signal.slice(3)} "$PPID"\nsleep 2`,
+      error: `interrupted by ${signal}`,
+      started: true,
+    })),
+  ])(
+    "retains incomplete setup with budget $timeoutMs after $error",
+    async ({ timeoutMs, action, error, started }) => {
+      const f = await fixture(`#!/bin/sh
+printf '%s' "$$" > "$HOME/setup-pid"
+printf 'setup\\n' >> "$HOME/count"
+${action}
+`);
+      const seed = f.operation();
+      await seed.project.prepare(f);
+      seed.close();
+      const input = {
+        namespace: "gateway",
+        seedKey: workerProjectSeedKey(f.project),
+        preparationKey: "a".repeat(64),
+        baseCommit: f.project.baseCommit,
+        setupRecipe: await readWorkerProjectSetupRecipe(f.project),
+        timeoutMs,
+      };
+      await expect(f.runScript(createProjectSetupScript(input))).rejects.toMatchObject({
+        stderr: expect.stringMatching(error),
+      });
+      const home = path.join(
+        f.home,
+        ".openclaw-worker",
+        "prepared",
+        "gateway",
+        input.preparationKey,
+        "home",
+      );
+      const files = await fs.readdir(home);
+      const count = files.includes("count")
+        ? await fs.readFile(path.join(home, "count"), "utf8")
+        : "";
+      if (started === undefined) {
+        expect(["", "setup\n"]).toContain(count);
+      } else {
+        expect(count).toBe(started ? "setup\n" : "");
+      }
+      for (const file of ["setup-pid", "setup-child"]) {
+        if (files.includes(file)) {
+          expectSetupProcessStopped(Number(await fs.readFile(path.join(home, file), "utf8")));
+        }
+      }
+      expect(await fs.readdir(path.join(home, ".openclaw-worker", "manifests"))).toEqual([]);
+      const retry = await f.preparedOperation();
+      await expect(retry.project.prepare(f)).rejects.toThrow();
+      retry.close();
+      expect(await fs.readFile(path.join(home, "count"), "utf8").catch(() => "")).toBe(count);
+    },
+  );
+
   it("rejects a completed workspace result after its provisioning owner changes", async () => {
     const f = await fixture();
     const first = await f.preparedOperation();
@@ -329,6 +438,7 @@ printf '%s' "$!" > "$HOME/setup-child"
     await expect(
       second.project.prepare({
         upload: f.upload,
+        runScriptWithBudget: (createScript) => f.runScriptWithBudget(createScript),
         runScript: async (script) => {
           const output = await f.runScript(script);
           current = false;
@@ -413,6 +523,7 @@ ${failure === "failed recipe" ? "exit 17" : "printf changed > input.txt"}
     await expect(
       prepared.project.prepare({
         upload: f.upload,
+        runScriptWithBudget: (createScript) => f.runScriptWithBudget(createScript),
         runScript: async (script) => {
           const output = await f.runScript(script);
           current = false;
@@ -424,5 +535,16 @@ ${failure === "failed recipe" ? "exit 17" : "printf changed > input.txt"}
     expect(
       await fs.stat(path.join(f.home, ".openclaw-worker", "prepared")).catch(() => undefined),
     ).toBeUndefined();
+  });
+
+  it("requires a budgeted transport before transferring a new prepared workspace", async () => {
+    const f = await fixture();
+    const operation = await f.preparedOperation();
+    await expect(
+      operation.project.prepare({ runScript: f.runScript, upload: f.upload }),
+    ).rejects.toThrow("Prepared workspaces require a provider command budget");
+    operation.close();
+    expect(f.runScript).not.toHaveBeenCalled();
+    expect(f.upload).not.toHaveBeenCalled();
   });
 });

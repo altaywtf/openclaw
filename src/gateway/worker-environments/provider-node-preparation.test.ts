@@ -565,7 +565,7 @@ describe("prepared node registration ownership", () => {
                 sourceManifestRef: `sha256:${"d".repeat(64)}`,
               }),
             );
-          await project.prepare({ runScript, upload: vi.fn() });
+          await project.prepare({ runScript, runScriptWithBudget: runScript, upload: vi.fn() });
           await options.beginNodeEnrollment();
           return {
             leaseId: "prepared-service-lease",

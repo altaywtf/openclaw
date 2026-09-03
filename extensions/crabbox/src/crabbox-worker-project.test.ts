@@ -7,6 +7,7 @@ import {
   createWorkerArchiveFixture,
 } from "./crabbox-worker-node-enrollment.test-support.js";
 import { operationLeaseId } from "./crabbox-worker-profile.js";
+import { prepareCrabboxProjectFiles } from "./crabbox-worker-project.js";
 import { listCrabboxWarmImages } from "./crabbox-worker-warm-image-store.js";
 import {
   CHECKPOINT_ID,
@@ -77,6 +78,44 @@ function projectOptions(
 }
 
 describe("Crabbox project snapshot provisioning", () => {
+  it("shares each freshly selected command budget with its script factory", async () => {
+    const { options } = projectOptions([]);
+    const timeoutMs = vi
+      .fn()
+      .mockReturnValueOnce(15_000)
+      .mockReturnValueOnce(9_000)
+      .mockReturnValueOnce(4_000);
+    const runCommand = vi.fn<Parameters<typeof prepareCrabboxProjectFiles>[0]["runCommand"]>(
+      async () => commandResult(),
+    );
+    const createScript = vi.fn((budget: number) => `setup-budget-${budget}`);
+    options.project.prepare.mockImplementationOnce(async (transport) => {
+      if (!transport.runScriptWithBudget) {
+        throw new Error("Missing budgeted script transport");
+      }
+      await transport.runScript("seed-inspection", options.project.signal);
+      await transport.upload("base.pack", "/project/base.pack", options.project.signal);
+      await transport.runScriptWithBudget(createScript, options.project.signal);
+      return { seedKey: PROJECT_KEY, cacheHit: false };
+    });
+    await prepareCrabboxProjectFiles({
+      project: options.project,
+      binary: "crabbox",
+      provider: "aws",
+      id: "project-budget",
+      runArgs: ["run", "--script-stdin"],
+      runCommand,
+      timeoutMs,
+    });
+    expect(timeoutMs).toHaveBeenCalledTimes(3);
+    expect(createScript).toHaveBeenCalledExactlyOnceWith(4_000);
+    expect(runCommand.mock.calls.map(([, command]) => [command.input, command.timeoutMs])).toEqual([
+      ["seed-inspection", 15_000],
+      [undefined, 9_000],
+      ["setup-budget-4000", 4_000],
+    ]);
+  });
+
   it("reuses prepared setup without inventing demand during refill and reports ready consumption", async () => {
     const events: string[] = [];
     const now = Date.now();

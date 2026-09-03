@@ -2,6 +2,7 @@ import { MAX_WORKSPACE_MANIFEST_BYTES } from "./workspace-inventory-limits.js";
 import { REMOTE_WORKSPACE_MANIFEST_JS } from "./workspace-sync-scripts.js";
 
 export const PREPARE_PROJECT_WORKSPACE_JS = `async (input, inspectOnly = false) => {
+const startedAt = performance.now();
 const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
@@ -39,6 +40,9 @@ const readManifest = (file, ref) => {
   } finally { fs.closeSync(fd); }
 };
 const runSetup = (script, workspaceDir, homeDir) => new Promise((resolve, reject) => {
+  // Verification and copying consume this command's budget before repository code starts.
+  const timeoutMs = input.timeoutMs - (performance.now() - startedAt);
+  if (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs > 2147483647 || timeoutMs <= 0) throw new Error("Prepared project command budget exhausted");
   const child = spawn(script, [], {
     cwd: workspaceDir,
     env: { PATH: process.env.PATH, HOME: homeDir, LANG: "C.UTF-8", OPENCLAW_SOURCE_TREE_PATH: workspaceDir, OPENCLAW_WORKTREE_PATH: workspaceDir },
@@ -46,26 +50,28 @@ const runSetup = (script, workspaceDir, homeDir) => new Promise((resolve, reject
     stdio: ["ignore", "ignore", "pipe"],
   });
   let stderr = "";
-  let stopped = false;
+  let failure;
+  // A deadline/signal may retire the group before exit; never signal that group twice.
+  let killed = false;
   const killGroup = () => {
-    if (child.pid) {
+    if (child.pid && !killed) {
       try { process.kill(-child.pid, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }
+      killed = true;
     }
   };
-  const stop = () => { stopped = true; killGroup(); };
-  const timeout = setTimeout(stop, 120000);
-  process.once("SIGTERM", stop);
-  process.once("SIGINT", stop);
+  const stop = (reason) => { failure ??= reason; killGroup(); };
+  const timeout = setTimeout(() => stop("timed out within the provider command budget (" + input.timeoutMs + " ms)"), timeoutMs);
+  const signals = ["SIGTERM", "SIGINT"].map((signal) => [signal, () => stop("interrupted by " + signal)]);
+  for (const [signal, handler] of signals) process.once(signal, handler);
   child.stderr.on("data", (chunk) => { stderr = (stderr + chunk.toString()).slice(-16384); });
-  child.once("error", reject);
+  child.once("error", (error) => { failure ??= error.message; });
   // Descendants can retain stderr after the script exits. Kill them at exit,
   // then await close to prove all inherited pipes are drained before capture.
   child.once("exit", killGroup);
   child.once("close", (code) => {
     clearTimeout(timeout);
-    process.removeListener("SIGTERM", stop);
-    process.removeListener("SIGINT", stop);
-    if (code !== 0 || stopped) reject(new Error("Prepared project setup failed: " + (stopped ? "interrupted" : stderr.trim() || "exit " + code)));
+    for (const [signal, handler] of signals) process.removeListener(signal, handler);
+    if (code !== 0 || failure) reject(new Error("Prepared project setup failed: " + (failure || stderr.trim() || "exit " + code)));
     else resolve();
   });
 });
@@ -119,6 +125,7 @@ export function createProjectSetupScript(input: {
   preparationKey: string;
   baseCommit: string;
   setupRecipe?: string;
+  timeoutMs?: number;
 }): string {
   return `set -eu
 node <<'PROJECT_SETUP_SCRIPT'
