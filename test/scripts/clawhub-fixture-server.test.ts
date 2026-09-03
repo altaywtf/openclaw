@@ -230,6 +230,23 @@ describe("ClawHub fixture server", () => {
     const sha256 = createHash("sha256").update(archive).digest("hex");
     const npmIntegrity = `sha512-${createHash("sha512").update(archive).digest("base64")}`;
     const npmShasum = createHash("sha1").update(archive).digest("hex");
+    const npmRoot = path.join(root, "npm");
+    const npmPackageDir = path.join(npmRoot, "package");
+    const npmTarball = "openclaw-discord-2026.8.1-beta.1.tgz";
+    const npmTarballPath = path.join(root, npmTarball);
+    mkdirSync(npmPackageDir, { recursive: true });
+    writeFileSync(
+      path.join(npmPackageDir, "package.json"),
+      `${JSON.stringify({ name: "@openclaw/discord", version, openclaw: { extensions: ["./index.js"] } })}\n`,
+    );
+    writeFileSync(
+      path.join(npmPackageDir, "openclaw.plugin.json"),
+      `${JSON.stringify({ id: "discord", configSchema: { type: "object" } })}\n`,
+    );
+    execFileSync("tar", ["-czf", npmTarballPath, "-C", npmRoot, "package"]);
+    const npmArchive = readFileSync(npmTarballPath);
+    const npmSha256 = createHash("sha256").update(npmArchive).digest("hex");
+    const npmArtifactIntegrity = `sha512-${createHash("sha512").update(npmArchive).digest("base64")}`;
     const coreRoot = path.join(root, "core");
     mkdirSync(path.join(coreRoot, "package"), { recursive: true });
     writeFileSync(
@@ -259,28 +276,25 @@ describe("ClawHub fixture server", () => {
     );
     expect(runNoRequestsAssertion(baseUrl, isolatedCwd).status).toBe(0);
     const stateDir = path.join(isolatedCwd, "state");
-    const installPath = path.join(
-      stateDir,
-      "npm/projects/whatsapp/node_modules/@openclaw/whatsapp",
-    );
-    cpSync(packageDir, installPath, { recursive: true });
+    const installPath = path.join(stateDir, "npm/projects/discord/node_modules/@openclaw/discord");
+    cpSync(npmPackageDir, installPath, { recursive: true });
     const registryDir = path.join(isolatedCwd, "registry");
     mkdirSync(registryDir);
-    cpSync(tarballPath, path.join(registryDir, tarball));
+    cpSync(npmTarballPath, path.join(registryDir, npmTarball));
     const registryManifest = JSON.stringify({
       schema: "openclaw.prepublish-plugin-registry/v1",
       schemaVersion: 1,
       sourceSha: "a".repeat(40),
       candidateVersion: version,
-      packages: [{ name: "@openclaw/whatsapp", version, tarball, sha256 }],
+      packages: [{ name: "@openclaw/discord", version, tarball: npmTarball, sha256: npmSha256 }],
     });
     writeFileSync(path.join(registryDir, "prepublish-plugin-registry.json"), registryManifest);
     const npmRecord: PluginInstallRecord = {
       source: "npm",
-      spec: `@openclaw/whatsapp@${version}`,
-      resolvedName: "@openclaw/whatsapp",
+      spec: `@openclaw/discord@${version}`,
+      resolvedName: "@openclaw/discord",
       resolvedVersion: version,
-      integrity: npmIntegrity,
+      integrity: npmArtifactIntegrity,
       installPath,
     };
     const bin = path.join(isolatedCwd, "bin");
@@ -316,9 +330,9 @@ ${runner.slice(boundary)}
       mkdirSync(path.join(stateDir, "plugins"), { recursive: true });
       writeFileSync(
         path.join(stateDir, "plugins", "installs.json"),
-        JSON.stringify({ installRecords: record ? { whatsapp: record } : {} }),
+        JSON.stringify({ installRecords: record ? { discord: record } : {} }),
       );
-      const fixtureEnv = writePluginInspectFixture(bin, record ? { whatsapp: record } : {});
+      const fixtureEnv = writePluginInspectFixture(bin, record ? { discord: record } : {});
       const artifacts = path.join(isolatedCwd, "artifacts");
       mkdirSync(artifacts, { recursive: true });
       writeFileSync(
@@ -387,7 +401,7 @@ ${runner.slice(boundary)}
     expect(automatic.stdout).toContain("assert-prepublish-requests passed");
     expect(automatic.stdout).toContain("assert-prepublish-recovery-requests passed");
     expect(automatic.stdout).toContain(
-      'Plugin "whatsapp" has verified official capability-consent exemption.',
+      'Plugin "discord" has verified official capability-consent exemption.',
     );
     for (const [record, failure] of [
       [null, "plugin install record missing"],
@@ -400,18 +414,18 @@ ${runner.slice(boundary)}
         { ...npmRecord, sourcePath: tarballPath, artifactKind: "npm-pack" },
         "plugin accepted surface missing",
       ],
-      [{ ...npmRecord, resolvedName: "@vendor/whatsapp" }, "plugin accepted surface missing"],
+      [{ ...npmRecord, resolvedName: "@vendor/discord" }, "plugin accepted surface missing"],
     ] as const) {
       const rejected = runAutomaticChecks(record);
       expect(rejected.status).not.toBe(0);
       expect(rejected.stderr).toContain(failure);
     }
-    const pending = runAutomaticChecks(null, "whatsapp");
+    const pending = runAutomaticChecks(null, "discord");
     expect(pending.status, pending.stderr).toBe(0);
-    expect(pending.stdout).toContain('Plugin "whatsapp" is awaiting fixture capability consent.');
-    const unrelatedPending = runAutomaticChecks(null, "discord");
+    expect(pending.stdout).toContain('Plugin "discord" is awaiting fixture capability consent.');
+    const unrelatedPending = runAutomaticChecks(null, "whatsapp");
     expect(unrelatedPending.status).toBe(1);
-    expect(unrelatedPending.stderr).toContain("whatsapp plugin install record missing");
+    expect(unrelatedPending.stderr).toContain("discord plugin install record missing");
     expect(
       runPrepublishAssertion(
         baseUrl,
