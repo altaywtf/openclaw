@@ -58,7 +58,8 @@ export function listSlackMessageActions(
       (account) =>
         account.identity !== "user" &&
         account.botTokenStatus === "available" &&
-        createActionGate(account.actions ?? cfg.channels?.slack?.actions)("messages"),
+        createActionGate(account.actions ?? cfg.channels?.slack?.actions)("messages") &&
+        createActionGate(account.actions ?? cfg.channels?.slack?.actions)("canvas", false),
     )
   ) {
     actions.add("canvas-create");

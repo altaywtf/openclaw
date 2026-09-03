@@ -47,6 +47,7 @@ function createCanvasFixture() {
         userToken: "xoxp-canvas-readonly",
         userTokenReadOnly: true,
         groupPolicy: "open",
+        actions: { canvas: true },
       },
     },
   };
@@ -111,6 +112,19 @@ afterEach(() => {
 });
 
 describe("Slack channel canvas actions", () => {
+  it("keeps canvas actions hidden and rejects direct calls until explicitly enabled", async () => {
+    const { adapter, cfg, invoke, requests } = createCanvasFixture();
+    cfg.channels!.slack!.actions = undefined;
+
+    const discovery = adapter.describeMessageTool({ cfg, accountId: "default" });
+    expect(discovery?.actions).not.toContain("canvas-create");
+    expect(discovery?.actions).not.toContain("canvas-edit");
+    await expect(invoke("canvas-create", CREATE)).rejects.toThrow(
+      "Slack canvas actions are disabled",
+    );
+    expect(requests).toEqual([]);
+  });
+
   it("exposes canvas input contracts without classifying mutations as chat delivery", () => {
     const { adapter, cfg } = createCanvasFixture();
     const discovery = adapter.describeMessageTool({ cfg, accountId: "default" });
@@ -335,7 +349,7 @@ describe("Slack channel canvas actions", () => {
       cfg.channels!.slack!.channels = { [CHANNEL_ID]: { enabled: false } };
       await expect(invoke(action, params)).rejects.toThrow("not allowed");
       cfg.channels!.slack!.channels = undefined;
-      cfg.channels!.slack!.actions = { messages: false };
+      cfg.channels!.slack!.actions = { messages: false, canvas: true };
       expect(adapter.describeMessageTool({ cfg, accountId: "default" })?.actions).not.toContain(
         action,
       );

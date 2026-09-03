@@ -588,6 +588,9 @@ export async function handleSlackAction(
   };
 
   if (action === "createCanvas" || action === "editCanvas") {
+    if (!isActionEnabled("canvas", false)) {
+      throw new Error("Slack canvas actions are disabled.");
+    }
     if (!isActionEnabled("messages")) {
       throw new Error("Slack messages are disabled.");
     }

@@ -304,6 +304,7 @@ describe("slackPlugin actions", () => {
               actions: {
                 reactions: true,
                 messages: true,
+                canvas: true,
                 pins: false,
                 memberInfo: false,
                 emojiList: false,

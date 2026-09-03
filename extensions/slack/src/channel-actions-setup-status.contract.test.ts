@@ -22,8 +22,6 @@ const slackDefaultActions = [
   "delete",
   "download-file",
   "upload-file",
-  "canvas-create",
-  "canvas-edit",
   "pin",
   "unpin",
   "list-pins",
@@ -51,6 +49,20 @@ describe("slack actions contract", () => {
           },
         } as OpenClawConfig,
         expectedActions: slackDefaultActions,
+        expectedCapabilities: ["presentation"],
+      },
+      {
+        name: "configured account exposes explicitly enabled canvas actions",
+        cfg: {
+          channels: {
+            slack: {
+              botToken: "xoxb-test",
+              appToken: "xapp-test",
+              actions: { canvas: true },
+            },
+          },
+        } as OpenClawConfig,
+        expectedActions: [...slackDefaultActions, "canvas-create", "canvas-edit"],
         expectedCapabilities: ["presentation"],
       },
       {
