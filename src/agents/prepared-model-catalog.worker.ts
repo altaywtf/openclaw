@@ -180,41 +180,6 @@ export async function runPreparedModelCatalogWorkerRequest(
 ): Promise<PreparedModelWorkerResult> {
   try {
     const prepared = await preparedGeneration;
-    if (request.kind === "auth-refresh") {
-      const authStore = refreshAuthStore({
-        agentDir: value.input.agentDir,
-        inheritedAuthDir: value.input.inheritedAuthDir,
-        authStore: value.authStore,
-        config: value.input.config,
-        env: value.input.env ?? process.env,
-        ...(request.profileIds ? { profileIds: request.profileIds } : {}),
-        providerIds: request.providerIds,
-        pluginGeneration: prepared.pluginGeneration,
-      });
-      return {
-        status: "ok",
-        kind: "auth-refresh",
-        generationFingerprint: value.generationFingerprint,
-        authStore,
-        providerAuth: resolveProviderAuthFacts(
-          resolveAgentCredentialMapFromStore(authStore, { config: value.input.config }),
-        ),
-      };
-    }
-    const { prepareAgentCatalogSource } = await import("./prepared-model-runtime.facts.js");
-    const { prepareFullCatalogFacts } = await import("./prepared-model-runtime.full-catalog.js");
-    // Full discovery is one point-in-time operation: refresh first, then let every provider hook
-    // and the returned availability projection consume the same exact store.
-    const authStore = refreshAuthStore({
-      agentDir: value.input.agentDir,
-      inheritedAuthDir: value.input.inheritedAuthDir,
-      authStore: value.authStore,
-      config: value.input.config,
-      env: value.input.env ?? process.env,
-      providerIds: listExternalCliSyncProviderIds(),
-      pluginGeneration: prepared.pluginGeneration,
-    });
-    replaceRuntimeAuthProfileStoreSnapshots([{ agentDir: value.input.agentDir, store: authStore }]);
     const pluginGenerationScope = {
       metadataSnapshot: prepared.pluginGeneration.pluginMetadataSnapshot,
       pluginRegistry: prepared.pluginGeneration.pluginRegistry,
@@ -264,6 +229,46 @@ export async function runPreparedModelCatalogWorkerRequest(
             }),
         }),
       );
+    if (request.kind === "auth-refresh") {
+      const authStore = refreshAuthStore({
+        agentDir: value.input.agentDir,
+        inheritedAuthDir: value.input.inheritedAuthDir,
+        authStore: value.authStore,
+        config: value.input.config,
+        env: value.input.env ?? process.env,
+        ...(request.profileIds ? { profileIds: request.profileIds } : {}),
+        providerIds: request.providerIds,
+        pluginGeneration: prepared.pluginGeneration,
+      });
+      return {
+        status: "ok",
+        kind: "auth-refresh",
+        generationFingerprint: value.generationFingerprint,
+        authStore,
+        // Native-login facts are not in the durable store; a scoped refresh must re-record them
+        // or the owner merge drops that runtime until a full rebuild.
+        providerAuth: {
+          ...resolveSyntheticAuth(request.providerIds).providerAuth,
+          ...resolveProviderAuthFacts(
+            resolveAgentCredentialMapFromStore(authStore, { config: value.input.config }),
+          ),
+        },
+      };
+    }
+    const { prepareAgentCatalogSource } = await import("./prepared-model-runtime.facts.js");
+    const { prepareFullCatalogFacts } = await import("./prepared-model-runtime.full-catalog.js");
+    // Full discovery is one point-in-time operation: refresh first, then let every provider hook
+    // and the returned availability projection consume the same exact store.
+    const authStore = refreshAuthStore({
+      agentDir: value.input.agentDir,
+      inheritedAuthDir: value.input.inheritedAuthDir,
+      authStore: value.authStore,
+      config: value.input.config,
+      env: value.input.env ?? process.env,
+      providerIds: listExternalCliSyncProviderIds(),
+      pluginGeneration: prepared.pluginGeneration,
+    });
+    replaceRuntimeAuthProfileStoreSnapshots([{ agentDir: value.input.agentDir, store: authStore }]);
     const ambientAuth = resolveSyntheticAuth(value.providerIds);
     const startupProviderIds = new Set(value.providerIds.map(normalizeProviderId));
     const credentials = {

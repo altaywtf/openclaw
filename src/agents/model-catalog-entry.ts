@@ -57,5 +57,6 @@ export function modelCatalogRowToEntry(row: ModelCatalogSourceRow): ModelCatalog
     ...(row.statusReason ? { statusReason: row.statusReason } : {}),
     ...(row.replaces ? { replaces: [...row.replaces] } : {}),
     ...(row.replacedBy ? { replacedBy: row.replacedBy } : {}),
+    ...(row.params ? { params: { ...row.params } } : {}),
   };
 }
