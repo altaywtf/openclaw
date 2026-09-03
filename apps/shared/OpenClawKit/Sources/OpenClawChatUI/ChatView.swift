@@ -655,7 +655,17 @@ public struct OpenClawChatView: View {
                 alignment: msg.role.lowercased() == "user" ? .trailing : .leading)
         let isUser = msg.role.lowercased() == "user"
         let row = VStack(alignment: isUser ? .trailing : .leading, spacing: 4) {
+            #if os(iOS)
+            // Streaming revisions invalidate the transcript container. Keep completed
+            // iPhone bubbles out of that hot path unless their render inputs changed.
+            if bubble.canUseIOSRenderGate {
+                bubble.equatable()
+            } else {
+                bubble
+            }
+            #else
             bubble
+            #endif
             if let outboxState = self.viewModel.outboxState(for: msg.id) {
                 ChatOutboxStatusLabel(state: outboxState)
                     .padding(.trailing, 8)
