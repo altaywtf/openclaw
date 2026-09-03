@@ -157,8 +157,15 @@ async function runProviderManualSecretMethod(
   if (!configured) {
     throw new Error(methodError || "Provider setup did not produce a configuration.");
   }
+  // Methods that keep an existing default leave another provider's model in place; verifying
+  // that model would prove the wrong provider.
   const configuredModel = configured.agents?.defaults?.model;
-  const defaultModel = typeof configuredModel === "string" ? configuredModel : method.starterModel;
+  const defaultModel =
+    typeof configuredModel === "string" &&
+    normalizeProviderId(parseRef(configuredModel).provider) ===
+      normalizeProviderId(choice.providerId)
+      ? configuredModel
+      : method.starterModel;
   if (!defaultModel) {
     throw new Error("Provider setup did not produce a starter model.");
   }
