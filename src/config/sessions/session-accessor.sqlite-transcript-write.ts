@@ -50,7 +50,10 @@ import {
   replaceSqliteTranscriptEventsInTransaction,
   rewriteSqliteTranscriptEventRowsInTransaction,
 } from "./session-accessor.sqlite-transcript-store.js";
-import { replaceSqliteTranscriptSuffixInTransaction } from "./session-accessor.sqlite-transcript-suffix.js";
+import {
+  prepareSqliteTranscriptSuffixMutation,
+  replaceSqliteTranscriptSuffixInTransaction,
+} from "./session-accessor.sqlite-transcript-suffix.js";
 import type { SessionTranscriptWriteTransactionContext } from "./session-accessor.types.js";
 import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
 import {
@@ -188,6 +191,9 @@ export function replaceTranscriptSuffixEventsSync(
 ): boolean {
   const fencedScope = withOwnedSessionTranscriptWriterFence(scope);
   const resolved = resolveSqliteTranscriptScope(fencedScope);
+  // Full-tree parsing and projection construction stay outside the immediate write transaction.
+  const owner = openOpenClawAgentDatabase(toDatabaseOptions(resolved));
+  const plan = prepareSqliteTranscriptSuffixMutation(owner, resolved, expectedEvents, nextEvents);
   let replaced = false;
   runOpenClawAgentWriteTransaction((database) => {
     assertOwnedTranscriptWriteCommit(fencedScope);
@@ -195,7 +201,7 @@ export function replaceTranscriptSuffixEventsSync(
     if (!transcriptWriteScopeIsCurrent(fresh, resolved, fencedScope)) {
       return;
     }
-    replaceSqliteTranscriptSuffixInTransaction(database, resolved, expectedEvents, nextEvents);
+    replaceSqliteTranscriptSuffixInTransaction(database, resolved, plan);
     replaced = true;
   }, toDatabaseOptions(resolved));
   if (fencedScope.expectedWriterRunId !== undefined && !replaced) {

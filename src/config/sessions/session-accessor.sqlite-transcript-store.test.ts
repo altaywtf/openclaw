@@ -10,6 +10,7 @@ import {
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { readSessionTranscriptActiveStats } from "./session-accessor.sqlite-active-events.js";
+import type { TranscriptEvent } from "./session-accessor.sqlite-contract.js";
 import {
   readTranscriptGenerationInTransaction,
   readTranscriptMutationStateInTransaction,
@@ -20,7 +21,10 @@ import {
   rewriteSqliteTranscriptEventRowsInTransaction,
   updateSqliteTranscriptEventJsonInTransaction,
 } from "./session-accessor.sqlite-transcript-store.js";
-import { replaceSqliteTranscriptSuffixInTransaction } from "./session-accessor.sqlite-transcript-suffix.js";
+import {
+  prepareSqliteTranscriptSuffixMutation,
+  replaceSqliteTranscriptSuffixInTransaction,
+} from "./session-accessor.sqlite-transcript-suffix.js";
 import {
   SYNC_REBUILD_MAX_BYTES,
   sessionTranscriptIndexNeedsReconcile,
@@ -397,6 +401,18 @@ describe("SQLite exact transcript rewrite", () => {
   });
 });
 
+function replaceTranscriptSuffixForTest(
+  scope: { agentId: string; sessionId: string; sessionKey: string; env: NodeJS.ProcessEnv },
+  expectedEvents: readonly TranscriptEvent[],
+  nextEvents: readonly TranscriptEvent[],
+): void {
+  const owner = openOpenClawAgentDatabase(scope);
+  const plan = prepareSqliteTranscriptSuffixMutation(owner, scope, expectedEvents, nextEvents);
+  runOpenClawAgentWriteTransaction((database) => {
+    replaceSqliteTranscriptSuffixInTransaction(database, scope, plan);
+  }, scope);
+}
+
 describe("SQLite exact transcript suffix replacement", () => {
   it("replaces a retained suffix without routing rows through forward indexing", async () => {
     await withRewriteFixture(({ db, snapshot, scope }) => {
@@ -404,12 +420,7 @@ describe("SQLite exact transcript suffix replacement", () => {
         ...rewriteEvents[2],
         parentId: "root",
       };
-      runOpenClawAgentWriteTransaction((database) => {
-        replaceSqliteTranscriptSuffixInTransaction(database, scope, rewriteEvents, [
-          rewriteEvents[0],
-          retainedAnswer,
-        ]);
-      }, scope);
+      replaceTranscriptSuffixForTest(scope, rewriteEvents, [rewriteEvents[0], retainedAnswer]);
 
       expect(snapshot()).toMatchObject({
         raw: [expect.objectContaining({ seq: 0 }), expect.objectContaining({ seq: 1 })],
@@ -452,13 +463,11 @@ describe("SQLite exact transcript suffix replacement", () => {
         "UPDATE transcript_event_identities SET message_idempotency_key = ?, created_at = 303 WHERE session_id = ? AND event_id = ?",
       ).run("retry", scope.sessionId, "owner");
 
-      runOpenClawAgentWriteTransaction((database) => {
-        replaceSqliteTranscriptSuffixInTransaction(database, scope, duplicateKeyEvents, [
-          duplicateKeyEvents[0],
-          duplicateKeyEvents[1],
-          { ...duplicateKeyEvents[3], parentId: "first" },
-        ]);
-      }, scope);
+      replaceTranscriptSuffixForTest(scope, duplicateKeyEvents, [
+        duplicateKeyEvents[0],
+        duplicateKeyEvents[1],
+        { ...duplicateKeyEvents[3], parentId: "first" },
+      ]);
 
       expect(
         db
@@ -495,18 +504,16 @@ describe("SQLite exact transcript suffix replacement", () => {
       },
     ] as const;
     await withRewriteFixture(({ db, scope }) => {
-      runOpenClawAgentWriteTransaction((database) => {
-        replaceSqliteTranscriptSuffixInTransaction(database, scope, duplicateKeyEvents, [
-          duplicateKeyEvents[0],
-          {
-            type: "message",
-            id: "new",
-            parentId: "root",
-            message: { role: "assistant", content: "new", idempotencyKey: "retry" },
-          },
-          { ...duplicateKeyEvents[2], parentId: "new" },
-        ]);
-      }, scope);
+      replaceTranscriptSuffixForTest(scope, duplicateKeyEvents, [
+        duplicateKeyEvents[0],
+        {
+          type: "message",
+          id: "new",
+          parentId: "root",
+          message: { role: "assistant", content: "new", idempotencyKey: "retry" },
+        },
+        { ...duplicateKeyEvents[2], parentId: "new" },
+      ]);
 
       expect(
         db
@@ -538,12 +545,10 @@ describe("SQLite exact transcript suffix replacement", () => {
       },
     ] as const;
     await withRewriteFixture(({ db, scope }) => {
-      runOpenClawAgentWriteTransaction((database) => {
-        replaceSqliteTranscriptSuffixInTransaction(database, scope, duplicateKeyEvents, [
-          duplicateKeyEvents[0],
-          { ...duplicateKeyEvents[2], parentId: "root" },
-        ]);
-      }, scope);
+      replaceTranscriptSuffixForTest(scope, duplicateKeyEvents, [
+        duplicateKeyEvents[0],
+        { ...duplicateKeyEvents[2], parentId: "root" },
+      ]);
 
       expect(
         db
@@ -558,14 +563,7 @@ describe("SQLite exact transcript suffix replacement", () => {
   it("preserves generation while updating raw, identity, active, and FTS rows", async () => {
     await withRewriteFixture(({ db, snapshot, scope }) => {
       const before = snapshot();
-      runOpenClawAgentWriteTransaction((database) => {
-        replaceSqliteTranscriptSuffixInTransaction(
-          database,
-          scope,
-          rewriteEvents,
-          rewriteEvents.slice(0, 2),
-        );
-      }, scope);
+      replaceTranscriptSuffixForTest(scope, rewriteEvents, rewriteEvents.slice(0, 2));
 
       const after = snapshot();
       expect(after.generation).toBe(before.generation);
@@ -584,14 +582,7 @@ describe("SQLite exact transcript suffix replacement", () => {
         "UPDATE session_transcript_index_state SET needs_rebuild = 1 WHERE session_id = ?",
       ).run(scope.sessionId);
 
-      runOpenClawAgentWriteTransaction((database) => {
-        replaceSqliteTranscriptSuffixInTransaction(
-          database,
-          scope,
-          rewriteEvents,
-          rewriteEvents.slice(0, 2),
-        );
-      }, scope);
+      replaceTranscriptSuffixForTest(scope, rewriteEvents, rewriteEvents.slice(0, 2));
 
       expect(snapshot().generation).toBe(before.generation);
       await waitForSessionTranscriptIndexReconcile(scope);
