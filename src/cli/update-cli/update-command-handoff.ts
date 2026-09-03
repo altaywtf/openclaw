@@ -33,6 +33,9 @@ function parsePositivePid(value: unknown): number | null {
   return /^\d+$/u.test(trimmed) ? (parseStrictPositiveInteger(trimmed) ?? null) : null;
 }
 
+const GATEWAY_ANCESTRY_SHELL_GUIDANCE =
+  "Run this command from a shell outside the gateway service.";
+
 export function gatewayAncestryBlockMessage(pid: unknown): string | undefined {
   const gatewayPid = parsePositivePid(pid);
   if (gatewayPid === null) {
@@ -48,7 +51,7 @@ export function gatewayAncestryBlockMessage(pid: unknown): string | undefined {
   // because the stop would kill the caller and nothing restarts the gateway.
   return `This command is running inside the gateway process tree (gateway PID ${gatewayPid}).
 Stopping or restarting the gateway from here would kill this command, so it cannot safely manage the gateway that owns it.
-Run this command from a shell outside the gateway service.`;
+${GATEWAY_ANCESTRY_SHELL_GUIDANCE}`;
 }
 
 const ANCESTRY_BLOCK_MARKER = "inside the gateway process tree";
@@ -66,7 +69,11 @@ export function formatUpdateAncestryBlockMessage(blockMessage: string): string {
   if (!blockMessage.includes(ANCESTRY_BLOCK_MARKER)) {
     return blockMessage;
   }
-  return appendUpdateChatHandoffGuidance(blockMessage);
+  const updateBlockMessage = blockMessage
+    .split("\n")
+    .filter((line) => line !== GATEWAY_ANCESTRY_SHELL_GUIDANCE)
+    .join("\n");
+  return appendUpdateChatHandoffGuidance(updateBlockMessage);
 }
 
 /** Update-specific refusal when inherited Gateway authority cannot be inspected safely. */

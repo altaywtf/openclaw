@@ -6482,6 +6482,7 @@ describe("update-cli", () => {
     ).rejects.toEqual(new ExitError(1));
 
     expect(getErrorOutput()).toContain("gateway update action or /update");
+    expect(getErrorOutput()).not.toContain("shell outside");
     expect(getErrorOutput()).not.toContain("terminal");
     expect(getErrorOutput()).not.toContain("stop the gateway service first");
     expect(lastWriteJsonCall()).toMatchObject({
@@ -6597,23 +6598,28 @@ describe("update-cli", () => {
     expect(packageInstallCommandCall()).toBeUndefined();
   });
 
-  it("refuses package updates from inside the active gateway process tree", async () => {
+  it("refuses a package update from inside the active gateway process tree", async () => {
     await mockPackageInstallAtCaseDir();
     serviceLoaded.mockResolvedValue(true);
     mockGetSelfAndAncestorPidsSync.mockReturnValue(
       new Set<number>([process.pid, gatewayFixturePid]),
     );
 
-    await expect(invokeUpdateCli({ yes: true })).rejects.toEqual(new ExitError(1));
+    await expect(invokeUpdateCli({ yes: true, json: true })).rejects.toEqual(new ExitError(1));
 
     const errors = getErrorOutput();
     expect(errors).toContain(
       `This command is running inside the gateway process tree (gateway PID ${gatewayFixturePid}).`,
     );
-    expect(errors).toContain("Run this command from a shell outside the gateway service.");
     expect(errors).toContain("would kill this command");
     expect(errors).toContain("gateway update action or /update");
+    expect(errors).not.toContain("shell outside");
+    expect(errors).not.toContain("terminal");
     expect(errors).not.toContain("stop the gateway service first");
+    expect(lastWriteJsonCall()).toMatchObject({
+      status: "error",
+      reason: "managed-service-preflight",
+    });
     expect(defaultRuntime.exit).not.toHaveBeenCalled();
     expect(serviceStop).not.toHaveBeenCalled();
     expect(packageInstallCommandCall()).toBeUndefined();
@@ -6831,9 +6837,10 @@ describe("update-cli", () => {
     expect(errors).toContain(
       `This command is running inside the gateway process tree (gateway PID ${gatewayFixturePid}).`,
     );
-    expect(errors).toContain("Run this command from a shell outside the gateway service.");
     expect(errors).toContain("would kill this command");
     expect(errors).toContain("gateway update action or /update");
+    expect(errors).not.toContain("shell outside");
+    expect(errors).not.toContain("terminal");
     expect(errors).not.toContain("stop the gateway service first");
     expect(defaultRuntime.exit).not.toHaveBeenCalled();
     expect(serviceStop).not.toHaveBeenCalled();
