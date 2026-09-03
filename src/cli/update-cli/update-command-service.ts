@@ -428,7 +428,7 @@ export async function maybeRestartService(params: {
         if (!preserveDefinition) {
           await createUpdateConfigSnapshot();
         }
-        await runRestartScript(restartScriptPath);
+        activationAccepted = await runRestartScript(restartScriptPath, activation.timeoutMs);
         restartInitiated = true;
       } else if (
         !refreshedGatewayAlreadyHealthy &&
