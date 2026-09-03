@@ -645,20 +645,25 @@ assert_prepublish_fixture_idle() {
 }
 
 assert_prepublish_plugin_install() {
-  local allow_pending="${1:-0}" plugin_id="discord" help consent
+  local allow_pending="${1:-0}" plugin_id="discord" clawhub_plugin_id="whatsapp" help consent
   local consent_supported=0 pending_args=()
+  if configured_plugin_installs_enabled; then
+    clawhub_plugin_id="matrix"
+  fi
   help="$(openclaw_e2e_maybe_timeout "$COMMAND_TIMEOUT" openclaw plugins install --help)" || return "$?"
   consent="$(printf '%s' "$help" | node scripts/e2e/lib/package-compat.mjs fixture-consent)" || return "$?"
   [ -z "$consent" ] || consent_supported=1
   if [ "$allow_pending" = "1" ] && [ "$update_repair_required" = "1" ]; then
     pending_args=("$UPDATE_JSON" "$initial_update_observation_root" "$baseline_version")
   fi
-  # A served npm primary must match the prepared artifact. An empty ClawHub ledger alone
-  # cannot prove installation; explicit ClawHub companion installs have their own audit.
+  # The npm primary and the ClawHub companion use independent transport contracts.
+  # Verify both exact artifacts; the fixture accepts only complete authorized ClawHub audits.
   node scripts/e2e/lib/upgrade-survivor/assertions.mjs \
     assert-npm-plugin-install "$plugin_id" "@openclaw/$plugin_id" "$candidate_version" \
     "$consent_supported" ${pending_args[@]+"${pending_args[@]}"} || return "$?"
-  assert_prepublish_fixture_idle
+  node "${OPENCLAW_UPGRADE_SURVIVOR_CLAWHUB_FIXTURE_SERVER:-scripts/e2e/lib/clawhub-fixture-server.cjs}" \
+    assert-prepublish-requests "$OPENCLAW_CLAWHUB_URL" "@openclaw/$clawhub_plugin_id" "$candidate_version" \
+    "${OPENCLAW_UPGRADE_SURVIVOR_CLAWHUB_REQUEST_DIALECT:-current}" complete
 }
 
 configure_plugin_registry() {
