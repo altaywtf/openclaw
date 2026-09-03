@@ -26,7 +26,10 @@ import {
   type UpdateCommandOptions,
 } from "./shared.js";
 import { createBeforeGitMutation, updateGitInstall } from "./update-command-git.js";
-import { handoffUpdateFromGateway } from "./update-command-handoff.js";
+import {
+  formatUpdateAncestryBlockMessage,
+  handoffUpdateFromGateway,
+} from "./update-command-handoff.js";
 import {
   assertReadableCallerUpdateConfig,
   captureOwnedManagedUpdateContext,
@@ -36,7 +39,10 @@ import {
   type OwnedManagedUpdatePreflightContext,
 } from "./update-command-managed-context.js";
 import { runPackageInstallUpdate } from "./update-command-package.js";
-import type { ManagedServiceRootRedirect } from "./update-command-service-plan.js";
+import {
+  GatewayServiceUpdateOwnershipError,
+  type ManagedServiceRootRedirect,
+} from "./update-command-service-plan.js";
 import {
   maybeRestartServiceAfterFailedMutableUpdate,
   maybeStopManagedServiceBeforeMutableUpdate,
@@ -92,7 +98,7 @@ function assertReadOnlyManagedServiceInspection(params: {
   ) {
     throw new UpdatePreMutationError(
       "managed-service-preflight",
-      preManagedServiceStop.blockMessage,
+      formatUpdateAncestryBlockMessage(preManagedServiceStop.blockMessage),
     );
   }
   if (
@@ -113,7 +119,7 @@ function assertReadOnlyManagedServiceInspection(params: {
   if (preManagedServiceStop?.blockMessage) {
     throw new UpdatePreMutationError(
       "managed-service-preflight",
-      preManagedServiceStop.blockMessage,
+      formatUpdateAncestryBlockMessage(preManagedServiceStop.blockMessage),
     );
   }
 }
@@ -295,6 +301,13 @@ export async function executeMutableUpdate(params: {
     try {
       const uniqueMutationRoots = Array.from(new Set(mutationRoots));
       for (const mutationRoot of uniqueMutationRoots) {
+        const inspectedVerdict = inspectedOwnedManagedUpdatePreflightStop?.serviceUpdateVerdict;
+        const expectedService =
+          phase === "prepare" &&
+          inspectedVerdict?.kind === "owned" &&
+          inspectedVerdict.root === mutationRoot
+            ? inspectedOwnedManagedUpdatePreflightStop
+            : undefined;
         preManagedServiceStop = await maybeStopManagedServiceBeforeMutableUpdate({
           updateInstallKind: params.updateInstallKind,
           root: mutationRoot,
@@ -323,6 +336,7 @@ export async function executeMutableUpdate(params: {
               invocationCwd: params.invocationCwd,
               stopProgress: params.stop,
             }),
+          expectedService,
         });
         if (
           phase === "inspect" &&
@@ -351,6 +365,9 @@ export async function executeMutableUpdate(params: {
         recoveryEnv = err.serviceEnv;
         params.recoveryState.triageTarget.env = err.serviceEnv;
         throw err;
+      }
+      if (err instanceof GatewayServiceUpdateOwnershipError) {
+        throw new UpdatePreMutationError("managed-service-preflight", err.message);
       }
       if (err instanceof UpdateCommandAbort || err instanceof UpdatePreMutationError) {
         throw err;
@@ -403,7 +420,7 @@ export async function executeMutableUpdate(params: {
       params.stop();
       throw new UpdatePreMutationError(
         "managed-service-preflight",
-        preManagedServiceStop.blockMessage,
+        formatUpdateAncestryBlockMessage(preManagedServiceStop.blockMessage),
       );
     }
 
@@ -420,7 +437,7 @@ export async function executeMutableUpdate(params: {
         [
           `${updateLabel} cannot run from inside the gateway service process.`,
           "That path replaces the active OpenClaw dist tree while the live gateway may still lazy-load old chunks.",
-          `Run \`${replaceCliName(formatCliCommand("openclaw update"), CLI_NAME)}\` from a shell outside the gateway service, or stop the gateway service first and then update.`,
+          `Run \`${replaceCliName(formatCliCommand("openclaw update"), CLI_NAME)}\` from a terminal outside the gateway service.`,
         ].join("\n"),
       );
     }
@@ -429,7 +446,7 @@ export async function executeMutableUpdate(params: {
       params.stop();
       throw new UpdatePreMutationError(
         "managed-service-preflight",
-        preManagedServiceStop.blockMessage,
+        formatUpdateAncestryBlockMessage(preManagedServiceStop.blockMessage),
       );
     }
   };
