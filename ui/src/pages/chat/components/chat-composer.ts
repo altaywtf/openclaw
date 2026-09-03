@@ -5,7 +5,6 @@ import {
   patchSettings,
   type ChatFollowUpMode,
 } from "../../../app/settings.ts";
-import { toSanitizedMarkdownHtml } from "../../../components/markdown.ts";
 import "../../../components/tooltip.ts";
 import { t } from "../../../i18n/index.ts";
 import type { HumanMention } from "../../../lib/chat/chat-types.ts";
@@ -13,7 +12,6 @@ import type { SlashCommandDef } from "../../../lib/chat/commands.ts";
 import { updateHumanMentions } from "../../../lib/chat/human-mentions.ts";
 import { resolveThinkingCommandArgOptionsForSession } from "../../../lib/chat/thinking.ts";
 import { areUiSessionKeysEquivalent } from "../../../lib/sessions/session-key.ts";
-import { detectTextDirection } from "../../../lib/text-direction.ts";
 import { ComposerDictationController, insertComposerDictation } from "../composer-dictation.ts";
 import { normalizeChatComposerDraft } from "../composer-draft.ts";
 import { ComposerMicrophonePicker } from "../composer-microphone-picker.ts";
@@ -31,6 +29,7 @@ import {
 } from "./chat-composer-dom.ts";
 import { createGoalComposerController } from "./chat-composer-goal-mode.ts";
 import { createComposerKeyDownHandler } from "./chat-composer-keydown.ts";
+import * as composerPreview from "./chat-composer-markdown-preview.ts";
 import type { HumanMentionMenuHost } from "./chat-composer-mention-menu.ts";
 import {
   getActiveSkillMenuOptionId,
@@ -65,44 +64,6 @@ import { renderChatPermissionPicker } from "./chat-permission-picker.ts";
 import { createGatewayQuestionPanelProps } from "./chat-question-card.ts";
 
 export { isChatRunWorking, resetChatComposerState } from "./chat-composer-state.ts";
-
-const RICH_MARKDOWN_HTML_RE =
-  /<(?:a|blockquote|code|del|details|em|h[1-4]|hr|img|li|ol|pre|s|strong|table|ul)(?:\s|>)/iu;
-
-function renderComposerMarkdownPreview(draft: string): string {
-  const rendered = toSanitizedMarkdownHtml(draft, {
-    codeBlockChrome: "none",
-    codeBlockInteraction: "static",
-    fileLinks: true,
-    sessionLinks: true,
-    tableInteractions: "none",
-  });
-  return RICH_MARKDOWN_HTML_RE.test(rendered) ? rendered : "";
-}
-
-function syncComposerMarkdownPreview(textarea: HTMLTextAreaElement, draft: string, dir: string) {
-  const previous = textarea.previousElementSibling;
-  let preview: HTMLElement;
-  if (
-    previous instanceof HTMLElement &&
-    previous.classList.contains("agent-chat__composer-markdown-preview")
-  ) {
-    preview = previous;
-  } else {
-    // The textarea remains the only editable draft owner. Its adjacent inert
-    // preview follows the same lifecycle without involving pane rerenders.
-    preview = document.createElement("div");
-    preview.className = "agent-chat__composer-markdown-preview chat-text";
-    preview.setAttribute("aria-hidden", "true");
-    preview.setAttribute("inert", "");
-    textarea.before(preview);
-  }
-
-  const rendered = renderComposerMarkdownPreview(draft);
-  preview.hidden = rendered.length === 0;
-  preview.dir = dir;
-  preview.innerHTML = rendered;
-}
 
 function resolveChatSlashCommandArgOptions(
   command: SlashCommandDef,
@@ -164,11 +125,7 @@ export function renderChatComposer(props: ChatComposerProps) {
     if (nextTextarea) {
       observeTextareaOverflow(nextTextarea);
       scheduleTextareaHeightAdjustment(nextTextarea);
-      syncComposerMarkdownPreview(
-        nextTextarea,
-        nextTextarea.value,
-        detectTextDirection(nextTextarea.value),
-      );
+      composerPreview.syncComposerMarkdownPreview(nextTextarea, nextTextarea.value);
       if (state.restoreComposerFocus) {
         state.restoreComposerFocus = false;
         queueMicrotask(() => state.composerTextarea?.focus({ preventScroll: true }));
@@ -181,11 +138,7 @@ export function renderChatComposer(props: ChatComposerProps) {
     scheduleTextareaHeightAdjustment(state.composerTextarea);
   }
   if (state.composerTextarea?.isConnected) {
-    syncComposerMarkdownPreview(
-      state.composerTextarea,
-      visibleDraft,
-      detectTextDirection(visibleDraft),
-    );
+    composerPreview.syncComposerMarkdownPreview(state.composerTextarea, visibleDraft);
   }
   const hasVisualAttachments = (props.attachments ?? []).some(
     (attachment) => !isLargePastedTextAttachment(attachment),
@@ -365,7 +318,6 @@ export function renderChatComposer(props: ChatComposerProps) {
     (props.getPendingAttachmentReads?.() ?? props.pendingAttachmentReads ?? 0) === 0 &&
     (props.connected || !draft.trimStart().startsWith("/"));
   const renderedDraftCanSubmit = canSubmitDraft(visibleDraft);
-
   const syncComposerDraftAfterSend = (target: HTMLTextAreaElement | null) => {
     state.mentionMenu.close();
     const submittedDraft = target?.value ?? props.getDraft?.() ?? props.draft;
@@ -403,11 +355,7 @@ export function renderChatComposer(props: ChatComposerProps) {
   });
 
   const syncComposerValue = (target: HTMLTextAreaElement, typedAtSign = false) => {
-    adjustTextareaHeight(target);
-    target.dir = detectTextDirection(target.value);
-    // Ordinary textarea edits deliberately skip a pane rerender. Keep the
-    // presentation-only sibling current without creating a second draft owner.
-    syncComposerMarkdownPreview(target, target.value, target.dir);
+    composerPreview.syncComposerValuePresentation(target);
     const mentions = getMentions();
     commitComposerDraft(
       props,
