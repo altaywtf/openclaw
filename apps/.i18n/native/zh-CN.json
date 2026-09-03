@@ -1954,6 +1954,7 @@
     "native.apple.1ab06582cc6559e9": "未加密",
     "native.apple.1acad147c34f0ed1": "Gateway 连接已更改。请重启 OpenClaw 以重新连接。",
     "native.apple.1b206a7a4565f60b": "CUA 守护进程",
+    "native.apple.1b26941acb04dc80": "麦克风不可用 — 请重新连接以恢复 Talk",
     "native.apple.1b3766cbf8893e51": "原生 WebRTC",
     "native.apple.1b3e61030f599963": "取消暂停 OpenClaw 以运行代理操作。",
     "native.apple.1b4ad7a0172fb147": "更快",

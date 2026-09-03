@@ -1954,6 +1954,7 @@
     "native.apple.1ab06582cc6559e9": "Okrypterad",
     "native.apple.1acad147c34f0ed1": "Anslutningen till Gateway ändrades. Starta om OpenClaw för att återansluta.",
     "native.apple.1b206a7a4565f60b": "CUA-daemon",
+    "native.apple.1b26941acb04dc80": "Mikrofonen är inte tillgänglig – anslut den igen för att återuppta Talk",
     "native.apple.1b3766cbf8893e51": "Inbyggd WebRTC",
     "native.apple.1b3e61030f599963": "Återuppta OpenClaw för att köra agentåtgärder.",
     "native.apple.1b4ad7a0172fb147": "Snabbare",

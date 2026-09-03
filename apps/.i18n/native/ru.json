@@ -1954,6 +1954,7 @@
     "native.apple.1ab06582cc6559e9": "Без шифрования",
     "native.apple.1acad147c34f0ed1": "Подключение к Gateway изменилось. Перезапустите OpenClaw для повторного подключения.",
     "native.apple.1b206a7a4565f60b": "Демон CUA",
+    "native.apple.1b26941acb04dc80": "Микрофон недоступен — подключите его снова, чтобы возобновить Talk",
     "native.apple.1b3766cbf8893e51": "Нативный WebRTC",
     "native.apple.1b3e61030f599963": "Возобновите работу OpenClaw, чтобы выполнять действия агента.",
     "native.apple.1b4ad7a0172fb147": "Быстрее",
