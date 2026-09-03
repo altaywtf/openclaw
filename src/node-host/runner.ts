@@ -217,7 +217,6 @@ export async function runNodeHost(opts: NodeHostRunOptions): Promise<void> {
       writeStderrLine(`node host gateway endpoint persistence failed: ${String(error)}`);
     });
   };
-  const gatewayDeviceFamily = resolveGatewayClientDeviceFamily(process.platform);
 
   const client = createNodeHostGatewayCandidateConnection({
     candidates: gatewayCandidates,
@@ -231,8 +230,7 @@ export async function runNodeHost(opts: NodeHostRunOptions): Promise<void> {
       clientName: GATEWAY_CLIENT_NAMES.NODE_HOST,
       clientDisplayName: displayName,
       clientVersion: VERSION,
-      platform: gatewayDeviceFamily ? resolveGatewayClientPlatform(process.platform) : "unknown",
-      deviceFamily: gatewayDeviceFamily,
+      ...resolveNodeHostGatewayPlatformIdentity(process.platform),
       mode: GATEWAY_CLIENT_MODES.NODE,
       role: "node",
       scopes: [],
