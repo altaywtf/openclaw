@@ -39,6 +39,7 @@ export type ImageRenderOptions = {
   canonicalMessageKey?: string;
   localSubmission?: boolean;
   connectionEpoch?: number;
+  assistantMediaScope?: string;
   localMediaPreviewRoots?: readonly string[];
   resourceBasePath?: string;
   authToken?: string | null;

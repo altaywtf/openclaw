@@ -328,11 +328,11 @@ function resolveAttachmentSource(
   } = options;
   const assistantAvailability = resolveAssistantAttachmentAvailability(
     attachment.url,
-    options.localMediaPreviewRoots ?? [],
     resourceBasePath,
     onRequestUpdate,
     resolveAssistantMedia,
     connectionEpoch,
+    options.assistantMediaScope,
   );
   if (assistantAvailability.status !== "available") {
     return {
@@ -347,6 +347,7 @@ function resolveAttachmentSource(
                 resourceBasePath,
                 onRequestUpdate,
                 connectionEpoch,
+                options.assistantMediaScope,
               )
           : undefined,
     };

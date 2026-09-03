@@ -276,6 +276,7 @@ export function renderGroupedMessage(
   const imageRenderOptions = {
     ...(hasImages ? imageMessageIdentity(message, opts.sessionKey) : {}),
     connectionEpoch: opts.connectionEpoch,
+    assistantMediaScope: opts.sessionKey,
     localMediaPreviewRoots: opts.localMediaPreviewRoots ?? [],
     resourceBasePath: opts.resourceBasePath,
     authToken: opts.assistantAttachmentAuthToken,

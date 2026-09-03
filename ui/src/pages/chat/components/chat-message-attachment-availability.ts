@@ -1,9 +1,6 @@
 import { t } from "../../../i18n/index.ts";
 import { formatUiExternalText } from "../../../lib/format-error.ts";
-import {
-  isLocalAssistantAttachmentSource,
-  isLocalAttachmentPreviewAllowed,
-} from "./chat-message-local-media.ts";
+import { isLocalAssistantAttachmentSource } from "./chat-message-local-media.ts";
 import {
   isChatMediaResourceCurrent,
   notifyChatMediaResourceSubscribers,
@@ -42,34 +39,21 @@ export const ASSISTANT_ATTACHMENT_MEDIA_TICKET_MAX_REFRESH_RETRIES = 2;
 
 export function resolveAssistantAttachmentAvailability(
   source: string,
-  localMediaPreviewRoots: readonly string[],
   resourceBasePath: string | undefined,
   onRequestUpdate: (() => void) | undefined,
   resolveMedia: AssistantMediaResolver | undefined,
   connectionEpoch: number | undefined,
+  assistantMediaScope?: string,
 ): AssistantAttachmentAvailability {
   if (!isLocalAssistantAttachmentSource(source)) {
     return { status: "available" };
-  }
-  // Bootstrap has no client roots yet; authenticated Gateway capability resolution remains authoritative.
-  if (
-    localMediaPreviewRoots.length > 0 &&
-    !isLocalAttachmentPreviewAllowed(source, localMediaPreviewRoots)
-  ) {
-    return createUnavailableAssistantAttachment(
-      t("chat.attachments.outsideAllowedFolders"),
-      false,
-      {
-        recoverable: false,
-      },
-    );
   }
   if (!resolveMedia) {
     return createUnavailableAssistantAttachment(t("chat.attachments.unavailable"), false, {
       recoverable: false,
     });
   }
-  const cacheKey = `${resourceBasePath ?? ""}::gateway:${connectionEpoch ?? 0}::${source}`;
+  const cacheKey = `${resourceBasePath ?? ""}::gateway:${connectionEpoch ?? 0}::${assistantMediaScope ?? ""}::${source}`;
   const resource = observeChatMediaResource<AssistantAttachmentAvailability>(
     "assistant-attachment",
     cacheKey,
@@ -203,12 +187,13 @@ export function retryAssistantAttachmentAvailability(
   resourceBasePath: string | undefined,
   onRequestUpdate: (() => void) | undefined,
   connectionEpoch: number | undefined,
+  assistantMediaScope?: string,
 ): void {
   if (!isLocalAssistantAttachmentSource(source)) {
     onRequestUpdate?.();
     return;
   }
-  const cacheKey = `${resourceBasePath ?? ""}::gateway:${connectionEpoch ?? 0}::${source}`;
+  const cacheKey = `${resourceBasePath ?? ""}::gateway:${connectionEpoch ?? 0}::${assistantMediaScope ?? ""}::${source}`;
   const resource = observeChatMediaResource<AssistantAttachmentAvailability>(
     "assistant-attachment",
     cacheKey,

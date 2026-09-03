@@ -39,7 +39,7 @@ describe("local assistant attachment media", () => {
             [{ type: "attachment", attachment: { kind, label, mimeType, url: source } }],
             {
               authToken: "must-not-be-forwarded",
-              localMediaPreviewRoots: ["/tmp/openclaw"],
+              localMediaPreviewRoots: ["/tmp/default-agent"],
               onRequestUpdate: rerender,
               resolveAssistantMedia,
             },

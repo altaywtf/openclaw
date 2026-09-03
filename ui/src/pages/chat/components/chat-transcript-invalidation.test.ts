@@ -297,19 +297,14 @@ describe("chat transcript invalidation", () => {
     transcript.hostDisconnected();
   });
 
-  it("reconciles guarded local attachments when pane preview roots change", async () => {
-    const request = vi.fn(() => {
-      if (request.mock.calls.length === 1) {
-        return new Promise<never>(() => {
-          // Keep the original request pending until the connection epoch invalidates it.
-        });
-      }
-      return Promise.resolve({
+  it("keeps session-authorized local attachments when bootstrap preview roots change", async () => {
+    const request = vi.fn(() =>
+      Promise.resolve({
         available: true,
-        mediaTicket: "root-restored-ticket",
+        mediaTicket: "session-authorized-ticket",
         mediaTicketExpiresAt: new Date(Date.now() + 90_000).toISOString(),
-      });
-    });
+      }),
+    );
     const client = {
       request,
     } as unknown as Parameters<typeof createTestChatPane>[0]["client"];
@@ -358,7 +353,7 @@ describe("chat transcript invalidation", () => {
     transcript.hostUpdated();
     await flushDeferredRowPrune();
 
-    const cacheKey = `::gateway:${state.connectionEpoch}::${source}`;
+    const cacheKey = `::gateway:${state.connectionEpoch}::${state.sessionKey}::${source}`;
     const previousResource = observeChatMediaResource("assistant-attachment", cacheKey);
     expect(request).toHaveBeenCalledWith(
       "assistant.media.get",
@@ -366,40 +361,34 @@ describe("chat transcript invalidation", () => {
       { timeoutMs: 30_000 },
     );
     expect(previousResource.subscribers.size).toBe(1);
+    await vi.waitFor(() => {
+      expect(
+        container.querySelector(".chat-assistant-attachment-card__download")?.getAttribute("href"),
+      ).toContain("mediaTicket=session-authorized-ticket");
+    });
 
-    const config = {
+    configPane.applyApplicationConfig({
       ...pane.context.config.current,
       localMediaPreviewRoots: ["/tmp/elsewhere"],
       embedSandboxMode: "scripts" as const,
       allowExternalEmbedUrls: false,
-    };
-    configPane.applyApplicationConfig(config);
-    await flushDeferredRowPrune();
-
-    expect(isChatMediaResourceCurrent(previousResource)).toBe(false);
-    expect(request).toHaveBeenCalledTimes(1);
-    expect(
-      container.querySelector(".chat-assistant-attachment-card__status-meta")?.textContent,
-    ).toContain("Outside allowed folders");
-
-    configPane.applyApplicationConfig({
-      ...config,
-      localMediaPreviewRoots: ["/tmp/openclaw"],
     });
     await flushDeferredRowPrune();
 
-    const restoredResource = observeChatMediaResource("assistant-attachment", cacheKey);
+    const currentResource = observeChatMediaResource("assistant-attachment", cacheKey);
+    expect(isChatMediaResourceCurrent(previousResource)).toBe(false);
+    expect(isChatMediaResourceCurrent(currentResource)).toBe(true);
     expect(request).toHaveBeenCalledTimes(2);
     expect(request).toHaveBeenLastCalledWith(
       "assistant.media.get",
       { source, sessionKey: state.sessionKey },
       { timeoutMs: 30_000 },
     );
-    expect(isChatMediaResourceCurrent(restoredResource)).toBe(true);
-    expect(restoredResource.subscribers.size).toBe(1);
+    expect(currentResource.subscribers.size).toBe(1);
+    expect(container.textContent).not.toContain("Outside allowed folders");
     expect(
       container.querySelector(".chat-assistant-attachment-card__download")?.getAttribute("href"),
-    ).toContain("mediaTicket=root-restored-ticket");
+    ).toContain("mediaTicket=session-authorized-ticket");
 
     releaseChatMediaResourceSubscriber(renderPane);
     transcript.hostDisconnected();

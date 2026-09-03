@@ -497,7 +497,6 @@ describe("chat media resource lifecycle", () => {
     const rerenderFirst = observeSubscriber(() => {
       const availability = resolveAssistantAttachmentAvailability(
         source,
-        ["/tmp/openclaw"],
         "/openclaw",
         rerenderFirst,
         fetchMock,
@@ -508,7 +507,6 @@ describe("chat media resource lifecycle", () => {
     const rerenderSecond = observeSubscriber(() => {
       const availability = resolveAssistantAttachmentAvailability(
         source,
-        ["/tmp/openclaw"],
         "/openclaw",
         rerenderSecond,
         fetchMock,
@@ -545,47 +543,19 @@ describe("chat media resource lifecycle", () => {
     const rerender = observeSubscriber(vi.fn());
 
     expect(
-      resolveAssistantAttachmentAvailability(
-        source,
-        ["/tmp/openclaw"],
-        "/openclaw",
-        rerender,
-        resolveMedia,
-        1,
-      ).status,
+      resolveAssistantAttachmentAvailability(source, "/openclaw", rerender, resolveMedia, 1).status,
     ).toBe("checking");
     await vi.advanceTimersByTimeAsync(0);
     expect(
-      resolveAssistantAttachmentAvailability(
-        source,
-        ["/tmp/openclaw"],
-        "/openclaw",
-        rerender,
-        resolveMedia,
-        1,
-      ).status,
+      resolveAssistantAttachmentAvailability(source, "/openclaw", rerender, resolveMedia, 1).status,
     ).toBe("unavailable");
 
     expect(
-      resolveAssistantAttachmentAvailability(
-        source,
-        ["/tmp/openclaw"],
-        "/openclaw",
-        rerender,
-        resolveMedia,
-        2,
-      ).status,
+      resolveAssistantAttachmentAvailability(source, "/openclaw", rerender, resolveMedia, 2).status,
     ).toBe("checking");
     await vi.advanceTimersByTimeAsync(0);
     expect(
-      resolveAssistantAttachmentAvailability(
-        source,
-        ["/tmp/openclaw"],
-        "/openclaw",
-        rerender,
-        resolveMedia,
-        2,
-      ),
+      resolveAssistantAttachmentAvailability(source, "/openclaw", rerender, resolveMedia, 2),
     ).toMatchObject({ status: "available", mediaTicket: "ticket-after-reconnect" });
     expect(resolveMedia).toHaveBeenCalledTimes(2);
   });
@@ -603,14 +573,7 @@ describe("chat media resource lifecycle", () => {
 
     let latest: ReturnType<typeof resolveAssistantAttachmentAvailability> | undefined;
     const rerender = observeSubscriber(() => {
-      latest = resolveAssistantAttachmentAvailability(
-        source,
-        ["/tmp/openclaw"],
-        "/openclaw",
-        rerender,
-        fetchMock,
-        1,
-      );
+      latest = resolveAssistantAttachmentAvailability(source, "/openclaw", rerender, fetchMock, 1);
     });
 
     rerender();
@@ -642,14 +605,7 @@ describe("chat media resource lifecycle", () => {
 
     let latest: ReturnType<typeof resolveAssistantAttachmentAvailability> | undefined;
     const rerender = observeSubscriber(() => {
-      latest = resolveAssistantAttachmentAvailability(
-        source,
-        ["/tmp/openclaw"],
-        "/openclaw",
-        rerender,
-        fetchMock,
-        1,
-      );
+      latest = resolveAssistantAttachmentAvailability(source, "/openclaw", rerender, fetchMock, 1);
     });
 
     rerender();
@@ -686,14 +642,7 @@ describe("chat media resource lifecycle", () => {
 
     let latest: ReturnType<typeof resolveAssistantAttachmentAvailability> | undefined;
     const rerender = observeSubscriber(() => {
-      latest = resolveAssistantAttachmentAvailability(
-        source,
-        ["/tmp/openclaw"],
-        "/openclaw",
-        rerender,
-        fetchMock,
-        1,
-      );
+      latest = resolveAssistantAttachmentAvailability(source, "/openclaw", rerender, fetchMock, 1);
     });
 
     rerender();
@@ -720,7 +669,6 @@ describe("chat media resource lifecycle", () => {
     const rerenderFirst = observeSubscriber(() => {
       const availability = resolveAssistantAttachmentAvailability(
         source,
-        ["/tmp/openclaw"],
         "/openclaw",
         rerenderFirst,
         fetchMock,
@@ -731,7 +679,6 @@ describe("chat media resource lifecycle", () => {
     const rerenderSecond = observeSubscriber(() => {
       const availability = resolveAssistantAttachmentAvailability(
         source,
-        ["/tmp/openclaw"],
         "/openclaw",
         rerenderSecond,
         fetchMock,
