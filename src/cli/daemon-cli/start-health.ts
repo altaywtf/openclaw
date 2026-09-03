@@ -2,10 +2,7 @@ import { resolveGatewayStartupTiming } from "../../commands/gateway-startup-timi
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { GatewayService } from "../../daemon/service.js";
 import { formatCliCommand } from "../command-format.js";
-import {
-  failGatewayPluginReadiness,
-  hasGatewayPluginReadinessFailure,
-} from "./lifecycle-health.js";
+import { failGatewayPluginReadiness } from "./lifecycle-health.js";
 import {
   DEFAULT_RESTART_HEALTH_DELAY_MS,
   renderRestartDiagnostics,
@@ -35,6 +32,7 @@ export async function verifyGatewayStartReadiness(params: {
       env: context.env,
       includeUnknownListenersAsStale: process.platform === "win32",
       includePluginHealth: true,
+      includeChannelHealth: false,
       requireRunningService: true,
       supervisorKeepsAlive: process.platform === "darwin",
     }),
@@ -46,7 +44,7 @@ export async function verifyGatewayStartReadiness(params: {
       delayMs: DEFAULT_RESTART_HEALTH_DELAY_MS,
     }),
   ]);
-  if (hasGatewayPluginReadinessFailure(health)) {
+  if (health.waitOutcome === "plugin-errors" || health.waitOutcome === "plugin-unavailable") {
     failGatewayPluginReadiness({
       action: "start",
       health,

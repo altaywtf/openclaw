@@ -20,7 +20,7 @@ import {
   confirmGatewayReachable,
   resolveGatewayRestartProbeContext,
   type GatewayReachability,
-  type GatewayRestartProbeAuth,
+  type GatewayRestartProbeContext,
 } from "./restart-health-probe.js";
 import {
   DEFAULT_RESTART_HEALTH_ATTEMPTS,
@@ -122,6 +122,13 @@ function applyUnavailablePlugins(snapshot: GatewayRestartSnapshot): GatewayResta
   return { ...snapshot, healthy: false };
 }
 
+function applyChannelProbeErrors(snapshot: GatewayRestartSnapshot): GatewayRestartSnapshot {
+  if (!snapshot.channelProbeErrors?.length) {
+    return snapshot;
+  }
+  return { ...snapshot, healthy: false };
+}
+
 export async function inspectGatewayRestart(params: {
   service: GatewayService;
   port: number;
@@ -129,9 +136,10 @@ export async function inspectGatewayRestart(params: {
   expectedVersion?: string | null;
   expectedBuildId?: string | null;
   includeUnknownListenersAsStale?: boolean;
-  probeAuth?: GatewayRestartProbeAuth;
-  configuredProbe?: ConfiguredGatewayLocalProbe;
   includePluginHealth?: boolean;
+  includeChannelHealth?: boolean;
+  probeContext?: GatewayRestartProbeContext;
+  configuredProbe?: ConfiguredGatewayLocalProbe;
   probeHosts?: readonly string[];
 }): Promise<GatewayRestartSnapshot> {
   const env = params.env ?? process.env;
@@ -143,8 +151,13 @@ export async function inspectGatewayRestart(params: {
     }));
   const expectedVersion = normalizeOptionalString(params.expectedVersion);
   const expectedBuildId = normalizeOptionalString(params.expectedBuildId);
-  const requiresIdentityProbe = Boolean(expectedVersion || expectedBuildId);
-  const requiresGatewayProbe = requiresIdentityProbe || params.includePluginHealth === true;
+  const requiresGatewayProbe = Boolean(
+    expectedVersion ||
+    expectedBuildId ||
+    params.includePluginHealth === true ||
+    params.includeChannelHealth === true,
+  );
+  const channelHealthRequired = params.includeChannelHealth !== false;
   let reachability: GatewayReachability | null = null;
   let probeError: string | undefined;
   let activatedPluginErrors: PluginHealthErrorSummary[] = [];
@@ -154,8 +167,7 @@ export async function inspectGatewayRestart(params: {
     if (!reachability) {
       reachability = await confirmGatewayReachable({
         port: params.port,
-        includeHealthDetails: requiresGatewayProbe,
-        auth: params.probeAuth,
+        ...params.probeContext,
         ...(params.configuredProbe ? { configuredProbe: params.configuredProbe } : {}),
         env,
       });
@@ -217,7 +229,7 @@ export async function inspectGatewayRestart(params: {
           ),
         ),
       );
-      return snapshot;
+      return channelHealthRequired ? applyChannelProbeErrors(snapshot) : snapshot;
     }
   }
 
@@ -258,6 +270,9 @@ export async function inspectGatewayRestart(params: {
       healthy = false;
     }
     if (params.includePluginHealth === true && reachable.unavailablePlugins.length > 0) {
+      healthy = false;
+    }
+    if (channelHealthRequired && reachable.channelProbeErrors.length > 0) {
       healthy = false;
     }
   }
@@ -307,7 +322,7 @@ export async function inspectGatewayRestart(params: {
       ),
     ),
   );
-  return snapshot;
+  return channelHealthRequired ? applyChannelProbeErrors(snapshot) : snapshot;
 }
 
 function shouldEarlyExitStoppedFree(
@@ -341,6 +356,7 @@ export async function waitForGatewayHealthyRestart(params: {
   port: number;
   attempts?: number;
   delayMs?: number;
+  settle?: { probes: number };
   env?: NodeJS.ProcessEnv;
   expectedVersion?: string | null;
   expectedBuildId?: string | null;
@@ -349,11 +365,14 @@ export async function waitForGatewayHealthyRestart(params: {
   supervisorKeepsAlive?: boolean;
   isStartupMigrationActive?: typeof hasActiveStartupMigrationLease;
   includePluginHealth?: boolean;
+  includeChannelHealth?: boolean;
   probeHosts?: readonly string[];
 }): Promise<GatewayRestartSnapshot> {
   const startedAtMs = performance.now();
   const attempts = params.attempts ?? DEFAULT_RESTART_HEALTH_ATTEMPTS;
   const delayMs = params.delayMs ?? DEFAULT_RESTART_HEALTH_DELAY_MS;
+  const settleProbes = Math.max(1, params.settle?.probes ?? 1);
+  const settleDurationMs = (settleProbes - 1) * delayMs;
   const standardDeadlineMs = attempts * delayMs;
 
   const probeContext = await resolveGatewayRestartProbeContext(params.env).catch(() => ({
@@ -375,7 +394,8 @@ export async function waitForGatewayHealthyRestart(params: {
     expectedBuildId: params.expectedBuildId,
     includeUnknownListenersAsStale: params.includeUnknownListenersAsStale,
     includePluginHealth: params.includePluginHealth === true,
-    probeAuth: probeContext.auth,
+    includeChannelHealth: params.includeChannelHealth,
+    probeContext,
     configuredProbe,
     probeHosts,
   });
@@ -390,16 +410,34 @@ export async function waitForGatewayHealthyRestart(params: {
   let postMigrationDeadlineMs: number | undefined;
   let migrationActive = false;
   let nextMigrationActivityPollMs = 0;
+  let healthyStreak: { pid: number | undefined; probes: number } | undefined;
 
   for (let attempt = 0; ; attempt += 1) {
     // Health probes and state-DB reads are part of the operator-visible wait. A monotonic clock
     // keeps both the normal deadline and migration watchdog bounded when those operations stall.
     const elapsedMs = Math.max(0, performance.now() - startedAtMs);
-    const serviceRuntimeReady =
-      !params.requireRunningService || snapshot.runtime.status === "running";
-    const healthy = snapshot.healthy && serviceRuntimeReady;
+    // A managed settle streak needs a concrete process identity. Scheduled Tasks can
+    // report running without exposing a PID, so Windows retains status-only proof.
+    const healthy =
+      snapshot.healthy &&
+      (!params.requireRunningService ||
+        (snapshot.runtime.status === "running" &&
+          (process.platform === "win32" || typeof snapshot.runtime.pid === "number")));
     if (healthy) {
-      return withWaitContext(snapshot, "healthy", elapsedMs);
+      if (healthyStreak && healthyStreak.pid === snapshot.runtime.pid) {
+        healthyStreak.probes += 1;
+      } else {
+        healthyStreak = { pid: snapshot.runtime.pid, probes: 1 };
+      }
+      if (healthyStreak.probes >= settleProbes) {
+        return withWaitContext(snapshot, "healthy", elapsedMs);
+      }
+    } else {
+      healthyStreak = undefined;
+    }
+    if (settleProbes > 1 && snapshot.healthy) {
+      // Callers consume snapshot.healthy; a partial settle must not report recovery at timeout.
+      snapshot.healthy = false;
     }
     if (snapshot.versionMismatch) {
       return withWaitContext(snapshot, "version-mismatch", elapsedMs);
@@ -407,11 +445,26 @@ export async function waitForGatewayHealthyRestart(params: {
     if (snapshot.buildIdMismatch) {
       return withWaitContext(snapshot, "build-id-mismatch", elapsedMs);
     }
+    const serviceRuntimeReady =
+      !params.requireRunningService ||
+      (snapshot.runtime.status === "running" &&
+        typeof snapshot.runtime.pid === "number" &&
+        snapshot.portUsage.status === "busy" &&
+        snapshot.portUsage.listeners.some((listener) =>
+          listenerOwnedByRuntimePid({ listener, runtimePid: snapshot.runtime.pid as number }),
+        ));
     if (serviceRuntimeReady && snapshot.activatedPluginErrors?.length) {
       return withWaitContext(snapshot, "plugin-errors", elapsedMs);
     }
     if (serviceRuntimeReady && snapshot.unavailablePlugins?.length) {
       return withWaitContext(snapshot, "plugin-unavailable", elapsedMs);
+    }
+    if (
+      serviceRuntimeReady &&
+      params.includeChannelHealth !== false &&
+      snapshot.channelProbeErrors?.length
+    ) {
+      return withWaitContext(snapshot, "channel-errors", elapsedMs);
     }
     if (snapshot.staleGatewayPids.length > 0 && snapshot.runtime.status !== "running") {
       return withWaitContext(snapshot, "stale-pids", elapsedMs);
@@ -454,9 +507,10 @@ export async function waitForGatewayHealthyRestart(params: {
     }
 
     if (elapsedMs >= standardDeadlineMs || migrationDeadlineMs !== undefined) {
+      // Settling gets its own readiness time, but cannot extend an active migration's watchdog.
       const deadlineMs = migrationActive
         ? migrationDeadlineMs
-        : (postMigrationDeadlineMs ?? standardDeadlineMs);
+        : (postMigrationDeadlineMs ?? standardDeadlineMs) + settleDurationMs;
       if (deadlineMs === undefined || elapsedMs >= deadlineMs) {
         return withWaitContext(snapshot, "timeout", elapsedMs);
       }
@@ -470,7 +524,8 @@ export async function waitForGatewayHealthyRestart(params: {
       expectedBuildId: params.expectedBuildId,
       includeUnknownListenersAsStale: params.includeUnknownListenersAsStale,
       includePluginHealth: params.includePluginHealth === true,
-      probeAuth: probeContext.auth,
+      includeChannelHealth: params.includeChannelHealth,
+      probeContext,
       configuredProbe,
       probeHosts,
     });

@@ -651,6 +651,7 @@ export async function runDaemonRestart(opts: DaemonLifecycleOptions = {}): Promi
           env: managedRestartContext.env,
           includeUnknownListenersAsStale: process.platform === "win32",
           includePluginHealth: true,
+          includeChannelHealth: false,
           requireRunningService: true,
           supervisorKeepsAlive: process.platform === "darwin",
         });

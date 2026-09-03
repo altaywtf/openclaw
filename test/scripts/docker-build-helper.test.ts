@@ -2739,6 +2739,14 @@ docker_e2e_docker_run_cmd run demo
     expect(publishedRunner.indexOf("phase update-candidate update_candidate")).toBeLessThan(
       publishedRunner.indexOf("phase assert-prepublish-requests assert_prepublish_plugin_install"),
     );
+    expect(publishedRunner).toContain(
+      "run_plugin_fixture_phase assert-prepublish-requests assert_prepublish_plugin_install 1",
+    );
+    expect(publishedRunner).toContain(
+      "phase assert-prepublish-recovery-requests assert_prepublish_plugin_install",
+    );
+    expect(publishedRunner).not.toContain("assert-prepublish-idle");
+    expect(publishedRunner).not.toContain("assert-prepublish-recovery-idle");
     expect(publishedRunner).not.toContain('if [ "$candidate_version" = "2026.6.35" ]; then');
     expect(publishedRunner).toContain(
       'local tarball="$fixture_root/openclaw-brave-plugin-${candidate_version}.tgz"',
@@ -2763,17 +2771,10 @@ docker_e2e_docker_run_cmd run demo
     const codexInstallIndex = runner.indexOf(
       'openclaw_e2e_fixture_plugin_command openclaw -- \\\n      plugins install "npm:@openclaw/codex@$package_version" --pin',
     );
-    const restoreCompanionIndex = runner.indexOf(
-      'restore "$OPENCLAW_CONFIG_PATH" "$authored_config"',
-    );
-    const assertCompanionIndex = runner.indexOf('assert-companion-installs "$package_version"');
     expect(discordInstallIndex).toBeGreaterThan(-1);
     expect(discordInstallIndex).toBeLessThan(whatsappInstallIndex);
     expect(whatsappInstallIndex).toBeLessThan(clawhubRequestIndex);
     expect(clawhubRequestIndex).toBeLessThan(codexInstallIndex);
-    expect(codexInstallIndex).toBeLessThan(restoreCompanionIndex);
-    expect(restoreCompanionIndex).toBeLessThan(assertCompanionIndex);
-    expect(assertCompanionIndex).toBeLessThan(runnerPrepareIndex);
     expect(
       runner.match(/openclaw_e2e_fixture_plugin_command openclaw -- \\\n\s+plugins install/gu),
     ).toHaveLength(3);
@@ -2794,6 +2795,17 @@ docker_e2e_docker_run_cmd run demo
         'if [ "$SCENARIO" = "configured-plugin-installs" ] || [ "$SCENARIO" = "sqlite-volume" ]; then',
         '  export MATRIX_ACCESS_TOKEN="upgrade-survivor-matrix-token"',
         '  export BRAVE_API_KEY="BSA_upgrade_survivor_brave_key"',
+        "fi",
+      ].join("\n"),
+    );
+    expect(publishedRunner).toContain(
+      [
+        'if [ "$SCENARIO" = "watchos-direct-node" ] || [ "$SCENARIO" = "mobile-pairing-reconnect" ]; then',
+        "  unset OPENAI_API_KEY DISCORD_BOT_TOKEN TELEGRAM_BOT_TOKEN",
+        "else",
+        '  export OPENAI_API_KEY="sk-openclaw-upgrade-survivor"',
+        '  export DISCORD_BOT_TOKEN="upgrade-survivor-discord-token"',
+        '  export TELEGRAM_BOT_TOKEN="123456:upgrade-survivor-telegram-token"',
         "fi",
       ].join("\n"),
     );
@@ -7700,9 +7712,7 @@ done
     );
 
     expect(dockerfile).toContain("OPENCLAW_DISABLE_BUNDLED_PLUGIN_POSTINSTALL=1");
-    expect(dockerfile).toContain(
-      "pnpm install --frozen-lockfile --ignore-scripts --filter openclaw",
-    );
+    expect(dockerfile).toContain("pnpm install --frozen-lockfile --ignore-scripts\n");
   });
 
   it("routes QR import Docker smoke through the timeout-aware run helper", () => {

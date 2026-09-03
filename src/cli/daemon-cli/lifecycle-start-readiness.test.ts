@@ -98,6 +98,7 @@ describe("Gateway service start readiness", () => {
         attempts: 90,
         delayMs: 500,
         includePluginHealth: true,
+        includeChannelHealth: false,
         requireRunningService: true,
       }),
     );
@@ -125,6 +126,7 @@ describe("Gateway service start readiness", () => {
   it("fails start when a configured plugin is unavailable", async () => {
     waitForGatewayHealthyRestart.mockResolvedValue({
       healthy: false,
+      waitOutcome: "plugin-unavailable",
       portUsage: { port: 18_789, status: "busy", listeners: [], hints: [] },
       unavailablePlugins: [
         {
@@ -145,6 +147,32 @@ describe("Gateway service start readiness", () => {
     );
     expect(waitForGatewayHealthyRestart).toHaveBeenCalledWith(
       expect.objectContaining({ includePluginHealth: true }),
+    );
+  });
+
+  it("does not promote stale-listener plugin details when managed start times out", async () => {
+    waitForGatewayHealthyRestart.mockResolvedValue({
+      healthy: false,
+      waitOutcome: "timeout",
+      runtime: { status: "stopped" },
+      portUsage: { port: 18_789, status: "busy", listeners: [], hints: [] },
+      staleGatewayPids: [],
+      unavailablePlugins: [
+        {
+          id: "discord",
+          state: "configured-unavailable",
+          diagnostic: {
+            kind: "plugin-verification",
+            reason: "missing-openclaw-peer-link",
+            detail: "stale listener plugin failure",
+          },
+        },
+      ],
+    });
+    invokeStartPostCheck();
+
+    await expect(runDaemonStart({ json: true })).rejects.toThrow(
+      "waiting for /healthz and /readyz",
     );
   });
 });

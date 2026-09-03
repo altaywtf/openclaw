@@ -11,6 +11,7 @@ export type GatewayRestartWaitOutcome =
   | "healthy"
   | "plugin-errors"
   | "plugin-unavailable"
+  | "channel-errors"
   | "version-mismatch"
   | "build-id-mismatch"
   | "stale-pids"
