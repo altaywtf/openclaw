@@ -67,6 +67,7 @@ import {
   resolveTargetVersion,
   resolveUpdateRoot,
   tryResolveInvocationCwd,
+  UpdatePreMutationError,
   type UpdateCommandOptions,
 } from "./shared.js";
 import { suppressDeprecations } from "./suppress-deprecations.js";
@@ -542,6 +543,12 @@ async function updateCommandInternal(
             supportedVersions: packageTargetSchemaVersions,
             callerDatabaseSchemaContext,
             managedServiceRootRedirect,
+          }).catch(async (error: unknown) => {
+            if (!(error instanceof UpdatePreMutationError)) {
+              throw error;
+            }
+            await refuseUpdate(error.reason, error.message);
+            return { incompatible: [], indeterminate: [] };
           }),
       )
     : { incompatible: [], indeterminate: [] };

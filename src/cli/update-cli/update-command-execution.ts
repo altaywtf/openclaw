@@ -10,8 +10,6 @@ import { readCurrentGitUpdateRecovery } from "../../infra/update-runner-git-reco
 import type { UpdateRunResult } from "../../infra/update-runner.js";
 import { defaultRuntime } from "../../runtime.js";
 import type { OpenClawSchemaVersions } from "../../state/openclaw-schema-versions.js";
-import { replaceCliName, resolveCliName } from "../cli-name.js";
-import { formatCliCommand } from "../command-format.js";
 import { createUpdateProgress } from "./progress.js";
 import {
   checkTargetDatabaseSchemasForContexts,
@@ -28,6 +26,7 @@ import {
 import { createBeforeGitMutation, updateGitInstall } from "./update-command-git.js";
 import {
   formatUpdateAncestryBlockMessage,
+  formatUpdateGatewayServiceProcessBlockMessage,
   handoffUpdateFromGateway,
 } from "./update-command-handoff.js";
 import {
@@ -53,8 +52,6 @@ import {
   type PreManagedServiceStop,
   type UpdateCommandRecoveryState,
 } from "./update-command-service.js";
-
-const CLI_NAME = resolveCliName();
 
 type MutableUpdateExecutionResult = {
   result: UpdateRunResult;
@@ -110,11 +107,7 @@ function assertReadOnlyManagedServiceInspection(params: {
     const updateLabel = params.updateInstallKind === "git" ? "Git updates" : "Package updates";
     throw new UpdatePreMutationError(
       "managed-service-preflight",
-      [
-        `${updateLabel} cannot run from inside the gateway service process.`,
-        "That path replaces the active OpenClaw dist tree while the live gateway may still lazy-load old chunks.",
-        `Run \`${replaceCliName(formatCliCommand("openclaw update"), CLI_NAME)}\` from a shell outside the gateway service, or stop the gateway service first and then update.`,
-      ].join("\n"),
+      formatUpdateGatewayServiceProcessBlockMessage(updateLabel),
     );
   }
   if (preManagedServiceStop?.blockMessage) {
@@ -454,11 +447,7 @@ export async function executeMutableUpdate(params: {
       const updateLabel = params.updateInstallKind === "git" ? "Git updates" : "Package updates";
       throw new UpdatePreMutationError(
         "managed-service-preflight",
-        [
-          `${updateLabel} cannot run from inside the gateway service process.`,
-          "That path replaces the active OpenClaw dist tree while the live gateway may still lazy-load old chunks.",
-          `Run \`${replaceCliName(formatCliCommand("openclaw update"), CLI_NAME)}\` from a terminal outside the gateway service.`,
-        ].join("\n"),
+        formatUpdateGatewayServiceProcessBlockMessage(updateLabel),
       );
     }
 

@@ -5382,12 +5382,11 @@ describe("update-cli", () => {
         OPENCLAW_CONFIG_PATH: path.join(callerState, "openclaw.json"),
       },
       async () => {
-        await expect(updateCommand({ dryRun: true })).rejects.toThrow(
-          "could not safely inspect managed Gateway config",
-        );
+        await expect(updateCommand({ dryRun: true })).rejects.toEqual(new ExitError(1));
       },
     );
 
+    expect(getErrorOutput()).toContain("could not safely inspect managed Gateway config");
     expect(databasePreflightMocks.preflightOpenClawDatabaseSchemas).not.toHaveBeenCalled();
     expectNoSideEffects(serviceStop, cleanupStaleManagedServiceUpdateHandoffs);
   });
@@ -5485,10 +5484,9 @@ describe("update-cli", () => {
       packageTargetStatus({ schemaVersions: { state: 3, agent: 11 } }),
     );
 
-    await expect(updateCommand({ dryRun: true })).rejects.toThrow(
-      "managed Gateway service changed before update admission",
-    );
+    await expect(updateCommand({ dryRun: true })).rejects.toEqual(new ExitError(1));
 
+    expect(getErrorOutput()).toContain("managed Gateway service changed before update admission");
     expect(serviceReadCommand).toHaveBeenCalledTimes(2);
     expect(databasePreflightMocks.preflightOpenClawDatabaseSchemas).not.toHaveBeenCalled();
     expectNoSideEffects(
@@ -6465,8 +6463,61 @@ describe("update-cli", () => {
   const packageUpdateInGatewayMessage = [
     "Package updates cannot run from inside the gateway service process.",
     "That path replaces the active OpenClaw dist tree while the live gateway may still lazy-load old chunks.",
-    "Run `openclaw update` from a terminal outside the gateway service.",
+    "From chat, the OpenClaw owner can start the update with the gateway update action or /update, which hands it to a managed helper.",
   ].join("\n");
+
+  it("reports a profile-scoped dry-run service refusal through the visible chat handoff", async () => {
+    await mockPackageInstallAtCaseDir();
+    primeServiceCommand(["openclaw", "gateway", "run"], {
+      OPENCLAW_SERVICE_MARKER: "openclaw",
+      OPENCLAW_SERVICE_KIND: "gateway",
+      OPENCLAW_PROFILE: "work",
+    });
+    serviceReadRuntime.mockRejectedValue(new Error("runtime probe failed"));
+
+    await expect(
+      withEnvAsync({ OPENCLAW_PROFILE: "work" }, () =>
+        runWithGatewayServiceEnv({ dryRun: true, json: true }),
+      ),
+    ).rejects.toEqual(new ExitError(1));
+
+    expect(getErrorOutput()).toContain("gateway update action or /update");
+    expect(getErrorOutput()).not.toContain("terminal");
+    expect(getErrorOutput()).not.toContain("stop the gateway service first");
+    expect(lastWriteJsonCall()).toMatchObject({
+      status: "error",
+      reason: "managed-service-preflight",
+    });
+    expectNoSideEffects(managedUpdateHandoff.start, serviceStop, runGatewayUpdate);
+  });
+
+  it("preflights a profile-scoped service-less dry run without starting a handoff", async () => {
+    await mockPackageInstallAtCaseDir();
+    const workState = profileStateDir("work");
+    vi.mocked(fetchNpmPackageTargetStatus).mockResolvedValue(
+      packageTargetStatus({ schemaVersions: { state: 3, agent: 11 } }),
+    );
+    serviceReadCommand.mockResolvedValue(null);
+    serviceReadRuntime.mockResolvedValue({
+      status: "stopped",
+      state: "stopped",
+      missingUnit: true,
+    });
+    const preflightStateDirs: Array<string | undefined> = [];
+    databasePreflightMocks.preflightOpenClawDatabaseSchemas.mockImplementation(({ env }) => {
+      preflightStateDirs.push(env.OPENCLAW_STATE_DIR);
+      return { incompatible: [], indeterminate: [] };
+    });
+
+    await withEnvAsync({ OPENCLAW_PROFILE: "work", OPENCLAW_STATE_DIR: workState }, () =>
+      runWithGatewayServiceEnv({ dryRun: true, json: true }),
+    );
+
+    expect(preflightStateDirs).toEqual([workState]);
+    expectNoSideEffects(managedUpdateHandoff.start, serviceStop, runGatewayUpdate);
+    expect(packageInstallCommandCall()).toBeUndefined();
+    expect(getErrorOutput()).not.toContain("terminal");
+  });
 
   it("allows package updates from inherited gateway service env when the managed gateway is not running", async () => {
     await mockPackageInstallAtCaseDir();
@@ -6678,6 +6729,15 @@ describe("update-cli", () => {
       ]);
       expect(serviceReadRuntime).toHaveBeenCalledTimes(2);
       expect(managedUpdateHandoff.start).toHaveBeenCalledTimes(1);
+      const handoffOrder = requireValue(
+        managedUpdateHandoff.start.mock.invocationCallOrder[0],
+        "managed handoff start call order",
+      );
+      expect(
+        databasePreflightMocks.preflightOpenClawDatabaseSchemas.mock.invocationCallOrder.every(
+          (order) => order < handoffOrder,
+        ),
+      ).toBe(true);
       expectNoSideEffects(serviceStop, serviceRestart, runRestartScript);
       if (git) {
         expect(runGatewayUpdate).toHaveBeenCalledWith(
@@ -6698,6 +6758,7 @@ describe("update-cli", () => {
         ],
       });
       expect(JSON.stringify(lastWriteJsonCall())).toContain("gateway status --deep");
+      expect(JSON.stringify(lastWriteJsonCall())).not.toContain("terminal");
     },
   );
 
