@@ -28,6 +28,7 @@ import {
   resolveTsdownBuildPlan,
   resolveTsdownCleanOutputRoots,
   runTsdownBuildInvocation as runTsdownBuildInvocationImpl,
+  sanitizeTsdownBuildOutputRoots,
 } from "../../scripts/tsdown-build.mts";
 import { createFixtureLifetime } from "../helpers/fixture-lifetime.js";
 import {
@@ -1933,6 +1934,25 @@ describe("resolveTsdownBuildInvocation", () => {
 
       await expectPathMissing(aiFile);
       await expect(fsPromises.readFile(coreFile, "utf8")).resolves.toBe("keep\n");
+    }));
+
+  it("sanitizes only the declaration roots selected by a direct AI build", () =>
+    fixture.run(async () => {
+      const rootDir = createTempDir("openclaw-tsdown-selected-sanitize-");
+      const aiDeclaration = path.join(rootDir, "packages", "ai", "dist", "index.d.ts");
+      const rootDeclaration = path.join(rootDir, "dist", "index.d.ts");
+      const malformed = "export { __exportAll, publicApi };\n";
+      await fsPromises.mkdir(path.dirname(aiDeclaration), { recursive: true });
+      await fsPromises.mkdir(path.dirname(rootDeclaration), { recursive: true });
+      await fsPromises.writeFile(aiDeclaration, malformed);
+      await fsPromises.writeFile(rootDeclaration, malformed);
+
+      sanitizeTsdownBuildOutputRoots(["--config", "tsdown.ai.config.ts"], rootDir);
+
+      await expect(fsPromises.readFile(aiDeclaration, "utf8")).resolves.toBe(
+        "export { publicApi };\n",
+      );
+      await expect(fsPromises.readFile(rootDeclaration, "utf8")).resolves.toBe(malformed);
     }));
 
   it.each(["OpenClaw.app", "candidates/OpenClaw.app"])(

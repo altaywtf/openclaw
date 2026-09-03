@@ -563,6 +563,12 @@ export function resolveTsdownCleanOutputRoots(args: string[] = []) {
   return listTsdownOutputRoots();
 }
 
+export function sanitizeTsdownBuildOutputRoots(args: string[] = [], cwd = process.cwd()): void {
+  for (const root of resolveTsdownCleanOutputRoots(args)) {
+    sanitizeBundlerHelperDtsExportTree(path.resolve(cwd, root));
+  }
+}
+
 function wrapperOwnsTsdownCleanup(args: string[]) {
   if (readForwardedScalarOption(args, ["--out-dir", "-d"], "--out-dir/-d") !== undefined) {
     return true;
@@ -1910,7 +1916,7 @@ export async function runTsdownBuild(argv: string[] = process.argv.slice(2)): Pr
   }
   const code = await executeTsdownBuildPlan(plan);
   if (code === 0) {
-    sanitizeBundlerHelperDtsExportTree(path.join(process.cwd(), "dist"));
+    sanitizeTsdownBuildOutputRoots(args.forwardedArgs);
   }
   return code;
 }
