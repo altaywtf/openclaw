@@ -343,7 +343,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // -1: keep the provider API-key auth factory on provider-auth instead of duplicating it
       // through provider-entry.
       // +1: canonical temporal context renderer for plugin-owned agent harnesses.
-      4374,
+      // +1: canonical user-turn operational metadata restoration for native harnesses.
+      4375,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -460,7 +461,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // -1: keep the provider API-key auth factory on provider-auth instead of duplicating it
       // through provider-entry.
       // +1: canonical temporal context renderer for plugin-owned agent harnesses.
-      2605,
+      // +1: canonical user-turn operational metadata restoration for native harnesses.
+      2606,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(
