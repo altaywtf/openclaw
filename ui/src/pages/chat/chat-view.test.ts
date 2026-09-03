@@ -4231,6 +4231,28 @@ describe("chat composer IME composition", () => {
 });
 
 describe("chat composer sizing", () => {
+  it("keeps a bottom-anchored transcript pinned when the rich preview appears", () => {
+    const container = renderChatView({});
+    const textarea = getComposerTextarea(container);
+    const thread = requireElement<HTMLElement>(container, ".chat-thread", "chat thread");
+    const preview = requireElement<HTMLElement>(
+      container,
+      ".agent-chat__composer-markdown-preview",
+      "composer preview",
+    );
+    Object.defineProperties(thread, {
+      clientHeight: { configurable: true, value: 500 },
+      scrollHeight: { configurable: true, get: () => (preview.hidden ? 1_000 : 1_120) },
+      scrollTop: { configurable: true, writable: true, value: 500 },
+    });
+
+    textarea.value = "**Bold direction**";
+    textarea.dispatchEvent(new InputEvent("input", { bubbles: true }));
+
+    expect(preview.hidden).toBe(false);
+    expect(thread.scrollTop).toBe(1_120);
+  });
+
   it("sizes restored drafts after the rendered value is committed", async () => {
     const container = renderChatView({ draft: "A restored long draft" });
     const textarea = getComposerTextarea(container);

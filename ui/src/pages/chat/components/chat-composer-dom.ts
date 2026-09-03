@@ -136,38 +136,44 @@ function updateTextareaOverflow(el: HTMLTextAreaElement) {
   el.toggleAttribute("data-scroll-fade-bottom", fadeBottom);
 }
 
-export function adjustTextareaHeight(el: HTMLTextAreaElement) {
-  // A surface that declares the compact shape is a fixed CSS box: it holds one
-  // line whatever the draft is, so an inline height left by an earlier measured
-  // pass would silently outrank the stylesheet. Which shape a composer is in is
-  // declared in its markup, never inferred here from how much text it holds.
-  if (el.closest('[data-composer-layout="single-line"]')) {
-    el.style.height = "";
-    el.style.overflowY = "";
-    el.removeAttribute("data-scroll-fade-top");
-    el.removeAttribute("data-scroll-fade-bottom");
-    return;
-  }
+export function preserveComposerBottomAnchor(el: HTMLTextAreaElement, mutateLayout: () => void) {
   const thread = el.closest(".chat")?.querySelector<HTMLElement>(".chat-thread") ?? null;
   const preserveBottomAnchor = thread
     ? captureChatSessionScrollPosition(thread).anchorToEnd
     : false;
-  // Hide the browser's scrollbar while measuring; restore it only when the
-  // final CSS-constrained height actually clips the draft.
-  el.style.overflowY = "hidden";
-  el.style.height = "auto";
-  // The owning surface declares its cap in CSS. Retain the historical fallback
-  // for detached/test controls whose computed max-height is not a pixel value.
-  const computedMaxHeight = getComputedStyle(el).maxHeight.trim();
-  const pixelMaxHeight = /^(\d+(?:\.\d+)?)px$/u.exec(computedMaxHeight);
-  const maxHeight = pixelMaxHeight ? Number(pixelMaxHeight[1]) : 150;
-  el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`;
-  updateTextareaOverflow(el);
-  // Once capped, the textarea can perturb the sibling transcript without
-  // resizing its viewport, so ResizeObserver has no correction to apply.
+  mutateLayout();
+  // Composer children can perturb the sibling transcript without resizing its
+  // viewport, so every height-changing mutation restores the captured anchor.
   if (thread && preserveBottomAnchor) {
     thread.scrollTop = thread.scrollHeight;
   }
+}
+
+export function adjustTextareaHeight(el: HTMLTextAreaElement) {
+  preserveComposerBottomAnchor(el, () => {
+    // A surface that declares the compact shape is a fixed CSS box: it holds one
+    // line whatever the draft is, so an inline height left by an earlier measured
+    // pass would silently outrank the stylesheet. Which shape a composer is in is
+    // declared in its markup, never inferred here from how much text it holds.
+    if (el.closest('[data-composer-layout="single-line"]')) {
+      el.style.height = "";
+      el.style.overflowY = "";
+      el.removeAttribute("data-scroll-fade-top");
+      el.removeAttribute("data-scroll-fade-bottom");
+      return;
+    }
+    // Hide the browser's scrollbar while measuring; restore it only when the
+    // final CSS-constrained height actually clips the draft.
+    el.style.overflowY = "hidden";
+    el.style.height = "auto";
+    // The owning surface declares its cap in CSS. Retain the historical fallback
+    // for detached/test controls whose computed max-height is not a pixel value.
+    const computedMaxHeight = getComputedStyle(el).maxHeight.trim();
+    const pixelMaxHeight = /^(\d+(?:\.\d+)?)px$/u.exec(computedMaxHeight);
+    const maxHeight = pixelMaxHeight ? Number(pixelMaxHeight[1]) : 150;
+    el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`;
+    updateTextareaOverflow(el);
+  });
 }
 
 export function observeTextareaOverflow(el: HTMLTextAreaElement) {

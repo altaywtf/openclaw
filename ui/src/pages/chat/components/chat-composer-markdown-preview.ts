@@ -1,7 +1,7 @@
 // Chat composer Markdown preview presentation.
 import { toSanitizedMarkdownHtml } from "../../../components/markdown.ts";
 import { detectTextDirection } from "../../../lib/text-direction.ts";
-import { adjustTextareaHeight } from "./chat-composer-dom.ts";
+import { adjustTextareaHeight, preserveComposerBottomAnchor } from "./chat-composer-dom.ts";
 
 const RICH_MARKDOWN_HTML_RE =
   /<(?:a|blockquote|code|del|details|em|h[1-4]|hr|img|li|ol|pre|s|strong|table|ul)(?:\s|>)/iu;
@@ -30,20 +30,23 @@ export function syncComposerMarkdownPreview(textarea: HTMLTextAreaElement, draft
     // preview follows the same lifecycle without involving pane rerenders.
     preview = document.createElement("div");
     preview.className = "agent-chat__composer-markdown-preview";
+    preview.hidden = true;
     preview.setAttribute("aria-hidden", "true");
     preview.setAttribute("inert", "");
     textarea.before(preview);
   }
 
   const rendered = renderComposerMarkdownPreview(draft);
-  preview.classList.toggle("chat-text", rendered.length > 0);
-  preview.hidden = rendered.length === 0;
-  preview.dir = detectTextDirection(draft);
-  preview.innerHTML = rendered;
+  preserveComposerBottomAnchor(textarea, () => {
+    preview.classList.toggle("chat-text", rendered.length > 0);
+    preview.hidden = rendered.length === 0;
+    preview.dir = detectTextDirection(draft);
+    preview.innerHTML = rendered;
+  });
 }
 
 export function syncComposerValuePresentation(textarea: HTMLTextAreaElement) {
-  adjustTextareaHeight(textarea);
-  textarea.dir = detectTextDirection(textarea.value);
   syncComposerMarkdownPreview(textarea, textarea.value);
+  textarea.dir = detectTextDirection(textarea.value);
+  adjustTextareaHeight(textarea);
 }
