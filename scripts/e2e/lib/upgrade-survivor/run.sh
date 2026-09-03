@@ -631,7 +631,7 @@ assert_prepublish_fixture_idle() {
 }
 
 assert_prepublish_plugin_install() {
-  local allow_pending="${1:-0}" plugin_id="whatsapp" help consent
+  local allow_pending="${1:-0}" plugin_id="discord" help consent
   local consent_supported=0 pending_args=()
   if configured_plugin_installs_enabled; then
     plugin_id="matrix"
