@@ -10,6 +10,39 @@ const suite = createControlUiE2eSuite({
 
 // Browser contexts preserve test isolation; keep one process warm for this file.
 suite.define(() => {
+  it("keeps a trailing newline at the textarea bottom", async () => {
+    await suite.withPage({ viewport: { width: 1582, height: 480 } }, async ({ page }) => {
+      const gateway = await installMockGateway(page);
+      await page.goto(`${suite.server.baseUrl}chat`);
+      await gateway.waitForRequest("chat.startup");
+
+      const textarea = page.locator(".agent-chat__composer-combobox textarea");
+      await textarea.fill(
+        ["First line", "", "Second line", "", "Third line", "", "Last line"].join("\n"),
+      );
+      expect(
+        await textarea.evaluate((element) => element.scrollHeight > element.clientHeight + 1),
+      ).toBe(true);
+      await textarea.focus();
+      await textarea.press("Shift+Enter");
+
+      await expect
+        .poll(() =>
+          textarea.evaluate(
+            (element) => element.scrollHeight - element.clientHeight - element.scrollTop,
+          ),
+        )
+        .toBeLessThanOrEqual(1);
+      expect(await textarea.getAttribute("data-scroll-fade-bottom")).toBeNull();
+
+      await textarea.evaluate((element) => {
+        element.scrollTop = 0;
+      });
+      await page.setViewportSize({ width: 1500, height: 480 });
+      await expect.poll(() => textarea.evaluate((element) => element.scrollTop)).toBe(0);
+    });
+  });
+
   it.each([
     {
       reason: "missing-auth",

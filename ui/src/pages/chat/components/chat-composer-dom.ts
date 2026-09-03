@@ -136,7 +136,7 @@ function updateTextareaOverflow(el: HTMLTextAreaElement) {
   el.toggleAttribute("data-scroll-fade-bottom", fadeBottom);
 }
 
-export function adjustTextareaHeight(el: HTMLTextAreaElement) {
+export function adjustTextareaHeight(el: HTMLTextAreaElement, followEndCaret = false) {
   // A surface that declares the compact shape is a fixed CSS box: it holds one
   // line whatever the draft is, so an inline height left by an earlier measured
   // pass would silently outrank the stylesheet. Which shape a composer is in is
@@ -162,6 +162,15 @@ export function adjustTextareaHeight(el: HTMLTextAreaElement) {
   const pixelMaxHeight = /^(\d+(?:\.\d+)?)px$/u.exec(computedMaxHeight);
   const maxHeight = pixelMaxHeight ? Number(pixelMaxHeight[1]) : 150;
   el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`;
+  // Resizing perturbs the browser's caret scroll. Reclaim the bottom for an
+  // active end caret so trailing padding cannot leave the final line faded.
+  if (
+    followEndCaret &&
+    el.ownerDocument.activeElement === el &&
+    el.selectionStart === el.value.length
+  ) {
+    el.scrollTop = el.scrollHeight;
+  }
   updateTextareaOverflow(el);
   // Once capped, the textarea can perturb the sibling transcript without
   // resizing its viewport, so ResizeObserver has no correction to apply.

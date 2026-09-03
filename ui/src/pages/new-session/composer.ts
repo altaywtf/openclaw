@@ -627,7 +627,7 @@ export function renderNewSessionComposer(options: NewSessionComposerOptions) {
                 }
                 // SAFETY: this input listener is attached directly to the textarea below.
                 const target = event.target as HTMLTextAreaElement;
-                adjustTextareaHeight(target);
+                adjustTextareaHeight(target, true);
                 const mentions = mentionMenuHost.getMentions();
                 options.onInput(
                   target.value,
