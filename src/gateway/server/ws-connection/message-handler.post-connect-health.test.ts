@@ -2333,6 +2333,43 @@ describe("attachGatewayWsMessageHandler post-connect health refresh", () => {
 
 describe("resolvePinnedClientMetadata", () => {
   it.each([
+    ["cli", "cli"],
+    ["openclaw-tui", "ui"],
+  ])("accepts the legacy Windows pairing tuple for core client %s", (clientId, clientMode) => {
+    expect(
+      resolvePinnedClientMetadata({
+        clientId,
+        clientMode,
+        claimedPlatform: "windows",
+        claimedDeviceFamily: "Windows",
+        pairedPlatform: "win32",
+        pairedDeviceFamily: undefined,
+      }),
+    ).toEqual({
+      platformMismatch: false,
+      deviceFamilyMismatch: false,
+      pinnedPlatform: "windows",
+      pinnedDeviceFamily: undefined,
+    });
+  });
+
+  it("does not accept the legacy Windows pairing tuple for unrelated clients", () => {
+    expect(
+      resolvePinnedClientMetadata({
+        clientId: "gateway-client",
+        clientMode: "backend",
+        claimedPlatform: "windows",
+        claimedDeviceFamily: "Windows",
+        pairedPlatform: "win32",
+        pairedDeviceFamily: undefined,
+      }),
+    ).toMatchObject({
+      platformMismatch: true,
+      deviceFamilyMismatch: false,
+    });
+  });
+
+  it.each([
     ["darwin", "macos"],
     ["win32", "windows"],
   ])(

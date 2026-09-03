@@ -236,6 +236,17 @@ export function resolvePinnedClientMetadata(params: {
   const pairedDeviceFamily = normalizeDeviceMetadataForAuth(params.pairedDeviceFamily);
   const hasPinnedPlatform = pairedPlatform !== "";
   const hasPinnedDeviceFamily = pairedDeviceFamily !== "";
+  // Older core Windows clients persisted win32 without a family. Accept only
+  // its canonical successor after the signed device identity has been verified.
+  const isLegacyCoreWindowsPairing =
+    ((params.clientId === GATEWAY_CLIENT_IDS.CLI &&
+      params.clientMode === GATEWAY_CLIENT_MODES.CLI) ||
+      (params.clientId === GATEWAY_CLIENT_IDS.TUI &&
+        params.clientMode === GATEWAY_CLIENT_MODES.UI)) &&
+    claimedPlatform === "windows" &&
+    claimedDeviceFamily === "windows" &&
+    pairedPlatform === "win32" &&
+    !hasPinnedDeviceFamily;
   const isLegacyNodeHostPlatformPin =
     params.clientId === GATEWAY_CLIENT_IDS.NODE_HOST &&
     params.clientMode === GATEWAY_CLIENT_MODES.NODE &&
@@ -268,19 +279,22 @@ export function resolvePinnedClientMetadata(params: {
   const platformMismatch =
     hasPinnedPlatform &&
     claimedPlatform !== pairedPlatform &&
+    !isLegacyCoreWindowsPairing &&
     !isLegacyNodeHostPlatformPin &&
     !isNodeHostUsingMacAppPlatformPin &&
     !isNativeAppPlatformVersionRefresh;
   const deviceFamilyMismatch = hasPinnedDeviceFamily && claimedDeviceFamily !== pairedDeviceFamily;
-  const pinnedPlatform = isLegacyNodeHostPlatformPin
-    ? normalizeLegacyNodeHostPlatformPin(pairedPlatform)
-    : claimedPlatform === pairedPlatform
-      ? params.pairedPlatform
-      : isNodeHostUsingMacAppPlatformPin
+  const pinnedPlatform = isLegacyCoreWindowsPairing
+    ? "windows"
+    : isLegacyNodeHostPlatformPin
+      ? normalizeLegacyNodeHostPlatformPin(pairedPlatform)
+      : claimedPlatform === pairedPlatform
         ? params.pairedPlatform
-        : isNativeAppPlatformVersionRefresh
-          ? params.claimedPlatform
-          : undefined;
+        : isNodeHostUsingMacAppPlatformPin
+          ? params.pairedPlatform
+          : isNativeAppPlatformVersionRefresh
+            ? params.claimedPlatform
+            : undefined;
   return {
     platformMismatch,
     deviceFamilyMismatch,
