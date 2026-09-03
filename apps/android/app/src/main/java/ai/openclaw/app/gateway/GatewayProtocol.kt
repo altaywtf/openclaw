@@ -810,7 +810,6 @@ enum class GatewayMethod(
   PluginsSetEnabled("plugins.setEnabled"),
   PluginsUninstall("plugins.uninstall"),
   PluginsRefresh("plugins.refresh"),
-  PluginsReload("plugins.reload"),
   ControlUiSessionPullRequestsSubscribe("controlUi.sessionPullRequests.subscribe"),
   ControlUiSessionPreview("controlUi.sessionPreview"),
   GatewaySuspendPrepare("gateway.suspend.prepare"),
@@ -913,6 +912,7 @@ enum class GatewayMethod(
   TranscriptsGet("transcripts.get"),
   ModelsAuthOrderSet("models.authOrderSet"),
   CanvasDocumentView("canvas.document.view"),
+  PluginsReload("plugins.reload"),
 }
 
 enum class GatewayEvent(
