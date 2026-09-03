@@ -27,6 +27,7 @@ import {
 } from "./session-accessor.sqlite-transcript-suffix.js";
 import {
   SYNC_REBUILD_MAX_BYTES,
+  SYNC_REBUILD_MAX_ROWS,
   sessionTranscriptIndexNeedsReconcile,
 } from "./session-transcript-index.js";
 import { SessionTranscriptProjectionUnavailableError } from "./session-transcript-projection-error.js";
@@ -414,6 +415,71 @@ function replaceTranscriptSuffixForTest(
 }
 
 describe("SQLite exact transcript suffix replacement", () => {
+  it.each([
+    {
+      name: "row",
+      events: [
+        rewriteEvents[0],
+        ...Array.from({ length: SYNC_REBUILD_MAX_ROWS + 1 }, (_value, index) => ({
+          type: "message",
+          id: `bounded-row-${index}`,
+          parentId: index === 0 ? "root" : `bounded-row-${index - 1}`,
+          message: { role: "user", content: `row ${index}` },
+        })),
+      ],
+    },
+    {
+      name: "byte",
+      events: [
+        rewriteEvents[0],
+        {
+          type: "message",
+          id: "bounded-byte-large",
+          parentId: "root",
+          message: { role: "user", content: "x".repeat(SYNC_REBUILD_MAX_BYTES + 1) },
+        },
+        {
+          type: "message",
+          id: "bounded-byte-tail",
+          parentId: "bounded-byte-large",
+          message: { role: "assistant", content: "temporary" },
+        },
+      ],
+    },
+  ])("plans only the removable suffix above the $name limit", async ({ events }) => {
+    await withRewriteFixture(({ db, scope }) => {
+      const work = trackSqliteStatementExecutions(db, ["fullTranscript", "sizeScan"], (sql) => {
+        const normalized = sql.toLowerCase();
+        if (normalized.includes("octet_length")) {
+          return "sizeScan";
+        }
+        if (
+          normalized.includes("transcript_events") &&
+          normalized.includes("event_json") &&
+          !normalized.includes("limit")
+        ) {
+          return "fullTranscript";
+        }
+        return null;
+      });
+      try {
+        const plan = prepareSqliteTranscriptSuffixMutation(
+          openOpenClawAgentDatabase(scope),
+          scope,
+          events,
+          events.slice(0, -1),
+          events.length - 1,
+        );
+        expect(plan.incremental).toBeDefined();
+        expect(plan.expectedRows).toHaveLength(1);
+        expect(plan.next).toHaveLength(0);
+      } finally {
+        work.restore();
+      }
+      expect(work.counts).toEqual({ fullTranscript: 0, sizeScan: 0 });
+    }, events);
+  });
+
   it("replaces a retained suffix without routing rows through forward indexing", async () => {
     await withRewriteFixture(({ db, snapshot, scope }) => {
       const retainedAnswer = {

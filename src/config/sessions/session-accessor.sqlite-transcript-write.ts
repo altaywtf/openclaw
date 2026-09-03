@@ -188,12 +188,19 @@ export function replaceTranscriptSuffixEventsSync(
   scope: SessionTranscriptWriteScope,
   expectedEvents: readonly TranscriptEvent[],
   nextEvents: readonly TranscriptEvent[],
+  prefixLength = 0,
 ): boolean {
   const fencedScope = withOwnedSessionTranscriptWriterFence(scope);
   const resolved = resolveSqliteTranscriptScope(fencedScope);
   // Full-tree parsing and projection construction stay outside the immediate write transaction.
   const owner = openOpenClawAgentDatabase(toDatabaseOptions(resolved));
-  const plan = prepareSqliteTranscriptSuffixMutation(owner, resolved, expectedEvents, nextEvents);
+  const plan = prepareSqliteTranscriptSuffixMutation(
+    owner,
+    resolved,
+    expectedEvents,
+    nextEvents,
+    prefixLength,
+  );
   let replaced = false;
   runOpenClawAgentWriteTransaction((database) => {
     assertOwnedTranscriptWriteCommit(fencedScope);

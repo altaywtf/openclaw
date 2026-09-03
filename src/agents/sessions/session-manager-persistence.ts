@@ -81,6 +81,9 @@ export class SessionManagerPersistence extends SessionManagerCore {
       }
     };
     const removedCount = preservedStart - removeStart;
+    const persistedPrefixLength =
+      removeStart +
+      originalState.opaqueFileEntries.filter((entry) => entry.index < removeStart).length;
     shiftOpaqueIndexesAfterRemoval(removeStart, removedCount);
     const removedEntries = this.fileEntries.splice(removeStart, removedCount) as SessionEntry[];
     const removedParentById = new Map(
@@ -163,6 +166,7 @@ export class SessionManagerPersistence extends SessionManagerCore {
             persistenceTarget,
             expectedPersistedEntries,
             this.getPersistedFileEntries(),
+            persistedPrefixLength,
           )
         ) {
           throw new Error(`SQLite session changed before trimming ${this.sessionId}`);

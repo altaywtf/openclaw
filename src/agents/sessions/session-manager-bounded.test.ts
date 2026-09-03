@@ -10,7 +10,10 @@ import {
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
 import { readSessionTranscriptBoundedActiveContextCore } from "../../config/sessions/session-accessor.sqlite-active-context.js";
-import { SYNC_REBUILD_MAX_ROWS } from "../../config/sessions/session-transcript-index.js";
+import {
+  SYNC_REBUILD_MAX_BYTES,
+  SYNC_REBUILD_MAX_ROWS,
+} from "../../config/sessions/session-transcript-index.js";
 import { runWithSessionTranscriptReadFence } from "../../config/sessions/session-transcript-read-fence.js";
 import { waitForSessionTranscriptIndexReconcile } from "../../config/sessions/session-transcript-reconcile.js";
 import { SessionManager } from "./session-manager.js";
@@ -270,6 +273,41 @@ it("keeps a long transcript projection available when removing a trailing entry"
       maxBytes: 4096,
       maxEvents: 4,
     }),
+  ).not.toThrow();
+});
+
+it("keeps an oversized transcript projection available when removing a trailing entry", async () => {
+  const dir = tempDirs.make("openclaw-session-manager-large-byte-suffix-");
+  const scope = {
+    agentId: "main",
+    sessionId: "large-byte-suffix-session",
+    sessionKey: "agent:main:large-byte-suffix-session",
+    storePath: path.join(dir, "sessions.json"),
+  };
+  await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 1 });
+  const manager = SessionManager.open(scope, dir);
+  manager.appendMessage({
+    role: "user",
+    content: "x".repeat(SYNC_REBUILD_MAX_BYTES + 1),
+    timestamp: 1,
+  });
+  const removableId = manager.appendMessage({
+    role: "user",
+    content: "temporary",
+    timestamp: 2,
+  });
+  await waitForSessionTranscriptIndexReconcile({
+    agentId: scope.agentId,
+    path: path.join(dir, "openclaw-agent.sqlite"),
+  });
+
+  expect(manager.removeTrailingEntries((entry) => entry.id === removableId)).toBe(1);
+  await waitForSessionTranscriptIndexReconcile({
+    agentId: scope.agentId,
+    path: path.join(dir, "openclaw-agent.sqlite"),
+  });
+  expect(() =>
+    SessionManager.openBounded(scope, { cwd: dir, maxBytes: 4096, maxEvents: 4 }),
   ).not.toThrow();
 });
 

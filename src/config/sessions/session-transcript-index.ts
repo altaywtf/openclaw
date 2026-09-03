@@ -398,17 +398,23 @@ export function replaceSessionTranscriptIndexSuffixInTransaction(
   sessionId: string,
   params: {
     unchangedBeforeSeq: number;
-    previous: SessionTranscriptIndexProjection;
+    previous?: SessionTranscriptIndexProjection;
     next: SessionTranscriptIndexProjection;
+    removedMessageIds?: readonly string[];
+    retainedActiveCount?: number;
   },
 ): void {
   const kysely = getIndexKysely(db);
+  const incremental = params.retainedActiveCount !== undefined;
   const currentRows = executeSqliteQuerySync(
     db,
     kysely
       .selectFrom("session_transcript_active_events")
       .select(["active_position", "context_eligible", "event_seq", "message_position"])
       .where("session_id", "=", sessionId)
+      .$if(incremental, (query) =>
+        query.where("active_position", ">=", params.retainedActiveCount!),
+      )
       .orderBy("active_position", "asc"),
   ).rows;
   const sameRow = (
@@ -419,36 +425,49 @@ export function replaceSessionTranscriptIndexSuffixInTransaction(
     current?.context_eligible === expected?.contextEligible &&
     current?.event_seq === expected?.eventSeq &&
     current?.message_position === expected?.messagePosition;
-  const expectedCurrentRows = params.previous.activeRows.filter(
-    (row) => row.eventSeq < params.unchangedBeforeSeq,
-  );
-  if (
-    currentRows.length !== expectedCurrentRows.length ||
-    currentRows.some((row, index) => !sameRow(row, expectedCurrentRows[index]))
-  ) {
-    throw new Error(`Transcript projection changed before suffix replacement: ${sessionId}`);
+
+  let retainedCount: number;
+  if (incremental) {
+    retainedCount = params.retainedActiveCount!;
+  } else {
+    const previous = params.previous;
+    if (!previous) {
+      throw new Error(`Missing previous transcript projection: ${sessionId}`);
+    }
+    const expectedCurrentRows = previous.activeRows.filter(
+      (row) => row.eventSeq < params.unchangedBeforeSeq,
+    );
+    if (
+      currentRows.length !== expectedCurrentRows.length ||
+      currentRows.some((row, index) => !sameRow(row, expectedCurrentRows[index]))
+    ) {
+      throw new Error(`Transcript projection changed before suffix replacement: ${sessionId}`);
+    }
+    const prefixCount = params.next.activeRows.findIndex(
+      (row) => row.eventSeq >= params.unchangedBeforeSeq,
+    );
+    retainedCount = prefixCount < 0 ? params.next.activeRows.length : prefixCount;
+    if (
+      retainedCount !== expectedCurrentRows.length ||
+      params.next.activeRows
+        .slice(0, retainedCount)
+        .some((row, index) => !sameRow(currentRows[index], row))
+    ) {
+      throw new Error(
+        `Transcript projection prefix changed before suffix replacement: ${sessionId}`,
+      );
+    }
   }
 
-  const prefixCount = params.next.activeRows.findIndex(
-    (row) => row.eventSeq >= params.unchangedBeforeSeq,
-  );
-  const retainedCount = prefixCount < 0 ? params.next.activeRows.length : prefixCount;
-  if (
-    retainedCount !== expectedCurrentRows.length ||
-    params.next.activeRows
-      .slice(0, retainedCount)
-      .some((row, index) => !sameRow(currentRows[index], row))
-  ) {
-    throw new Error(`Transcript projection prefix changed before suffix replacement: ${sessionId}`);
-  }
-
-  const removedMessageIds = [
-    ...new Set(
-      params.previous.activeRows
-        .slice(retainedCount)
-        .flatMap((row) => (row.ftsEntry ? [row.ftsEntry.messageId] : [])),
-    ),
-  ];
+  const removedMessageIds = incremental
+    ? (params.removedMessageIds ?? [])
+    : [
+        ...new Set(
+          params
+            .previous!.activeRows.slice(retainedCount)
+            .flatMap((row) => (row.ftsEntry ? [row.ftsEntry.messageId] : [])),
+        ),
+      ];
   for (let offset = 0; offset < removedMessageIds.length; offset += 400) {
     executeSqliteQuerySync(
       db,
@@ -468,7 +487,10 @@ export function replaceSessionTranscriptIndexSuffixInTransaction(
 
   const insertActive = createActiveEventInserter(db, sessionId);
   const insertFts = createFtsInserter(db, sessionId);
-  for (const row of params.next.activeRows.slice(retainedCount)) {
+  const rowsToInsert = incremental
+    ? params.next.activeRows
+    : params.next.activeRows.slice(retainedCount);
+  for (const row of rowsToInsert) {
     insertActive(row);
     if (row.ftsEntry) {
       insertFts(row.ftsEntry);
@@ -478,7 +500,7 @@ export function replaceSessionTranscriptIndexSuffixInTransaction(
     db,
     sessionId,
   )({
-    activeEventCount: params.next.activeRows.length,
+    activeEventCount: params.next.activeRows.length + (incremental ? retainedCount : 0),
     activeMessageCount: params.next.activeMessageCount,
     indexedSeq: params.next.indexedSeq,
     leafEventId: params.next.leafEventId,
