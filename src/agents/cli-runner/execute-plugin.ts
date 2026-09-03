@@ -529,8 +529,7 @@ export async function executePluginOwnedProcess(params: {
         claimResources: params.context.preparedBackend.claimLiveSessionResources,
       });
     }
-    run.assertCurrent?.();
-    signal.throwIfAborted();
+    assertCurrent();
     const execution = params.execute({
       command,
       args: params.executionArgs,
