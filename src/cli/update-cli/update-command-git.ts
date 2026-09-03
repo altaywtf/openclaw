@@ -23,6 +23,7 @@ import {
   readGitTargetSchemaVersions,
   selectChannelTag,
 } from "../../infra/update-runner-git-target.js";
+import type { CommandRunner as UpdateRunnerCommandRunner } from "../../infra/update-runner-types.js";
 import { runGatewayUpdate, type UpdateRunResult } from "../../infra/update-runner.js";
 import { defaultRuntime } from "../../runtime.js";
 import { OPENCLAW_DATABASE_SCHEMA_DOCS_URL } from "../../state/openclaw-database-preflight.js";
@@ -191,7 +192,7 @@ async function resolveCurrentRemoteBranchRevision(params: {
     return { status: "unreadable", reason: remoteList.metadataUnreadable };
   }
   const remote = (remoteList.remotes ?? [])
-    .sort((left, right) => right.length - left.length)
+    .toSorted((left, right) => right.length - left.length)
     .find((value) => trackingRef.startsWith(`${value}/`));
   if (!remote) {
     return {
@@ -313,6 +314,8 @@ export async function inspectGitDryRunTargetSchemaVersions(params: {
   devTarget?: DevUpdateTarget;
 }): Promise<{ schemaVersions?: OpenClawSchemaVersions; metadataUnreadable?: string }> {
   const runCommand = createGlobalCommandRunner();
+  const runTargetCommand: UpdateRunnerCommandRunner = (argv, options) =>
+    runCommand(argv, { ...options, timeoutMs: options.timeoutMs ?? params.timeoutMs });
   let revision: string | null = null;
   if (params.channel === "extended-stable") {
     return { metadataUnreadable: "extended-stable is unavailable for Git updates" };
@@ -335,7 +338,7 @@ export async function inspectGitDryRunTargetSchemaVersions(params: {
     }
     revision = selected;
   } else {
-    const branch = await readBranchName(runCommand, params.root, params.timeoutMs);
+    const branch = await readBranchName(runTargetCommand, params.root, params.timeoutMs);
     const needsCheckoutMain = branch !== DEV_BRANCH;
     let remoteBranchRefs: string[] = [];
     if (needsCheckoutMain) {
@@ -371,7 +374,7 @@ export async function inspectGitDryRunTargetSchemaVersions(params: {
     return { metadataUnreadable: "could not resolve the selected Git target" };
   }
   const target = await readGitTargetSchemaVersions({
-    runCommand,
+    runCommand: runTargetCommand,
     root: params.root,
     revision,
     timeoutMs: params.timeoutMs,

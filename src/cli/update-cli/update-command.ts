@@ -62,6 +62,7 @@ import {
   parseTimeoutMsOrExit,
   readPackageName,
   readPackageVersion,
+  resolveGitInstallDir,
   resolveGlobalManager,
   resolveNodeRunner,
   resolveTargetVersion,
