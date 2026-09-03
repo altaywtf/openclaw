@@ -2,7 +2,10 @@
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { expect, vi, type Mock } from "vitest";
 import type { OpenClawConfig } from "../runtime-api.js";
-import type { TelegramNativeCommandDeps } from "./bot-native-command-deps.runtime.js";
+import {
+  defaultTelegramNativeCommandDeps,
+  type TelegramNativeCommandDeps,
+} from "./bot-native-command-deps.runtime.js";
 import {
   createNativeCommandTestParams as createBaseNativeCommandTestParams,
   createTelegramPrivateCommandContext,
@@ -96,6 +99,7 @@ export function createNativeCommandTestParams(
 ): RegisterTelegramNativeCommandsParams {
   const telegramDeps: TelegramNativeCommandDeps = {
     getRuntimeConfig: vi.fn(() => cfg) as TelegramNativeCommandDeps["getRuntimeConfig"],
+    runProviderChannelLoginFlow: defaultTelegramNativeCommandDeps.runProviderChannelLoginFlow,
     readChannelAllowFromStore: vi.fn(
       async () => [],
     ) as TelegramNativeCommandDeps["readChannelAllowFromStore"],

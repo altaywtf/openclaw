@@ -9,7 +9,6 @@ import type { ModelsAuthLoginFlowOptions } from "openclaw/plugin-sdk/provider-au
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import type { SessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { TelegramNativeCommandDeps } from "./bot-native-command-deps.runtime.js";
 import type { TelegramLoginFlow } from "./bot-native-command-executors.test-support.js";
 import {
   createTelegramGroupCommandContext,
@@ -62,7 +61,6 @@ vi.mock("openclaw/plugin-sdk/session-store-runtime", async () => {
   };
 });
 
-type TelegramLoginFlow = NonNullable<TelegramNativeCommandDeps["runProviderChannelLoginFlow"]>;
 type TelegramLoginResult = Awaited<ReturnType<TelegramLoginFlow>>;
 type LoginFlowResult = Partial<TelegramLoginResult> &
   Pick<TelegramLoginResult, "providerId" | "methodId" | "profiles">;
@@ -910,7 +908,7 @@ describe("registerTelegramNativeCommands /login", () => {
         updatedAt: 1,
       },
     });
-    const runModelsAuthLoginFlow = vi.fn(async () => ({
+    const runModelsAuthLoginFlow = vi.fn<TelegramLoginFlow>(async () => ({
       providerId: "openai",
       methodId: "device-code",
       modelAccess: "already-visible",
@@ -965,7 +963,7 @@ describe("registerTelegramNativeCommands /login", () => {
       },
     });
     loginSessionMocks.updateSessionStoreEntry.mockRejectedValueOnce(new Error("write failed"));
-    const runModelsAuthLoginFlow = vi.fn(async () => ({
+    const runModelsAuthLoginFlow = vi.fn<TelegramLoginFlow>(async () => ({
       providerId: "openai",
       methodId: "device-code",
       modelAccess: "already-visible",
@@ -995,7 +993,7 @@ describe("registerTelegramNativeCommands /login", () => {
   });
 
   it("reports partial success when Telegram login returns no OpenAI profile", async () => {
-    const runModelsAuthLoginFlow = vi.fn(async () => ({
+    const runModelsAuthLoginFlow = vi.fn<TelegramLoginFlow>(async () => ({
       providerId: "openai",
       methodId: "device-code",
       modelAccess: "already-visible",
@@ -1043,7 +1041,7 @@ describe("registerTelegramNativeCommands /login", () => {
       const patch = await params.update({ ...concurrentEntry });
       return patch ? { ...concurrentEntry, ...patch } : concurrentEntry;
     });
-    const runModelsAuthLoginFlow = vi.fn(async () => ({
+    const runModelsAuthLoginFlow = vi.fn<TelegramLoginFlow>(async () => ({
       providerId: "openai",
       methodId: "device-code",
       modelAccess: "already-visible",
