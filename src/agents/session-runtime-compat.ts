@@ -84,10 +84,11 @@ export function resolveSessionRuntimeOverrideForProvider(params: {
   }
 
   // agentHarnessId records the runtime that produced the existing transcript;
-  // it must not override the runtime selected for the next turn.
+  // it must not override the runtime selected for the next turn. A stored CLI provider
+  // override names its runtime alias directly.
   return resolveCompatibleAgentRuntimeForProvider({
     provider: params.provider,
-    runtime: params.entry?.agentRuntimeOverride,
+    runtime: params.entry?.agentRuntimeOverride ?? params.entry?.providerOverride,
     cfg: params.cfg,
   });
 }

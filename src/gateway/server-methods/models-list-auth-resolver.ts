@@ -100,6 +100,7 @@ export function createModelsListEntryEvaluator(params: {
         cfg: params.cfg,
         metadataSnapshot: params.metadataSnapshot,
         provider: entry.provider,
+        nativeRuntime: entry.nativeRuntime,
       });
       const provider = normalizeProviderId(entry.provider);
       // Stored credentials prove presence, not acceptance. Apply the live rejection only to the

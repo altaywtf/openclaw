@@ -137,11 +137,15 @@ export function applyCliRuntimeModelAuthAvailability(params: {
   cfg: OpenClawConfig;
   metadataSnapshot?: PluginMetadataSnapshot;
   provider: string;
+  /** Runtime that discovered the row; its own recorded login serves the row. */
+  nativeRuntime?: string;
 }): ModelAuthAvailabilityEvaluation {
   if (params.evaluation.routeResolution !== null) {
     return params.evaluation;
   }
-  const preparedAuth = params.authResolver.resolvePreparedRuntimeAuthMode(params.provider);
+  const preparedAuth =
+    params.authResolver.resolvePreparedRuntimeAuthMode(params.provider) ??
+    resolveNativeRuntimeAuth(params.authResolver, params.nativeRuntime);
   const runtimeProvider = preparedAuth?.runtime;
   if (
     !runtimeProvider ||
@@ -184,6 +188,16 @@ export function applyCliRuntimeModelAuthAvailability(params: {
       ? { availability: false, routeResolution: null, unavailableReason: "missing-auth" }
       : { availability: undefined, routeResolution: null };
 }
+function resolveNativeRuntimeAuth(
+  authResolver: ModelAuthAvailabilityResolver,
+  nativeRuntime: string | undefined,
+): PreparedProviderAuth[string] | undefined {
+  const runtimeAuth = nativeRuntime
+    ? authResolver.resolvePreparedRuntimeAuthMode(nativeRuntime)
+    : undefined;
+  return runtimeAuth ? { ...runtimeAuth, runtime: nativeRuntime } : undefined;
+}
+
 type CreateModelAuthAvailabilityResolverParams = {
   cfg: OpenClawConfig;
   authStore: AuthProfileStore;
