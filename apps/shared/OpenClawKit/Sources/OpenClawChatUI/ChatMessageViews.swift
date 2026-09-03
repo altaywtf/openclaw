@@ -286,7 +286,7 @@ private struct ChatBubbleShape: InsettableShape {
 }
 
 @MainActor
-struct ChatMessageBubble: View, Equatable {
+struct ChatMessageBubble: View, @MainActor Equatable {
     let message: OpenClawChatMessage
     let style: OpenClawChatView.Style
     let markdownVariant: ChatMarkdownVariant
@@ -318,11 +318,11 @@ struct ChatMessageBubble: View, Equatable {
         }
     }
 
-    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+    static func == (lhs: Self, rhs: Self) -> Bool {
         // The iOS gate excludes media/widgets, so resolver closures cannot affect its subtree.
         // Comparing closure identity would defeat the gate because ChatView rebuilds them each pass.
-        lhs.message == rhs.message &&
-            Self.styleValue(lhs.style) == Self.styleValue(rhs.style) &&
+        guard self.styleValue(lhs.style) == self.styleValue(rhs.style) else { return false }
+        return lhs.message == rhs.message &&
             lhs.markdownVariant.rawValue == rhs.markdownVariant.rawValue &&
             lhs.userAccent == rhs.userAccent &&
             lhs.displayOptions.rawValue == rhs.displayOptions.rawValue &&
@@ -337,7 +337,7 @@ struct ChatMessageBubble: View, Equatable {
             lhs.mediaArtifactResolverReady == rhs.mediaArtifactResolverReady
     }
 
-    private nonisolated static func styleValue(_ style: OpenClawChatView.Style) -> UInt8 {
+    private static func styleValue(_ style: OpenClawChatView.Style) -> UInt8 {
         switch style {
         case .standard: 0
         case .onboarding: 1
