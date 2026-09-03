@@ -232,6 +232,21 @@ function prepareIncrementalTranscriptSuffixMutation(
   const next = nextTail.slice(localPrefixLength);
   const startSeq =
     expectedRows[0]?.seq ?? (storedTail.at(-1)?.seq ?? persistedPrefixLength - 1) + 1;
+  const storedCreatedAtByEventId = new Map(
+    expectedTail.flatMap((event, index) => {
+      const eventId = readTranscriptEventId(event);
+      const createdAt = storedTail[index]?.createdAt;
+      return eventId && createdAt !== undefined ? [[eventId, createdAt] as const] : [];
+    }),
+  );
+  const nextCreatedAt = next.map((event) => {
+    const eventId = readTranscriptEventId(event);
+    return (
+      (eventId ? storedCreatedAtByEventId.get(eventId) : undefined) ??
+      readEventTimestamp(event) ??
+      Date.now()
+    );
+  });
   const projectionWasHealthy = !sessionTranscriptIndexNeedsReconcile(
     database.db,
     resolved.sessionId,
@@ -247,7 +262,7 @@ function prepareIncrementalTranscriptSuffixMutation(
         retainedActiveCount: 0,
       },
       next,
-      nextCreatedAt: next.map((event) => readEventTimestamp(event) ?? Date.now()),
+      nextCreatedAt,
       nextProjection: {
         activeMessageCount: 0,
         activeRows: [],
@@ -318,28 +333,11 @@ function prepareIncrementalTranscriptSuffixMutation(
     retainedMessagePosition === null || retainedMessagePosition === undefined
       ? 0
       : retainedMessagePosition + 1;
-  const syntheticAnchor: TranscriptEvent | undefined = anchorId
-    ? { type: "custom", id: anchorId, parentId: null }
-    : undefined;
+  const syntheticAnchor = anchorId ? { type: "custom", id: anchorId, parentId: null } : undefined;
   const projectionEvents = syntheticAnchor ? [syntheticAnchor, ...next] : [...next];
   const projectionSeqs = projectionEvents.map((_event, index) =>
     syntheticAnchor && index === 0 ? startSeq - 1 : startSeq + index - (syntheticAnchor ? 1 : 0),
   );
-  const storedCreatedAtByEventId = new Map(
-    expectedTail.flatMap((event, index) => {
-      const eventId = readTranscriptEventId(event);
-      const createdAt = storedTail[index]?.createdAt;
-      return eventId && createdAt !== undefined ? [[eventId, createdAt] as const] : [];
-    }),
-  );
-  const nextCreatedAt = next.map((event) => {
-    const eventId = readTranscriptEventId(event);
-    return (
-      (eventId ? storedCreatedAtByEventId.get(eventId) : undefined) ??
-      readEventTimestamp(event) ??
-      Date.now()
-    );
-  });
   const projectionCreatedAt = syntheticAnchor ? [Date.now(), ...nextCreatedAt] : nextCreatedAt;
   const relativeProjection = prepareTranscriptIndexProjection(
     projectionEvents,
@@ -347,16 +345,20 @@ function prepareIncrementalTranscriptSuffixMutation(
     projectionCreatedAt,
   );
   const syntheticMessageOffset = syntheticAnchor && hasTranscriptMessage(syntheticAnchor) ? 1 : 0;
-  const activeRows = relativeProjection.activeRows
-    .filter((row) => row.eventSeq >= startSeq)
-    .map((row, index) => ({
+  const activeRows: SessionTranscriptIndexProjection["activeRows"] = [];
+  for (const row of relativeProjection.activeRows) {
+    if (row.eventSeq < startSeq) {
+      continue;
+    }
+    activeRows.push({
       ...row,
-      activePosition: retainedActiveCount + index,
+      activePosition: retainedActiveCount + activeRows.length,
       messagePosition:
         row.messagePosition === null
           ? null
           : retainedMessageCount + row.messagePosition - syntheticMessageOffset,
-    }));
+    });
+  }
   const addedMessages = activeRows.filter((row) => row.messagePosition !== null).length;
   return {
     expectedRows,
