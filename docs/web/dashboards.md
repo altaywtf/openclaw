@@ -27,6 +27,9 @@ after a Gateway reconnect.
 If a refresh fails, the page keeps the last loaded dashboards visible with a
 stale-data warning. Choose **Retry** to load the list again.
 
+Selecting a dashboard-enabled thread in the main sidebar also opens its dashboard
+panel expanded and focuses the dashboard tab.
+
 The dashboard and its server-side thread preference follow you when you connect
 to the same Gateway from another device. The active dashboard tab and side-panel
 layout remain per-device UI state, so each browser can keep its own working
