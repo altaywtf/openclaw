@@ -2,6 +2,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../../test/helpers/temp-dir.js";
 import {
+  appendTranscriptMessage,
   loadTranscriptEvents,
   readSessionTranscriptWatermark,
   upsertSessionEntryCore,
@@ -267,6 +268,45 @@ describe("stripSessionsYieldArtifacts", () => {
             entry.customType === SESSIONS_YIELD_INTERRUPT_CUSTOM_TYPE),
       ),
     ).toBe(false);
+  });
+
+  it("keeps live and durable histories unchanged when concurrent persistence wins", async () => {
+    const dir = tempDirs.make("openclaw-sessions-yield-concurrent-");
+    const scope = {
+      agentId: "main",
+      sessionId: "sessions-yield-concurrent",
+      sessionKey: "agent:main:sessions-yield-concurrent",
+      storePath: path.join(dir, "sessions.json"),
+    };
+    await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 1 });
+    const sessionManager = SessionManager.open(scope, dir);
+    const toolResult = makeToolResultMessage();
+    const assistant = makeAssistantMessage({ stopReason: "aborted" });
+    const interrupt = makeYieldInterruptMessage();
+    sessionManager.appendMessage(toolResult);
+    sessionManager.appendMessage(assistant);
+    sessionManager.appendCustomMessageEntry(
+      SESSIONS_YIELD_INTERRUPT_CUSTOM_TYPE,
+      "[sessions_yield interrupt]",
+      false,
+    );
+    const session = buildSession([toolResult, assistant, interrupt], sessionManager);
+    await appendTranscriptMessage(scope, {
+      cwd: dir,
+      eventId: "concurrent",
+      message: makeUserMessage(),
+    });
+
+    expect(() => stripSessionsYieldArtifacts(session)).toThrow(
+      "SQLite transcript changed while preparing suffix removal",
+    );
+    expect(session.agent.state.messages).toEqual([toolResult, assistant, interrupt]);
+    expect(SessionManager.open(scope, dir).buildSessionContext().messages).toMatchObject([
+      toolResult,
+      assistant,
+      { role: "custom", customType: SESSIONS_YIELD_INTERRUPT_CUSTOM_TYPE },
+      { role: "user", content: [{ type: "text", text: "continue" }] },
+    ]);
   });
 
   it.each([
