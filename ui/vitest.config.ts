@@ -11,7 +11,7 @@ import {
   loadPatternListFromEnv,
   relativizeScopedPatterns,
 } from "../test/vitest/vitest.pattern-file.ts";
-import { loadVitestExperimentalConfig } from "../test/vitest/vitest.performance-config.ts";
+import { loadVitestPerformanceConfig } from "../test/vitest/vitest.performance-config.ts";
 import {
   jsdomOptimizedDeps,
   nonIsolatedRunnerPath,
@@ -107,7 +107,7 @@ function includeUiTests(patterns: string[], env = process.env): string[] {
 }
 
 const sharedUiTestConfig = {
-  ...loadVitestExperimentalConfig(process.env, process.platform, here),
+  ...loadVitestPerformanceConfig(process.env, process.platform, here),
   // Preserve calls recorded during shared setup and beforeAll hooks.
   clearMocks: false,
   isolate: false,
@@ -208,9 +208,6 @@ export default defineConfig({
     projects: [
       defineProject({
         plugins: [controlUiLocaleModulesPlugin()],
-        resolve: {
-          alias: workspaceSourceAliases,
-        },
         test: {
           ...sharedUiTestConfig,
           deps: jsdomOptimizedDeps,
@@ -237,9 +234,6 @@ export default defineConfig({
       }),
       defineProject({
         plugins: [controlUiLocaleModulesPlugin()],
-        resolve: {
-          alias: workspaceSourceAliases,
-        },
         test: {
           ...sharedUiTestConfig,
           // Reuse the canonical singleton-sensitive list so the package and
@@ -254,9 +248,6 @@ export default defineConfig({
       }),
       defineProject({
         plugins: [controlUiLocaleModulesPlugin()],
-        resolve: {
-          alias: workspaceSourceAliases,
-        },
         test: {
           ...sharedUiTestConfig,
           deps: jsdomOptimizedDeps,
