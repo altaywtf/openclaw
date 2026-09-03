@@ -1,17 +1,15 @@
-export function resolveGatewayClientPlatform(platform: NodeJS.Platform): string {
+export function resolveGatewayClientPlatform(platform: string): string {
   switch (platform) {
     case "darwin":
       return "macos";
     case "win32":
       return "windows";
-    case "linux":
-      return "linux";
     default:
-      return "unknown";
+      return platform;
   }
 }
 
-export function resolveGatewayClientDeviceFamily(platform: NodeJS.Platform): string | undefined {
+export function resolveGatewayClientDeviceFamily(platform: string): string | undefined {
   switch (platform) {
     case "darwin":
       return "Mac";

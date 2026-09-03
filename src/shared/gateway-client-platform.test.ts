@@ -9,7 +9,7 @@ describe("gateway client platform metadata", () => {
     { runtime: "darwin", platform: "macos", deviceFamily: "Mac" },
     { runtime: "win32", platform: "windows", deviceFamily: "Windows" },
     { runtime: "linux", platform: "linux", deviceFamily: "Linux" },
-    { runtime: "freebsd", platform: "unknown", deviceFamily: undefined },
+    { runtime: "freebsd", platform: "freebsd", deviceFamily: undefined },
   ] as const)("maps $runtime to $platform/$deviceFamily", ({ runtime, platform, deviceFamily }) => {
     expect(resolveGatewayClientPlatform(runtime)).toBe(platform);
     expect(resolveGatewayClientDeviceFamily(runtime)).toBe(deviceFamily);

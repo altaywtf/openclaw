@@ -2333,9 +2333,33 @@ describe("attachGatewayWsMessageHandler post-connect health refresh", () => {
 
 describe("resolvePinnedClientMetadata", () => {
   it.each([
-    ["cli", "cli"],
-    ["openclaw-tui", "ui"],
-  ])("accepts the legacy Windows pairing tuple for core client %s", (clientId, clientMode) => {
+    ["win32", "windows", "Windows"],
+    ["darwin", "macos", "Mac"],
+  ])(
+    "accepts equivalent runtime alias %s as %s regardless of client mode",
+    (pairedPlatform, claimedPlatform, claimedDeviceFamily) => {
+      expect(
+        resolvePinnedClientMetadata({
+          clientId: "test",
+          clientMode: "test",
+          claimedPlatform,
+          claimedDeviceFamily,
+          pairedPlatform,
+          pairedDeviceFamily: undefined,
+        }),
+      ).toEqual({
+        platformMismatch: false,
+        deviceFamilyMismatch: false,
+        pinnedPlatform: claimedPlatform,
+        pinnedDeviceFamily: undefined,
+      });
+    },
+  );
+
+  it.each([
+    ["cli", "probe"],
+    ["gateway-client", "backend"],
+  ])("accepts the Windows runtime alias for affected caller %s/%s", (clientId, clientMode) => {
     expect(
       resolvePinnedClientMetadata({
         clientId,
@@ -2345,22 +2369,20 @@ describe("resolvePinnedClientMetadata", () => {
         pairedPlatform: "win32",
         pairedDeviceFamily: undefined,
       }),
-    ).toEqual({
+    ).toMatchObject({
       platformMismatch: false,
       deviceFamilyMismatch: false,
-      pinnedPlatform: "windows",
-      pinnedDeviceFamily: undefined,
     });
   });
 
-  it("does not accept the legacy Windows pairing tuple for unrelated clients", () => {
+  it("keeps non-equivalent platform changes approval-bound", () => {
     expect(
       resolvePinnedClientMetadata({
-        clientId: "gateway-client",
-        clientMode: "backend",
+        clientId: "test",
+        clientMode: "test",
         claimedPlatform: "windows",
         claimedDeviceFamily: "Windows",
-        pairedPlatform: "win32",
+        pairedPlatform: "linux",
         pairedDeviceFamily: undefined,
       }),
     ).toMatchObject({

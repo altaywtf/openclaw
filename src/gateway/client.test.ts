@@ -1699,6 +1699,23 @@ describe("GatewayClient connect auth payload", () => {
     }
   });
 
+  it("preserves runtime metadata defaults for platforms without canonical aliases", () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("freebsd");
+    const client = createClientWithIdentity("device-freebsd", vi.fn(), {
+      clientName: GATEWAY_CLIENT_NAMES.TEST,
+      mode: GATEWAY_CLIENT_MODES.TEST,
+    });
+
+    try {
+      const { connect } = startClientAndConnect({ client });
+      expect(connect.params?.client).toMatchObject({ platform: "freebsd" });
+      expect(connect.params?.client).not.toHaveProperty("deviceFamily");
+    } finally {
+      client.stop();
+      platformSpy.mockRestore();
+    }
+  });
+
   it("does not advertise node plugin tools in the initial connect frame", () => {
     const client = new GatewayClient({
       url: "ws://127.0.0.1:18789",
