@@ -24,6 +24,57 @@ import java.util.UUID
 @RunWith(RobolectricTestRunner::class)
 class ClientDatabasesTest {
   @Test
+  fun readerPositionPersistsPerGatewayAndSessionAcrossReopen() =
+    runTest {
+      val names = databaseNames()
+      withDatabases(names, setOf("gateway-a", "gateway-b")) { databases ->
+        val store = databases.readerPositionStore()
+        store.save("gateway-a", "main", ChatReaderPosition("message-a", 4, 37))
+        store.save("gateway-a", "agent:main:side", ChatReaderPosition("message-side", 8, 12))
+        store.save("gateway-b", "main", ChatReaderPosition("message-b", 2, 5))
+      }
+
+      withCleanDatabases(names, setOf("gateway-a", "gateway-b")) { reopened ->
+        val store = reopened.readerPositionStore()
+        assertEquals(ChatReaderPosition("message-a", 4, 37), store.load("gateway-a", "main"))
+        assertEquals(
+          ChatReaderPosition("message-side", 8, 12),
+          store.load("gateway-a", "agent:main:side"),
+        )
+        assertEquals(ChatReaderPosition("message-b", 2, 5), store.load("gateway-b", "main"))
+        store.deleteSession("gateway-a", "main")
+        assertNull(store.load("gateway-a", "main"))
+        assertEquals(ChatReaderPosition("message-b", 2, 5), store.load("gateway-b", "main"))
+      }
+    }
+
+  @Test
+  fun clientStateV1MigratesBeforeReaderPositionIsPersisted() =
+    runTest {
+      val names = databaseNames()
+      val context = RuntimeEnvironment.getApplication()
+      val v1 = ClientStateDatabase.open(context, names.state)
+      v1.controlDao().upsertMetadata(ClientStateMetadataEntity("v1-proof", "preserved"))
+      v1.close()
+      SQLiteDatabase.openDatabase(context.getDatabasePath(names.state).path, null, SQLiteDatabase.OPEN_READWRITE).use {
+        it.execSQL("DROP TABLE chat_reader_positions")
+        it.execSQL(
+          "UPDATE room_master_table SET identity_hash = ? WHERE id = 42",
+          arrayOf<Any>("924cec9afdb455dced2592399a08f5da"),
+        )
+        it.version = 1
+      }
+
+      withCleanDatabases(names) { migrated ->
+        assertEquals(2, migrated.clientStateDatabase().userVersion())
+        assertEquals("preserved", migrated.clientStateDatabase().controlDao().metadataValue("v1-proof"))
+        val position = ChatReaderPosition("message-1", 6, 19)
+        migrated.readerPositionStore().save("gateway-a", "main", position)
+        assertEquals(position, migrated.readerPositionStore().load("gateway-a", "main"))
+      }
+    }
+
+  @Test
   fun deferredOutboxPersistsAtomicMutationDemotion() =
     runTest {
       val names = databaseNames()
@@ -53,7 +104,7 @@ class ClientDatabasesTest {
 
       withCleanDatabases(names, setOf("gateway-test")) { databases ->
         assertEquals(3, databases.gatewayCacheDatabase().userVersion())
-        assertEquals(1, databases.clientStateDatabase().userVersion())
+        assertEquals(2, databases.clientStateDatabase().userVersion())
 
         val rows = databases.commandOutbox().load("gateway-test").associateBy { it.id }
         val pristine = rows.getValue("pristine")
@@ -268,14 +319,18 @@ class ClientDatabasesTest {
       withDatabases(names, setOf("gateway-a", "gateway-b")) { first ->
         seedGateway(first, "gateway-a", "remove")
         seedGateway(first, "gateway-b", "keep")
+        first.readerPositionStore().save("gateway-a", "main", ChatReaderPosition("remove", 2, 3))
+        first.readerPositionStore().save("gateway-b", "main", ChatReaderPosition("keep", 4, 5))
         first.stageGatewayRemoval("gateway-a")
       }
 
       withCleanDatabases(names, setOf("gateway-b")) { reopened ->
         assertTrue(reopened.transcriptCache().loadTranscript("gateway-a", "main", "main").isEmpty())
         assertTrue(reopened.commandOutbox().load("gateway-a").isEmpty())
+        assertNull(reopened.readerPositionStore().load("gateway-a", "main"))
         assertEquals(listOf("keep"), reopened.transcriptCache().loadTranscript("gateway-b", "main", "main").map { it.content.single().text })
         assertEquals(listOf("keep"), reopened.commandOutbox().load("gateway-b").map { it.text })
+        assertEquals(ChatReaderPosition("keep", 4, 5), reopened.readerPositionStore().load("gateway-b", "main"))
       }
     }
 

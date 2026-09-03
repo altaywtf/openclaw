@@ -1,5 +1,6 @@
 package ai.openclaw.app.ui.chat
 
+import ai.openclaw.app.chat.ChatReaderPosition
 import androidx.compose.foundation.gestures.stopScroll
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -23,7 +24,11 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 internal enum class ChatScrollFollowTarget {
   ReadAnchor,
@@ -78,6 +83,7 @@ internal val ChatReaderStateSaver = createChatReaderStateSaver()
 internal data class ChatReaderTransition(
   val state: ChatReaderState,
   val scrollIndex: Int? = null,
+  val scrollOffset: Int = 0,
   val animated: Boolean = false,
 )
 
@@ -96,18 +102,25 @@ internal fun rememberChatReaderScrollController(
   sessionKey: String,
   timeline: ChatTimeline,
   historyLoading: Boolean,
+  gatewayId: String? = null,
+  loadPosition: suspend (String, String) -> ChatReaderPosition? = { _, _ -> null },
+  savePosition: suspend (String, String, ChatReaderPosition) -> Unit = { _, _, _ -> },
 ): ChatReaderScrollController {
   val listState = rememberLazyListState()
   val scope = rememberCoroutineScope()
   val targetTolerancePx = with(LocalDensity.current) { 24.dp.roundToPx() }
   val currentTimeline by rememberUpdatedState(timeline)
-  val readerStateSaver = remember(sessionKey) { createChatReaderStateSaver(sessionKey) }
+  val currentLoadPosition by rememberUpdatedState(loadPosition)
+  val currentSavePosition by rememberUpdatedState(savePosition)
+  val readerStateSaver = remember(gatewayId, sessionKey) { createChatReaderStateSaver(sessionKey) }
   var readerState by
-    rememberSaveable(sessionKey, stateSaver = readerStateSaver) {
+    rememberSaveable(gatewayId, sessionKey, stateSaver = readerStateSaver) {
       mutableStateOf(ChatReaderState(ownerSessionKey = sessionKey))
     }
-  var applyingScrollCount by remember(sessionKey) { mutableIntStateOf(0) }
-  var isUserScrolling by remember(sessionKey) { mutableStateOf(false) }
+  var applyingScrollCount by remember(gatewayId, sessionKey) { mutableIntStateOf(0) }
+  var isUserScrolling by remember(gatewayId, sessionKey) { mutableStateOf(false) }
+  var persistedPosition by remember(gatewayId, sessionKey) { mutableStateOf<ChatReaderPosition?>(null) }
+  var positionLoaded by remember(gatewayId, sessionKey) { mutableStateOf(false) }
 
   fun pauseFollowing() {
     readerState = readerState.copy(followTarget = null)
@@ -117,7 +130,7 @@ internal fun rememberChatReaderScrollController(
   }
 
   val nestedScroll =
-    remember(sessionKey) {
+    remember(gatewayId, sessionKey) {
       object : NestedScrollConnection {
         override fun onPreScroll(
           available: Offset,
@@ -132,35 +145,81 @@ internal fun rememberChatReaderScrollController(
     }
 
   suspend fun applyTransition(transition: ChatReaderTransition) {
-    readerState = transition.state
-    val index = transition.scrollIndex ?: return
+    val index = transition.scrollIndex
+    if (index == null) {
+      readerState = transition.state
+      return
+    }
     // A replacement cancels its predecessor before the predecessor's finally runs.
     // Count active invocations so that cleanup cannot hide the newer animation.
     applyingScrollCount += 1
+    readerState = transition.state
     try {
       if (transition.animated) {
-        listState.animateScrollToItem(index)
+        listState.animateScrollToItem(index, transition.scrollOffset)
       } else {
-        listState.scrollToItem(index)
+        listState.scrollToItem(index, transition.scrollOffset)
       }
     } finally {
       applyingScrollCount -= 1
     }
   }
 
+  LaunchedEffect(gatewayId, sessionKey) {
+    persistedPosition =
+      gatewayId
+        ?.takeIf(String::isNotBlank)
+        ?.let { stableGatewayId ->
+          runCatching { currentLoadPosition(stableGatewayId, sessionKey) }.getOrNull()
+        }
+    positionLoaded = true
+  }
+
   // Loading only changes empty-timeline transitions. A populated-history refresh
   // must not cancel a moving scroll after its content version has been recorded.
-  LaunchedEffect(sessionKey, timeline, historyLoading && timeline.items.isEmpty()) {
+  LaunchedEffect(sessionKey, timeline, historyLoading && timeline.items.isEmpty(), positionLoaded) {
+    if (!positionLoaded) return@LaunchedEffect
+    val restoredTransition =
+      if (readerState.initialized) null else persistedPosition?.let { restoredChatReaderTransition(timeline, it, sessionKey) }
+    if (!readerState.initialized && persistedPosition != null && restoredTransition == null && historyLoading) {
+      // Cached history may not contain the durable anchor yet. Wait for the authoritative
+      // load before applying the normal fallback and replacing the saved position.
+      return@LaunchedEffect
+    }
     val transition =
       if (readerState.initialized) {
         readerState.onTimelineChanged(timeline, historyLoading)
       } else {
-        initialChatReaderTransition(timeline, ownerSessionKey = sessionKey)
+        restoredTransition ?: initialChatReaderTransition(timeline, ownerSessionKey = sessionKey)
       }
     applyTransition(transition)
   }
 
-  LaunchedEffect(sessionKey) {
+  LaunchedEffect(gatewayId, sessionKey) {
+    val stableGatewayId = gatewayId?.takeIf(String::isNotBlank) ?: return@LaunchedEffect
+    snapshotFlow {
+      val position =
+        if (positionLoaded && readerState.initialized && applyingScrollCount == 0) {
+          currentTimeline.readerPosition(
+            index = listState.firstVisibleItemIndex,
+            offset = listState.firstVisibleItemScrollOffset,
+          )
+        } else {
+          null
+        }
+      listState.isScrollInProgress to position
+    }.collectLatest { (scrolling, position) ->
+      position ?: return@collectLatest
+      if (scrolling) delay(250)
+      // Finish the settled viewport write when navigation disposes this composition;
+      // otherwise reopening immediately can observe the preceding position.
+      withContext(NonCancellable) {
+        runCatching { currentSavePosition(stableGatewayId, sessionKey, position) }
+      }
+    }
+  }
+
+  LaunchedEffect(gatewayId, sessionKey) {
     snapshotFlow {
       Triple(
         listState.isScrollInProgress,
@@ -221,6 +280,37 @@ internal fun initialChatReaderTransition(
         latestContentVersion = timeline.latestContentVersion,
       ),
     scrollIndex = initialIndex,
+  )
+}
+
+internal fun restoredChatReaderTransition(
+  timeline: ChatTimeline,
+  position: ChatReaderPosition,
+  ownerSessionKey: String? = null,
+): ChatReaderTransition? {
+  // Gateway reloads can regenerate display IDs. The stable message version rebinds
+  // the same transcript row before the index-only fallback is considered.
+  val restoredIndex =
+    position.messageId?.let(timeline::indexOfMessage)
+      ?: position.messageVersion?.let(timeline::indexOfMessageVersion)
+      ?: position.itemIndex.takeIf {
+        position.messageId == null && position.messageVersion == null && it in timeline.items.indices
+      }
+      ?: return null
+  val followsLatest = restoredIndex == timeline.latestContentIndex && position.itemOffset == 0
+  return ChatReaderTransition(
+    state =
+      ChatReaderState(
+        ownerSessionKey = ownerSessionKey,
+        initialized = true,
+        followTarget = ChatScrollFollowTarget.LatestContent.takeIf { followsLatest },
+        hasNewerContent = !followsLatest && timeline.latestContentIndex != null,
+        latestUserMessageId = timeline.latestUserMessageId,
+        latestUserMessageVersion = timeline.latestUserMessageVersion,
+        latestContentVersion = timeline.latestContentVersion,
+      ),
+    scrollIndex = restoredIndex,
+    scrollOffset = position.itemOffset,
   )
 }
 
@@ -336,6 +426,30 @@ private fun ChatTimeline.containsMessage(id: String): Boolean =
   items
     .filterIsInstance<ChatTimelineItem.Message>()
     .any { item -> item.message.id == id }
+
+internal fun ChatTimeline.readerPosition(
+  index: Int,
+  offset: Int,
+): ChatReaderPosition? {
+  val item = items.getOrNull(index) ?: return null
+  val message = (item as? ChatTimelineItem.Message)?.message
+  return ChatReaderPosition(
+    messageId = message?.id,
+    itemIndex = index,
+    itemOffset = offset,
+    messageVersion = message?.let(::stableMessageVersion),
+  )
+}
+
+private fun ChatTimeline.indexOfMessage(id: String): Int? =
+  items
+    .indexOfFirst { item -> item is ChatTimelineItem.Message && item.message.id == id }
+    .takeIf { it >= 0 }
+
+private fun ChatTimeline.indexOfMessageVersion(version: String): Int? =
+  items
+    .indexOfFirst { item -> item is ChatTimelineItem.Message && stableMessageVersion(item.message) == version }
+    .takeIf { it >= 0 }
 
 private fun ChatTimeline.followTargetForIndex(index: Int?): ChatScrollFollowTarget? {
   if (index == null) return null

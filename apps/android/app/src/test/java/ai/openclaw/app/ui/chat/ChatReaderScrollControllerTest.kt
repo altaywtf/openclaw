@@ -3,6 +3,7 @@ package ai.openclaw.app.ui.chat
 import ai.openclaw.app.chat.ChatMessage
 import ai.openclaw.app.chat.ChatMessageContent
 import ai.openclaw.app.chat.ChatQuestionPrompt
+import ai.openclaw.app.chat.ChatReaderPosition
 import ai.openclaw.app.gateway.QuestionAnswers
 import ai.openclaw.app.gateway.QuestionRecord
 import androidx.compose.runtime.saveable.SaverScope
@@ -25,6 +26,97 @@ class ChatReaderScrollControllerTest {
     assertEquals(ChatScrollFollowTarget.ReadAnchor, transition.state.followTarget)
     assertTrue(transition.state.hasNewerContent)
     assertEquals("user-1", transition.state.latestUserMessageId)
+  }
+
+  @Test
+  fun persistedViewportRestoresStableMessageAndOffsetAfterNewContent() {
+    val before =
+      timeline(
+        user("user-1"),
+        assistant("assistant-1"),
+        user("user-2"),
+        assistant("assistant-2"),
+      )
+    val saved = requireNotNull(before.readerPosition(index = 3, offset = 47))
+    val after =
+      timeline(
+        user("user-1"),
+        assistant("assistant-1"),
+        user("user-2"),
+        assistant("assistant-2"),
+        user("user-3"),
+        assistant("assistant-3"),
+      )
+
+    val restored = requireNotNull(restoredChatReaderTransition(after, saved, "session-1"))
+
+    assertEquals("user-1", saved.messageId)
+    assertEquals(5, restored.scrollIndex)
+    assertEquals(47, restored.scrollOffset)
+    assertNull(restored.state.followTarget)
+    assertTrue(restored.state.hasNewerContent)
+    assertEquals(after.latestContentVersion, restored.state.latestContentVersion)
+  }
+
+  @Test
+  fun persistedLiveEdgeRestoresFollowingWithoutNewerContent() {
+    val timeline = timeline(user("user-1"), assistant("assistant-1"))
+    val saved = requireNotNull(timeline.readerPosition(index = 0, offset = 0))
+
+    val restored = requireNotNull(restoredChatReaderTransition(timeline, saved))
+
+    assertEquals(0, restored.scrollIndex)
+    assertEquals(ChatScrollFollowTarget.LatestContent, restored.state.followTarget)
+    assertFalse(restored.state.hasNewerContent)
+  }
+
+  @Test
+  fun persistedOffsetInsideLatestMessageDoesNotResumeFollowing() {
+    val timeline = timeline(user("user-1"), assistant("assistant-1"))
+    val saved = requireNotNull(timeline.readerPosition(index = 0, offset = 120))
+
+    val restored = requireNotNull(restoredChatReaderTransition(timeline, saved))
+
+    assertEquals(0, restored.scrollIndex)
+    assertEquals(120, restored.scrollOffset)
+    assertNull(restored.state.followTarget)
+    assertTrue(restored.state.hasNewerContent)
+  }
+
+  @Test
+  fun persistedViewportRebindsRegeneratedMessageId() {
+    val before =
+      timeline(
+        user("user-before", text = "prompt", timestampMs = 1_000, idempotencyKey = "run-1:user"),
+        assistant("assistant-before"),
+      )
+    val saved = requireNotNull(before.readerPosition(index = 1, offset = 29))
+    val after =
+      timeline(
+        user("user-after", text = "prompt", timestampMs = 2_000, idempotencyKey = "run-1:user"),
+        assistant("assistant-after"),
+        user("user-new"),
+        assistant("assistant-new"),
+      )
+
+    val restored = requireNotNull(restoredChatReaderTransition(after, saved))
+
+    assertEquals("user-before", saved.messageId)
+    assertEquals(3, restored.scrollIndex)
+    assertEquals(29, restored.scrollOffset)
+    assertTrue(restored.state.hasNewerContent)
+  }
+
+  @Test
+  fun missingPersistedMessageUsesUnchangedInitialPolicy() {
+    val timeline = timeline(user("user-1"), assistant("assistant-1"))
+    val missing = ChatReaderPosition(messageId = "removed", itemIndex = 8, itemOffset = 31)
+
+    val restored = restoredChatReaderTransition(timeline, missing)
+    val reopened = restored ?: initialChatReaderTransition(timeline)
+
+    assertNull(restored)
+    assertEquals(initialChatReaderTransition(timeline), reopened)
   }
 
   @Test

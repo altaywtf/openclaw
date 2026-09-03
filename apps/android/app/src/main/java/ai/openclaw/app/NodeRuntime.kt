@@ -16,6 +16,8 @@ import ai.openclaw.app.chat.ChatPermissionMode
 import ai.openclaw.app.chat.ChatProgressCard
 import ai.openclaw.app.chat.ChatQuestionDraft
 import ai.openclaw.app.chat.ChatQuestionPrompt
+import ai.openclaw.app.chat.ChatReaderPosition
+import ai.openclaw.app.chat.ChatReaderPositionStore
 import ai.openclaw.app.chat.ChatSessionDeletion
 import ai.openclaw.app.chat.ChatSessionEntry
 import ai.openclaw.app.chat.ChatSwarmGroup
@@ -797,6 +799,7 @@ internal fun gatewayConnectionDisplay(
 private data class AndroidChatStores(
   val transcriptCache: ChatTranscriptCache,
   val commandOutbox: ChatCommandOutbox,
+  val readerPositionStore: ChatReaderPositionStore,
   val clientDatabases: AndroidClientDatabases,
   val externalTranscriptCache: ChatTranscriptCache? = null,
 )
@@ -860,6 +863,7 @@ private fun openAndroidChatStores(
   return AndroidChatStores(
     transcriptCache = databases.transcriptCache(),
     commandOutbox = databases.commandOutbox(),
+    readerPositionStore = databases.readerPositionStore(),
     clientDatabases = databases,
   )
 }
@@ -885,6 +889,7 @@ class NodeRuntime private constructor(
 ) {
   private val chatTranscriptCache = chatStores.transcriptCache
   private val chatCommandOutbox = chatStores.commandOutbox
+  private val chatReaderPositionStore = chatStores.readerPositionStore
   private val clientDatabases = chatStores.clientDatabases
   private val externalTranscriptCache = chatStores.externalTranscriptCache
   private val screenshotRequester by lazy { AndroidScreenshotFixture.createRequester() }
@@ -2077,6 +2082,9 @@ class NodeRuntime private constructor(
 
   private fun publishChatSessionDeletion(deletion: ChatSessionDeletion) {
     synchronized(gatewayDataScopeLock) { chatSelectionSeq.incrementAndGet() }
+    deletion.gatewayId?.let { gatewayId ->
+      scope.launch { runCatching { chatReaderPositionStore.deleteSession(gatewayId, deletion.sessionKey) } }
+    }
     chatSessionDeletionListeners.values.forEach { listener -> listener(deletion) }
   }
 
@@ -3061,6 +3069,17 @@ class NodeRuntime private constructor(
   val chatCommands: StateFlow<List<ChatCommandEntry>> = chat.commands
   val chatOutboxItems: StateFlow<List<ChatOutboxItem>> = chat.outboxItems
   val chatOutboxPresentationRestored: StateFlow<Boolean> = chat.outboxPresentationRestored
+
+  internal suspend fun loadChatReaderPosition(
+    gatewayId: String,
+    sessionKey: String,
+  ): ChatReaderPosition? = chatReaderPositionStore.load(gatewayId, sessionKey)
+
+  internal suspend fun saveChatReaderPosition(
+    gatewayId: String,
+    sessionKey: String,
+    position: ChatReaderPosition,
+  ) = chatReaderPositionStore.save(gatewayId, sessionKey, position)
 
   suspend fun listBackgroundTasks(agentId: String): List<BackgroundTask> = chat.listBackgroundTasks(agentId)
 

@@ -11,6 +11,7 @@ import ai.openclaw.app.chat.ChatPermissionMode
 import ai.openclaw.app.chat.ChatProgressCard
 import ai.openclaw.app.chat.ChatQuestionDraft
 import ai.openclaw.app.chat.ChatQuestionPrompt
+import ai.openclaw.app.chat.ChatReaderPosition
 import ai.openclaw.app.chat.ChatSessionEntry
 import ai.openclaw.app.chat.ChatSwarmGroup
 import ai.openclaw.app.chat.ChatThinkingLevelSelection
@@ -666,6 +667,18 @@ class MainViewModel private constructor(
   val chatOutboxPresentationRestored: StateFlow<Boolean> = runtimeState(initial = false) { it.chatOutboxPresentationRestored }
   internal val chatMessageSpeech: StateFlow<MessageSpeechState?> =
     runtimeState(initial = null) { it.messageSpeechState }
+
+  internal suspend fun loadChatReaderPosition(
+    gatewayId: String,
+    sessionKey: String,
+  ): ChatReaderPosition? = ensureRuntime().loadChatReaderPosition(gatewayId, sessionKey)
+
+  internal suspend fun saveChatReaderPosition(
+    gatewayId: String,
+    sessionKey: String,
+    position: ChatReaderPosition,
+  ) = ensureRuntime().saveChatReaderPosition(gatewayId, sessionKey, position)
+
   val execApprovals: StateFlow<List<GatewayExecApprovalSummary>> = runtimeState(initial = emptyList()) { it.execApprovals }
   val execApprovalsRefreshing: StateFlow<Boolean> = runtimeState(initial = false) { it.execApprovalsRefreshing }
   val execApprovalsErrorText: StateFlow<String?> = runtimeState(initial = null) { it.execApprovalsErrorText }

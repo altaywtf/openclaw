@@ -121,8 +121,9 @@ internal abstract class GatewayCacheDatabase : RoomDatabase() {
     ComposerSendAdmissionEntity::class,
     ClientStateMetadataEntity::class,
     GatewayRemovalEntity::class,
+    ChatReaderPositionEntity::class,
   ],
-  version = 1,
+  version = 2,
   exportSchema = true,
 )
 internal abstract class ClientStateDatabase : RoomDatabase() {
@@ -130,13 +131,28 @@ internal abstract class ClientStateDatabase : RoomDatabase() {
 
   abstract fun controlDao(): ClientStateControlDao
 
+  abstract fun readerPositionDao(): ChatReaderPositionDao
+
   companion object {
+    internal val MIGRATION_1_2 =
+      object : Migration(1, 2) {
+        override suspend fun migrate(connection: SQLiteConnection) {
+          connection.execSQL(
+            "CREATE TABLE IF NOT EXISTS `chat_reader_positions` " +
+              "(`gatewayId` TEXT NOT NULL, `sessionKey` TEXT NOT NULL, `messageId` TEXT, " +
+              "`itemIndex` INTEGER NOT NULL, `itemOffset` INTEGER NOT NULL, `messageVersion` TEXT, " +
+              "PRIMARY KEY(`gatewayId`, `sessionKey`))",
+          )
+        }
+      }
+
     suspend fun open(
       context: Context,
       name: String = CLIENT_STATE_DB_NAME,
     ): ClientStateDatabase =
       Room
         .databaseBuilder(context.applicationContext, ClientStateDatabase::class.java, name)
+        .addMigrations(MIGRATION_1_2)
         .build()
         // Fail closed and preserve the file if durable state cannot be opened or validated.
         .openValidated()
@@ -373,6 +389,8 @@ private class OpenedAndroidClientDatabases private constructor(
 
   val commandOutbox = RoomChatCommandOutbox(clientState)
 
+  val readerPositionStore = ChatReaderPositionStore { clientState }
+
   suspend fun stageGatewayRemoval(gatewayId: String) {
     val gateway = scopedGatewayId(gatewayId) ?: return
     // A retry may race an interrupted committed purge. Never downgrade that irreversible marker.
@@ -399,6 +417,7 @@ private class OpenedAndroidClientDatabases private constructor(
       clientState.withWriteTransaction {
         clientState.controlDao().upsertGatewayRemoval(GatewayRemovalEntity(gateway, GATEWAY_REMOVAL_COMMITTING))
         commandOutbox.clearGateway(gateway)
+        readerPositionStore.clearGateway(gateway)
         clientState.controlDao().upsertGatewayRemoval(GatewayRemovalEntity(gateway, GATEWAY_REMOVAL_CACHE_PENDING))
       }
       completeCacheRemoval(gateway, propagateFailure = requireCacheRemoval)
@@ -553,10 +572,13 @@ internal class AndroidClientDatabases private constructor(
 
   private val transcriptCache = DeferredChatTranscriptCache(::ready)
   private val commandOutbox = DeferredChatCommandOutbox(::ready)
+  private val readerPositionStore = ChatReaderPositionStore { ready().clientState }
 
   fun transcriptCache(): ChatTranscriptCache = transcriptCache
 
   fun commandOutbox(): ChatCommandOutbox = commandOutbox
+
+  fun readerPositionStore(): ChatReaderPositionStore = readerPositionStore
 
   suspend fun stageGatewayRemoval(gatewayId: String) = ready().stageGatewayRemoval(gatewayId)
 

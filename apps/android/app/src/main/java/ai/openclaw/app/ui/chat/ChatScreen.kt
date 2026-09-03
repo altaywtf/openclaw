@@ -26,6 +26,7 @@ import ai.openclaw.app.chat.ChatPlanStepStatus
 import ai.openclaw.app.chat.ChatProgressCard
 import ai.openclaw.app.chat.ChatQuestionDraft
 import ai.openclaw.app.chat.ChatQuestionPrompt
+import ai.openclaw.app.chat.ChatReaderPosition
 import ai.openclaw.app.chat.ChatSessionEntry
 import ai.openclaw.app.chat.ChatSubagentActivity
 import ai.openclaw.app.chat.ChatThinkingLevelOption
@@ -716,6 +717,7 @@ fun ChatScreen(
     verticalArrangement = Arrangement.spacedBy(8.dp),
   ) {
     ChatMessageList(
+      gatewayId = activeGatewayStableId,
       sessionKey = sessionKey,
       fullMessageOwner = composerOwner,
       selectionGeneration = selectionGeneration,
@@ -725,6 +727,8 @@ fun ChatScreen(
       messages = messages,
       transcriptAnchor = transcriptAnchor,
       historyLoading = historyLoading,
+      loadReaderPosition = viewModel::loadChatReaderPosition,
+      saveReaderPosition = viewModel::saveChatReaderPosition,
       activeRunCount = selectedActiveRun.count,
       activeRunId = selectedActiveRun.runId,
       activeRunClockKey = selectedActiveRun.clockKey,
@@ -1308,6 +1312,7 @@ private fun HeaderIcon(
 
 @Composable
 private fun ChatMessageList(
+  gatewayId: String?,
   sessionKey: String,
   fullMessageOwner: ChatComposerOwner,
   selectionGeneration: Long,
@@ -1317,6 +1322,8 @@ private fun ChatMessageList(
   messages: List<ChatMessage>,
   transcriptAnchor: ChatTranscriptAnchorState?,
   historyLoading: Boolean,
+  loadReaderPosition: suspend (String, String) -> ChatReaderPosition?,
+  saveReaderPosition: suspend (String, String, ChatReaderPosition) -> Unit,
   activeRunCount: Int,
   activeRunId: String?,
   activeRunClockKey: String?,
@@ -1388,9 +1395,12 @@ private fun ChatMessageList(
   val timeline = remember(baseTimeline, turnRecap) { baseTimeline.withTurnRecap(turnRecap) }
   val readerScroll =
     rememberChatReaderScrollController(
+      gatewayId = gatewayId,
       sessionKey = sessionKey,
       timeline = timeline,
       historyLoading = historyLoading,
+      loadPosition = loadReaderPosition,
+      savePosition = saveReaderPosition,
     )
   DisposableEffect(sessionKey, turnRecapResolver) {
     onDispose { turnRecapResolver.abandonActiveWatch(sessionKey) }
