@@ -1405,14 +1405,16 @@ async function verifyPackedContents(results: NpmPackResult[], packedRoot: string
     pathToFileURL(resolve("src/shared/worker-bundle-hash.ts")).href,
     import.meta.url,
   );
-  const workerDeployEntrypoints = Object.entries(workerBundle)
-    .filter(([name]) => /^WORKER_BUNDLE_.*_PATH$/u.test(name))
-    .map(([name, value]) => {
-      if (typeof value !== "string") {
-        throw new Error(`release-check: target worker artifact ${name} must be a path string.`);
-      }
-      return `dist/worker/${value}`;
-    });
+  const workerDeployEntrypoints = existsSync("src/worker")
+    ? Object.entries(workerBundle)
+        .filter(([name]) => /^WORKER_BUNDLE_.*_PATH$/u.test(name))
+        .map(([name, value]) => {
+          if (typeof value !== "string") {
+            throw new Error(`release-check: target worker artifact ${name} must be a path string.`);
+          }
+          return `dist/worker/${value}`;
+        })
+    : [];
   checkCliBootstrapExternalImports({
     rootDir: packedRoot,
     workerDeployEntrypoints,
