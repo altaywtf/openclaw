@@ -188,20 +188,10 @@ export async function prepareWorkspaceBuildGroup(
   const pluginMetadataMs = reusablePluginGeneration
     ? 0
     : performance.now() - pluginMetadataStartedAt;
-  const manifestSyntheticAuth = resolveManifestNativeHarness({
-    config: input.config,
-    env,
-    metadataSnapshot: pluginMetadataSnapshot,
-    workspaceDir: input.workspaceDir,
-    resolveRuntimes: catalogMode === "live",
-  });
+  const manifestSyntheticAuth = resolveManifestNativeHarness(pluginMetadataSnapshot);
   const manifestSyntheticAuthProviderIds = manifestSyntheticAuth.providerIds;
   const manifestSyntheticAuthProviderRefs = manifestSyntheticAuth.providerRefs;
-  const nativeHarnessRuntimes = manifestSyntheticAuth.runtimes;
-  const configuredHarnessRuntimes = () => [
-    ...(options.getConfiguredHarnessRuntimes?.() ?? []),
-    ...nativeHarnessRuntimes,
-  ];
+  const configuredHarnessRuntimes = options.getConfiguredHarnessRuntimes;
   const runtimePluginStartedAt = performance.now();
   const preferBuiltPluginArtifacts =
     reusablePluginGeneration?.preferBuiltPluginArtifacts ??
@@ -467,7 +457,6 @@ export async function prepareWorkspaceBuildGroup(
       messageToolCatalog,
       pluginMetadataSnapshot,
       preparedStaticProviderCatalog,
-      nativeHarnessRuntimes,
       providerStaticModels,
       preferBuiltPluginArtifacts,
       reusablePluginGeneration,

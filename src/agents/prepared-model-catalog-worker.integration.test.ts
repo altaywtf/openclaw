@@ -520,7 +520,10 @@ describe("prepared model catalog worker boundary", () => {
     );
     const syntheticAuthProbePath = path.join(fixture.root, "synthetic-auth-probes.txt");
 
-    expect(fixture.snapshot.providerAuth[HARNESS_ID]).toEqual({ mode: "api_key" });
+    expect(fixture.snapshot.providerAuth[HARNESS_ID]).toEqual({
+      mode: "oauth",
+      runtime: HARNESS_ID,
+    });
     expect(fixture.snapshot.providerAuth[DISCOVERED_HARNESS_ID]).toBeUndefined();
     expect(fixture.snapshot.providerAuth[MISSING_AUTH_HARNESS_ID]).toBeUndefined();
     expect(fixture.snapshot.providerAuth[PROVIDER_ID]).toBeUndefined();
@@ -536,8 +539,11 @@ describe("prepared model catalog worker boundary", () => {
       DISCOVERED_HARNESS_ID,
       MISSING_AUTH_HARNESS_ID,
     ]);
-    expect(fullAuth?.providerAuth[HARNESS_ID]).toEqual({ mode: "api_key" });
-    expect(fullAuth?.providerAuth[DISCOVERED_HARNESS_ID]).toEqual({ mode: "api_key" });
+    expect(fullAuth?.providerAuth[HARNESS_ID]).toEqual({ mode: "oauth", runtime: HARNESS_ID });
+    expect(fullAuth?.providerAuth[DISCOVERED_HARNESS_ID]).toEqual({
+      mode: "oauth",
+      runtime: DISCOVERED_HARNESS_ID,
+    });
     expect(fullAuth?.providerAuth[MISSING_AUTH_HARNESS_ID]).toBeUndefined();
     expect(fullAuth?.providerAuth[PROVIDER_ID]).toEqual({ mode: "oauth" });
   });

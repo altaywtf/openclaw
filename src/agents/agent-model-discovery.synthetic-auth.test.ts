@@ -109,13 +109,6 @@ describe("agent model discovery synthetic auth", () => {
       ],
     });
 
-    expect(
-      resolveManifestNativeHarness({
-        config: {},
-        env: {},
-        metadataSnapshot,
-        resolveRuntimes: false,
-      }).providerIds,
-    ).toEqual(["anthropic"]);
+    expect(resolveManifestNativeHarness(metadataSnapshot).providerIds).toEqual(["anthropic"]);
   });
 });

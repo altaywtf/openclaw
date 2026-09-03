@@ -330,6 +330,16 @@ export async function runPreparedModelCatalogWorkerRequest(
       pluginGenerationScope.pluginRegistry = catalogRegistry;
       catalogGeneration = Object.freeze({ ...catalogGeneration, pluginRegistry: catalogRegistry });
     }
+    // Recorded native-login facts decide which harness catalogs join the live inventory;
+    // no separate login probe runs outside the prepared generation.
+    const nativeHarnessRuntimes = [
+      ...new Set(
+        Object.values(providerAuth).flatMap((auth) => (auth.runtime ? [auth.runtime] : [])),
+      ),
+    ].toSorted((left, right) => left.localeCompare(right));
+    if (nativeHarnessRuntimes.length > 0) {
+      catalogGeneration = Object.freeze({ ...catalogGeneration, nativeHarnessRuntimes });
+    }
     const source = await prepareAgentCatalogSource(
       exactAgentFacts,
       catalogGeneration,

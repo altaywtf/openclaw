@@ -3,7 +3,6 @@ import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
 import type { ProviderSyntheticAuthResult } from "../plugins/provider-external-auth.types.js";
-import { resolveProviderSyntheticAuthWithPlugin } from "../plugins/provider-runtime.js";
 import type { ProviderPlugin } from "../plugins/types.js";
 
 // Provider-scoped live builds must not fan ambient synthetic-auth discovery out to every
@@ -74,18 +73,14 @@ export function resolvePreparedSyntheticAuth(params: {
   );
 }
 
-/** Resolves manifest synthetic-auth providers and their available native runtime owners. */
-export function resolveManifestNativeHarness(params: {
-  config: OpenClawConfig;
-  env: NodeJS.ProcessEnv;
-  metadataSnapshot: PluginMetadataSnapshot;
-  workspaceDir?: string;
-  resolveRuntimes?: boolean;
-}): { providerIds: string[]; runtimes: string[]; providerRefs: string[] } {
+/** Resolves manifest synthetic-auth providers declared by startup-activated plugins. */
+export function resolveManifestNativeHarness(metadataSnapshot: PluginMetadataSnapshot): {
+  providerIds: string[];
+  providerRefs: string[];
+} {
   const providers = new Set<string>();
-  const runtimes = new Set<string>();
   const providerRefs = new Set<string>();
-  for (const plugin of params.metadataSnapshot.plugins) {
+  for (const plugin of metadataSnapshot.plugins) {
     // Deferred plugins (activation.onStartup false) own local-server providers that only exist
     // once activated; enumerating them here would surface unauthenticated rows at startup.
     if (plugin.activation?.onStartup === false || (plugin.syntheticAuthRefs?.length ?? 0) === 0) {
@@ -100,30 +95,9 @@ export function resolveManifestNativeHarness(params: {
     for (const provider of plugin.syntheticAuthRefs ?? []) {
       providerRefs.add(provider);
     }
-    if (params.resolveRuntimes === false) {
-      continue;
-    }
-    for (const provider of plugin.syntheticAuthRefs ?? []) {
-      const runtime = resolveProviderSyntheticAuthWithPlugin({
-        provider,
-        config: params.config,
-        workspaceDir: params.workspaceDir,
-        env: params.env,
-        context: {
-          config: params.config,
-          provider,
-          providerConfig: params.config.models?.providers?.[provider],
-        },
-      })?.runtime?.trim();
-      if (!runtime) {
-        continue;
-      }
-      runtimes.add(runtime);
-    }
   }
   return {
     providerIds: [...providers].toSorted((left, right) => left.localeCompare(right)),
-    runtimes: [...runtimes].toSorted((left, right) => left.localeCompare(right)),
     providerRefs: [...providerRefs].toSorted((left, right) => left.localeCompare(right)),
   };
 }
