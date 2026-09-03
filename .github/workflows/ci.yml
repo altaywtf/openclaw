@@ -1922,7 +1922,7 @@ jobs:
             pre-commit run --config "$PRE_COMMIT_CONFIG_PATH" zizmor --files "${workflow_files[@]}"
 
       - name: Audit production dependencies
-        run: node scripts/pre-commit/pnpm-audit-prod.mjs --audit-level=high
+        run: node scripts/pre-commit/pnpm-audit-prod.mjs --audit-level=high --allow-osv-fallback
 
   # Prime the lockfile- and pnpm-pinned store for fork PRs, manual runs, the
   # GitHub backend, and docs-only same-repo PRs. This job restores only; the

@@ -1,21 +1,30 @@
 // Pnpm Audit Prod tests cover pnpm audit prod script behavior.
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { toErrorObject as toLintErrorObject } from "@openclaw/normalization-core/error-coercion";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  AdvisoryRequestTimeoutError,
+  canFallbackToOsv,
   collectAllResolvedPackagesFromLockfile,
   collectProdResolvedPackagesFromLockfile,
   createBulkAdvisoryPayload,
   fetchBulkAdvisories,
+  fetchBulkAdvisoriesWithRetry,
   filterFindingsBySeverity,
   parseArgs,
   parseSnapshotKey,
   readBoundedBulkAdvisoryErrorText,
+  resolveOsvSeverity,
+  resolveConfiguredRegistryUrls,
   runPnpmAuditProd,
   stripVersionDecorators,
 } from "../../scripts/pre-commit/pnpm-audit-prod.mjs";
+import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
+
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+afterEach(() => vi.unstubAllEnvs());
 
 describe("pnpm-audit-prod", () => {
   it("keeps toolchain snapshots separate from production while auditing both documents", () => {
@@ -62,8 +71,14 @@ snapshots:
     );
   });
   it("parses explicit audit severity flags", () => {
-    expect(parseArgs(["--min-severity", "critical"])).toEqual({ minSeverity: "critical" });
-    expect(parseArgs(["--audit-level=moderate"])).toEqual({ minSeverity: "moderate" });
+    expect(parseArgs(["--min-severity", "critical"])).toEqual({
+      allowOsvFallback: false,
+      minSeverity: "critical",
+    });
+    expect(parseArgs(["--audit-level=moderate", "--allow-osv-fallback"])).toEqual({
+      allowOsvFallback: true,
+      minSeverity: "moderate",
+    });
   });
 
   it("rejects missing audit severity flag values", () => {
@@ -73,6 +88,156 @@ snapshots:
     );
     expect(() => parseArgs(["--min-severity", "-h"])).toThrow("--min-severity requires a value");
     expect(() => parseArgs(["--audit-level="])).toThrow("--audit-level requires a value");
+  });
+
+  it("allows OSV fallback only for the public npm registry", () => {
+    expect(canFallbackToOsv("https://registry.npmjs.org")).toBe(true);
+    expect(canFallbackToOsv("https://registry.example.com")).toBe(false);
+    expect(canFallbackToOsv("https://registry.npmjs.org", ["https://private.example.com"])).toBe(
+      false,
+    );
+  });
+
+  it("detects private scoped registries used by audited packages", async () => {
+    const rootDir = tempDirs.make("openclaw-audit-registry-");
+    await writeFile(
+      path.join(rootDir, ".npmrc"),
+      "@company:registry=https://private.example.com\n",
+    );
+
+    await expect(
+      resolveConfiguredRegistryUrls({
+        rootDir,
+        payload: { "@company/private": ["1.0.0"], "@types/node": ["24.0.0"] },
+      }),
+    ).resolves.toContain("https://private.example.com");
+  });
+
+  it("detects default and workspace registry configuration", async () => {
+    const npmrcRoot = tempDirs.make("openclaw-audit-default-registry-");
+    await writeFile(path.join(npmrcRoot, ".npmrc"), "registry=https://npm.corp.example.com\n");
+    const npmrcUrls = await resolveConfiguredRegistryUrls({
+      rootDir: npmrcRoot,
+      payload: { axios: ["1.0.0"] },
+    });
+    expect(npmrcUrls).toContain("https://npm.corp.example.com");
+    expect(canFallbackToOsv(undefined, npmrcUrls)).toBe(false);
+
+    const workspaceRoot = tempDirs.make("openclaw-audit-workspace-registry-");
+    await writeFile(
+      path.join(workspaceRoot, "pnpm-workspace.yaml"),
+      [
+        "registry: https://registry.npmjs.org/",
+        "registries:",
+        "",
+        "  # Private scope routing remains inside this mapping.",
+        "  https://npm.corp.example.com/:",
+        '    scopes: ["@company"]',
+        'namedRegistries: { work: "https://npm.work.example.com/" }',
+      ].join("\n"),
+    );
+    const workspaceUrls = await resolveConfiguredRegistryUrls({
+      rootDir: workspaceRoot,
+      payload: { "@company/private": ["1.0.0"] },
+    });
+    expect(workspaceUrls).toEqual(
+      expect.arrayContaining([
+        "https://registry.npmjs.org/",
+        "https://npm.corp.example.com/",
+        "https://npm.work.example.com/",
+      ]),
+    );
+    expect(canFallbackToOsv(undefined, workspaceUrls)).toBe(false);
+  });
+
+  it("blocks OSV fallback for pnpm registry environment variables", async () => {
+    vi.stubEnv("PNPM_CONFIG_REGISTRY", "https://private.example.com");
+    const rootDir = tempDirs.make("openclaw-audit-pnpm-registry-");
+    const urls = await resolveConfiguredRegistryUrls({
+      rootDir,
+      payload: { axios: ["1.0.0"] },
+    });
+    expect(urls).toContain("https://private.example.com");
+    expect(canFallbackToOsv(undefined, urls)).toBe(false);
+  });
+
+  it("detects npm's default global registry configuration", async () => {
+    const prefix = tempDirs.make("openclaw-audit-npm-prefix-");
+    await mkdir(path.join(prefix, "etc"), { recursive: true });
+    await writeFile(path.join(prefix, "etc", "npmrc"), "registry=https://private.example.com\n");
+    vi.stubEnv("NPM_CONFIG_PREFIX", prefix);
+    const urls = await resolveConfiguredRegistryUrls({
+      rootDir: tempDirs.make("openclaw-audit-global-registry-"),
+      payload: { axios: ["1.0.0"] },
+    });
+    expect(urls).toContain("https://private.example.com");
+    expect(canFallbackToOsv(undefined, urls)).toBe(false);
+  });
+
+  it("blocks OSV fallback for dynamic pnpm registry configuration", async () => {
+    const rootDir = tempDirs.make("openclaw-audit-dynamic-registry-");
+    await writeFile(path.join(rootDir, "pnpm-workspace.yaml"), "registry: ${PRIVATE_REGISTRY}\n");
+    const urls = await resolveConfiguredRegistryUrls({
+      rootDir,
+      payload: { axios: ["1.0.0"] },
+    });
+    expect(canFallbackToOsv(undefined, urls)).toBe(false);
+  });
+
+  it("maps standard OSV CVSS scores to audit severities", () => {
+    expect(
+      resolveOsvSeverity(
+        {
+          id: "OSV-critical",
+          severity: [{ type: "CVSS_V3", score: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H" }],
+        },
+        "axios",
+      ),
+    ).toBe("critical");
+    expect(
+      resolveOsvSeverity(
+        {
+          id: "OSV-moderate",
+          severity: [{ type: "CVSS_V3", score: "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:N/A:N" }],
+        },
+        "axios",
+      ),
+    ).toBe("moderate");
+    expect(
+      resolveOsvSeverity(
+        {
+          id: "OSV-scope-changed",
+          severity: [{ type: "CVSS_V3", score: "CVSS:3.1/AV:P/AC:H/PR:H/UI:N/S:C/C:H/I:H/A:H" }],
+        },
+        "axios",
+      ),
+    ).toBe("high");
+    expect(
+      resolveOsvSeverity(
+        { id: "OSV-high", severity: [{ type: "CVSS_V2", score: "AV:N/AC:L/Au:N/C:P/I:P/A:P" }] },
+        "axios",
+      ),
+    ).toBe("high");
+    expect(
+      resolveOsvSeverity(
+        {
+          id: "OSV-multiple",
+          affected: [
+            {
+              package: { ecosystem: "npm", name: "axios" },
+              ecosystem_specific: { severity: "LOW" },
+            },
+            {
+              package: { ecosystem: "npm", name: "axios" },
+              severity: [
+                { type: "CVSS_V3", score: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H" },
+              ],
+            },
+          ],
+        },
+        "axios",
+      ),
+    ).toBe("critical");
   });
 
   it("parses scoped snapshot keys with peer suffixes", () => {
@@ -235,11 +400,12 @@ snapshots:
       {
         "@mistralai/mistralai": [
           {
-            id: "1118204",
+            id: "MAL-2026-3432",
+            aliases: ["GHSA-3q49-cfcf-g5fm"],
             severity: "critical",
             title: "Malware in @mistralai/mistralai",
             vulnerable_versions: ">=0",
-            url: "https://github.com/advisories/GHSA-3q49-cfcf-g5fm",
+            url: "https://osv.dev/vulnerability/MAL-2026-3432",
           },
         ],
       },
@@ -333,7 +499,7 @@ snapshots:
     }) as typeof fetch);
 
     await expect(
-      fetchBulkAdvisories({
+      fetchBulkAdvisoriesWithRetry({
         payload: { axios: ["1.0.0"] },
         timeoutMs: 5,
         fetchImpl,
@@ -361,7 +527,7 @@ snapshots:
         );
       });
     }) as typeof fetch);
-    const request = fetchBulkAdvisories({
+    const request = fetchBulkAdvisoriesWithRetry({
       payload: { axios: ["1.0.0"] },
       timeoutMs: 5,
       fetchImpl,
@@ -380,7 +546,7 @@ snapshots:
     });
 
     await expect(
-      fetchBulkAdvisories({
+      fetchBulkAdvisoriesWithRetry({
         payload: { axios: ["1.0.0"] },
         timeoutMs: 5,
         fetchImpl,
@@ -425,6 +591,20 @@ snapshots:
         fetchImpl,
       }),
     ).rejects.toThrow(expectedError);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it("does not retry non-timeout bulk advisory failures", async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response("registry failure", { status: 500, statusText: "Internal Error" }),
+    );
+
+    await expect(
+      fetchBulkAdvisoriesWithRetry({
+        payload: { axios: ["1.0.0"] },
+        fetchImpl,
+      }),
+    ).rejects.toThrow(/Bulk advisory request failed \(500 Internal Error\)/u);
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
@@ -474,7 +654,7 @@ snapshots:
     });
 
     await expect(request).rejects.toThrow(/Bulk advisory request exceeded timeout/u);
-    expect(cancellations).toBe(2);
+    expect(cancellations).toBe(1);
   });
 
   it("cancels stalled failed bulk advisory response bodies on request timeout", async () => {
@@ -497,7 +677,7 @@ snapshots:
     });
 
     await expect(request).rejects.toThrow(/Bulk advisory request exceeded timeout/u);
-    expect(cancellations).toBe(2);
+    expect(cancellations).toBe(1);
   });
 
   it("bounds successful bulk advisory response bodies", async () => {
@@ -558,6 +738,94 @@ snapshots:
     });
 
     await expect(request).rejects.toThrow(/Bulk advisory response body was empty/u);
+  });
+
+  it("falls back to exact-version OSV results after npm bulk timeouts", async () => {
+    const tempDir = tempDirs.make("openclaw-audit-osv-");
+    await writeFile(
+      path.join(tempDir, "pnpm-lock.yaml"),
+      `lockfileVersion: '9.0'\n\nimporters:\n  .:\n    dependencies:\n      axios:\n        version: 1.0.0\n\nsnapshots:\n  axios@1.0.0: {}\n`,
+      "utf8",
+    );
+
+    try {
+      const stderr = { write: () => true } as unknown as NodeJS.WriteStream;
+      const timeoutFetch = vi.fn(async () => {
+        throw new AdvisoryRequestTimeoutError("Bulk advisory request exceeded timeout of 120000ms");
+      });
+      await expect(
+        runPnpmAuditProd({ rootDir: tempDir, fetchImpl: timeoutFetch, stderr }),
+      ).rejects.toThrow(/Bulk advisory request exceeded timeout/u);
+      expect(timeoutFetch).toHaveBeenCalledTimes(2);
+
+      let npmAttempts = 0;
+      let osvBatchAttempts = 0;
+      const stderrChunks: string[] = [];
+      const exitCode = await runPnpmAuditProd({
+        allowOsvFallback: true,
+        rootDir: tempDir,
+        minSeverity: "critical",
+        fetchImpl: async (input, init) => {
+          const url =
+            typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+          if (url.includes("registry.npmjs.org")) {
+            npmAttempts += 1;
+            throw new AdvisoryRequestTimeoutError(
+              "Bulk advisory request exceeded timeout of 120000ms",
+            );
+          }
+          if (url.endsWith("/querybatch")) {
+            osvBatchAttempts += 1;
+            const requestBody = typeof init?.body === "string" ? init.body : "";
+            const pageToken = osvBatchAttempts === 1 ? undefined : "next-page";
+            expect(JSON.parse(requestBody)).toEqual({
+              queries: [
+                {
+                  package: { ecosystem: "npm", name: "axios" },
+                  version: "1.0.0",
+                  ...(pageToken ? { page_token: pageToken } : {}),
+                },
+              ],
+            });
+            return new Response(
+              JSON.stringify({
+                results: [
+                  osvBatchAttempts === 1
+                    ? { vulns: [{ id: "GHSA-test" }], next_page_token: "next-page" }
+                    : { vulns: [{ id: "MAL-test" }] },
+                ],
+              }),
+            );
+          }
+          if (url.endsWith("/GHSA-test")) {
+            return new Response(
+              JSON.stringify({
+                id: "GHSA-test",
+                summary: "moderate test issue",
+                database_specific: { severity: "MODERATE" },
+              }),
+            );
+          }
+          expect(url).toBe("https://api.osv.dev/v1/vulns/MAL-test");
+          return new Response(JSON.stringify({ id: "MAL-test", summary: "malware" }));
+        },
+        stdout: { write: () => true } as unknown as NodeJS.WriteStream,
+        stderr: {
+          write(chunk: string) {
+            stderrChunks.push(chunk);
+            return true;
+          },
+        } as NodeJS.WriteStream,
+      });
+
+      expect(npmAttempts).toBe(2);
+      expect(osvBatchAttempts).toBe(2);
+      expect(exitCode).toBe(1);
+      expect(stderrChunks.join(" ")).toContain("falling back to OSV exact-version queries");
+      expect(stderrChunks.join(" ")).toContain("Found 1 critical or higher advisories");
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
   });
 
   it.each([false, true])(
