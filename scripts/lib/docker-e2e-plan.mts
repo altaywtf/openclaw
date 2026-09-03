@@ -297,18 +297,6 @@ function supportsUpdateFirstHopCompatForTarget(targetRoot: string | undefined): 
   return UPDATE_FIRST_HOP_COMPAT_OUTPUTS.every((name) => source.includes(`dest: "dist/${name}"`));
 }
 
-function supportsUpdateFirstHopCompatForTarget(targetRoot: string | undefined): boolean {
-  if (!targetRoot) {
-    return true;
-  }
-  const runtimePostbuild = resolve(targetRoot, "scripts/runtime-postbuild.mts");
-  if (!existsSync(runtimePostbuild)) {
-    return false;
-  }
-  const source = readFileSync(runtimePostbuild, "utf8");
-  return UPDATE_FIRST_HOP_COMPAT_OUTPUTS.every((name) => source.includes(`dest: "dist/${name}"`));
-}
-
 function expandedUpgradeSurvivorLaneName(
   poolLaneName: string,
   baselineSpec: string | undefined,
