@@ -274,9 +274,11 @@ describe("chat pane terminal action", () => {
     }
   });
 
-  it("keeps Browser and Tasks reachable in the topbar", () => {
+  it("keeps Browser in the topbar and Tasks in the session menu", () => {
     const client = { request: vi.fn() } as unknown as GatewayBrowserClient;
     const { pane, state } = createTestChatPane({ client, sessions: {} as SessionCapability });
+    const openSplitView = vi.fn();
+    Reflect.set(pane, "onOpenSplitView", openSplitView);
     const session = {
       key: state.sessionKey,
       kind: "direct",
@@ -307,13 +309,29 @@ describe("chat pane terminal action", () => {
           "openclaw-chat-header-session-menu",
         )
         ?.panelActions.map((action) => action.id) ?? [];
+    const layoutActions = () =>
+      container.querySelector<
+        HTMLElement & { layoutActions: Array<{ id: string; onActivate: () => void }> }
+      >("openclaw-chat-header-session-menu")?.layoutActions ?? [];
 
     state.browserPanelAvailable = false;
     renderHeader();
     expect(container.querySelector(".chat-browser-panel-toggle")).toBeNull();
     expect(panelActionIds()).not.toContain("browser");
-    container.querySelector<HTMLButtonElement>(".chat-tasks-toggle")?.click();
+    expect(container.querySelector(".chat-tasks-toggle")).toBeNull();
+    expect(container.querySelector(".chat-open-split-view")).toBeNull();
+    expect(panelActionIds()).toContain("background-tasks");
+    container
+      .querySelector<HTMLElement & { panelActions: Array<{ id: string; onActivate: () => void }> }>(
+        "openclaw-chat-header-session-menu",
+      )
+      ?.panelActions.find((action) => action.id === "background-tasks")
+      ?.onActivate();
     expect(onToggleTasks).toHaveBeenCalledOnce();
+    layoutActions()
+      .find((action) => action.id === "open-split-view")
+      ?.onActivate();
+    expect(openSplitView).toHaveBeenCalledOnce();
 
     state.browserPanelAvailable = true;
     const onToggleBrowser = vi.fn();

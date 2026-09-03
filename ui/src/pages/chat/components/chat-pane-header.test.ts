@@ -280,7 +280,6 @@ describe("chat pane header", () => {
       workspaceAction: html`<button data-action="workspace"></button>`,
       sessionRailAction: html`<button data-action="rail"></button>`,
       sessionMenuAction: html`<button data-action="session-menu"></button>`,
-      onOpenSplitView: vi.fn(),
     });
 
     expect(container.querySelector('[data-action="persistent-surface"]')).toBeNull();

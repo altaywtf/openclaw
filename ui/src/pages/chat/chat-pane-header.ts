@@ -39,7 +39,6 @@ import { displayedChatSessionBranches } from "./chat-history-branches.ts";
 import { ChatPaneDiscussion } from "./chat-pane-discussion.ts";
 import { resolveChatPaneDesktopTarget, resolveChatPanePlacement } from "./chat-pane-placement.ts";
 import { readChatSessionActionAccess } from "./chat-session-action-access.ts";
-import { renderBackgroundTasksToggle } from "./components/chat-background-tasks-render.ts";
 import type { BackgroundTasksProps } from "./components/chat-background-tasks.types.ts";
 import { isChatRunWorking } from "./components/chat-composer.ts";
 import "./components/chat-header-session-menu.ts";
@@ -247,7 +246,6 @@ export abstract class ChatPaneHeader extends ChatPaneDiscussion {
           </button>
         </openclaw-tooltip>`
       : nothing;
-    const backgroundTasksAction = catalog ? nothing : renderBackgroundTasksToggle(backgroundTasks);
     const sessionRailMode = this.selectedSessionRailMode(this.state?.sessionKey ?? "");
     const toggleSessionRail = () => this.requestSessionRail("toggle");
     const panelMenuActions: HeaderMenuQuickAction[] = [];
@@ -433,7 +431,7 @@ export abstract class ChatPaneHeader extends ChatPaneDiscussion {
       copiedAction: this.headerCopiedAction,
       renameDisabledReason,
       actionsDisabled: this.state?.connected !== true,
-      panelActions: html`${browserPanelAction}${backgroundTasksAction}${sidePanelAction}`,
+      panelActions: html`${browserPanelAction}${sidePanelAction}`,
       discussionAction: nothing,
       diffAction: nothing,
       backgroundTasksAction: nothing,
@@ -487,10 +485,8 @@ export abstract class ChatPaneHeader extends ChatPaneDiscussion {
               }}
               .worktreePath=${row.execNode || !isNativeLocalGateway() ? null : workspace.root}
               .onboarding=${this.onboarding}
-              .preferencesBrowserOnly=${
-                this.context.runtimeConfig?.state.connected &&
-                this.context.runtimeConfig.canPatch === false
-              }
+              .preferencesBrowserOnly=${this.context.runtimeConfig?.state.connected &&
+              this.context.runtimeConfig.canPatch === false}
               .compact=${this.narrow}
               .navigationAllowed=${true}
               .copyMarkdownAllowed=${canCopySessionMarkdown(this.context.gateway.snapshot)}
@@ -548,19 +544,16 @@ export abstract class ChatPaneHeader extends ChatPaneDiscussion {
         }
         void this.switchToBranch(leafEntryId);
       },
-      onOpenSplitView: this.onOpenSplitView,
       onSplitDown: this.onSplitDown,
       onSplitRight: this.onSplitRight,
       onClosePane: this.onClosePane,
     });
     const continueCommand = this.currentContinueInTerminalCommand(row);
-    return html`${header}${
-      continueCommand
-        ? renderContinueInTerminalDialog({
-            command: continueCommand,
-            onClose: () => this.closeContinueInTerminalDialog(),
-          })
-        : nothing
-    }`;
+    return html`${header}${continueCommand
+      ? renderContinueInTerminalDialog({
+          command: continueCommand,
+          onClose: () => this.closeContinueInTerminalDialog(),
+        })
+      : nothing}`;
   }
 }
