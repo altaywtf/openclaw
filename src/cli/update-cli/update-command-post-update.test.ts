@@ -3,11 +3,11 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
-import type { UpdateRunResult } from "../../infra/update-runner.js";
 import { defaultRuntime } from "../../runtime.js";
 import {
   createManagedServiceIdentityFixture,
   createScriptActivationFixture,
+  finishSuccessfulPackageSwitch,
   successfulPluginUpdate,
   validConfigSnapshot,
 } from "./update-command-post-update.test-support.js";
@@ -131,75 +131,6 @@ function expectFailureReport(reason: string, json?: boolean): void {
     json === undefined ? expect.any(Object) : expect.objectContaining({ json }),
   );
   expect(defaultRuntime.exit).not.toHaveBeenCalled();
-}
-
-async function finishSuccessfulPackageSwitch(
-  params: {
-    previousRoot: string;
-    packageRoot: string;
-    restartEnvironment?: NodeJS.ProcessEnv;
-    json?: boolean;
-    sealed?: boolean;
-    updateMode?: UpdateRunResult["mode"];
-    stoppedForUpdate?: boolean;
-    intentionallyStopped?: boolean;
-    windowsTaskAutoStartRecovery?: NonNullable<
-      FinishUpdateParams["preManagedServiceStop"]
-    >["windowsTaskAutoStartRecovery"];
-  } = {
-    previousRoot: "/tmp/openclaw-update",
-    packageRoot: "/tmp/openclaw-update",
-    restartEnvironment: process.env,
-  },
-): Promise<void> {
-  await finishUpdate({
-    mutationStarted: true,
-    result: {
-      status: "ok",
-      mode: params.updateMode ?? "npm",
-      root: params.packageRoot,
-      ...(params.sealed && {
-        before: { version: "2026.4.23" },
-        after: {
-          version: "2026.4.24",
-          ...(params.updateMode === "git" ? { buildId: "new-build" } : {}),
-        },
-      }),
-      steps: [],
-      durationMs: 1,
-    },
-    root: params.previousRoot,
-    previousInstallRoot: params.previousRoot,
-    installKindChanged: params.previousRoot !== params.packageRoot,
-    configSnapshot: validConfigSnapshot,
-    requestedChannel: null,
-    storedChannel: null,
-    channel: params.updateMode === "git" ? "dev" : "stable",
-    downgradeRisk: true,
-    shouldRestart: Boolean(params.restartEnvironment),
-    opts: { json: params.json },
-    showProgress: false,
-    controlPlaneUpdateSentinelMeta: {},
-    preUpdatePluginInstallRecords: {},
-    startedAt: Date.now(),
-    updateStepTimeoutMs: 1_000,
-    ...(params.restartEnvironment && {
-      preManagedServiceStop: {
-        stopped: params.stoppedForUpdate ?? true,
-        ...(params.intentionallyStopped && { running: false }),
-        windowsTaskAutoStartRecovery: params.windowsTaskAutoStartRecovery,
-        ...(params.sealed && {
-          serviceUpdateVerdict: {
-            kind: "owned",
-            root: params.previousRoot,
-            refreshDefinition: false,
-            fingerprint: "sealed",
-          },
-        }),
-      },
-      ownedManagedUpdateEnv: params.restartEnvironment,
-    }),
-  } as unknown as FinishUpdateParams);
 }
 
 describe("successful update finalization ordering", () => {
