@@ -633,9 +633,8 @@ extensions/matrix/src/approval-reactions.ts	1
 extensions/matrix/src/auth-precedence.ts	1
 extensions/matrix/src/channel-account-paths.ts	1
 extensions/matrix/src/channel.ts	4
-extensions/matrix/src/cli-account.ts	5
+extensions/matrix/src/cli-account.ts	1
 extensions/matrix/src/cli-direct.ts	2
-extensions/matrix/src/cli-encryption.ts	1
 extensions/matrix/src/cli-shared.ts	1
 extensions/matrix/src/config-schema.ts	1
 extensions/matrix/src/directory-live.ts	3
@@ -1151,7 +1150,7 @@ extensions/slack/src/monitor/media.ts	2
 extensions/slack/src/monitor/message-handler.ts	2
 extensions/slack/src/monitor/message-handler/dispatch-helpers.ts	2
 extensions/slack/src/monitor/message-handler/dispatch-streaming.ts	6
-extensions/slack/src/monitor/message-handler/dispatch.ts	2
+extensions/slack/src/monitor/message-handler/dispatch.ts	1
 extensions/slack/src/monitor/message-handler/prepare-dm-history.ts	1
 extensions/slack/src/monitor/message-handler/prepare-thread-context.ts	1
 extensions/slack/src/monitor/message-handler/prepare.ts	2
@@ -1786,7 +1785,6 @@ src/agents/embedded-agent-runner/run/attempt-tool-call-replay-sanitization.ts	17
 src/agents/embedded-agent-runner/run/attempt-tool-call-stream-normalization.ts	4
 src/agents/embedded-agent-runner/run/attempt-tool-call-text-promotion.ts	3
 src/agents/embedded-agent-runner/run/attempt-tool-prepare.ts	3
-src/agents/embedded-agent-runner/run/attempt-transcript-helpers.ts	1
 src/agents/embedded-agent-runner/run/attempt-transcript-lifecycle.ts	1
 src/agents/embedded-agent-runner/run/attempt-user-transcript-context-registry.ts	1
 src/agents/embedded-agent-runner/run/attempt.model-diagnostic-events.ts	6
@@ -3091,7 +3089,6 @@ src/infra/net/undici-global-dispatcher.ts	5
 src/infra/node-commands.ts	1
 src/infra/node-sqlite.ts	3
 src/infra/npm-managed-root.ts	8
-src/infra/npm-pack-install.ts	2
 src/infra/npm-registry-spec.ts	1
 src/infra/oauth-loopback-callback.ts	1
 src/infra/openclaw-cli-shim.ts	1
@@ -3108,7 +3105,7 @@ src/infra/outbound/deliver-queue-state.ts	1
 src/infra/outbound/delivery-queue-media-spool.ts	2
 src/infra/outbound/delivery-queue-media-staging.ts	2
 src/infra/outbound/delivery-queue-preparation.ts	1
-src/infra/outbound/delivery-queue-storage.ts	8
+src/infra/outbound/delivery-queue-storage.ts	6
 src/infra/outbound/envelope.ts	2
 src/infra/outbound/format.ts	1
 src/infra/outbound/message-account-selection.ts	2
