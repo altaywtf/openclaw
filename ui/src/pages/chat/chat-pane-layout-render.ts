@@ -191,15 +191,7 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
       },
       dashboard:
         !this.compact && board.hasBoard ? this.renderBoardPanel(board, sidebarLayout) : nothing,
-      canvasCommentAvailable:
-        !this.compact &&
-        board.snapshot.widgets.some(
-          (widget) =>
-            widget.tabId === board.activeTabId &&
-            widget.contentKind === "html" &&
-            widget.grantState !== "pending" &&
-            widget.grantState !== "rejected",
-        ),
+      canvasCommentAvailable: !this.compact && this.canvasCommentAvailable(board),
       canvasCommentMode: this.canvasCommentTarget === canvasAnnotationTarget,
       canvasAnnotationCount: canvasAnnotations.length,
       onToggleCanvasComment: () => this.toggleCanvasAnnotationMode(canvasAnnotationTarget),

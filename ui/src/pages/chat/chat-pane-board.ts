@@ -61,6 +61,16 @@ export abstract class ChatPaneBoard extends ChatPaneHistory {
     return this.canvasAnnotationsByTarget[target] ?? [];
   }
 
+  protected canvasCommentAvailable(board: ResolvedBoardView): boolean {
+    return board.snapshot.widgets.some(
+      (widget) =>
+        widget.tabId === board.activeTabId &&
+        widget.contentKind === "html" &&
+        widget.grantState !== "pending" &&
+        widget.grantState !== "rejected",
+    );
+  }
+
   protected canvasAnnotationEpoch(target: string): number {
     return this.canvasAnnotationEpochByTarget[target] ?? 0;
   }

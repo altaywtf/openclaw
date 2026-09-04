@@ -129,9 +129,11 @@ function renderCanvasCommentAction(params: {
         @click=${params.onToggle}
       >
         ${CANVAS_ANNOTATION_GLYPH}
-        ${params.count > 0
-          ? html`<span class="canvas-annotation-launcher__count">${params.count}</span>`
-          : nothing}
+        ${
+          params.count > 0
+            ? html`<span class="canvas-annotation-launcher__count">${params.count}</span>`
+            : nothing
+        }
       </button>
     </openclaw-tooltip>`;
   }

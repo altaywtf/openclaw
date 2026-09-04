@@ -191,10 +191,11 @@ describeControlUiE2e("Control UI dashboard A2UI", () => {
       await page.screenshot({ path: path.join(commenterProofDir, "inactive.png") });
     }
 
-    const toggle = page.getByRole("button", { name: "Annotate page" });
+    const dashboardHeader = page.locator(".side-panel__header");
+    const toggle = dashboardHeader.getByRole("button", { name: "Annotate page" });
     await toggle.click();
     await page.locator("[data-canvas-comment-overlay]").waitFor();
-    await page.getByRole("button", { name: "Exit annotate mode" }).waitFor();
+    await dashboardHeader.getByRole("button", { name: "Exit annotate mode" }).waitFor();
     if (recordProof) {
       await page.screenshot({ path: path.join(commenterProofDir, "annotating.png") });
       await page.waitForTimeout(600);
@@ -224,13 +225,13 @@ describeControlUiE2e("Control UI dashboard A2UI", () => {
       await page.waitForTimeout(700);
     }
     await page.getByRole("button", { name: "Comment on selected Canvas element" }).click();
-    const stageAnnotations = page.getByRole("button", {
+    const stageAnnotations = dashboardHeader.getByRole("button", {
       name: "Send to chat",
     });
     await expect.poll(() => stageAnnotations.isEnabled()).toBe(true);
     expect(await page.locator(".chat-browser-annotation-group").count()).toBe(0);
     await page.keyboard.press("Escape");
-    await page.getByRole("button", { name: "Annotate page" }).click();
+    await toggle.click();
     await page.mouse.click(
       targetBounds!.x + targetBounds!.width / 2,
       targetBounds!.y + targetBounds!.height / 2,
@@ -305,7 +306,10 @@ describeControlUiE2e("Control UI dashboard A2UI", () => {
     contexts.add(context);
     const page = await context.newPage();
     await openCommenterBoard(page);
-    await page.getByRole("button", { name: "Annotate page" }).click();
+    await page
+      .locator(".side-panel__header")
+      .getByRole("button", { name: "Annotate page" })
+      .click();
     await page.locator("[data-canvas-comment-overlay]").waitFor();
 
     const outerFrame = await page
