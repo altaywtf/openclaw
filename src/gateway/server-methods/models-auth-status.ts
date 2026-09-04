@@ -293,6 +293,7 @@ function mapProvider(
   apiKeys: ReadonlyMap<string, ModelAuthStatusProvider["apiKey"]>,
   logoutProfileIds: ReadonlySet<string>,
   configBoundProfileIds: ReadonlySet<string>,
+  configBoundAuthProviders: ReadonlySet<string>,
   externalProfileIds: ReadonlySet<string>,
   externalCliProfileIds: ReadonlySet<string>,
   includeProfileIdentity: boolean,
@@ -316,9 +317,7 @@ function mapProvider(
     runtimeStore.runtimeLocalProfileIds ??
       Object.keys(store.profiles).filter((profileId) => !externalProfileIds.has(profileId)),
   );
-  const providerOrderLocked = prov.profiles.some((profile) =>
-    configBoundProfileIds.has(profile.profileId),
-  );
+  const providerOrderLocked = configBoundAuthProviders.has(authProviderKey);
   const configuredOrderLocked = profileOrder.order !== undefined && !profileOrder.fromStore;
   const usageProfile =
     prov.profiles.find((profile) => profile.type === "oauth" || profile.type === "token") ??
@@ -700,6 +699,13 @@ export const modelsAuthStatusHandlers: GatewayRequestHandlers = {
           .map(([profileId]) => profileId),
       );
       const configBoundProfileIds = resolveConfigBoundProfileIds(cfg, store, authAliasLookupParams);
+      // Priority mutations cover the whole auth owner, including profiles under aliases.
+      // Every alias must advertise that same lock while profile source/logout stays individual.
+      const configBoundAuthProviders = new Set(
+        Object.entries(store.profiles)
+          .filter(([profileId]) => configBoundProfileIds.has(profileId))
+          .map(([, profile]) => resolveProviderIdForAuth(profile.provider, authAliasLookupParams)),
+      );
       const providers = authHealth.providers.map((prov) =>
         mapProvider(
           prov,
@@ -711,6 +717,7 @@ export const modelsAuthStatusHandlers: GatewayRequestHandlers = {
           apiKeys,
           logoutProfileIds,
           configBoundProfileIds,
+          configBoundAuthProviders,
           externalProfileIds,
           externalCliProfileIds,
           includeProfileIdentity,
