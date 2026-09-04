@@ -48,7 +48,6 @@ import { releaseAttachmentWorkspaceOwner } from "./chat-pane-rails.ts";
 import { ChatPaneSessionCreation } from "./chat-pane-session-creation.ts";
 import { ChatPaneSessionPanelToggleController } from "./chat-pane-session-panel-toggle.ts";
 import {
-  CHAT_COMPOSER_TEXTAREA_SELECTOR,
   CHAT_OPEN_DETAILS_SELECTOR,
   focusChatComposerFromPrintableKeydown,
 } from "./chat-pane-shared.ts";
@@ -66,6 +65,10 @@ import {
 } from "./chat-state-refresh.ts";
 import { resetChatViewState } from "./chat-view-state.ts";
 import { publishChatWorkContext } from "./chat-work-context.ts";
+import {
+  CHAT_COMPOSER_EDITOR_SELECTOR,
+  focusChatComposer,
+} from "./components/chat-composer-dom.ts";
 import { dismissConfirmedActionPopovers } from "./components/chat-message.ts";
 import { clearChatModelSearchOnEscape } from "./components/chat-model-picker.ts";
 import { dismissThreadPortals } from "./components/chat-thread-interactions.ts";
@@ -556,16 +559,15 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
 
   override updated(changedProperties: Map<PropertyKey, unknown> = new Map()) {
     void chatAvatars.refreshSenderAgentAvatars(this.state);
-    if (!this.chatRouteReadyReported && this.querySelector(CHAT_COMPOSER_TEXTAREA_SELECTOR)) {
+    if (!this.chatRouteReadyReported && this.querySelector(CHAT_COMPOSER_EDITOR_SELECTOR)) {
       // The outer router commit is not a meaningful chat paint. Keep the
       // handoff cover until this pane has committed its usable composer.
       this.chatRouteReadyReported = true;
       this.dispatchEvent(new Event(CHAT_ROUTE_READY_EVENT, { bubbles: true, composed: true }));
     }
     if (changedProperties.has("focusComposer") && this.focusComposer) {
-      const textarea = this.querySelector<HTMLTextAreaElement>(CHAT_COMPOSER_TEXTAREA_SELECTOR);
-      const input = textarea?.closest<HTMLElement>(".agent-chat__input");
-      textarea?.focus({ preventScroll: true });
+      const editor = focusChatComposer(this);
+      const input = editor?.closest<HTMLElement>(".agent-chat__input");
       if (input) {
         this.showComposerPrefillAttention(input);
       }

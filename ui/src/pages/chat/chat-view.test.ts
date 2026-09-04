@@ -666,6 +666,14 @@ function getComposerTextarea(container: Element): HTMLTextAreaElement {
   ) as HTMLTextAreaElement;
 }
 
+function getComposerEditor(container: Element): HTMLElement {
+  return requireElement(
+    container,
+    ".agent-chat__composer-editor .cm-content",
+    "composer editor",
+  ) as HTMLElement;
+}
+
 function createDragEvent(type: string, types = ["Files"]): Event {
   const event = new Event(type, { bubbles: true, cancelable: true });
   Object.defineProperty(event, "dataTransfer", { value: { types } });
@@ -2632,7 +2640,7 @@ describe("per-pane chat presentation state", () => {
     const onRequestUpdate = vi.fn(() => renderChatInto(container, { onRequestUpdate }));
     try {
       renderChatInto(container, { onRequestUpdate });
-      const composer = getComposerTextarea(container);
+      const composer = getComposerEditor(container);
       composer.focus();
       const event = new KeyboardEvent("keydown", {
         key: "а",
@@ -2676,7 +2684,7 @@ describe("per-pane chat presentation state", () => {
     const onRequestUpdate = vi.fn(() => renderChatInto(container, { onRequestUpdate }));
     try {
       renderChatInto(container, { onRequestUpdate });
-      const composer = getComposerTextarea(container);
+      const composer = getComposerEditor(container);
       const transientTarget = document.createElement("button");
       const chat = container.querySelector<HTMLElement>(".card.chat");
       if (!chat) {

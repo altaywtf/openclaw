@@ -1,10 +1,13 @@
 import { areUiSessionKeysEquivalent } from "../../lib/sessions/session-key.ts";
+import {
+  CHAT_COMPOSER_EDITOR_SELECTOR,
+  focusChatComposer,
+} from "./components/chat-composer-dom.ts";
 import type { SessionChatRouteData } from "./route-loader.ts";
 
 const HANDOFF_TTL_MS = 30_000;
 const MAINTENANCE_MS = 15_000;
 const RETRY_MS = 250;
-const COMPOSER_SELECTOR = ".agent-chat__composer-combobox textarea";
 
 type PendingHandoff = {
   expiresAt: number;
@@ -101,7 +104,7 @@ export class RouteDraftComposerFocus {
       this.timer = undefined;
     }
     const deadline = Date.now() + MAINTENANCE_MS;
-    let ownedComposer: HTMLTextAreaElement | undefined;
+    let ownedComposer: HTMLElement | undefined;
 
     const focusCurrentComposer = () => {
       if (!this.host.isConnected) {
@@ -114,7 +117,7 @@ export class RouteDraftComposerFocus {
           candidate.sessionKey !== undefined &&
           areUiSessionKeysEquivalent(candidate.sessionKey, sessionKey),
       );
-      const composer = pane?.querySelector<HTMLTextAreaElement>(COMPOSER_SELECTOR);
+      const composer = pane?.querySelector<HTMLElement>(CHAT_COMPOSER_EDITOR_SELECTOR);
       const activeElement = document.activeElement;
       const focusStillOwned =
         activeElement === ownedComposer ||
@@ -122,7 +125,7 @@ export class RouteDraftComposerFocus {
         (activeElement instanceof HTMLElement && !activeElement.isConnected);
 
       if (composer && (!ownedComposer || focusStillOwned)) {
-        composer.focus({ preventScroll: true });
+        focusChatComposer(pane!);
         ownedComposer = composer;
       } else if (ownedComposer && !focusStillOwned) {
         this.timer = undefined;

@@ -464,6 +464,10 @@ function attachChatComposerRichEditor(state: ChatComposerRichEditorState) {
     source: state.composerTextarea,
     options: state.composerEditorOptions,
   });
+  if (state.restoreComposerFocus) {
+    state.restoreComposerFocus = false;
+    queueMicrotask(() => state.composerEditor?.focus());
+  }
 }
 
 export function setChatComposerRichEditorSource(
@@ -477,10 +481,6 @@ export function setChatComposerRichEditorSource(
   }
   state.composerTextarea = nextTextarea;
   attachChatComposerRichEditor(state);
-  if (state.restoreComposerFocus && state.composerEditor) {
-    state.restoreComposerFocus = false;
-    queueMicrotask(() => state.composerEditor?.focus());
-  }
 }
 
 export function setChatComposerRichEditorHost(

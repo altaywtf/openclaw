@@ -1,5 +1,6 @@
 import { syncAnchoredOverlay } from "../../../components/anchored-overlay.ts";
 import { consumeTooltipEscape } from "../../../components/tooltip.ts";
+import { focusChatComposer } from "./chat-composer-dom.ts";
 
 const MOBILE_COMPOSER_OVERLAY_QUERY =
   "(max-width: 640px), (max-width: 932px) and (max-height: 500px) and (orientation: landscape)";
@@ -88,9 +89,9 @@ function dismissChatComposerPickersOnEscape(event: KeyboardEvent): void {
   const lastPicker = deepestPickers.at(-1);
   deepestPickers.forEach(closeComposerPicker);
   invocationComposer?.dispatchEvent(new CustomEvent(CHAT_COMPOSER_DISMISS_INVOCATIONS_EVENT));
-  invocationComposer
-    ?.querySelector<HTMLTextAreaElement>(".agent-chat__composer-combobox > textarea")
-    ?.focus({ preventScroll: true });
+  if (invocationComposer) {
+    focusChatComposer(invocationComposer);
+  }
   if (lastPicker) {
     pickerTrigger(lastPicker)?.focus({ preventScroll: true });
   }

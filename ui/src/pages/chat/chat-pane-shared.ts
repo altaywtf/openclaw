@@ -10,6 +10,10 @@ import { clampText } from "../../lib/format.ts";
 import { areUiSessionKeysEquivalent } from "../../lib/sessions/session-key.ts";
 import { releaseChatAttachmentPayloads } from "./attachment-payload-store.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
+import {
+  CHAT_COMPOSER_SOURCE_SELECTOR,
+  focusChatComposer,
+} from "./components/chat-composer-dom.ts";
 
 export type ChatPageContext = ApplicationContext;
 export type PaneSessionChangeOptions = { replace?: boolean };
@@ -216,7 +220,6 @@ export type ChatPaneConnectionScope = {
 };
 export const CHAT_OPEN_DETAILS_SELECTOR =
   ".chat-controls__inline-select[open], .context-usage details[open], .agent-chat__attach-menu[open], .chat-pr__checks[open]";
-export const CHAT_COMPOSER_TEXTAREA_SELECTOR = ".agent-chat__composer-combobox > textarea";
 // Menus without typeahead own activation/navigation, not printable input.
 // Keeping those key classes separate prevents an open menu from silently dropping a letter.
 const CHAT_PRINTABLE_KEY_TARGET_SELECTOR =
@@ -290,11 +293,11 @@ export function focusChatComposerFromPrintableKeydown(
   ) {
     return;
   }
-  const composer = root.querySelector<HTMLTextAreaElement>(CHAT_COMPOSER_TEXTAREA_SELECTOR);
-  if (!composer || composer.disabled || composer.readOnly) {
+  const source = root.querySelector<HTMLTextAreaElement>(CHAT_COMPOSER_SOURCE_SELECTOR);
+  if (!source || source.disabled || source.readOnly) {
     return;
   }
   // Focus transfers ownership; block old-target dropdown typeahead from cancelling input.
-  composer.focus({ preventScroll: true });
+  focusChatComposer(root);
   event.stopImmediatePropagation();
 }

@@ -940,8 +940,9 @@ describe("renderChatComposer status", () => {
 
     draw();
     const initialTextarea = container.querySelector<HTMLTextAreaElement>("textarea")!;
-    initialTextarea.focus();
-    expect(document.activeElement).toBe(initialTextarea);
+    const initialEditor = container.querySelector<HTMLElement>(".cm-content")!;
+    initialEditor.focus();
+    expect(document.activeElement).toBe(initialEditor);
     initialTextarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
     initialTextarea.value = "Keep this draft while composing";
     initialTextarea.dispatchEvent(
@@ -968,7 +969,7 @@ describe("renderChatComposer status", () => {
     await Promise.resolve();
     let textarea = container.querySelector<HTMLTextAreaElement>("textarea")!;
     expect(textarea.value).toBe("Host updated this draft while the question was open");
-    expect(document.activeElement).toBe(textarea);
+    expect(document.activeElement).toBe(container.querySelector(".cm-content"));
 
     panel = container.querySelector("openclaw-chat-question-panel") as typeof panel;
     panel.props.onCollapsedChange(false);
@@ -982,7 +983,7 @@ describe("renderChatComposer status", () => {
     await Promise.resolve();
     textarea = container.querySelector<HTMLTextAreaElement>("textarea")!;
     expect(textarea.value).toBe("Host updated this draft while the question was open");
-    expect(document.activeElement).toBe(textarea);
+    expect(document.activeElement).toBe(container.querySelector(".cm-content"));
     expect(container.querySelector("openclaw-chat-question-panel")).toBeNull();
 
     container.remove();

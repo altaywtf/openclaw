@@ -14,6 +14,23 @@ const COMPOSER_CHROME_INTERACTIVE_SELECTOR = [
   "[role='option']",
 ].join(",");
 
+export const CHAT_COMPOSER_SOURCE_SELECTOR = ".agent-chat__composer-combobox > textarea";
+export const CHAT_COMPOSER_EDITOR_SELECTOR = ".agent-chat__composer-editor .cm-content";
+
+export function getChatComposerEditor(root: ParentNode): HTMLElement | null {
+  return root.querySelector<HTMLElement>(CHAT_COMPOSER_EDITOR_SELECTOR);
+}
+
+export function focusChatComposer(root: ParentNode): HTMLElement | null {
+  const source = root.querySelector<HTMLTextAreaElement>(CHAT_COMPOSER_SOURCE_SELECTOR);
+  if (source?.disabled) {
+    return null;
+  }
+  const editor = getChatComposerEditor(root);
+  editor?.focus({ preventScroll: true });
+  return editor;
+}
+
 type ComposerTextareaResizeObserverState = {
   observer: ResizeObserver | null;
   adjustmentFrame: number | null;
@@ -256,9 +273,7 @@ export function focusComposerFromChrome(event: MouseEvent | PointerEvent, connec
   if (!(currentTarget instanceof HTMLElement)) {
     return;
   }
-  currentTarget
-    .querySelector<HTMLElement>(".agent-chat__composer-editor .cm-content")
-    ?.focus({ preventScroll: true });
+  focusChatComposer(currentTarget);
 }
 
 export function preserveComposerFocusOnPrimaryAction(

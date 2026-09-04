@@ -33,6 +33,7 @@ import type { RealtimeTalkConversationEntry } from "../realtime-talk-conversatio
 import type { ChatRunUiStatus } from "../run-lifecycle.ts";
 import type { CompactionStatus, RunOutputUsage } from "../tool-stream-contract.ts";
 import type { BackgroundTasksProps } from "./chat-background-tasks.types.ts";
+import { getChatComposerEditor } from "./chat-composer-dom.ts";
 import type { ChatHistoryBoundaryProps } from "./chat-history-boundary.ts";
 import type { MessageActionDetails } from "./chat-message-markdown.ts";
 import type { ArtifactDownloadResolver } from "./chat-message-media.ts";
@@ -244,20 +245,18 @@ export function renderTranscriptSearch(
         placeholder=${t("chat.thread.searchPlaceholder")}
         aria-label=${t("chat.thread.search")}
         .value=${state.searchQuery}
-        ${
-          state.searchFocusPending
-            ? ref((element) => {
-                if (element instanceof HTMLInputElement) {
-                  state.searchFocusPending = false;
-                  queueMicrotask(() => {
-                    if (element.isConnected) {
-                      element.focus({ preventScroll: true });
-                    }
-                  });
-                }
-              })
-            : nothing
-        }
+        ${state.searchFocusPending
+          ? ref((element) => {
+              if (element instanceof HTMLInputElement) {
+                state.searchFocusPending = false;
+                queueMicrotask(() => {
+                  if (element.isConnected) {
+                    element.focus({ preventScroll: true });
+                  }
+                });
+              }
+            })
+          : nothing}
         @input=${(event: Event) => {
           state.searchQuery = (event.target as HTMLInputElement).value;
           requestUpdate();
@@ -288,9 +287,9 @@ export function closeTranscriptSearch(state: ChatThreadState, requestUpdate: () 
   queueMicrotask(() => {
     const target = returnFocusTarget?.isConnected
       ? returnFocusTarget
-      : returnFocusOwner?.querySelector<HTMLTextAreaElement>(
-          ".agent-chat__composer-combobox > textarea",
-        );
+      : returnFocusOwner
+        ? getChatComposerEditor(returnFocusOwner)
+        : null;
     target?.focus({ preventScroll: true });
   });
 }

@@ -24,13 +24,11 @@ import {
   uiSessionEventMatches,
 } from "../../lib/sessions/session-key.ts";
 import { ChatPaneBase } from "./chat-pane-base.ts";
-import {
-  CHAT_COMPOSER_TEXTAREA_SELECTOR,
-  type ChatPaneConnectionScope,
-} from "./chat-pane-shared.ts";
+import { type ChatPaneConnectionScope } from "./chat-pane-shared.ts";
 import { resetSessionCompanion } from "./chat-session-companion.ts";
 import { resolveChatAgentId, selectedChatSessionRow } from "./chat-state-route.ts";
 import { clearTypingActorForSessionMessage } from "./chat-typing-presence.ts";
+import { focusChatComposer } from "./components/chat-composer-dom.ts";
 import {
   canManageChatSessionSharing,
   type ChatSessionSharingState,
@@ -570,11 +568,7 @@ export abstract class ChatPaneSharing extends ChatPaneBase {
     this.sessionSuggestionBusyIds.add(suggestion.id);
     if (resolution === "edit") {
       scope.state.handleChatDraftChange(suggestion.text, []);
-      queueMicrotask(() =>
-        this.querySelector<HTMLTextAreaElement>(CHAT_COMPOSER_TEXTAREA_SELECTOR)?.focus({
-          preventScroll: true,
-        }),
-      );
+      queueMicrotask(() => focusChatComposer(this));
     }
     this.requestUpdate();
     try {

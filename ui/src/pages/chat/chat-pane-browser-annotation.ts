@@ -3,17 +3,15 @@ import type {
   BrowserAnnotationEvent,
 } from "../../components/browser/browser-annotation.ts";
 import { canAdmitBrowserAnnotation } from "./browser-annotation-admission.ts";
-import { CHAT_COMPOSER_TEXTAREA_SELECTOR } from "./chat-pane-shared.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
 import { chatAttachmentFromDataUrl } from "./components/chat-attachments.ts";
+import { focusChatComposer } from "./components/chat-composer-dom.ts";
 
 export function focusBrowserAnnotationComposerAfterUpdate(
   host: ParentNode & { updateComplete: Promise<unknown> },
 ): void {
   void host.updateComplete.then(() => {
-    host.querySelector<HTMLTextAreaElement>(CHAT_COMPOSER_TEXTAREA_SELECTOR)?.focus({
-      preventScroll: true,
-    });
+    focusChatComposer(host);
   });
 }
 

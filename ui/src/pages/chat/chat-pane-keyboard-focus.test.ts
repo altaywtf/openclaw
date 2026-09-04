@@ -9,6 +9,19 @@ import {
 } from "./chat-pane.test-support.ts";
 
 describe("chat pane keyboard focus", () => {
+  function appendComposer(pane: HTMLElement) {
+    const combobox = document.createElement("div");
+    combobox.className = "agent-chat__composer-combobox";
+    const source = combobox.appendChild(document.createElement("textarea"));
+    source.className = "agent-chat__composer-source";
+    const host = combobox.appendChild(document.createElement("div"));
+    host.className = "agent-chat__composer-editor";
+    const editor = host.appendChild(document.createElement("div"));
+    editor.className = "cm-content";
+    pane.append(combobox);
+    return { editor, source };
+  }
+
   it("keeps the letter-to-composer contract when a button is focused", () => {
     const { pane } = createTestChatPane({
       client: createGatewayBrowserClientFixture(),
@@ -16,11 +29,8 @@ describe("chat pane keyboard focus", () => {
     });
     pane.active = true;
     pane.presented = true;
-    const composer = document.createElement("div");
-    composer.className = "agent-chat__composer-combobox";
-    const textarea = composer.appendChild(document.createElement("textarea"));
-    pane.append(composer);
-    const focus = vi.spyOn(textarea, "focus");
+    const { editor } = appendComposer(pane);
+    const focus = vi.spyOn(editor, "focus");
     const button = document.body.appendChild(document.createElement("button"));
     button.addEventListener("keydown", (event) => pane.handleDocumentKeydown(event));
     button.focus();
@@ -43,11 +53,8 @@ describe("chat pane keyboard focus", () => {
     });
     pane.active = true;
     pane.presented = true;
-    const composer = document.createElement("div");
-    composer.className = "agent-chat__composer-combobox";
-    const textarea = composer.appendChild(document.createElement("textarea"));
-    pane.append(composer);
-    const focus = vi.spyOn(textarea, "focus");
+    const { editor } = appendComposer(pane);
+    const focus = vi.spyOn(editor, "focus");
     const details = document.body.appendChild(document.createElement("details"));
     details.open = true;
     const summary = details.appendChild(document.createElement("summary"));
@@ -85,11 +92,8 @@ describe("chat pane keyboard focus", () => {
     });
     pane.active = true;
     pane.presented = true;
-    const composer = document.createElement("div");
-    composer.className = "agent-chat__composer-combobox";
-    const textarea = composer.appendChild(document.createElement("textarea"));
-    pane.append(composer);
-    const focus = vi.spyOn(textarea, "focus");
+    const { editor } = appendComposer(pane);
+    const focus = vi.spyOn(editor, "focus");
     const container = document.body.appendChild(document.createElement("div"));
     const modal = container.appendChild(document.createElement("openclaw-modal-dialog"));
     const cancel = modal.appendChild(document.createElement("button"));
@@ -116,11 +120,8 @@ describe("chat pane keyboard focus", () => {
     });
     pane.active = true;
     pane.presented = true;
-    const composer = document.createElement("div");
-    composer.className = "agent-chat__composer-combobox";
-    const textarea = composer.appendChild(document.createElement("textarea"));
-    pane.append(composer);
-    const focus = vi.spyOn(textarea, "focus");
+    const { editor } = appendComposer(pane);
+    const focus = vi.spyOn(editor, "focus");
     const modal = document.body.appendChild(document.createElement("div"));
     modal.setAttribute("aria-modal", "true");
 

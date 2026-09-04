@@ -348,10 +348,34 @@ suite.define(() => {
         shellContainsChildren: true,
       });
 
-      await composer.locator(".agent-chat__composer-combobox > textarea").focus();
+      const editor = composer.locator(".agent-chat__composer-editor .cm-content");
+      await editor.evaluate((element) => {
+        const focusSink = document.createElement("button");
+        focusSink.tabIndex = -1;
+        document.body.append(focusSink);
+        focusSink.focus();
+        focusSink.remove();
+      });
+      await expect.poll(() => composer.locator(".cm-editor.cm-focused").count()).toBe(0);
+      const shellRestingStyle = await shell.evaluate(async (element) => {
+        await Promise.all(element.getAnimations().map((animation) => animation.finished));
+        const style = getComputedStyle(element);
+        return `${style.borderColor}|${style.boxShadow}`;
+      });
+      await editor.focus();
+      await expect.poll(() => composer.locator(".cm-editor.cm-focused").count()).toBe(1);
       await expect
         .poll(() => composer.evaluate((element) => getComputedStyle(element).boxShadow))
         .toBe("none");
+      await expect
+        .poll(() =>
+          shell.evaluate(async (element) => {
+            await Promise.all(element.getAnimations().map((animation) => animation.finished));
+            const style = getComputedStyle(element);
+            return `${style.borderColor}|${style.boxShadow}`;
+          }),
+        )
+        .not.toBe(shellRestingStyle);
       await page.evaluate(() => {
         document.documentElement.dataset.themeMode = "light";
       });
