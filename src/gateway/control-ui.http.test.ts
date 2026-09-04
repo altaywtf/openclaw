@@ -72,7 +72,7 @@ const resolvePlaybackTranscodeMock = vi.hoisted(() =>
   vi.fn(async (): Promise<PlaybackTranscodeResolution> => ({ kind: "passthrough" })),
 );
 // Pass-through spies on the assistant media file boundary so ticket revocation
-// races can be injected between root validation and the local file open.
+// races can be injected around the privileged file effects.
 const openLocalFileSafelyMock = vi.hoisted(() => vi.fn());
 const assertLocalMediaAllowedMock = vi.hoisted(() => vi.fn());
 const resolveControlUiSessionAccessMock = vi.hoisted(() => vi.fn());
@@ -1160,6 +1160,69 @@ describe("handleControlUiHttpRequest", () => {
           } finally {
             resolveControlUiSessionAccessMock.mockReset();
           }
+        },
+      });
+    },
+  );
+
+  it.each([
+    {
+      boundary: "before opening a transcoded rendition",
+      transcode: (revoke: () => void, renditionPath: string) => {
+        resolvePlaybackTranscodeMock.mockImplementationOnce(async () => {
+          revoke();
+          return {
+            kind: "transcoded",
+            path: renditionPath,
+            contentType: "audio/mpeg",
+            extension: ".mp3",
+          };
+        });
+      },
+    },
+    {
+      boundary: "before streaming the verified descriptor",
+      transcode: (revoke: () => void) => {
+        resolvePlaybackTranscodeMock.mockImplementationOnce(async () => {
+          revoke();
+          return { kind: "fallback" };
+        });
+      },
+    },
+  ])(
+    "rejects ticketed assistant media when authority is revoked $boundary",
+    async ({ transcode }) => {
+      await withAllowedAssistantMediaRoot({
+        prefix: "ui-media-ticket-final-effect-race-",
+        fn: async (tmpRoot) => {
+          const filePath = path.join(tmpRoot, "voice.caf");
+          const renditionPath = path.join(tmpRoot, "voice.mp3");
+          await fs.writeFile(filePath, Buffer.from("caff-original"));
+          await fs.writeFile(renditionPath, Buffer.from("rendition"));
+          const config = {} as OpenClawConfig;
+          const client = { connId: "ticket-final-effect-race-conn" } as {
+            connId: string;
+            invalidatedReason?: string;
+          };
+          const clients = new Set([client as unknown as GatewayWsClient]);
+          const minted = await resolveControlUiAssistantMedia(filePath, config, {
+            agentId: "main",
+            connId: client.connId,
+          });
+          expect(minted.available).toBe(true);
+          const mediaTicket = minted.available ? minted.mediaTicket : "";
+          const url = `/__openclaw__/assistant-media?playback=1&source=${encodeURIComponent(filePath)}&mediaTicket=${encodeURIComponent(mediaTicket)}`;
+          transcode(() => {
+            client.invalidatedReason = "closed";
+          }, renditionPath);
+          openLocalFileSafelyMock.mockClear();
+
+          const revoked = await runAssistantMediaRequest({ url, method: "GET", config, clients });
+
+          expect(revoked.handled).toBe(true);
+          expect(revoked.res.statusCode).toBe(401);
+          expect(revoked.end).toHaveBeenCalledWith("Unauthorized");
+          expect(openLocalFileSafelyMock).toHaveBeenCalledTimes(1);
         },
       });
     },

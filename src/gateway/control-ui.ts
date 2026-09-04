@@ -661,6 +661,13 @@ export async function handleControlUiAssistantMediaRequest(
         return true;
       }
       if (playback.kind === "transcoded") {
+        // Transcoding was awaited above, so live ticket authority may have
+        // changed before the rendition file is opened.
+        if (!resolveAssistantMediaTicketAuthority(verifiedMediaTicket, source, opts)) {
+          await byteStream.close();
+          respondPlainText(res, 401, "Unauthorized");
+          return true;
+        }
         const transcoded = await openLocalFileSafely({ filePath: playback.path }).catch(() => null);
         if (transcoded) {
           await byteStream.close();
@@ -672,6 +679,13 @@ export async function handleControlUiAssistantMediaRequest(
           filename = replacePlaybackFileExtension(filename, playback.extension);
         }
       }
+    }
+    // MIME detection and playback preparation can await after the last check.
+    // Revalidate immediately before the descriptor starts emitting bytes.
+    if (!resolveAssistantMediaTicketAuthority(verifiedMediaTicket, source, opts)) {
+      await byteStream.close();
+      respondPlainText(res, 401, "Unauthorized");
+      return true;
     }
     res.setHeader("Content-Type", contentType);
     res.setHeader(
