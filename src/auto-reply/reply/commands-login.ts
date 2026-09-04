@@ -2,21 +2,20 @@ import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
+import type { ProviderModelAccessChoice } from "../../commands/models/auth-model-policy.js";
 import { updateSessionEntry } from "../../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import {
   decideProviderLoginSessionAdoption,
   createProviderLoginFlowRegistry,
-  buildProviderLoginChoicesReply,
   formatProviderLoginCommand,
   formatProviderLoginComplete,
-  formatProviderLoginControlUiHandoff,
   formatProviderLoginFailed,
   formatProviderLoginSessionSwitchFailed,
   isProviderLoginPatchPersisted,
+  prepareProviderChannelLogin,
   releaseProviderLoginFlow,
   reserveProviderLoginFlow,
-  resolveProviderChannelLoginChoice,
   runProviderChannelLoginFlow,
   type ProviderChannelLoginChoice,
 } from "../../plugin-sdk/provider-auth-login-flow-runtime.js";
@@ -33,17 +32,6 @@ const activeProviderLoginFlows = createProviderLoginFlowRegistry();
 
 export function clearActiveProviderLoginFlowsForTest(): void {
   activeProviderLoginFlows.clear();
-}
-
-function parseLoginCommand(
-  commandBodyNormalized: string,
-): { providerInput: string | undefined } | null {
-  const match = commandBodyNormalized.trim().match(/^\/login(?:\s+(.+))?$/u);
-  if (!match) {
-    return null;
-  }
-  const providerInput = match[1]?.trim() || undefined;
-  return { providerInput };
 }
 
 function normalizeSurface(value: unknown): string {
@@ -226,6 +214,7 @@ async function runChannelProviderLogin(params: {
   choice: ProviderChannelLoginChoice;
   agentId: string;
   runtime?: RuntimeEnv;
+  modelAccessChoice?: ProviderModelAccessChoice;
 }): Promise<ReplyPayload> {
   const flowKey = buildProviderLoginFlowKey(params.commandParams, params.choice.choiceId);
   const sendReply = params.commandParams.opts?.onBlockReply;
@@ -255,6 +244,7 @@ async function runChannelProviderLogin(params: {
       agentId: params.agentId,
       config: params.commandParams.cfg,
       runtime: params.runtime ?? defaultRuntime,
+      modelAccessChoice: params.modelAccessChoice,
       signal: flowSignal,
       sendMessage: async (text) => await emitLoginMessage(params.commandParams, text),
       sendReply,
@@ -300,51 +290,27 @@ export const handleLoginCommand: CommandHandler = async (params, allowTextComman
   if (!allowTextCommands) {
     return null;
   }
-  const parsed = parseLoginCommand(params.command.commandBodyNormalized);
-  if (!parsed) {
+  const prepared = await prepareProviderChannelLogin({
+    commandText: params.command.commandBodyNormalized,
+    commandAuthorized: params.command.isAuthorizedSender,
+    senderIsOwner: params.command.senderIsOwner,
+    isPrivateChat: isPrivateLoginContext(params),
+    config: params.cfg,
+    agentId: params.agentId,
+    workspaceDir: params.workspaceDir,
+    signal: params.opts?.abortSignal,
+  });
+  if (!prepared) {
     return null;
   }
-
-  if (!params.command.isAuthorizedSender || !params.command.senderIsOwner) {
-    return {
-      shouldContinue: false,
-      reply: {
-        text: "Only a configured OpenClaw owner/admin can start provider login from this channel.",
-      },
-    };
+  if (prepared.status !== "ready") {
+    return { shouldContinue: false, reply: prepared.reply };
   }
-
-  const resolution = resolveProviderChannelLoginChoice(parsed.providerInput, {
-    config: params.cfg,
-    workspaceDir: params.workspaceDir,
-  });
-  if (resolution.status !== "resolved") {
-    return {
-      shouldContinue: false,
-      reply: buildProviderLoginChoicesReply(resolution),
-    };
-  }
-
-  if (!isPrivateLoginContext(params)) {
-    return {
-      shouldContinue: false,
-      reply: {
-        text: `Provider login codes are only sent in a private chat or Control UI session. Open a private chat with OpenClaw and send \`${formatProviderLoginCommand(resolution.choice)}\` there.`,
-      },
-    };
-  }
-
-  if (resolution.choice.mode !== "chat") {
-    return {
-      shouldContinue: false,
-      reply: { text: formatProviderLoginControlUiHandoff(resolution.choice) },
-    };
-  }
-
   const reply = await runChannelProviderLogin({
     commandParams: params,
-    choice: resolution.choice,
+    choice: prepared.choice,
     agentId: params.agentId,
+    modelAccessChoice: prepared.modelAccessChoice,
   });
   return { shouldContinue: false, reply };
 };

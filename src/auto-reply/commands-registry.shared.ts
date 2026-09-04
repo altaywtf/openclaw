@@ -234,6 +234,12 @@ export function buildBuiltinChatCommands(
           choices: listProviderLoginChoices ? () => listProviderLoginChoices() : undefined,
           preferAutocomplete: true,
         }),
+        defineCommandArgument("models", "Model access after sign-in", {
+          choices: [
+            { value: "all", label: "Show all provider models" },
+            { value: "keep", label: "Keep current restrictions" },
+          ],
+        }),
       ],
     }),
     defineBuiltinCommand(

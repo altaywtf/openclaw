@@ -27,6 +27,16 @@ export type { ProviderChannelLoginChoice } from "../plugins/provider-login-optio
 
 type ProviderAuthLoginFlowRuntime = typeof import("../commands/models/auth.js");
 
+type ProviderLoginReply = ReplyPayload & { text: string };
+
+type ProviderChannelLoginPreparation =
+  | { status: "reply" | "rejected"; reply: ProviderLoginReply }
+  | {
+      status: "ready";
+      choice: ProviderChannelLoginChoice;
+      modelAccessChoice?: ModelsAuthLoginFlowOptions["modelAccessChoice"];
+    };
+
 export type ProviderLoginSessionEntry = {
   sessionId: string;
   providerOverride?: string;
@@ -191,6 +201,84 @@ export function releaseProviderLoginFlow(params: {
   }
 }
 
+export async function prepareProviderChannelLogin(params: {
+  commandText: string;
+  commandAuthorized: boolean;
+  senderIsOwner: boolean;
+  isPrivateChat: boolean;
+  config: OpenClawConfig;
+  agentId: string;
+  workspaceDir?: string;
+  signal?: AbortSignal;
+}): Promise<ProviderChannelLoginPreparation | null> {
+  const match = params.commandText.trim().match(/^\/login(?:\s+(.+?))?(?:\s+(all|keep))?$/u);
+  if (!match) {
+    return null;
+  }
+  params.signal?.throwIfAborted();
+  if (!params.commandAuthorized || !params.senderIsOwner) {
+    return {
+      status: "rejected",
+      reply: {
+        text: "Only a configured OpenClaw owner/admin can start provider login from this channel.",
+      },
+    };
+  }
+  const resolution = resolveProviderChannelLoginChoice(match[1]?.trim() || undefined, {
+    config: params.config,
+    workspaceDir: params.workspaceDir,
+  });
+  if (resolution.status !== "resolved") {
+    return { status: "reply", reply: buildProviderLoginChoicesReply(resolution) };
+  }
+  const choice = resolution.choice;
+  if (!params.isPrivateChat) {
+    return {
+      status: "reply",
+      reply: {
+        text: `Provider login codes are only sent in a private chat or Control UI session. Open a private chat with OpenClaw and send \`${formatProviderLoginCommand(choice)}\` there.`,
+      },
+    };
+  }
+  if (choice.mode !== "chat") {
+    return { status: "reply", reply: { text: formatProviderLoginControlUiHandoff(choice) } };
+  }
+  const modelAccessChoice = match[2] === "all" || match[2] === "keep" ? match[2] : undefined;
+  const { prepareProviderModelAccessChoice } =
+    await import("../commands/models/auth-model-policy.js");
+  params.signal?.throwIfAborted();
+  const prompt = prepareProviderModelAccessChoice({
+    config: params.config,
+    agentId: params.agentId,
+    provider: choice.providerId,
+    providerLabel: choice.providerLabel,
+  });
+  if (prompt && !modelAccessChoice) {
+    const command = `/login ${formatProviderLoginChoiceRef(choice)}`;
+    const buttons = prompt.options.map((option) => ({
+      label: option.label,
+      action: { type: "command" as const, command: `${command} ${option.value}` },
+    }));
+    return {
+      status: "reply",
+      reply: {
+        text: [
+          prompt.message,
+          ...buttons.map((button) => `${button.label}: \`${button.action.command}\``),
+        ].join("\n"),
+        presentationTextMode: "fallback",
+        presentation: {
+          blocks: [
+            { type: "text", text: prompt.message },
+            { type: "buttons", buttons },
+          ],
+        },
+      },
+    };
+  }
+  return { status: "ready", choice, ...(modelAccessChoice ? { modelAccessChoice } : {}) };
+}
+
 function buildProviderChannelLoginPrompter(params: {
   sendMessage: (message: string) => Promise<void>;
   sendDeviceCode?: NonNullable<ModelsAuthLoginFlowOptions["prompter"]["deviceCode"]>;
@@ -241,6 +329,7 @@ export async function runProviderChannelLoginFlow(params: {
   choice: ProviderChannelLoginChoice;
   agentId: string;
   profileId?: string;
+  modelAccessChoice?: ModelsAuthLoginFlowOptions["modelAccessChoice"];
   config: OpenClawConfig;
   runtime: RuntimeEnv;
   sendMessage: (message: string) => Promise<void>;
@@ -284,6 +373,7 @@ export async function runProviderChannelLoginFlow(params: {
       method: params.choice.methodId,
       ownerPluginId: params.choice.pluginId,
       credentialOnly: true,
+      modelAccessChoice: params.modelAccessChoice,
       agent: params.agentId,
       ...(params.profileId ? { profileId: params.profileId } : {}),
       config: params.config,
@@ -339,6 +429,9 @@ export function formatProviderLoginComplete(
   if (modelAccess === "enabled") {
     return `${login} Available ${choice.providerLabel} models will update automatically. Your default model is unchanged. Use /models to browse.`;
   }
+  if (modelAccess === "restricted") {
+    return `${login} Your current model restrictions are unchanged. Use /models to browse available models.`;
+  }
   return `${login} Try your request again now.`;
 }
 
@@ -364,7 +457,7 @@ export function formatProviderLoginControlUiHandoff(choice: ProviderChannelLogin
 
 export function buildProviderLoginChoicesReply(
   resolution: Exclude<ProviderChannelLoginResolution, { status: "resolved" }>,
-): ReplyPayload {
+): ProviderLoginReply {
   const buttons =
     resolution.status === "providers"
       ? resolution.providers.map((provider) => ({

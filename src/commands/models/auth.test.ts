@@ -11,6 +11,7 @@ import {
 } from "../../config/runtime-write-application.js";
 import type { ProviderAuthMethod, ProviderPlugin } from "../../plugins/types.js";
 import type { RuntimeEnv } from "../../runtime.js";
+import { WizardCancelledError } from "../../wizard/prompts.js";
 import { WizardSession } from "../../wizard/session.js";
 
 type AuthRunCall = {
@@ -87,7 +88,8 @@ vi.mock("./auth-credential-import.js", () => ({
   tryImportProviderCredential: mocks.tryImportProviderCredential,
 }));
 
-vi.mock("../../secrets/store/secret-store.js", () => ({
+vi.mock("../../secrets/store/secret-store.js", async () => ({
+  ...(await import("../../secrets/store/secret-store-validation-error.js")),
   readSecretStoreValue: mocks.readSecretStoreValue,
   writeSecretStoreEntry: mocks.writeSecretStoreEntry,
   deleteSecretStoreEntry: mocks.deleteSecretStoreEntry,
@@ -430,7 +432,7 @@ describe("modelsAuthLoginCommand", () => {
     );
     mocks.createClackPrompter.mockReturnValue({
       note: vi.fn(async () => {}),
-      select: vi.fn(),
+      select: vi.fn().mockResolvedValue("all"),
     });
     runProviderAuth = vi.fn<ProviderAuthMethod["run"]>().mockResolvedValue({
       profiles: [
@@ -1960,10 +1962,10 @@ describe("modelsAuthLoginCommand", () => {
       expect(result.modelAccess).toBe("failed");
     });
 
+    const choice = await session.next();
+    expect(choice.step?.type).toBe("select");
+    await session.answer(choice.step!.id, "all");
     const result = await session.next();
-    if (result.step) {
-      await session.answer(result.step.id, null);
-    }
     await session.whenSettled();
 
     expect(result).toMatchObject({ done: true, status: "done" });
@@ -2000,7 +2002,188 @@ describe("modelsAuthLoginCommand", () => {
     expect(mocks.upsertAuthProfileAfterLoginWithLock).toHaveBeenCalledOnce();
   });
 
-  it("enables every model from an explicitly authorized provider without changing the default", async () => {
+  it.each(["all", "keep"] as const)(
+    "asks before login whether to expand an existing model restriction (%s)",
+    async (selection) => {
+      currentConfig = {
+        agents: {
+          defaults: {
+            model: "custom/current",
+            modelPolicy: { allow: ["custom/current"] },
+          },
+        },
+      };
+      useXaiOAuthLogin();
+      const prompter = mocks.createClackPrompter();
+      prompter.select.mockImplementation(async () => {
+        expect(runProviderAuth).not.toHaveBeenCalled();
+        expect(mocks.upsertAuthProfileAfterLoginWithLock).not.toHaveBeenCalled();
+        return selection;
+      });
+      const refreshAuthState = vi.fn(async () => "refreshed" as const);
+
+      const result = await runModelsAuthLoginFlowCore({
+        provider: "xai",
+        method: "oauth",
+        credentialOnly: true,
+        config: currentConfig,
+        runtime: createRuntime(),
+        prompter,
+        refreshAuthState,
+      });
+
+      expect(prompter.select).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          options: [
+            expect.objectContaining({ value: "all", label: expect.stringContaining("models") }),
+            expect.objectContaining({ value: "keep", label: "Keep current restrictions" }),
+          ],
+        }),
+      );
+      expect(result.modelAccess).toBe(selection === "all" ? "enabled" : "restricted");
+      expect(currentConfig.agents?.defaults?.modelPolicy?.allow).toEqual(
+        selection === "all" ? ["custom/current", "xai/*"] : ["custom/current"],
+      );
+      expect(currentConfig.agents?.defaults?.model).toBe("custom/current");
+      expect(mocks.upsertAuthProfileAfterLoginWithLock).toHaveBeenCalledOnce();
+      expect(refreshAuthState).toHaveBeenCalledWith("main");
+    },
+  );
+
+  it.each([false, true])(
+    "can cancel model access before import or force purge (force: %s)",
+    async (force) => {
+      currentConfig = {
+        agents: { defaults: { modelPolicy: { allow: ["custom/current"] } } },
+      };
+      useXaiOAuthLogin();
+      mocks.tryImportProviderCredential.mockResolvedValue({
+        provider: "xai",
+        profileId: "xai:imported",
+        mode: "oauth",
+      });
+      const prompter = mocks.createClackPrompter();
+      prompter.select.mockRejectedValue(new WizardCancelledError());
+
+      await expect(
+        runModelsAuthLoginFlowCore({
+          provider: "xai",
+          method: "oauth",
+          force,
+          config: currentConfig,
+          runtime: createRuntime(),
+          prompter,
+        }),
+      ).rejects.toBeInstanceOf(WizardCancelledError);
+
+      expect(runProviderAuth).not.toHaveBeenCalled();
+      expect(mocks.tryImportProviderCredential).not.toHaveBeenCalled();
+      expect(mocks.removeProviderAuthProfilesWithLock).not.toHaveBeenCalled();
+      expect(mocks.upsertAuthProfileAfterLoginWithLock).not.toHaveBeenCalled();
+      expect(mocks.updateConfig).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["agent", "policy"] as const)(
+    "does not redirect model-access consent to defaults when the target %s disappears",
+    async (removed) => {
+      currentConfig = {
+        agents: {
+          defaults: { modelPolicy: { allow: ["custom/shared"] } },
+          entries: {
+            main: {},
+            coder: { modelPolicy: { allow: ["custom/private"] } },
+          },
+        },
+      };
+      useXaiOAuthLogin("xai:coder");
+      runProviderAuth.mockReset();
+      runProviderAuth.mockImplementationOnce(async () => {
+        currentConfig = structuredClone(currentConfig);
+        if (removed === "agent") {
+          delete currentConfig.agents!.entries!.coder;
+        } else {
+          delete currentConfig.agents!.entries!.coder!.modelPolicy;
+        }
+        return {
+          profiles: [
+            {
+              profileId: "xai:coder",
+              credential: { type: "api_key", provider: "xai", key: "fixture-key" },
+            },
+          ],
+        };
+      });
+
+      const result = await loginWithXai("coder");
+
+      expect(result.modelAccess).toBe("failed");
+      expect(currentConfig.agents?.defaults?.modelPolicy?.allow).toEqual(["custom/shared"]);
+      expect(currentConfig.agents?.entries?.main).not.toHaveProperty("modelPolicy");
+      expect(mocks.upsertAuthProfileAfterLoginWithLock).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(["all", "keep", undefined] as const)(
+    "keeps restrictions added while sign-in runs without new consent (%s)",
+    async (selection) => {
+      useXaiOAuthLogin();
+      runProviderAuth.mockReset();
+      runProviderAuth.mockImplementationOnce(async () => {
+        currentConfig = {
+          agents: { defaults: { modelPolicy: { allow: ["custom/added-during-login"] } } },
+        };
+        return {
+          profiles: [
+            {
+              profileId: "xai:owner",
+              credential: { type: "api_key", provider: "xai", key: "fixture-key" },
+            },
+          ],
+        };
+      });
+      const result = await runModelsAuthLoginFlowCore({
+        provider: "xai",
+        method: "oauth",
+        modelAccessChoice: selection,
+        config: currentConfig,
+        credentialOnly: true,
+        runtime: createRuntime(),
+        prompter: mocks.createClackPrompter(),
+      });
+      expect(result.modelAccess).toBe("restricted");
+      expect(currentConfig.agents?.defaults?.modelPolicy?.allow).toEqual([
+        "custom/added-during-login",
+      ]);
+      expect(mocks.createClackPrompter().select).not.toHaveBeenCalled();
+    },
+  );
+
+  it("revalidates the approved policy owner inside the config write", async () => {
+    currentConfig = {
+      agents: {
+        defaults: { modelPolicy: { allow: ["custom/shared"] } },
+        entries: {
+          main: {},
+          coder: { modelPolicy: { allow: ["custom/private"] } },
+        },
+      },
+    };
+    useXaiOAuthLogin("xai:coder");
+    mocks.updateConfig.mockImplementationOnce(
+      async (mutator: (config: OpenClawConfig) => OpenClawConfig) => {
+        delete currentConfig.agents!.entries!.coder!.modelPolicy;
+        return mutator(currentConfig);
+      },
+    );
+
+    const result = await loginWithXai("coder");
+
+    expect(result.modelAccess).toBe("failed");
+    expect(currentConfig.agents?.defaults?.modelPolicy?.allow).toEqual(["custom/shared"]);
+  });
+
+  it("enables every model after the user approves access without changing the default", async () => {
     currentConfig = {
       agents: {
         defaults: {

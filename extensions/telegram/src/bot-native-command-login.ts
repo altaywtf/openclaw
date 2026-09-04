@@ -1,18 +1,15 @@
-import type { CommandArgs } from "openclaw/plugin-sdk/command-auth-native";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import {
   decideProviderLoginSessionAdoption,
   createProviderLoginFlowRegistry,
-  buildProviderLoginChoicesReply,
   formatProviderLoginCommand,
   formatProviderLoginComplete,
-  formatProviderLoginControlUiHandoff,
   formatProviderLoginFailed,
   formatProviderLoginSessionSwitchFailed,
   isProviderLoginPatchPersisted,
+  prepareProviderChannelLogin,
   releaseProviderLoginFlow,
   reserveProviderLoginFlow,
-  resolveProviderChannelLoginChoice,
 } from "openclaw/plugin-sdk/provider-auth-login-flow-runtime";
 import { danger } from "openclaw/plugin-sdk/runtime-env";
 import {
@@ -48,15 +45,6 @@ function formatTelegramLoginDeviceCode(params: TelegramLoginDeviceCode): string 
   ].join("\n");
 }
 
-function resolveTelegramProviderLoginInput(
-  commandArgs: CommandArgs | undefined,
-): string | undefined {
-  const providerValue = commandArgs?.values?.provider;
-  return typeof providerValue === "string" && providerValue.trim()
-    ? providerValue
-    : commandArgs?.raw;
-}
-
 function buildTelegramProviderLoginFlowKey(dispatch: TelegramCommandDispatch): string {
   const threadKey =
     dispatch.threadSpec.id == null
@@ -73,7 +61,7 @@ function buildTelegramProviderLoginFlowKey(dispatch: TelegramCommandDispatch): s
 
 export async function executeTelegramLoginCommand(params: {
   dispatch: TelegramCommandDispatch;
-  commandArgs?: CommandArgs;
+  commandText: string;
   currentProvider?: string;
 }): Promise<boolean> {
   const { dispatch } = params;
@@ -106,38 +94,34 @@ export async function executeTelegramLoginCommand(params: {
       },
     );
   };
-  if (!dispatch.senderIsOwner) {
-    await sendLoginMessage(
-      "Only a configured OpenClaw owner can start provider login from Telegram.",
-    );
+  const prepared = await prepareProviderChannelLogin({
+    commandText: params.commandText,
+    commandAuthorized: dispatch.commandAuthorized,
+    senderIsOwner: dispatch.senderIsOwner,
+    isPrivateChat: dispatch.msg.chat.type === "private",
+    config: dispatch.runtimeCfg,
+    agentId: dispatch.route.agentId,
+    signal: dispatch.opts.accountAbortSignal,
+  });
+  if (!prepared) {
     return false;
   }
-  const resolution = resolveProviderChannelLoginChoice(
-    resolveTelegramProviderLoginInput(params.commandArgs),
-    { config: dispatch.runtimeCfg },
-  );
-  if (resolution.status !== "resolved") {
+  if (prepared.status !== "ready") {
+    if (!prepared.reply.presentation) {
+      await sendLoginMessage(prepared.reply.text);
+      return prepared.status === "reply";
+    }
     const { deliverReplies } = await dispatch.loadDeliveryRuntime();
     const result = await deliverReplies({
-      replies: [buildProviderLoginChoicesReply(resolution)],
+      replies: [prepared.reply],
       ...dispatch.buildDeliveryBaseOptions({
         sessionKeyForInternalHooks: dispatch.targetSessionKey,
         policySessionKey: dispatch.targetSessionKey,
       }),
     });
-    return result.delivered;
+    return result.delivered && prepared.status === "reply";
   }
-  const loginChoice = resolution.choice;
-  if (dispatch.isGroup) {
-    await sendLoginMessage(
-      `For safety, provider login codes are only sent in a private chat with this bot. DM this bot \`${formatProviderLoginCommand(loginChoice)}\` to sign in.`,
-    );
-    return true;
-  }
-  if (loginChoice.mode !== "chat") {
-    await sendLoginMessage(formatProviderLoginControlUiHandoff(loginChoice));
-    return true;
-  }
+  const loginChoice = prepared.choice;
   const flowKey = buildTelegramProviderLoginFlowKey(dispatch);
   const reservation = reserveProviderLoginFlow({
     flows: activeTelegramProviderLoginFlows,
@@ -172,6 +156,7 @@ export async function executeTelegramLoginCommand(params: {
         agentId: dispatch.route.agentId,
         config: dispatch.runtimeCfg,
         runtime: dispatch.runtime,
+        modelAccessChoice: prepared.modelAccessChoice,
         signal: flowSignal,
         sendMessage: sendLoginMessage,
         sendReply: async (reply) => {

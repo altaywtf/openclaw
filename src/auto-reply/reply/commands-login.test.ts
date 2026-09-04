@@ -176,6 +176,62 @@ describe("handleLoginCommand", () => {
     );
   });
 
+  it.each(["discord", "slack", "telegram", "signal", "webchat"])(
+    "offers model-access choices before sign-in and resumes the selected choice on %s",
+    async (surface) => {
+      const overrides = {
+        cfg: {
+          commands: { text: true, ownerAllowFrom: ["owner"] },
+          agents: {
+            defaults: { modelPolicy: { allow: ["openai/current"] } },
+            entries: { main: {} },
+          },
+        },
+        ctx: { Provider: surface, Surface: surface, OriginatingChannel: surface },
+        command: { channel: surface, channelId: surface },
+        agentId: "main",
+        opts: blockReplyOpts(),
+      };
+      mockSuccessfulLoginFlow();
+      const providers = await handleLoginCommand(buildLoginParams("/login", overrides), true);
+      const loginButton = providers?.reply?.presentation?.blocks
+        .flatMap((block) => (block.type === "buttons" ? block.buttons : []))
+        .find((button) => button.label === "OpenAI");
+      if (loginButton?.action?.type !== "command") {
+        throw new Error("Expected the OpenAI provider login button");
+      }
+      const menu = await handleLoginCommand(
+        buildLoginParams(loginButton.action.command, overrides),
+        true,
+      );
+      expect(menu?.reply?.text).toContain("current model restrictions");
+      const buttons =
+        menu?.reply?.presentation?.blocks.flatMap((block) =>
+          block.type === "buttons" ? block.buttons : [],
+        ) ?? [];
+
+      expect(buttons.map((button) => button.label)).toEqual([
+        "Show all OpenAI models",
+        "Keep current restrictions",
+      ]);
+      expect(runModelsAuthLoginFlowMock).not.toHaveBeenCalled();
+      for (const [index, selection] of ["all", "keep"].entries()) {
+        const button = buttons[index];
+        if (button?.action?.type !== "command") {
+          throw new Error("Expected a portable login choice command");
+        }
+        expect(menu?.reply?.text).toContain(button.action.command);
+        await handleLoginCommand(buildLoginParams(button.action.command, overrides), true);
+        expect(runModelsAuthLoginFlowMock).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            provider: "openai",
+            modelAccessChoice: selection,
+          }),
+        );
+      }
+    },
+  );
+
   it("cancels pending provider login with the initiating chat turn", async () => {
     const controller = new AbortController();
     const options = { ...blockReplyOpts(), abortSignal: controller.signal };

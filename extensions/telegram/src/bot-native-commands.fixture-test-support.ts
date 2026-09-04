@@ -161,6 +161,7 @@ export function stubTelegramProviderLoginFlow(
       method: flow.choice.methodId,
       ownerPluginId: flow.choice.pluginId,
       credentialOnly: true,
+      modelAccessChoice: flow.modelAccessChoice,
       agent: flow.agentId,
       ...(flow.profileId ? { profileId: flow.profileId } : {}),
       config: flow.config,

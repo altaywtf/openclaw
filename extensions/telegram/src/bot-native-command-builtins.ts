@@ -280,7 +280,7 @@ export async function executeTelegramBuiltinCommand(
         cfg: dispatch.runtimeCfg,
         agentId: dispatch.route.agentId,
       }).provider;
-    return await executeTelegramLoginCommand({ dispatch, commandArgs, currentProvider });
+    return await executeTelegramLoginCommand({ dispatch, commandText: prompt, currentProvider });
   }
 
   const menuNeedsModelContext =

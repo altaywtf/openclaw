@@ -17,7 +17,6 @@ import {
 } from "@openclaw/normalization-core/string-coerce";
 import { styleSelectParams } from "../../../packages/terminal-core/src/prompt-select-styled-params.js";
 import { stylePromptMessage } from "../../../packages/terminal-core/src/prompt-style.js";
-import { resolveMutableAgentEntry } from "../../agents/agent-scope-config.js";
 import { resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
 import { removeProviderAuthProfilesWithLock } from "../../agents/auth-profiles.js";
 import {
@@ -28,10 +27,6 @@ import {
 import type { AuthProfileCredential } from "../../agents/auth-profiles/types.js";
 import { normalizeProviderId } from "../../agents/model-ref-shared.js";
 import { isCliProvider } from "../../agents/model-selection-cli.js";
-import {
-  AGENT_MODEL_POLICY_ALLOW_CONFIG_PATH,
-  resolveConfiguredModelPolicyAllow,
-} from "../../agents/model-selection-shared.js";
 import { resolveProviderIdForAuth } from "../../agents/provider-auth-aliases.js";
 import { resolveDefaultAgentWorkspaceDir } from "../../agents/workspace.js";
 import { formatCliCommand } from "../../cli/command-format.js";
@@ -39,11 +34,6 @@ import { parseDurationMs } from "../../cli/parse-duration.js";
 import { logConfigUpdated } from "../../config/logging.js";
 import { applyMergePatch, createMergePatch } from "../../config/merge-patch.js";
 import { normalizeAgentModelRefForConfig } from "../../config/model-input.js";
-import { parseModelPolicyWildcardRef } from "../../config/model-policy-ref.js";
-import {
-  attachRuntimeConfigWriteApplication,
-  createRuntimeConfigWriteApplication,
-} from "../../config/runtime-write-application.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
   applyProviderAuthConfigPatch,
@@ -66,7 +56,6 @@ import type {
   ProviderAuthResult,
   ProviderPlugin,
 } from "../../plugins/types.js";
-import { captureGatewayRootWorkAdmissionContinuationScope } from "../../process/gateway-work-admission.js";
 import type { RuntimeEnv } from "../../runtime.js";
 import { normalizeSecretInput } from "../../utils/normalize-secret-input.js";
 import { createClackPrompter } from "../../wizard/clack-prompter.js";
@@ -75,6 +64,13 @@ import { validateAnthropicSetupToken } from "../auth-token.js";
 import { repairCodexRuntimePluginInstallForModelSelection } from "../codex-runtime-plugin-install.js";
 import { repairCopilotRuntimePluginInstallForModelSelection } from "../copilot-runtime-plugin-install.js";
 import { tryImportProviderCredential } from "./auth-credential-import.js";
+import {
+  adoptProviderModelPolicy,
+  chooseProviderModelAccess,
+  type ProviderModelAccessChoice,
+  type ProviderModelAccessDecision,
+  type ProviderModelAccessResult,
+} from "./auth-model-policy.js";
 import { type ModelAuthRefreshOutcome, refreshRunningGatewayAuthState } from "./auth-refresh.js";
 import { loadValidConfigOrThrow, resolveModelsTargetAgent, updateConfig } from "./shared.js";
 
@@ -124,96 +120,6 @@ const select = async <T>(params: Parameters<typeof clackSelect<T>>[0]) =>
   guardCancel(await clackSelect(styleSelectParams(params)));
 
 const MODELS_AUTH_STDIN_MAX_BYTES = 1024 * 1024;
-
-type ProviderModelAccessResult = "enabled" | "already-visible" | "failed";
-
-function providerModelPolicyNeedsUpdate(
-  policy: ReturnType<typeof resolveConfiguredModelPolicyAllow>,
-  provider: string,
-): boolean {
-  // Missing or empty policy already permits every model.
-  return Boolean(
-    provider &&
-    policy.refs.length > 0 &&
-    !policy.refs.some((entry) => parseModelPolicyWildcardRef(entry)?.key === `${provider}/*`),
-  );
-}
-
-function appendProviderModelPolicy(params: {
-  config: OpenClawConfig;
-  agentId: string;
-  provider: string;
-}): boolean {
-  const provider = normalizeProviderId(params.provider);
-  const policy = resolveConfiguredModelPolicyAllow({
-    cfg: params.config,
-    agentId: params.agentId,
-  });
-  if (!providerModelPolicyNeedsUpdate(policy, provider)) {
-    return false;
-  }
-  const allow = [...policy.refs, `${provider}/*`];
-  if (policy.configPath === AGENT_MODEL_POLICY_ALLOW_CONFIG_PATH) {
-    const entry = resolveMutableAgentEntry(params.config, params.agentId);
-    if (!entry) {
-      throw new Error(`Agent "${params.agentId}" no longer exists in the current config.`);
-    }
-    entry.modelPolicy = { ...entry.modelPolicy, allow };
-    return true;
-  }
-
-  params.config.agents ??= {};
-  params.config.agents.defaults ??= {};
-  params.config.agents.defaults.modelPolicy = {
-    ...params.config.agents.defaults.modelPolicy,
-    allow,
-  };
-  return true;
-}
-
-async function adoptProviderModelPolicy(params: {
-  provider: string;
-  agentId: string;
-  runtime: RuntimeEnv;
-}): Promise<ProviderModelAccessResult> {
-  try {
-    const current = await loadValidConfigOrThrow();
-    const provider = normalizeProviderId(params.provider);
-    const policy = resolveConfiguredModelPolicyAllow({
-      cfg: current,
-      agentId: params.agentId,
-    });
-    if (!providerModelPolicyNeedsUpdate(policy, provider)) {
-      return "already-visible";
-    }
-    let changed = false;
-    const application = createRuntimeConfigWriteApplication(
-      captureGatewayRootWorkAdmissionContinuationScope()?.run,
-    );
-    await updateConfig(
-      (config) => {
-        changed = appendProviderModelPolicy({ ...params, config });
-        return config;
-      },
-      {
-        writeOptions: attachRuntimeConfigWriteApplication({}, application),
-      },
-    );
-    if (changed) {
-      if (application.claimed && (await application.result) !== "applied") {
-        throw new Error("the running Gateway did not apply the saved model policy");
-      }
-      logConfigUpdated(params.runtime);
-      return "enabled";
-    }
-    return "already-visible";
-  } catch (error) {
-    params.runtime.error(
-      `Provider sign-in succeeded, but model access could not be updated: ${error instanceof Error ? error.message : String(error)}`,
-    );
-    return "failed";
-  }
-}
 
 async function readPipedStdin(): Promise<string> {
   const bytes = await readByteStreamWithLimit(process.stdin, {
@@ -822,6 +728,13 @@ export async function modelsAuthSetupTokenCommand(
     throw new Error(`Provider "${provider.id}" does not expose a token auth method.`);
   }
 
+  const modelAccessDecision = await chooseProviderModelAccess({
+    config,
+    agentId,
+    provider: provider.id,
+    providerLabel: provider.label,
+    prompter,
+  });
   const pendingLogin = await runProviderAuthMethod({
     config,
     agentId,
@@ -832,7 +745,7 @@ export async function modelsAuthSetupTokenCommand(
     runtime,
     prompter,
   });
-  await finalizeProviderLogin({ agentId, runtime }, pendingLogin);
+  await finalizeProviderLogin({ agentId, runtime, modelAccessDecision }, pendingLogin);
 }
 
 /** Reads a pasted bearer/setup token and stores it as an auth profile. */
@@ -1015,6 +928,13 @@ export async function modelsAuthAddCommand(opts: { agent?: string }, runtime: Ru
           `Unknown token auth method "${methodId}". Run ${formatCliCommand("openclaw models auth login --provider " + providerPlugin.id)} to choose interactively.`,
         );
       }
+      const modelAccessDecision = await chooseProviderModelAccess({
+        config,
+        agentId,
+        provider: providerPlugin.id,
+        providerLabel: providerPlugin.label,
+        prompter,
+      });
       const pendingLogin = await runProviderAuthMethod({
         config,
         agentId,
@@ -1025,7 +945,7 @@ export async function modelsAuthAddCommand(opts: { agent?: string }, runtime: Ru
         runtime,
         prompter,
       });
-      await finalizeProviderLogin({ agentId, runtime }, pendingLogin);
+      await finalizeProviderLogin({ agentId, runtime, modelAccessDecision }, pendingLogin);
       return;
     }
   }
@@ -1102,6 +1022,7 @@ type PendingModelsAuthLoginFlowResult = Omit<
 >;
 
 export type ModelsAuthLoginFlowOptions = LoginOptions & {
+  modelAccessChoice?: ProviderModelAccessChoice;
   /** Manifest owner selected by a remote provider-login choice. */
   ownerPluginId?: string;
   /** Save credentials and connection settings without applying unrelated setup settings. */
@@ -1164,6 +1085,7 @@ async function finalizeProviderLogin(
     refreshAuthState?: (agentId: string) => Promise<ModelAuthRefreshOutcome>;
     logCompletion?: () => void;
     showOpenAiTip?: boolean;
+    modelAccessDecision: ProviderModelAccessDecision;
   },
   result: PendingModelsAuthLoginFlowResult,
 ): Promise<ModelsAuthLoginFlowResult> {
@@ -1173,6 +1095,7 @@ async function finalizeProviderLogin(
           provider: result.providerId,
           agentId: params.agentId,
           runtime: params.runtime,
+          decision: params.modelAccessDecision,
         })
       : "failed";
   const authRefresh = params.refreshAuthState
@@ -1269,6 +1192,14 @@ export async function runModelsAuthLoginFlowCore(
     );
   }
 
+  const modelAccessDecision = await chooseProviderModelAccess({
+    config: context.config,
+    agentId: context.agentId,
+    provider: selectedProvider.id,
+    providerLabel: selectedProvider.label,
+    prompter,
+    choice: opts.modelAccessChoice,
+  });
   const importedCredential =
     !opts.force && !opts.profileId
       ? await tryImportProviderCredential({
@@ -1305,6 +1236,7 @@ export async function runModelsAuthLoginFlowCore(
         agentId: context.agentId,
         runtime: opts.runtime,
         ...(opts.refreshAuthState ? { refreshAuthState: opts.refreshAuthState } : {}),
+        modelAccessDecision,
         showOpenAiTip: true,
         logCompletion: () => {
           if (importedCredential.configUpdated) {
@@ -1385,6 +1317,7 @@ export async function runModelsAuthLoginFlowCore(
       agentId: context.agentId,
       runtime: opts.runtime,
       ...(opts.refreshAuthState ? { refreshAuthState: opts.refreshAuthState } : {}),
+      modelAccessDecision,
       showOpenAiTip: true,
     },
     pendingLogin,
@@ -1403,6 +1336,9 @@ export async function modelsAuthLoginCommand(opts: LoginOptions, runtime: Runtim
     runtime,
     prompter: createClackPrompter(),
   });
+  if (result.modelAccess === "restricted") {
+    runtime.log("Your current model restrictions are unchanged.");
+  }
   if (result.authRefresh === "gateway-rejected") {
     runtime.error(
       "Provider login succeeded, but the Gateway rejected its auth refresh. Check the Gateway logs, then run /models.",

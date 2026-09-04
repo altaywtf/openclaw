@@ -114,6 +114,14 @@ App-guided setup tests only the model you select, or the provider's recommended
 model when you have not selected one. It saves that default only after one
 confirmation turn succeeds. A failed confirmation keeps the saved sign-in.
 
+If an existing restriction would hide that provider's models, login first offers
+**Show all provider models** or **Keep current restrictions**. This also applies
+to restrictions inherited from an older setup. Showing all models adds only that
+provider's wildcard to the current policy; it does not change the default model
+or remove restrictions for other providers. Chat shows buttons where supported
+and copyable `/login <provider> all` or `/login <provider> keep` commands otherwise.
+The CLI and Control UI use the same choice.
+
 ```bash
 openclaw onboard
 ```
@@ -193,7 +201,7 @@ Set the complete list directly:
 openclaw config set agents.defaults.modelPolicy.allow '["openai/gpt-5.4","anthropic/*"]' --strict-json
 ```
 
-`openclaw models set`, provider setup, and `openclaw models aliases add` can add entries under `agents.defaults.models`, but they never change `modelPolicy.allow`. This keeps model metadata and aliases independent from override policy.
+`openclaw models set`, provider setup, and `openclaw models aliases add` can add entries under `agents.defaults.models` without changing `modelPolicy.allow`. Provider login expands that policy only when you explicitly choose **Show all provider models**. Model metadata and aliases remain independent from override policy.
 </Accordion>
 
 ## Choose a model for a session

@@ -381,7 +381,11 @@ describe("openclaw.setup.auth.start owner binding", () => {
             },
           },
           agents: {
-            defaults: { workspace: workspaceDir, skipBootstrap: true },
+            defaults: {
+              workspace: workspaceDir,
+              skipBootstrap: true,
+              modelPolicy: { allow: ["fixture/kept-model"] },
+            },
             list: [{ id: "main", default: true }],
           },
           gateway: { auth: { mode: "token" as const, token } },
@@ -408,8 +412,21 @@ describe("openclaw.setup.auth.start owner binding", () => {
           },
         );
         expect(started).toMatchObject({ done: false, status: "running" });
+        const modelAccess = await gateway.client.request<WizardNextResult>("wizard.next", {
+          sessionId: started.sessionId,
+        });
+        expect(modelAccess.step).toMatchObject({
+          type: "select",
+          options: [
+            { value: "all", label: `Show all ${SELECTED_OWNER} models` },
+            { value: "keep", label: "Keep current restrictions" },
+          ],
+        });
+        expect(probe.selectedAuthRuns).toBe(0);
+        const selectedAccess = authFlow === "device" ? "all" : "keep";
         const signIn = await gateway.client.request<WizardNextResult>("wizard.next", {
           sessionId: started.sessionId,
+          answer: { stepId: modelAccess.step!.id, value: selectedAccess },
         });
         if (!signIn.step) {
           throw new Error("Expected a provider sign-in step.");
@@ -509,6 +526,11 @@ describe("openclaw.setup.auth.start owner binding", () => {
         });
         const configAfterLogin = JSON.parse(await fs.readFile(configPath, "utf8"));
         expect(configAfterLogin.agents?.defaults?.model).toBeUndefined();
+        expect(configAfterLogin.agents?.defaults?.modelPolicy?.allow).toEqual(
+          selectedAccess === "all"
+            ? ["fixture/kept-model", `${COLLISION_PROVIDER}/*`]
+            : ["fixture/kept-model"],
+        );
         expect(configAfterLogin.agents?.defaults?.workspace).toBe(workspaceDir);
         expect(configAfterLogin.messages?.responsePrefix).toBe("concurrent-edit");
       } finally {

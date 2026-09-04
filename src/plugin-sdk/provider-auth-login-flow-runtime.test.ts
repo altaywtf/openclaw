@@ -9,12 +9,17 @@ import {
   buildProviderLoginChoicesReply,
   decideProviderLoginSessionAdoption,
   formatProviderLoginComplete,
+  prepareProviderChannelLogin,
   type ProviderChannelLoginChoice,
   type ProviderLoginSessionEntry,
   runProviderChannelLoginFlow,
 } from "./provider-auth-login-flow-runtime.js";
 
 const mocks = vi.hoisted(() => ({
+  resolveProviderChannelLoginChoice:
+    vi.fn<
+      typeof import("../plugins/provider-login-options.js").resolveProviderChannelLoginChoice
+    >(),
   runModelsAuthLoginFlowCore: vi.fn<
     (options: ModelsAuthLoginFlowOptions) => Promise<ModelsAuthLoginFlowResult>
   >(async () => ({
@@ -29,6 +34,13 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../commands/models/auth.js", () => ({
   runModelsAuthLoginFlowCore: mocks.runModelsAuthLoginFlowCore,
 }));
+
+vi.mock("../plugins/provider-login-options.js", async () => {
+  const actual = await vi.importActual<typeof import("../plugins/provider-login-options.js")>(
+    "../plugins/provider-login-options.js",
+  );
+  return { ...actual, resolveProviderChannelLoginChoice: mocks.resolveProviderChannelLoginChoice };
+});
 
 const choice: ProviderChannelLoginChoice = {
   choiceId: "xai-oauth",
@@ -55,9 +67,141 @@ const loginParams = {
   unsupportedPromptMessage: "Open Control UI → Models and choose Sign in.",
 };
 
+const preparationParams = {
+  commandText: "/login xai",
+  commandAuthorized: true,
+  senderIsOwner: true,
+  isPrivateChat: true,
+  config: {
+    agents: {
+      defaults: { modelPolicy: { allow: ["other/current"] } },
+      entries: { main: {} },
+    },
+  },
+  agentId: "main",
+};
+
 describe("provider channel login runtime", () => {
   beforeEach(() => {
     mocks.runModelsAuthLoginFlowCore.mockClear();
+    mocks.resolveProviderChannelLoginChoice.mockReset().mockReturnValue({
+      status: "resolved",
+      choice,
+    });
+  });
+
+  it.each([
+    { commandAuthorized: false, senderIsOwner: true },
+    { commandAuthorized: true, senderIsOwner: false },
+  ])("rejects preflight without both authorization facts: %j", async (authorization) => {
+    await expect(
+      prepareProviderChannelLogin({ ...preparationParams, ...authorization }),
+    ).resolves.toMatchObject({
+      status: "rejected",
+      reply: { text: expect.stringContaining("owner/admin") },
+    });
+    expect(mocks.resolveProviderChannelLoginChoice).not.toHaveBeenCalled();
+    expect(mocks.runModelsAuthLoginFlowCore).not.toHaveBeenCalled();
+  });
+
+  it("returns a privacy warning instead of a ready login outside a private context", async () => {
+    await expect(
+      prepareProviderChannelLogin({ ...preparationParams, isPrivateChat: false }),
+    ).resolves.toMatchObject({
+      status: "reply",
+      reply: { text: expect.stringContaining("private chat") },
+    });
+    expect(mocks.runModelsAuthLoginFlowCore).not.toHaveBeenCalled();
+  });
+
+  it.each(["all", "keep"] as const)(
+    "returns the %s continuation before starting auth",
+    async (selection) => {
+      const menu = await prepareProviderChannelLogin(preparationParams);
+      if (!menu || menu.status !== "reply") {
+        throw new Error("Expected a model-access choice reply");
+      }
+      const buttons =
+        menu.reply.presentation?.blocks.flatMap((block) =>
+          block.type === "buttons" ? block.buttons : [],
+        ) ?? [];
+      expect(buttons.map((button) => button.label)).toEqual([
+        "Show all xAI (Grok) models",
+        "Keep current restrictions",
+      ]);
+      const button = buttons[selection === "all" ? 0 : 1];
+      if (button?.action?.type !== "command") {
+        throw new Error("Expected a typed model-access continuation");
+      }
+      expect(menu.reply.presentationTextMode).toBe("fallback");
+      expect(menu.reply.text).toContain(button.action.command);
+      await expect(
+        prepareProviderChannelLogin({
+          ...preparationParams,
+          commandText: button.action.command,
+        }),
+      ).resolves.toEqual({ status: "ready", choice, modelAccessChoice: selection });
+      expect(mocks.resolveProviderChannelLoginChoice).toHaveBeenLastCalledWith("xai/xai-oauth", {
+        config: preparationParams.config,
+        workspaceDir: undefined,
+      });
+      expect(mocks.runModelsAuthLoginFlowCore).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not add model-access consent when restrictions are absent", async () => {
+    await expect(
+      prepareProviderChannelLogin({ ...preparationParams, config: {} }),
+    ).resolves.toEqual({ status: "ready", choice });
+  });
+
+  it("resolves a stale continuation again instead of starting another provider", async () => {
+    mocks.resolveProviderChannelLoginChoice.mockReturnValue({ status: "unsupported", choices: [] });
+    await expect(
+      prepareProviderChannelLogin({
+        ...preparationParams,
+        commandText: "/login removed/choice all",
+      }),
+    ).resolves.toMatchObject({
+      status: "reply",
+      reply: { text: expect.stringContaining("No provider connections") },
+    });
+    expect(mocks.runModelsAuthLoginFlowCore).not.toHaveBeenCalled();
+  });
+
+  it.each(["secret", "setup", "sign-in"] as const)(
+    "returns the existing %s handoff instead of starting auth",
+    async (mode) => {
+      mocks.resolveProviderChannelLoginChoice.mockReturnValue({
+        status: "resolved",
+        choice: { ...choice, mode },
+      });
+      await expect(prepareProviderChannelLogin(preparationParams)).resolves.toMatchObject({
+        status: "reply",
+        reply: { text: expect.stringContaining("Control UI") },
+      });
+      expect(mocks.runModelsAuthLoginFlowCore).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not prepare cancelled login commands", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("Login cancelled"));
+    await expect(
+      prepareProviderChannelLogin({ ...preparationParams, signal: controller.signal }),
+    ).rejects.toThrow("Login cancelled");
+    expect(mocks.resolveProviderChannelLoginChoice).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("leaves other commands unhandled (aborted: %s)", async (aborted) => {
+    await expect(
+      prepareProviderChannelLogin({
+        ...preparationParams,
+        commandText: "/models",
+        signal: aborted ? AbortSignal.abort(new Error("Login cancelled")) : undefined,
+      }),
+    ).resolves.toBeNull();
+    expect(mocks.resolveProviderChannelLoginChoice).not.toHaveBeenCalled();
   });
 
   it("fails closed when an offered provider asks chat for extra input", async () => {
@@ -81,19 +225,27 @@ describe("provider channel login runtime", () => {
     );
   });
 
-  it("passes the selected manifest owner to provider execution", async () => {
-    await runProviderChannelLoginFlow({ ...loginParams, sendMessage: vi.fn(async () => {}) });
+  it.each(["all", "keep"] as const)(
+    "passes the selected manifest owner and %s choice to provider execution",
+    async (modelAccessChoice) => {
+      await runProviderChannelLoginFlow({
+        ...loginParams,
+        modelAccessChoice,
+        sendMessage: vi.fn(async () => {}),
+      });
 
-    expect(mocks.runModelsAuthLoginFlowCore).toHaveBeenCalledWith(
-      expect.objectContaining({
-        provider: "xai",
-        method: "oauth",
-        ownerPluginId: "xai",
-        credentialOnly: true,
-        agent: "main",
-      }),
-    );
-  });
+      expect(mocks.runModelsAuthLoginFlowCore).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider: "xai",
+          method: "oauth",
+          ownerPluginId: "xai",
+          credentialOnly: true,
+          agent: "main",
+          modelAccessChoice,
+        }),
+      );
+    },
+  );
 
   it("sends a typed browser action and keeps completion bound to its initiating login", async () => {
     const clearOrigin = prepareGatewayBrowserOrigin({
