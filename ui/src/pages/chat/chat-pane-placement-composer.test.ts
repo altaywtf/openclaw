@@ -37,6 +37,7 @@ function presentation(
     restartingKey: null,
     row,
     startupPending: false,
+    hasQueuedInputWaitingForWorkspaceSync: false,
     onRestart: vi.fn(),
     onReclaim: vi.fn(),
     ...overrides,
@@ -53,8 +54,10 @@ describe("chat placement composer presentation", () => {
     ["draining", "busy", "Send now; your message starts automatically after workspace sync."],
     ["reconciling", "busy", "Send now; your message starts automatically after workspace sync."],
   ] as const)("projects %s placement into a %s composer", (state, kind, busyMessage) => {
-    const result = presentation(placementSession(state));
     const acceptsDuringSync = state === "draining" || state === "reconciling";
+    const result = presentation(placementSession(state), {
+      hasQueuedInputWaitingForWorkspaceSync: acceptsDuringSync,
+    });
 
     expect(result.state.kind).toBe(kind);
     expect(result.blocksSend).toBe(kind !== "ready" && !acceptsDuringSync);
@@ -76,6 +79,13 @@ describe("chat placement composer presentation", () => {
       }).canSend,
     ).toBe(kind === "ready" || acceptsDuringSync);
   });
+
+  it.each(["draining", "reconciling"] as const)(
+    "keeps %s blocked without an admitted queued follow-up",
+    (state) => {
+      expect(presentation(placementSession(state)).blocksSend).toBe(true);
+    },
+  );
 
   it.each(["restart", "stop-first"] as const)(
     "projects failed %s recovery into an actionable composer banner",

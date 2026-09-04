@@ -111,7 +111,7 @@ describe("server-owned pending input display", () => {
   it("shows a durable receipt while an accepted input waits for workspace sync", () => {
     const queued = { ...input, state: "queued" as const };
 
-    const items = buildPendingInputItems([queued], undefined, true);
+    const items = buildPendingInputItems([queued], undefined, ["run-queued"]);
 
     expect(items).toEqual(
       expect.arrayContaining([

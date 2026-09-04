@@ -80,16 +80,18 @@ suite.define(() => {
       },
       async ({ page }) => {
         const reconciling = session("reconciling");
+        const reconcilingHistory = {
+          inFlightRun: null,
+          messages: [{ role: "assistant", content: "Cloud edits are ready to apply." }],
+          pendingInputs: { items: [pendingInput], total: 1 },
+          sessionId: reconciling.sessionId,
+          sessionInfo: reconciling,
+          thinkingLevel: null,
+        };
         const gateway = await installMockGateway(page, {
           methodResponses: {
-            "chat.history": {
-              inFlightRun: null,
-              messages: [{ role: "assistant", content: "Cloud edits are ready to apply." }],
-              pendingInputs: { items: [pendingInput], total: 1 },
-              sessionId: reconciling.sessionId,
-              sessionInfo: reconciling,
-              thinkingLevel: null,
-            },
+            "chat.history": reconcilingHistory,
+            "chat.startup": reconcilingHistory,
             "sessions.list": chatSessionListResponse([reconciling]),
           },
           sessionInfo: reconciling,
@@ -98,15 +100,7 @@ suite.define(() => {
         });
 
         await page.goto(controlUiSessionUrl(suite.server.baseUrl, sessionKey));
-        const histories = (await gateway.getRequests("chat.history")).length;
-        await gateway.emitGatewayEvent("sessions.changed", {
-          sessionKey,
-          sessionId: reconciling.sessionId,
-          reason: "send",
-          hasActiveRun: true,
-          session: reconciling,
-        });
-        await gateway.waitForRequest("chat.history", { after: histories });
+        await gateway.waitForRequest("chat.startup");
         await page.getByRole("button", { name: "Cloud · syncing files" }).waitFor();
         await page.getByText("Received · waiting for workspace sync", { exact: true }).waitFor();
         await page.getByText("Safely applying cloud edits", { exact: false }).waitFor();

@@ -30,6 +30,7 @@ import {
   applySelectedSessionProjection,
   resolveAssistantAttachmentAuthToken,
 } from "./chat-pane-state.ts";
+import { getChatPendingInputs } from "./chat-pending-inputs.ts";
 import { markQueuedChatSendsWaitingForReconnect } from "./chat-queue.ts";
 import { stopChatRealtimeTalk } from "./chat-realtime.ts";
 import { flushChatQueueForEvent, retryReconnectableQueuedChatSends } from "./chat-send-actions.ts";
@@ -64,6 +65,15 @@ export abstract class ChatPaneContext extends ChatPaneLifecycle {
     row: GatewaySessionRow | undefined,
     startupPending: boolean,
   ) {
+    const activeRunIds = new Set(row?.activeRunIds ?? []);
+    const hasQueuedInputWaitingForWorkspaceSync = Boolean(
+      this.state &&
+      (row?.placement?.state === "draining" || row?.placement?.state === "reconciling") &&
+      getChatPendingInputs(this.state)?.page.items.some(
+        (input) =>
+          input.state === "queued" && input.runId !== undefined && activeRunIds.has(input.runId),
+      ),
+    );
     return resolvePlacementComposer({
       gatewaySnapshot: this.context.gateway.snapshot,
       movingKey: this.headerPlacementMovingKey,
@@ -71,6 +81,7 @@ export abstract class ChatPaneContext extends ChatPaneLifecycle {
       restartingKey: this.headerPlacementRestartingKey,
       row,
       startupPending,
+      hasQueuedInputWaitingForWorkspaceSync,
       onRestart: () => row && void this.restartHeaderPlacement(row),
       onReclaim: () => row && void this.reclaimHeaderPlacement(row),
     });

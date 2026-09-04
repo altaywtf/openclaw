@@ -68,6 +68,7 @@ export function resolvePlacementComposer(params: {
   restartingKey: string | null;
   row: GatewaySessionRow | undefined;
   startupPending: boolean;
+  hasQueuedInputWaitingForWorkspaceSync: boolean;
   onRestart: () => void;
   onReclaim: () => void;
 }): PlacementComposerPresentation {
@@ -82,8 +83,10 @@ export function resolvePlacementComposer(params: {
     state,
     blocksSend:
       state.kind !== "ready" &&
-      placement?.state !== "draining" &&
-      placement?.state !== "reconciling",
+      !(
+        params.hasQueuedInputWaitingForWorkspaceSync &&
+        (placement?.state === "draining" || placement?.state === "reconciling")
+      ),
     busyMessage,
     diskSpace: placement?.state === "active" ? placement.diskSpace : undefined,
     runError: failureReason
