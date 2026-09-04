@@ -458,6 +458,45 @@ describe("SQLite exact transcript suffix replacement", () => {
     }, events);
   });
 
+  it("reconciles when an inactive suffix starts below an active parent", async () => {
+    const inactiveEvent = {
+      type: "message",
+      id: "inactive-child",
+      parentId: "answer",
+      appendMode: "side",
+      message: { role: "assistant", content: "inactive child" },
+    } as const;
+    const activeEvent = {
+      type: "message",
+      id: "active-child",
+      parentId: "answer",
+      message: { role: "user", content: "active child" },
+    } as const;
+    const events = [...rewriteEvents, inactiveEvent, activeEvent] as const;
+    const nextEvents = [...rewriteEvents, activeEvent] as const;
+
+    await withRewriteFixture(async ({ db, snapshot, scope }) => {
+      await waitForSessionTranscriptIndexReconcile(scope);
+      replaceTranscriptSuffixForTest(scope, events, nextEvents, rewriteEvents.length);
+
+      expect(snapshot().raw).toHaveLength(nextEvents.length);
+      await waitForSessionTranscriptIndexReconcile(scope);
+      const result = snapshot();
+      expect(result.active).toEqual([
+        expect.objectContaining({ event_seq: 0 }),
+        expect.objectContaining({ event_seq: 1 }),
+        expect.objectContaining({ event_seq: 2 }),
+        expect.objectContaining({ event_seq: 3 }),
+      ]);
+      expect(result.search).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ message_id: "active-child", text: "active child" }),
+        ]),
+      );
+      expect(sessionTranscriptIndexNeedsReconcile(db, scope.sessionId)).toBe(false);
+    }, events);
+  });
+
   it.each([
     {
       name: "row",

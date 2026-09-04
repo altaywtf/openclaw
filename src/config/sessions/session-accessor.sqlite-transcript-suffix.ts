@@ -313,9 +313,17 @@ function prepareIncrementalTranscriptSuffixMutation(
           .where("identity.event_id", "=", anchorId),
       )
     : undefined;
-  if (anchorId && !anchor) {
-    // Inactive branches have no active-position anchor. Rebuild their derived rows after the
-    // fenced raw mutation instead of rejecting a valid suffix cleanup.
+  const changedEventWasActive = executeSqliteQueryTakeFirstSync(
+    database.db,
+    db
+      .selectFrom("session_transcript_active_events")
+      .select("event_seq")
+      .where("session_id", "=", resolved.sessionId)
+      .where("event_seq", "=", startSeq),
+  );
+  if (anchorId && (!anchor || !changedEventWasActive)) {
+    // Inactive branches may have inactive or active parents. Rebuild their derived rows after the
+    // fenced raw mutation instead of treating later active descendants as part of the mutation.
     return prepareReconciledIncrementalSuffixMutation({
       database,
       expectedRows,
