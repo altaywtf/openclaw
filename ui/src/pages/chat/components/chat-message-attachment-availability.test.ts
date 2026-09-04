@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { resolveAssistantAttachmentAvailability } from "./chat-message-attachment-availability.ts";
+import {
+  notifyChatMediaResourceSubscribers,
+  observeChatMediaResource,
+} from "./chat-message-media.ts";
 
 async function flushAvailabilityResolution() {
   for (let index = 0; index < 8; index += 1) {
@@ -101,5 +105,51 @@ describe("assistant attachment availability", () => {
     ).toMatchObject({ status: "available", mediaTicket: "ticket-research" });
     expect(mainResolver).toHaveBeenCalledTimes(1);
     expect(researchResolver).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps session-scoped subscriptions independent for one update callback", async () => {
+    const source = `/tmp/openclaw/${crypto.randomUUID()}.png`;
+    const expiresAt = new Date(Date.now() + 90_000).toISOString();
+    const resolver = vi.fn(async () => ({
+      available: true as const,
+      mediaTicket: "ticket-shared",
+      mediaTicketExpiresAt: expiresAt,
+    }));
+    const onRequestUpdate = vi.fn();
+
+    resolveAssistantAttachmentAvailability(
+      source,
+      "/openclaw",
+      onRequestUpdate,
+      resolver,
+      1,
+      "agent:main:main",
+    );
+    resolveAssistantAttachmentAvailability(
+      source,
+      "/openclaw",
+      onRequestUpdate,
+      resolver,
+      1,
+      "agent:main:task",
+    );
+    await flushAvailabilityResolution();
+    onRequestUpdate.mockClear();
+
+    const mainResource = observeChatMediaResource(
+      "assistant-attachment",
+      `/openclaw::gateway:1::agent:main:main::${source}`,
+    );
+    const taskResource = observeChatMediaResource(
+      "assistant-attachment",
+      `/openclaw::gateway:1::agent:main:task::${source}`,
+    );
+    expect(mainResource.subscribers.has(onRequestUpdate)).toBe(true);
+    expect(taskResource.subscribers.has(onRequestUpdate)).toBe(true);
+
+    notifyChatMediaResourceSubscribers(mainResource);
+    expect(onRequestUpdate).toHaveBeenCalledTimes(1);
+    notifyChatMediaResourceSubscribers(taskResource);
+    expect(onRequestUpdate).toHaveBeenCalledTimes(2);
   });
 });

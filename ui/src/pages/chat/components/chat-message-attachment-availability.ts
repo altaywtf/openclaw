@@ -40,6 +40,17 @@ export const ASSISTANT_ATTACHMENT_UNAVAILABLE_RETRY_MS = 5_000;
 export const ASSISTANT_ATTACHMENT_MEDIA_TICKET_REFRESH_SKEW_MS = 30_000;
 export const ASSISTANT_ATTACHMENT_MEDIA_TICKET_MAX_REFRESH_RETRIES = 2;
 
+// A re-render of one attachment under a new base path or connection epoch
+// replaces its subscription, but the main transcript and a task transcript
+// rendering the same source through one update callback are distinct
+// subscribers, so the subscription scope includes the selected session.
+function assistantAttachmentSubscriberScope(
+  assistantMediaScope: string | undefined,
+  source: string,
+): string {
+  return `${assistantMediaScope ?? ""}::${source}`;
+}
+
 export function resolveAssistantAttachmentAvailability(
   source: string,
   resourceBasePath: string | undefined,
@@ -76,7 +87,7 @@ export function resolveAssistantAttachmentAvailability(
     "assistant-attachment",
     cacheKey,
     onRequestUpdate,
-    source,
+    assistantAttachmentSubscriberScope(assistantMediaScope, source),
   );
   const cached = resource.value;
   let refreshingAvailability: Extract<
@@ -216,7 +227,7 @@ export function retryAssistantAttachmentAvailability(
     "assistant-attachment",
     cacheKey,
     onRequestUpdate,
-    source,
+    assistantAttachmentSubscriberScope(assistantMediaScope, source),
   );
   resource.abortController?.abort();
   resource.abortController = undefined;
