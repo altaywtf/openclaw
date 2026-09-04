@@ -155,6 +155,37 @@ const projected = (row) => ({
   isRepair: row.isRepair,
 });
 
+function startTui(env) {
+  let screen = "";
+  const terminal = spawnPty(process.execPath, [entry, "tui", "--url", url, "--token", token], {
+    name: "xterm-256color",
+    cols: 140,
+    rows: 40,
+    cwd: process.cwd(),
+    env,
+  });
+  terminal.onData((text) => {
+    screen += stripVTControlCharacters(text);
+  });
+  const exited = new Promise((resolve) => terminal.onExit(resolve));
+  const session = { terminal, screen: () => screen, exited };
+  tui = session;
+  return session;
+}
+
+async function stopTui(session) {
+  session.terminal.kill();
+  await session.exited;
+  if (tui === session) tui = undefined;
+}
+
+async function completeTui(session) {
+  await until(session.screen, (text) => text.includes("gateway connected"), "TUI connected");
+  session.terminal.write("/gateway-status\r");
+  await until(session.screen, (text) => text.includes("Gateway status"), "TUI status response");
+  await stopTui(session);
+}
+
 try {
   phase = "gateway startup";
   const gateway = start(admin, ["gateway", "run", "--allow-unconfigured"]);
@@ -170,17 +201,28 @@ try {
   );
 
   phase = "normal administrator approval";
+  // Read-only CLI commands do not mint device identities. The real TUI does.
+  const adminTui = startTui(admin);
+  await until(
+    adminTui.screen,
+    (text) => text.includes("pairing required"),
+    "administrator pairing",
+  );
   let rows = await adminList();
   for (const request of rows.pending) await approve(request.requestId);
+  await stopTui(adminTui);
+  await completeTui(startTui(admin));
   json(await list(admin));
   report.stages.push({ phase, completedAuthenticatedCommand: true });
 
   phase = "initial CLI device approval";
-  assert.notEqual((await list(device)).code, 0);
-  rows = await adminList();
+  const deviceTui = startTui(device);
+  rows = await until(adminList, (value) => value.pending.length === 1, "initial device pairing");
   assert.equal(rows.pending.length, 1);
   const deviceId = rows.pending[0].deviceId;
   await approve(rows.pending[0].requestId);
+  await stopTui(deviceTui);
+  await completeTui(startTui(device));
   json(await list(device));
   report.stages.push({ phase, completedAuthenticatedCommand: true });
 
@@ -251,33 +293,23 @@ try {
   await approve(cliRequest.requestId);
 
   phase = "TUI after CLI approval";
-  let screen = "";
-  tui = spawnPty(process.execPath, [entry, "tui", "--url", url, "--token", token], {
-    name: "xterm-256color",
-    cols: 140,
-    rows: 40,
-    cwd: process.cwd(),
-    env: device,
-  });
-  tui.onData((text) => {
-    screen += stripVTControlCharacters(text);
-  });
+  const finalTui = startTui(device);
   await until(
-    async () => screen,
+    finalTui.screen,
     (text) => text.includes("gateway connected") || text.includes("pairing required"),
     "TUI connection result",
   );
   report.stages.push({
     phase,
-    connected: screen.includes("gateway connected"),
-    pairingRequired: screen.includes("pairing required"),
+    connected: finalTui.screen().includes("gateway connected"),
+    pairingRequired: finalTui.screen().includes("pairing required"),
   });
   report.outcome = "current-main-repeated-metadata-approval";
 } catch (error) {
   report.failure = { phase, message: sanitize(String(error)) };
   process.exitCode = 1;
 } finally {
-  tui?.kill();
+  if (tui) await stopTui(tui);
   for (const child of [...children]) await stop(child);
   report.cleanup = { trackedChildrenRemaining: children.size };
   await fs.mkdir(".artifacts/gateway-device-metadata", { recursive: true });
