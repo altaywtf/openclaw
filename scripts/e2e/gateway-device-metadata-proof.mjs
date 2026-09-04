@@ -231,7 +231,8 @@ function sanitize(text) {
     .replaceAll(process.cwd().replaceAll("\\", "/"), "<harness-checkout>")
     .replaceAll(os.tmpdir(), "<temporary-directory>")
     .replaceAll(os.tmpdir().replaceAll("\\", "/"), "<temporary-directory>")
-    .replace(/(\[gateway\] agent model:).*/g, "$1 <unused in this proof>");
+    .replace(/(\[gateway\] agent model:).*/g, "$1 <unused in this proof>")
+    .replace(/(\| session [^|\r\n]+\| )[^|\r\n]+(\| deliver:)/g, "$1<model omitted> $2");
 }
 
 const admin = await makeState("approver");
@@ -761,15 +762,19 @@ async function runLegacyUpgrade() {
   await fs.writeFile(legacyEnv.OPENCLAW_CONFIG_PATH, JSON.stringify(legacyConfig));
   const oldGateway = start(legacyEnv, ["gateway", "run", "--allow-unconfigured"], legacyEntry);
   await ready(oldGateway);
+  const oldStateFenceMs = Date.now();
+  assert.ok(
+    oldGateway.text.includes(
+      "runtime-only gateway auth paired the local CLI device before readiness",
+    ),
+  );
   const oldVersion = await command(legacyEnv, ["--version"], legacyEntry);
   assert.equal(oldVersion.code, 0);
   assert.ok(oldVersion.stdout.includes("2026.9.1"));
-  const oldDevices = json(await command(legacyEnv, ["devices", "list", "--json"], legacyEntry));
-  assert.equal(oldDevices.paired.length, 1);
-  const oldDevice = oldDevices.paired[0];
-  assert.equal(oldDevice.platform, "win32");
-  assert.equal(oldDevice.deviceFamily, undefined);
-  report.legacy = { version: oldVersion.stdout.trim(), before: projected(oldDevice) };
+  report.legacy = { version: oldVersion.stdout.trim(), oldStateFenceMs };
+  phase = "read existing stable device identity";
+  const oldIdentity = json(await command(legacyEnv, ["node", "identity", "--json"], legacyEntry));
+  report.legacy.existingIdentity = oldIdentity;
   await stop(oldGateway.child);
 
   phase = "legacy state upgraded to candidate";
@@ -779,10 +784,30 @@ async function runLegacyUpgrade() {
   await fs.writeFile(legacyEnv.OPENCLAW_CONFIG_PATH, JSON.stringify(legacyConfig));
   const upgradedGateway = start(legacyEnv, ["gateway", "run", "--allow-unconfigured"]);
   await ready(upgradedGateway);
+  assert.equal(upgradedGateway.text.includes("auth token was missing"), false);
+  assert.equal(upgradedGateway.text.includes("runtime-only gateway auth paired"), false);
+  phase = "verify original pairing before upgraded clients";
   const upgradeRows = json(await list(legacyEnv));
-  const upgradedDevice = upgradeRows.paired.find((row) => row.deviceId === oldDevice.deviceId);
-  assert.ok(upgradedDevice);
-  report.legacy.beforeTui = projected(upgradedDevice);
+  assert.equal(upgradeRows.pending.length, 0);
+  assert.equal(upgradeRows.paired.length, 1);
+  const oldDevice = upgradeRows.paired[0];
+  assert.equal(oldDevice.deviceId, oldIdentity.deviceId);
+  assert.equal(oldDevice.publicKey, oldIdentity.publicKey);
+  assert.equal(oldDevice.platform, "win32");
+  assert.equal(oldDevice.deviceFamily, undefined);
+  assert.equal(oldDevice.role, "operator");
+  assert.deepEqual(oldDevice.roles, ["operator"]);
+  for (const timestamp of [oldDevice.createdAtMs, oldDevice.approvedAtMs]) {
+    assert.ok(Number.isSafeInteger(timestamp) && timestamp > 0 && timestamp <= oldStateFenceMs);
+  }
+  report.legacy.originalPairingBeforeClients = {
+    ...projected(oldDevice),
+    deviceId: oldDevice.deviceId,
+    publicKey: oldDevice.publicKey,
+    createdAtMs: oldDevice.createdAtMs,
+    approvedAtMs: oldDevice.approvedAtMs,
+  };
+  phase = "legacy identity upgraded TUI";
   await completeTui(startTui(legacyEnv));
   assert.equal(json(await list(legacyEnv)).pending.length, 0);
   report.legacy.sameIdentityTuiStatusCompleted = true;
