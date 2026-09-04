@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { fullSuiteVitestShards } from "./vitest/vitest.test-shards.mjs";
 
 type VitestTestConfig = {
+  root?: string;
   dir?: string;
   exclude?: string[];
   include?: string[];
@@ -57,7 +58,10 @@ async function listFullSuiteTestFileMatches(): Promise<Map<string, string[]>> {
   for (const configPath of configPaths) {
     const config = await loadRawVitestConfig(configPath);
     const testConfig = config.test ?? {};
-    const dir = path.resolve(config.root ?? process.cwd(), testConfig.dir ?? ".");
+    const dir = path.resolve(
+      testConfig.root ?? config.root ?? process.cwd(),
+      testConfig.dir ?? ".",
+    );
     const exclude = (testConfig.exclude ?? []).map((pattern) =>
       path.isAbsolute(pattern) ? toRepoPath(path.relative(dir, pattern)) : toRepoPath(pattern),
     );
