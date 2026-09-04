@@ -262,6 +262,44 @@ describe("registerTelegramNativeCommands real plugin registry", () => {
     );
   });
 
+  it("shows the shared OAuth-provider menu for bare native login", async () => {
+    const { bot, commandHandlers, sendMessage } = createCommandBot();
+    registerTelegramNativeCommands({
+      ...createNativeCommandTestParams({
+        commands: { native: true, ownerAllowFrom: ["200"] },
+        agents: { list: [{ id: "main" }] },
+      }),
+      bot,
+    });
+    await requireCommandHandler(
+      commandHandlers,
+      "login",
+    )(createPrivateCommandContext({ match: "", userId: 200 }));
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(deliverReplies).toHaveBeenCalledWith(
+      expect.objectContaining({
+        replies: [
+          expect.objectContaining({
+            presentation: {
+              blocks: [
+                { type: "text", text: "Choose a provider to sign in:" },
+                {
+                  type: "buttons",
+                  buttons: expect.arrayContaining([
+                    {
+                      label: "OpenAI",
+                      action: { type: "command", command: "/login oauth/openai/openai" },
+                    },
+                  ]),
+                },
+              ],
+            },
+          }),
+        ],
+      }),
+    );
+  });
+
   it("keeps a custom menu description while registering the same-name plugin handler", async () => {
     const { bot, commandHandlers, sendMessage, setMyCommands } = createCommandBot();
     registerPairPluginCommand();

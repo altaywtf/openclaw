@@ -125,6 +125,29 @@ describe("provider channel login runtime", () => {
     });
   });
 
+  it("renders every OAuth provider as a button without the method-list cap", () => {
+    const providers = Array.from({ length: 10 }, (_value, index) => ({
+      pluginId: `plugin-${index}`,
+      providerId: `provider-${index}`,
+      label: `Provider ${index}`,
+    }));
+    const reply = buildProviderLoginChoicesReply({ status: "providers", providers });
+    const buttons =
+      reply.presentation?.blocks.flatMap((block) =>
+        block.type === "buttons" ? block.buttons : [],
+      ) ?? [];
+    expect(buttons).toHaveLength(providers.length);
+    expect(reply.text).toContain("Choose a provider to sign in:");
+    expect(reply.text).toContain("/login oauth/plugin-9/provider-9");
+    expect(reply.text).not.toContain("more in Control UI");
+  });
+
+  it("does not substitute API-key or setup choices for an empty OAuth list", () => {
+    expect(buildProviderLoginChoicesReply({ status: "providers", providers: [] })).toEqual({
+      text: "No OAuth sign-in providers are available. Use /login <provider> for other connection options.",
+    });
+  });
+
   it("keeps model-access failure ahead of a later refresh failure", () => {
     expect(formatProviderLoginComplete(choice, false, "failed", "gateway-unreachable")).toBe(
       "xAI (Grok) login complete. Your credential is saved, but OpenClaw could not enable its models. Retry /login xai after the current config change finishes.",

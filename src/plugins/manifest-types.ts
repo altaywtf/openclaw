@@ -585,8 +585,6 @@ export type PluginManifestProviderAuthChoice = {
   channelLogin?: {
     /** Extra command arguments accepted in addition to the choice and provider ids. */
     aliases?: string[];
-    /** Use this choice for a bare `/login`; multiple defaults fail closed. */
-    default?: boolean;
   };
   /**
    * Interactive onboarding surfaces where this auth choice should appear.

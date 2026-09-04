@@ -1570,7 +1570,7 @@ describe("loadPluginManifestRegistry", () => {
           provider: "valid",
           method: "oauth",
           choiceId: "valid-oauth",
-          channelLogin: { aliases: ["valid-login"], default: true },
+          channelLogin: { aliases: ["valid-login"] },
         },
         {
           provider: "unknown-field",
@@ -1583,12 +1583,6 @@ describe("loadPluginManifestRegistry", () => {
           method: "oauth",
           choiceId: "bad-alias-oauth",
           channelLogin: { aliases: ["valid", 42] },
-        },
-        {
-          provider: "bad-default",
-          method: "oauth",
-          choiceId: "bad-default-oauth",
-          channelLogin: { default: "yes" },
         },
       ],
       configSchema: { type: "object" },
@@ -1603,11 +1597,10 @@ describe("loadPluginManifestRegistry", () => {
     expect(registry.plugins[0]?.providerAuthChoices).toEqual([
       expect.objectContaining({
         choiceId: "valid-oauth",
-        channelLogin: { aliases: ["valid-login"], default: true },
+        channelLogin: { aliases: ["valid-login"] },
       }),
       expect.objectContaining({ choiceId: "unknown-field-oauth" }),
       expect.objectContaining({ choiceId: "bad-alias-oauth" }),
-      expect.objectContaining({ choiceId: "bad-default-oauth" }),
     ]);
     for (const invalid of registry.plugins[0]?.providerAuthChoices?.slice(1) ?? []) {
       expect(invalid).not.toHaveProperty("channelLogin");

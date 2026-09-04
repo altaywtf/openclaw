@@ -27,7 +27,6 @@ function choice(params: {
   method: string;
   choiceId: string;
   aliases?: string[];
-  default?: boolean;
   guided?: "auth" | "secret" | "setup";
   channelLogin?: boolean;
   onboardingScopes?: string[];
@@ -48,16 +47,126 @@ function choice(params: {
     ...(params.channelLogin === false
       ? {}
       : {
-          channelLogin: {
-            ...(params.aliases ? { aliases: params.aliases } : {}),
-            ...(params.default ? { default: true } : {}),
-          },
+          channelLogin: params.aliases ? { aliases: params.aliases } : {},
         }),
     ...(params.onboardingScopes ? { onboardingScopes: params.onboardingScopes } : {}),
   };
 }
 
 describe("provider channel login choices", () => {
+  it.each([undefined, "", "  "])(
+    "lists OAuth providers without starting sign-in for %j",
+    (input) => {
+      const snapshot = metadataSnapshot([
+        {
+          ...choice({
+            provider: "alpha",
+            method: "browser",
+            choiceId: "alpha-browser",
+            channelLogin: false,
+          }),
+          groupLabel: "Alpha",
+        },
+        {
+          ...choice({ provider: "alpha", method: "device", choiceId: "alpha-device" }),
+          groupLabel: "Alpha",
+        },
+        {
+          ...choice({
+            provider: "beta",
+            method: "oauth",
+            choiceId: "beta-oauth",
+            channelLogin: false,
+          }),
+          groupLabel: "Beta",
+        },
+        choice({
+          provider: "key-only",
+          method: "key",
+          choiceId: "key-only",
+          guided: "secret",
+          channelLogin: false,
+        }),
+        choice({
+          provider: "local",
+          method: "setup",
+          choiceId: "local",
+          guided: "setup",
+          channelLogin: false,
+        }),
+      ]);
+
+      expect(resolveProviderChannelLoginChoice(input, { metadataSnapshot: snapshot })).toEqual({
+        status: "providers",
+        providers: [
+          { pluginId: "test-provider", providerId: "alpha", label: "Alpha" },
+          { pluginId: "test-provider", providerId: "beta", label: "Beta" },
+        ],
+      });
+      expect(
+        resolveProviderChannelLoginChoice("oauth/test-provider/alpha", {
+          metadataSnapshot: snapshot,
+        }),
+      ).toMatchObject({
+        status: "resolved",
+        choice: { providerId: "alpha", methodId: "device" },
+      });
+    },
+  );
+
+  it("keeps regional OAuth methods behind one provider choice", () => {
+    const snapshot = metadataSnapshot([
+      choice({ provider: "regional", method: "global", choiceId: "regional-global" }),
+      choice({ provider: "regional", method: "region", choiceId: "regional-region" }),
+      choice({
+        provider: "regional",
+        method: "key",
+        choiceId: "regional-key",
+        guided: "secret",
+        channelLogin: false,
+      }),
+    ]);
+    expect(
+      resolveProviderChannelLoginChoice("oauth/test-provider/regional", {
+        metadataSnapshot: snapshot,
+      }),
+    ).toMatchObject({
+      status: "ambiguous",
+      choices: [
+        expect.objectContaining({ choiceId: "regional-global" }),
+        expect.objectContaining({ choiceId: "regional-region" }),
+      ],
+    });
+  });
+
+  it("still requires a choice with one provider and rejects stale provider buttons", () => {
+    const snapshot = metadataSnapshot([
+      choice({ provider: "alpha", method: "oauth", choiceId: "alpha" }),
+    ]);
+    expect(
+      resolveProviderChannelLoginChoice(undefined, { metadataSnapshot: snapshot }),
+    ).toMatchObject({
+      status: "providers",
+      providers: [{ providerId: "alpha" }],
+    });
+    const config = { plugins: { entries: { "test-provider": { enabled: false } } } };
+    expect(
+      resolveProviderChannelLoginChoice(undefined, { config, metadataSnapshot: snapshot }),
+    ).toEqual({
+      status: "providers",
+      providers: [],
+    });
+    expect(
+      resolveProviderChannelLoginChoice("oauth/test-provider/alpha", {
+        config,
+        metadataSnapshot: snapshot,
+      }),
+    ).toEqual({
+      status: "unsupported",
+      choices: [],
+    });
+  });
+
   it("routes every visible text-inference choice through Models and /login", () => {
     const visibleChoices = resolveManifestDeclaredProviderAuthChoices().filter(
       (entry) =>
@@ -352,14 +461,6 @@ describe("provider channel login choices", () => {
       choices: [
         choice({ provider: "one", method: "oauth", choiceId: "one", aliases: ["shared"] }),
         choice({ provider: "two", method: "oauth", choiceId: "two", aliases: ["shared"] }),
-      ],
-    },
-    {
-      name: "default",
-      input: undefined,
-      choices: [
-        choice({ provider: "one", method: "oauth", choiceId: "one", default: true }),
-        choice({ provider: "two", method: "oauth", choiceId: "two", default: true }),
       ],
     },
   ])("refuses a colliding $name", ({ input, choices }) => {

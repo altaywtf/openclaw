@@ -511,7 +511,7 @@ Each `providerAuthChoices` entry describes one onboarding or auth choice. OpenCl
 | `appGuidedActionLabel` | No       | `string`                                                              | Short command label shown when starting provider-owned app-guided setup.                                  |
 | `appGuidedDiscovery`   | No       | `boolean`                                                             | The matching runtime auth method owns read-only local discovery through `appGuidedSetup`.                 |
 | `appGuidedAuth`        | No       | `"oauth"` \| `"device-code"`                                          | Provider-owned interactive login that native setup clients can render generically.                        |
-| `channelLogin`         | No       | `{ aliases?: string[], default?: boolean }`                           | Offer this fixed-input login through owner-only private chat; the runtime rejects any extra prompt.       |
+| `channelLogin`         | No       | `{ aliases?: string[] }`                                              | Offer this fixed-input login through owner-only private chat; the runtime rejects any extra prompt.       |
 | `onboardingScopes`     | No       | `Array<"text-inference" \| "image-generation" \| "music-generation">` | Which onboarding surfaces this choice should appear in. If omitted, it defaults to `["text-inference"]`.  |
 
 When `appGuidedDiscovery` is true, the matching provider auth method must expose
@@ -526,8 +526,18 @@ The availability probe is also read-only.
 `channelLogin` is an explicit offering, not a promise inferred from the auth
 method kind. The channel prompter accepts messages and device codes only. It
 stops and directs the owner to the Control UI if the provider asks for text,
-selection, or confirmation. Choice, provider, default, and alias collisions
+selection, or confirmation. Choice, provider, and alias collisions
 also stop with an explicit list of unambiguous `/login <choice>` commands.
+
+Bare `/login` displays eligible OAuth and device-code providers instead of
+starting a login. Each provider has one button on channels that support command
+buttons; other surfaces show the same choices as commands you can copy. Core
+owns this menu, so channels do not maintain separate provider lists.
+
+API-key and provider-setup methods do not appear in the bare `/login` menu.
+They remain available through explicit `/login <provider>` or
+`/login <pluginId>/<choiceId>` commands. Methods that need input chat cannot
+collect direct the owner to the matching Control UI sign-in or setup flow.
 
 The Control UI lists eligible, unambiguous manifest-declared provider auth
 choices. Manual-only choices, choices outside text-inference onboarding, and

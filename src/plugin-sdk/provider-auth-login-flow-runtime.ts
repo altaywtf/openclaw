@@ -5,6 +5,7 @@ import type {
 } from "../commands/models/auth.js";
 import {
   formatProviderLoginChoiceRef,
+  formatProviderOAuthLoginRef,
   resolveProviderChannelLoginChoice,
   type ProviderChannelLoginChoice,
   type ProviderChannelLoginResolution,
@@ -315,23 +316,41 @@ export function formatProviderLoginControlUiHandoff(choice: ProviderChannelLogin
 export function buildProviderLoginChoicesReply(
   resolution: Exclude<ProviderChannelLoginResolution, { status: "resolved" }>,
 ): ReplyPayload {
-  const visible = resolution.choices
-    .toSorted((a, b) => Number(b.mode === "chat") - Number(a.mode === "chat"))
-    .slice(0, 8);
-  if (visible.length === 0) {
+  const buttons =
+    resolution.status === "providers"
+      ? resolution.providers.map((provider) => ({
+          label: provider.label,
+          action: {
+            type: "command" as const,
+            command: `/login ${formatProviderOAuthLoginRef(provider)}`,
+          },
+        }))
+      : resolution.choices
+          .toSorted((left, right) => Number(right.mode === "chat") - Number(left.mode === "chat"))
+          .slice(0, 8)
+          .map((choice) => ({
+            label: choice.label,
+            action: {
+              type: "command" as const,
+              command: `/login ${formatProviderLoginChoiceRef(choice)}`,
+            },
+          }));
+  if (buttons.length === 0) {
     return {
-      text: "No provider connections are available. Enable a provider plugin in Control UI → Models.",
+      text:
+        resolution.status === "providers"
+          ? "No OAuth sign-in providers are available. Use /login <provider> for other connection options."
+          : "No provider connections are available. Enable a provider plugin in Control UI → Models.",
     };
   }
   const heading =
-    resolution.status === "ambiguous"
-      ? "Choose how to connect:"
-      : "Unsupported login provider. Available provider access commands:";
-  const buttons = visible.map((choice) => ({
-    label: choice.label,
-    action: { type: "command" as const, command: `/login ${formatProviderLoginChoiceRef(choice)}` },
-  }));
-  const remaining = resolution.choices.length - visible.length;
+    resolution.status === "providers"
+      ? "Choose a provider to sign in:"
+      : resolution.status === "ambiguous"
+        ? "Choose how to connect:"
+        : "Unsupported login provider. Available provider access commands:";
+  const remaining =
+    resolution.status === "providers" ? 0 : resolution.choices.length - buttons.length;
   const more = remaining > 0 ? `${remaining} more in Control UI → Models.` : undefined;
   return {
     text: [

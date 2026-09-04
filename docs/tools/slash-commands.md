@@ -568,7 +568,8 @@ See [BTW side questions](/tools/btw) for the full behavior.
     - **`/login`** resolves every visible provider access method declared by installed plugin manifests. Group/topic invocations ask the owner to use a private chat before showing login details.
     - Provider families can offer a shared connection choice menu. For example, `/login ollama` offers **Ollama Cloud** and **Ollama server**. Channels with command-button support show buttons; other surfaces show the same choices as commands you can copy.
     - Buttons and native autocomplete select an exact plugin-owned method. Each selection checks current permissions and plugin availability again.
-    - Private chat completes the fixed-input flows: `/login codex`, `/login xai`, `/login minimax-global-oauth`, and `/login minimax-cn-oauth`. Bare `/login` uses the OpenAI device flow. `/login openai` keeps its browser sign-in flow.
+    - Bare **`/login`** lists available OAuth providers, one button per provider, without starting sign-in. API-key-only and local setup connections stay under `/login <provider>`. Providers with several regional sign-in methods show a second choice.
+    - Private chat completes the fixed-input flows: `/login codex`, `/login xai`, `/login minimax-global-oauth`, and `/login minimax-cn-oauth`. `/login openai` keeps its browser sign-in flow.
     - Methods that need a key, token, redirect URL, tenant, endpoint, confirmation, or local-runtime work return an exact **Control UI → Models** sign-in or setup action. Secrets never enter chat history.
     - **`/stop`** targets the active chat session to abort the current run.
 

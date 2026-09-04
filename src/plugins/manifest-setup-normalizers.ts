@@ -317,13 +317,7 @@ function normalizeManifestHttpsUrl(value: unknown): string | undefined {
 function normalizeProviderChannelLogin(
   value: unknown,
 ): PluginManifestProviderAuthChoice["channelLogin"] | undefined {
-  if (
-    !isRecord(value) ||
-    Object.keys(value).some((key) => key !== "aliases" && key !== "default")
-  ) {
-    return undefined;
-  }
-  if ("default" in value && typeof value.default !== "boolean") {
+  if (!isRecord(value) || Object.keys(value).some((key) => key !== "aliases")) {
     return undefined;
   }
   if (
@@ -334,10 +328,7 @@ function normalizeProviderChannelLogin(
     return undefined;
   }
   const aliases = normalizeTrimmedStringList(value.aliases);
-  return {
-    ...(aliases.length > 0 ? { aliases } : {}),
-    ...(value.default === true ? { default: true } : {}),
-  };
+  return aliases.length > 0 ? { aliases } : {};
 }
 
 export function normalizeProviderAuthChoices(

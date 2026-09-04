@@ -35,8 +35,15 @@ export type ProviderChannelLoginChoice = {
   mode: "chat" | "secret" | "setup" | "sign-in";
 };
 
+export type ProviderOAuthLoginGroup = {
+  pluginId: string;
+  providerId: string;
+  label: string;
+};
+
 export type ProviderChannelLoginResolution =
   | { status: "resolved"; choice: ProviderChannelLoginChoice }
+  | { status: "providers"; providers: ProviderOAuthLoginGroup[] }
   | {
       status: "ambiguous" | "unsupported";
       choices: ProviderChannelLoginChoice[];
@@ -167,6 +174,12 @@ export function formatProviderLoginChoiceRef(
   return `${encodeURIComponent(choice.pluginId)}/${encodeURIComponent(choice.choiceId)}`;
 }
 
+export function formatProviderOAuthLoginRef(
+  provider: Pick<ProviderOAuthLoginGroup, "pluginId" | "providerId">,
+): string {
+  return `oauth/${encodeURIComponent(provider.pluginId)}/${encodeURIComponent(provider.providerId)}`;
+}
+
 function channelLoginChoiceKey(
   choice: Pick<ProviderChannelLoginChoice, "pluginId" | "choiceId" | "providerId" | "methodId">,
 ): string {
@@ -265,8 +278,39 @@ export function resolveProviderChannelLoginChoice(
       : ({ status: "ambiguous", choices: resolved.length > 0 ? resolved : choices } as const);
   };
   if (!normalized) {
-    const defaults = metadata.filter((choice) => choice.channelLogin?.default === true);
-    return defaults.length > 0 ? select(defaults) : { status: "unsupported", choices };
+    const providers = new Map<string, ProviderOAuthLoginGroup>();
+    for (const choice of metadata) {
+      if (!choice.appGuidedAuth) {
+        continue;
+      }
+      const ref = formatProviderOAuthLoginRef(choice);
+      if (!providers.has(ref)) {
+        providers.set(ref, {
+          pluginId: choice.pluginId,
+          providerId: choice.providerId,
+          label: choice.groupLabel?.trim() || choice.choiceLabel,
+        });
+      }
+    }
+    return {
+      status: "providers",
+      providers: [...providers.values()].toSorted(
+        (left, right) =>
+          left.label.localeCompare(right.label, "en") ||
+          formatProviderOAuthLoginRef(left).localeCompare(formatProviderOAuthLoginRef(right)),
+      ),
+    };
+  }
+  if (normalized.startsWith("oauth/") && normalized.split("/").length === 3) {
+    const matches = metadata.filter(
+      (choice) =>
+        choice.appGuidedAuth &&
+        normalizeLoginInput(formatProviderOAuthLoginRef(choice)) === normalized,
+    );
+    const direct = matches.filter((choice) => choice.channelLogin);
+    return matches.length > 0
+      ? select(direct.length > 0 ? direct : matches)
+      : { status: "unsupported", choices };
   }
   const qualifiedChoices = metadata.filter(
     (choice) => normalizeLoginInput(formatProviderLoginChoiceRef(choice)) === normalized,

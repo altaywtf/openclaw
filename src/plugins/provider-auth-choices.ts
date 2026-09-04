@@ -36,7 +36,7 @@ export type ProviderAuthChoiceMetadata = {
   appGuidedActionLabel?: string;
   appGuidedDiscovery?: boolean;
   appGuidedAuth?: "oauth" | "device-code";
-  channelLogin?: { aliases?: string[]; default?: boolean };
+  channelLogin?: { aliases?: string[] };
   onboardingScopes?: ("text-inference" | "image-generation" | "music-generation")[];
 };
 
@@ -125,10 +125,9 @@ function toProviderAuthChoiceCandidate(params: {
     ...(choice.appGuidedAuth ? { appGuidedAuth: choice.appGuidedAuth } : {}),
     ...(choice.channelLogin
       ? {
-          channelLogin: {
-            ...(choice.channelLogin.aliases ? { aliases: [...choice.channelLogin.aliases] } : {}),
-            ...(choice.channelLogin.default === true ? { default: true } : {}),
-          },
+          channelLogin: choice.channelLogin.aliases
+            ? { aliases: [...choice.channelLogin.aliases] }
+            : {},
         }
       : {}),
     ...(choice.onboardingScopes ? { onboardingScopes: choice.onboardingScopes } : {}),

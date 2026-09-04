@@ -128,6 +128,66 @@ describe("handleLoginCommand", () => {
     });
   });
 
+  it.each(["discord", "slack", "telegram", "signal", "webchat"])(
+    "shows one OAuth-provider button on bare /login without starting auth on %s",
+    async (surface) => {
+      const result = await handleLoginCommand(
+        buildLoginParams("/login", {
+          ctx: { Provider: surface, Surface: surface, OriginatingChannel: surface },
+          command: { channel: surface, channelId: surface },
+        }),
+        true,
+      );
+      const buttons =
+        result?.reply?.presentation?.blocks.flatMap((block) =>
+          block.type === "buttons" ? block.buttons : [],
+        ) ?? [];
+      const labels = buttons.map((button) => button.label);
+      expect(labels).toContain("OpenAI");
+      expect(labels).toContain("MiniMax");
+      expect(new Set(labels).size).toBe(labels.length);
+      expect(labels).not.toContain("Ollama Cloud");
+      expect(labels).not.toContain("Ollama server");
+      expect(runModelsAuthLoginFlowMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("starts OpenAI device sign-in only after the provider button is selected", async () => {
+    const menu = await handleLoginCommand(buildLoginParams("/login"), true);
+    const button = menu?.reply?.presentation?.blocks
+      .flatMap((block) => (block.type === "buttons" ? block.buttons : []))
+      .find((entry) => entry.label === "OpenAI");
+    if (button?.action?.type !== "command") {
+      throw new Error("Expected an OpenAI command button");
+    }
+    expect(runModelsAuthLoginFlowMock).not.toHaveBeenCalled();
+    mockSuccessfulLoginFlow();
+    await handleLoginCommand(
+      buildLoginParams(button.action.command, { opts: blockReplyOpts() }),
+      true,
+    );
+    expect(runModelsAuthLoginFlowMock).toHaveBeenCalledOnce();
+    expect(runModelsAuthLoginFlowMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "openai",
+        method: "device-code",
+        ownerPluginId: "openai",
+      }),
+    );
+  });
+
+  it("keeps the bare provider menu owner-only", async () => {
+    const result = await handleLoginCommand(
+      buildLoginParams("/login", {
+        cfg: { commands: { ownerAllowFrom: ["other-owner"] } },
+      }),
+      true,
+    );
+    expect(result?.reply?.text).toContain("Only a configured OpenClaw owner/admin");
+    expect(result?.reply?.presentation).toBeUndefined();
+    expect(runModelsAuthLoginFlowMock).not.toHaveBeenCalled();
+  });
+
   it("starts Codex device-code login and emits the pairing code through block delivery", async () => {
     const onBlockReply = vi.fn(async () => {});
     mockSuccessfulLoginFlow();
