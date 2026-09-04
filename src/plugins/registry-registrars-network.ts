@@ -11,6 +11,7 @@ import { normalizeRegisteredChannelPlugin } from "./channel-validation.js";
 import { normalizePluginHttpPath } from "./http-path.js";
 import { findPluginHttpRouteRegistrationConflicts } from "./http-route-overlap.js";
 import { getPluginHttpRouteViews, replacePluginHttpRoutes } from "./http-route-owner.js";
+import { wrapCurrentPluginInstance } from "./plugin-instance-scope.js";
 import {
   resolvePluginRegistrationCapabilities,
   type PluginRegistryState,
@@ -291,7 +292,8 @@ export function createNetworkRegistrars(state: PluginRegistryState) {
       return;
     }
     const metadata = {
-      plugin,
+      // Normalization copied the input; teardown must retain its registration owner.
+      plugin: wrapCurrentPluginInstance(plugin),
       pluginName: record.name,
       origin: record.origin,
       source: record.source,

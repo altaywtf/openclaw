@@ -44,9 +44,14 @@ import {
 } from "./loader.test-fixtures.js";
 import { buildMemoryPromptSection, registerMemoryCapability } from "./memory-state.js";
 import { adoptProcessPluginCache, createPluginCache, withPluginCache } from "./plugin-cache.js";
-import { getPluginInstance } from "./plugin-instance-scope.js";
+import {
+  getPluginInstance,
+  getPluginValueInstance,
+  type PluginInstanceHandle,
+} from "./plugin-instance-scope.js";
 import { clearPluginMetadataLifecycleCaches } from "./plugin-metadata-lifecycle.js";
 import { getPluginModuleLoaderStats } from "./plugin-module-loader-cache.js";
+import { resolveProviderRuntimePlugin } from "./provider-hook-runtime.js";
 import { getPluginLoaderCacheState } from "./registry-lifecycle.js";
 import { getPluginRegistryRuntime } from "./registry-runtime-binding.js";
 import { createEmptyPluginRegistry } from "./registry.js";
@@ -644,9 +649,21 @@ describe("clearPluginRegistryLoadCache", () => {
     const source = (version: string) => `module.exports = {
       id: "cache-generation", register(api) {
         api.registerGatewayMethod("cache.${version}", () => {});
+        api.registerProvider({
+          id: "cache-generation", label: "Cache generation", auth: [],
+          prepareExtraParams() { return { version: "${version}" }; }
+        });
       },
     };`;
     const plugin = writePlugin({ id: "cache-generation", body: source("first") });
+    writeFileSync(
+      path.join(plugin.dir, "openclaw.plugin.json"),
+      JSON.stringify({
+        id: plugin.id,
+        providers: [plugin.id],
+        configSchema: { type: "object", additionalProperties: false, properties: {} },
+      }),
+    );
     const options = {
       config: {
         plugins: {
@@ -656,22 +673,42 @@ describe("clearPluginRegistryLoadCache", () => {
         },
       },
     };
+    const providerOwners = new Set<PluginInstanceHandle>();
+    const readProvider = (cache: ReturnType<typeof createPluginCache>) => {
+      const provider = withPluginCache(cache, () =>
+        resolveProviderRuntimePlugin({ provider: plugin.id, config: options.config }),
+      );
+      const prepare = provider?.prepareExtraParams;
+      const owner = prepare ? getPluginValueInstance(prepare) : undefined;
+      if (!prepare || !owner) {
+        throw new Error("expected a managed provider hook");
+      }
+      providerOwners.add(owner);
+      return prepare({ provider: plugin.id, modelId: "fixture" });
+    };
     const firstCache = createPluginCache();
     const first = withPluginCache(firstCache, () => loadPluginRegistryHandle(options));
     const registries = [first];
     try {
+      expect(readProvider(firstCache)).toEqual({ version: "first" });
       writeFileSync(plugin.file, source("second"));
       expect(withPluginCache(firstCache, () => loadPluginRegistryHandle(options))).toBe(first);
+      expect(readProvider(firstCache)).toEqual({ version: "first" });
       const secondCache = createPluginCache();
       const second = withPluginCache(secondCache, () => loadPluginRegistryHandle(options));
       registries.push(second);
       expect(Object.keys(first.gatewayHandlers)).toEqual(["cache.first"]);
       expect(Object.keys(second.gatewayHandlers)).toEqual(["cache.second"]);
+      expect(readProvider(secondCache)).toEqual({ version: "second" });
       adoptProcessPluginCache(secondCache);
       expect(loadPluginRegistryHandle(options)).toBe(second);
       expect(withPluginCache(firstCache, () => loadPluginRegistryHandle(options))).toBe(first);
+      expect(readProvider(firstCache)).toEqual({ version: "first" });
     } finally {
-      await Promise.all(registries.map((registry) => disposePluginRegistryInstances(registry)));
+      await Promise.all([
+        ...registries.map((registry) => disposePluginRegistryInstances(registry)),
+        ...[...providerOwners].map((owner) => owner.dispose()),
+      ]);
     }
   });
 

@@ -7,10 +7,7 @@ import {
 } from "../channels/plugins/index.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginLifecycleReason } from "../plugins/lifecycle.js";
-import {
-  getActivePluginRegistry,
-  getActivePluginRegistryVersion,
-} from "../plugins/runtime.js";
+import { getActivePluginRegistry, getActivePluginRegistryVersion } from "../plugins/runtime.js";
 import { DEFAULT_ACCOUNT_ID } from "../routing/account-id.js";
 import { isPlainObject } from "../utils.js";
 import { canHotReloadGatewayAuthCredentials } from "./auth-resolve.js";
@@ -93,11 +90,7 @@ const AUTH_CREDENTIAL_PATHS = ["gateway.auth.token", "gateway.auth.password"];
 const CORE_RELOAD_POLICIES: ReloadPolicy[] = [
   { prefixes: ["gateway.remote", "gateway.reload"], kind: "none" },
   {
-    prefixes: [
-      ...AUTH_CREDENTIAL_PATHS,
-      "mcp.apps",
-      "secrets.egressProxy",
-    ],
+    prefixes: [...AUTH_CREDENTIAL_PATHS, "mcp.apps", "secrets.egressProxy"],
     kind: "restart",
   },
   {

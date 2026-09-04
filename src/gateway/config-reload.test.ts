@@ -2781,9 +2781,13 @@ describe("startGatewayConfigReloader", () => {
               await vi.runAllTimersAsync();
               const applied = scenario === "direct" || scenario === "watcher-echo";
               await expect(writeResult.application).resolves.toBe(applied ? "applied" : "failed");
-              expect(competingRootCounts).toEqual(scenario === "watcher-echo" ? [0, 0] : [0]);
+              expect(competingRootCounts).toEqual(
+                scenario === "watcher-echo" || scenario === "failed-cleanup" ? [0, 0] : [0],
+              );
               if (applied) {
                 expect(log.error).not.toHaveBeenCalled();
+              } else {
+                expect(log.error).toHaveBeenCalledOnce();
               }
             } finally {
               hotReloadGate.resolve();

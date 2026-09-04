@@ -59,7 +59,6 @@ import {
 } from "../process/command-queue.js";
 import {
   captureGatewayRootWorkAdmissionContinuationScope,
-  getActiveGatewayRootWorkCount,
   getActiveGatewayRootWorkHolders,
   isGatewayWorkAdmissionClosed,
   resetGatewayWorkAdmission,
@@ -2988,35 +2987,6 @@ describe("gateway hot reload superseded tail recovery", () => {
     });
     expect(requestRecoveryRestart).not.toHaveBeenCalled();
   });
-
-  it.each(["discord", "telegram"] as const)(
-    "starts the %s channel outside the config-reload request admission",
-    async (channel) => {
-      const startRootCounts: number[] = [];
-      const handlers = createReloadHandlersForTest(undefined, {
-        start: vi.fn(async () => {
-          startRootCounts.push(getActiveGatewayRootWorkCount({ excludeCurrent: true }));
-          return new Map();
-        }),
-        stop: vi.fn(async () => {}),
-      });
-      const root = tryBeginGatewayRootWorkAdmission();
-      expect(root).not.toBeNull();
-
-      try {
-        await root?.run(async () => {
-          await handlers.applyHotReload(
-            createHotTailPlan({ restartChannels: new Set([channel]) }),
-            {},
-          );
-        });
-      } finally {
-        root?.release();
-      }
-
-      expect(startRootCounts).toEqual([1]);
-    },
-  );
 });
 
 describe("gateway hot reload commit policy", () => {
@@ -4032,7 +4002,6 @@ describe("gateway channel hot reload handlers", () => {
 
   it("restarts only the changed account", async () => {
     const events: string[] = [];
-    const startRootCounts: number[] = [];
     const accountStopSettled = createDeferred();
     const channels = {
       stop: vi.fn(async (channel: ChannelKind, accountId?: string) => {
@@ -4041,7 +4010,6 @@ describe("gateway channel hot reload handlers", () => {
       }),
       start: vi.fn(async (channel: ChannelKind, accountId?: string) => {
         events.push(`start:${channel}:${accountId}`);
-        startRootCounts.push(getActiveGatewayRootWorkCount({ excludeCurrent: true }));
         return new Map();
       }),
     };
@@ -4070,7 +4038,6 @@ describe("gateway channel hot reload handlers", () => {
     }
 
     expect(events).toEqual(["stop:discord:alpha", "start:discord:alpha"]);
-    expect(startRootCounts).toEqual([1]);
     expect(channels.stop).toHaveBeenCalledOnce();
     expect(channels.start).toHaveBeenCalledOnce();
   });

@@ -31,6 +31,7 @@ import {
 } from "../process/gateway-work-admission.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import { createChannelTestPluginBase } from "../test-utils/channel-plugins.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import type {
   TranscriptOccupancyWatchRequest,
@@ -38,6 +39,7 @@ import type {
   TranscriptStartRequest,
 } from "../transcripts/provider-types.js";
 import { TranscriptsStore } from "../transcripts/store.js";
+import { createChannelManager } from "./server-channels.js";
 import { startGatewayDiscovery } from "./server-discovery-runtime.js";
 import { reloadGatewayPlugins } from "./server-plugin-reload.js";
 import { startTranscriptReloadFixtureSidecars } from "./server-plugin-reload.transcripts.test-support.js";
@@ -196,6 +198,9 @@ async function createRecoveryFixture(
       });
     }
     candidate.registry.plugins.push(siblingRecord);
+    candidate.registry.channels.push(
+      ...previous.registry.channels.filter((entry) => entry.pluginId === "sibling"),
+    );
     candidate.registry.transcriptSourceProviders.push(
       ...previous.registry.transcriptSourceProviders.filter(
         (entry) => entry.pluginId === "sibling",
@@ -299,6 +304,91 @@ async function createRecoveryFixture(
     candidateStop,
   };
 }
+
+it.each(["commit", "rollback"])(
+  "restarts pending channel preparation after command changes: %s",
+  async (outcome) => {
+    const preparing = createDeferredCore();
+    const release = createDeferredCore();
+    const starts: string[] = [];
+    const channelId = "reload-probe";
+    const fixture = await createRecoveryFixture({
+      abortOnCandidateStart: false,
+      beforePublish: async () => {
+        release.resolve();
+        await original;
+        if (outcome === "rollback") {
+          throw new Error("rollback probe");
+        }
+      },
+      register: (api, owner) => {
+        if (owner === "first") {
+          api.registerCommand({
+            name: "reload-probe",
+            description: "Probe",
+            handler: () => ({ text: "ok" }),
+          });
+        } else {
+          api.registerChannel({
+            plugin: {
+              ...createChannelTestPluginBase({
+                id: channelId,
+                config: { listAccountIds: () => ["default", "parked"] },
+              }),
+              gateway: {
+                startAccount: async ({ accountId, abortSignal }) => {
+                  starts.push(accountId);
+                  await new Promise<void>((resolve) => {
+                    abortSignal.addEventListener("abort", () => resolve(), { once: true });
+                  });
+                },
+              },
+            },
+          });
+        }
+      },
+    });
+    let held = false;
+    const manager = createChannelManager({
+      getRuntimeConfig: fixture.getConfig,
+      channelLogs: {},
+      channelRuntimeEnvs: {},
+      getPluginHttpRouteRegistry: () => fixture.registryOwner.registry,
+      startupTrace: {
+        measure: async (name, run) => {
+          const result = await run();
+          if (!held && name === `channels.${channelId}.list-accounts`) {
+            held = true;
+            preparing.resolve();
+            await release.promise;
+          }
+          return result;
+        },
+      },
+    });
+    fixture.runtime.channelManager = manager;
+    cleanups.push(() => manager.stopChannel(channelId));
+    await manager.stopChannel(channelId, "parked");
+    const original = manager.startChannel(channelId).catch((error: unknown) => error);
+    try {
+      await preparing.promise;
+      if (outcome === "rollback") {
+        await expect(fixture.reload()).rejects.toThrow("rollback probe");
+      } else {
+        await fixture.reload();
+      }
+      expect(await original).toMatchObject({
+        message: expect.stringContaining("plugins are reloading; retry"),
+      });
+      await vi.waitFor(() => expect(starts).toEqual(["default"]));
+      expect(manager.isManuallyStopped(channelId, "parked")).toBe(true);
+      expect(fixture.siblingStart).toHaveBeenCalledOnce();
+    } finally {
+      release.resolve();
+      await original;
+    }
+  },
+);
 
 it.each(["commit", "rollback", "after-commit error", "late startup"] as const)(
   "keeps discovery handles owned across plugin replacement: %s",

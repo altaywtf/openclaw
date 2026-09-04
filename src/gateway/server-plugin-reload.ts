@@ -118,7 +118,7 @@ export async function reloadGatewayPlugins(
     NonNullable<GatewayPostReadySidecarHandle["preparePluginReload"]>
   >[] = [];
   let releaseChannelStarts: ReturnType<typeof channelManager.pauseChannelStarts> | undefined;
-  const stoppedChannels = new Map<ChannelId, Set<string>>();
+  const channelTargets = new Set<ChannelId>();
   const stopReplacedServices = async (services: PluginServicesHandle | null | undefined) => {
     try {
       await services?.stop({
@@ -248,7 +248,6 @@ export async function reloadGatewayPlugins(
         .filter((record) => !previousRegistry.plugins.includes(record))
         .map((record) => record.id),
     ]);
-    const channelTargets = new Set<ChannelId>();
     if (
       previousRegistry.commands.some((entry) => !nextRegistry.commands.includes(entry)) ||
       nextRegistry.commands.some((entry) => !previousRegistry.commands.includes(entry))
@@ -258,20 +257,13 @@ export async function reloadGatewayPlugins(
         channelTargets.add(channel.plugin.id);
       }
     }
-    for (const channel of previousRegistry.channels) {
+    for (const channel of [...previousRegistry.channels, ...nextRegistry.channels]) {
       if (changedPluginIds.has(channel.pluginId)) {
         channelTargets.add(channel.plugin.id);
       }
     }
     assertCurrent();
-    releaseChannelStarts = channelManager.pauseChannelStarts(
-      new Set([
-        ...channelTargets,
-        ...nextRegistry.channels
-          .filter((channel) => changedPluginIds.has(channel.pluginId))
-          .map((channel) => channel.plugin.id),
-      ]),
-    );
+    releaseChannelStarts = channelManager.pauseChannelStarts(channelTargets);
     phase = "drain";
     sidecarReplacements = runtimeState.gatewayLifetimeSidecars.flatMap((sidecar) =>
       sidecar.preparePluginReload
@@ -296,13 +288,13 @@ export async function reloadGatewayPlugins(
     }
     // Stop using the old registrations before publication; unchanged accounts and
     // services retain their exact instances and never participate in this drain.
-    for (const channel of channelTargets) {
-      const stopped = new Set<string>();
-      stoppedChannels.set(channel, stopped);
-      await channelManager.stopChannel(channel, undefined, {
+    for (const { plugin } of previousRegistry.channels) {
+      if (!channelTargets.has(plugin.id)) {
+        continue;
+      }
+      await channelManager.stopChannel(plugin.id, undefined, {
         manual: false,
         strict: true,
-        onStopped: (id) => stopped.add(id),
       });
     }
     await stopReplacedServices(previousServices);
@@ -398,24 +390,17 @@ export async function reloadGatewayPlugins(
       isTruthyEnvValue(params.env?.OPENCLAW_SKIP_CHANNELS) ||
       isTruthyEnvValue(params.env?.OPENCLAW_SKIP_PROVIDERS);
     for (const channel of nextRegistry.channels) {
-      if (
-        !skipChannels &&
-        (changedPluginIds.has(channel.pluginId) || stoppedChannels.has(channel.plugin.id))
-      ) {
-        const accounts = changedPluginIds.has(channel.pluginId)
-          ? undefined
-          : stoppedChannels.get(channel.plugin.id);
-        for (const account of accounts ?? [undefined]) {
-          const result = await channelManager.startChannel(channel.plugin.id, account, {
-            manual: false,
-            preserveManualStop: true,
-          });
-          const failures = [...result].filter(([, outcome]) => outcome.status === "retry");
-          if (failures.length) {
-            throw new Error(
-              `Plugin channel ${channel.plugin.id} could not start: ${failures.map(([id]) => id).join(", ")}`,
-            );
-          }
+      if (!skipChannels && channelTargets.has(channel.plugin.id)) {
+        // Whole-channel targets include preparation that had not reserved an account at drain.
+        const result = await channelManager.startChannel(channel.plugin.id, undefined, {
+          manual: false,
+          preserveManualStop: true,
+        });
+        const failures = [...result].filter(([, outcome]) => outcome.status === "retry");
+        if (failures.length) {
+          throw new Error(
+            `Plugin channel ${channel.plugin.id} could not start: ${failures.map(([id]) => id).join(", ")}`,
+          );
         }
       }
     }
@@ -435,12 +420,7 @@ export async function reloadGatewayPlugins(
       sourceDigests,
     };
     return {
-      restartChannels: new Set<ChannelId>([
-        ...stoppedChannels.keys(),
-        ...nextRegistry.channels
-          .filter((entry) => changedPluginIds.has(entry.pluginId))
-          .map((entry) => entry.plugin.id),
-      ]),
+      restartChannels: channelTargets,
       activeChannels: new Set(nextRegistry.channels.map((entry) => entry.plugin.id)),
       runtime: receipt,
     };
@@ -515,9 +495,10 @@ export async function reloadGatewayPlugins(
           );
           await runLifecycleHooks(previousRegistry, true, previousConfig);
           releaseChannelStarts?.("rollback");
-          for (const [channel, accounts] of stoppedChannels) {
-            for (const account of accounts) {
-              await channelManager.startChannel(channel, account, {
+          // A fence can cancel preparation before an account exists to record as stopped.
+          for (const { plugin } of previousRegistry.channels) {
+            if (channelTargets.has(plugin.id)) {
+              await channelManager.startChannel(plugin.id, undefined, {
                 manual: false,
                 preserveManualStop: true,
               });

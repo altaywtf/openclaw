@@ -548,9 +548,9 @@ Reload never migrates workspace state.
 
 ### Reload modes
 
-| Mode                   | Behavior                                                                |
-| ---------------------- | ----------------------------------------------------------------------- |
-| **`hybrid`** (default) | Applies hot-reloadable settings. Automatically restarts when required.  |
+| Mode                   | Behavior                                                                                           |
+| ---------------------- | -------------------------------------------------------------------------------------------------- |
+| **`hybrid`** (default) | Applies hot-reloadable settings. Automatically restarts when required.                             |
 | **`off`**              | Disables automatic config application. Use explicit plugin management or restart to apply changes. |
 
 ```json5
@@ -585,7 +585,7 @@ back to OpenClaw.
 | Automation                | `hooks`, `cron`, `agents.defaults.heartbeat`                                                                                                                                                                                   | No (reloads the owning subsystem)      |
 | Sessions & messages       | `session`, `messages`                                                                                                                                                                                                          | No                                     |
 | Tools & media             | `tools`, `skills`, `mcp` except Apps listener settings, `audio`, `talk`, `tts`, `memory.citations`, `attachments.ttlHours`                                                                                                     | No                                     |
-| Plugins | `plugins.*` | No (reloads plugin runtime) |
+| Plugins                   | `plugins.*`                                                                                                                                                                                                                    | No (reloads plugin runtime)            |
 | UI & misc                 | `ui`, `logging`, `identity`, `bindings`, `surfaces`                                                                                                                                                                            | No                                     |
 | Approval & install policy | `approvals.exec`, `approvals.plugin`, `security.installPolicy`, `security.audit.suppressions`                                                                                                                                  | No (subsequent operations)             |
 | Diagnostics & ACP         | `diagnostics.flags`, `diagnostics.cacheTrace.enabled`, `acp.stream`, `acp.runtime.installCommand`                                                                                                                              | No (subsequent operations)             |
@@ -601,7 +601,7 @@ back to OpenClaw.
 | Discovery visibility      | `discovery.mdns.mode`                                                                                                                                                                                                          | No (replaces discovery advertisements) |
 | Browser defaults          | `browser.profiles`, `browser.defaultProfile`, `browser.headless`, `browser.executablePath`, `browser.attachOnly`, `browser.cdpUrl`, `browser.noSandbox`, `browser.extraArgs`, `browser.snapshotDefaults`, `browser.tabCleanup` | No                                     |
 | Gateway server            | Other `gateway.*` settings (port, bind, auth mode, roles, tailscale, TLS)                                                                                                                                                      | **Yes**                                |
-| Infrastructure            | Other `discovery` and `browser` settings, MCP Apps listener settings, `secrets.egressProxy`                                                                                                | **Yes**                                |
+| Infrastructure            | Other `discovery` and `browser` settings, MCP Apps listener settings, `secrets.egressProxy`                                                                                                                                    | **Yes**                                |
 
 Changes to `channels.defaults`, `channels.modelByChannel`, `messages.inbound`,
 `messages.ackReactionScope`, `commands`, `accessGroups`, `tts`, `surfaces`,

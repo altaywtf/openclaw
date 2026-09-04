@@ -2924,13 +2924,11 @@ describe("server-channels auto restart", () => {
           await releaseCleanup.promise;
         });
       }
-      const originalStart = vi.fn(
-        async ({ abortSignal }: ChannelGatewayContext<TestAccount>) => {
-          await new Promise<void>((resolve) => {
-            abortSignal.addEventListener("abort", () => resolve(), { once: true });
-          });
-        },
-      );
+      const originalStart = vi.fn(async ({ abortSignal }: ChannelGatewayContext<TestAccount>) => {
+        await new Promise<void>((resolve) => {
+          abortSignal.addEventListener("abort", () => resolve(), { once: true });
+        });
+      });
       const replacementStart = vi.fn(
         async ({ abortSignal }: ChannelGatewayContext<TestAccount>) => {
           await new Promise<void>((resolve) => {

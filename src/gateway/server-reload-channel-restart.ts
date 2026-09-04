@@ -1,27 +1,8 @@
 import { getChannelPlugin } from "../channels/plugins/index.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
-import { requireActivePluginChannelRegistry } from "../plugins/runtime.js";
-import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-request-scope.js";
-import { runOutsideGatewayRootWorkAdmission } from "../process/gateway-work-admission.js";
 import type { ChannelKind } from "./config-reload-plan.js";
 import type { GatewayReloadHandlerParams } from "./server-reload-contracts.js";
-
-async function startGatewayChannelFromActiveRegistry(
-  params: Pick<GatewayReloadHandlerParams, "startChannel">,
-  channel: ChannelKind,
-  accountId?: string,
-): Promise<void> {
-  await withPluginRuntimeRegistryScope(requireActivePluginChannelRegistry(), () =>
-    // A config reload preserves the operator's manual stop intent.
-    runOutsideGatewayRootWorkAdmission(() =>
-      params.startChannel(channel, accountId, {
-        preserveManualStop: true,
-        skipUnavailableAccounts: true,
-      }),
-    ),
-  );
-}
 
 export async function restartGatewayChannels(options: {
   params: Pick<GatewayReloadHandlerParams, "startChannel" | "stopChannel" | "logChannels">;
@@ -119,7 +100,10 @@ export async function restartGatewayChannels(options: {
       );
       await params.stopChannel(channel, accountId, { manual: false });
       if (!suppressed && !isLifecycleReloadAborted()) {
-        await startGatewayChannelFromActiveRegistry(params, channel, accountId);
+        await params.startChannel(channel, accountId, {
+          preserveManualStop: true,
+          skipUnavailableAccounts: true,
+        });
       }
     } catch (err) {
       failures.push(accountId === undefined ? channel : `${channel}[${accountId}]`);

@@ -460,6 +460,7 @@ function runCiManifestFixture(options: {
         "scripts/lib/merge-head-diff-base.mjs",
         "scripts/lib/record-shared.mjs",
         "packages/normalization-core/src/stable-stringify.ts",
+        "packages/normalization-core/src/error-coercion.ts",
         "scripts/run-tsgo-core-test-shards.mts",
         "scripts/run-additional-boundary-checks.mts",
       ]) {

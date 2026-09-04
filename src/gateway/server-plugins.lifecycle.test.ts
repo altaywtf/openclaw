@@ -738,7 +738,7 @@ describe("Gateway plugin replacement channel ownership", () => {
   ])("$name", { timeout: 120_000 }, async ({ teardownFails }) => {
     releasePending = createDeferredCore();
     const starts = new Map<string, number>();
-    const channel: ChannelPlugin = {
+    const channelPlugin: ChannelPlugin = {
       ...createChannelTestPluginBase({
         id: channelId,
         config: {
@@ -788,7 +788,7 @@ describe("Gateway plugin replacement channel ownership", () => {
     const { coordinator, channelName } = installInstanceBindingProbeCoordinator(
       teardownFails ? { serviceStopFailure: "rejection" } : undefined,
     );
-    coordinator.channel = channel;
+    coordinator.channel = channelPlugin;
     const { bundledRoot } = await writeInstanceBindingProbePlugin(channelName, channelId);
     process.env.OPENCLAW_TEST_MINIMAL_GATEWAY = "0";
     delete process.env.OPENCLAW_DISABLE_BUNDLED_PLUGINS;

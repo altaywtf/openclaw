@@ -43,6 +43,8 @@ import {
 import { withPluginHttpRouteRegistry } from "../plugins/http-registry.js";
 import { runPluginCleanup } from "../plugins/plugin-instance-scope.js";
 import type { PluginRegistry } from "../plugins/registry.js";
+import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-request-scope.js";
+import { runOutsidePluginRuntimeGenerationScope } from "../plugins/runtime/generation-scope.js";
 import type { PluginRuntimeChannel } from "../plugins/runtime/types-channel.js";
 import { runOutsideGatewayRootWorkAdmission } from "../process/gateway-work-admission.js";
 import { resolveAccountEntry, resolveNormalizedAccountEntry } from "../routing/account-lookup.js";
@@ -257,7 +259,6 @@ type StopChannelOptions = {
   manual?: boolean;
   /** Replacement must observe settled ownership before a successor can start. */
   strict?: boolean;
-  onStopped?: (accountId: string) => void;
 };
 
 type ChannelAccountStopOutcome = { status: "fulfilled" } | { status: "rejected"; error: unknown };
@@ -1147,10 +1148,16 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
     return startOutcomes;
   };
 
-  // Channel lifetimes outlive the RPC or timer requesting startup, so their
-  // provider, approval, cleanup, and restart descendants must be process-owned.
+  // Channel lifetimes belong to this Gateway, even when an old request or
+  // generation initiates the start after plugin publication.
   const startChannelInternal = (...args: Parameters<typeof startChannelProcessOwned>) =>
-    runOutsideGatewayRootWorkAdmission(() => startChannelProcessOwned(...args));
+    runOutsideGatewayRootWorkAdmission(() =>
+      runOutsidePluginRuntimeGenerationScope(() =>
+        withPluginRuntimeRegistryScope(getPluginHttpRouteRegistry?.(), () =>
+          startChannelProcessOwned(...args),
+        ),
+      ),
+    );
 
   const stopChannel = async (
     channelId: ChannelId,
@@ -1364,9 +1371,6 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
         const stopAttempt = previousStop.then(runStopAttempt);
         store.stops.set(id, { status: "stopping", attempt: stopAttempt });
         const outcome = await stopAttempt;
-        if (outcome.status === "fulfilled") {
-          optsLocal.onStopped?.(id);
-        }
         const latestStop = store.stops.get(id);
         if (latestStop?.status === "stopping" && latestStop.attempt === stopAttempt) {
           if (outcome.status === "rejected") {

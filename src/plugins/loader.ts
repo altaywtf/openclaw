@@ -7,10 +7,7 @@ export {
   isPluginRegistryLoadInFlight,
   resolvePluginRegistryLoadCacheKey,
 } from "./loader-cache.js";
-export {
-  getRuntimePluginRegistryForLoadOptions,
-  resolveRuntimePluginRegistry,
-} from "./loader-runtime-registry.js";
+export { resolveRuntimePluginRegistry } from "./loader-runtime-registry.js";
 
 /** Loads a caller-owned registry value without changing the process-wide active registry. */
 export function loadPluginRegistryHandle(options: PluginLoadOptions = {}) {
