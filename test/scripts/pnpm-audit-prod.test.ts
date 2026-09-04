@@ -587,9 +587,14 @@ snapshots:
   });
 
   it.each([false, true])(
-    "reports npm-only coverage with the audit outcome (blocked %s)",
+    "submits one 401-package request and reports npm-only coverage (blocked %s)",
     async (blocked) => {
       const tempDir = await mkdtemp(path.join(tmpdir(), "openclaw-audit-prod-"));
+      // One package above the removed caller-side batching boundary.
+      const packageNames = [
+        "axios",
+        ...Array.from({ length: 400 }, (_, index) => `fixture-${index}`),
+      ];
       await writeFile(
         path.join(tempDir, "pnpm-lock.yaml"),
         `lockfileVersion: '9.0'
@@ -597,24 +602,25 @@ snapshots:
 importers:
   .:
     dependencies:
-      axios:
-        version: 1.0.0
+${packageNames.map((name) => `      ${name}: {version: 1.0.0}`).join("\n")}
 
 snapshots:
-  axios@1.0.0: {}
+${packageNames.map((name) => `  ${name}@1.0.0: {}`).join("\n")}
 `,
         "utf8",
       );
 
       try {
+        const payloads: Record<string, string[]>[] = [];
         const stdoutChunks: string[] = [];
         const stderrChunks: string[] = [];
         const exitCode = await runPnpmAuditProd({
           rootDir: tempDir,
-          fetchImpl: async (input) => {
+          fetchImpl: async (input, init) => {
             const url =
               input instanceof URL ? input.href : input instanceof Request ? input.url : input;
             expect(url).toMatch(/\/-\/npm\/v1\/security\/advisories\/bulk$/u);
+            payloads.push(JSON.parse(typeof init?.body === "string" ? init.body : ""));
             return new Response(
               JSON.stringify(
                 blocked
@@ -653,6 +659,9 @@ snapshots:
           } as NodeJS.WriteStream,
         });
 
+        expect(payloads).toEqual([
+          Object.fromEntries(packageNames.map((name) => [name, ["1.0.0"]])),
+        ]);
         expect(exitCode).toBe(blocked ? 1 : 0);
         if (blocked) {
           expect(stdoutChunks).toStrictEqual([]);

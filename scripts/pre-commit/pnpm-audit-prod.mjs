@@ -691,14 +691,6 @@ export function filterFindingsBySeverity(advisoriesByPackage, minSeverity, versi
   return findings;
 }
 
-function chunkEntries(entries, size) {
-  const chunks = [];
-  for (let index = 0; index < entries.length; index += size) {
-    chunks.push(entries.slice(index, index + size));
-  }
-  return chunks;
-}
-
 export function resolveRegistryBaseUrl() {
   const configured =
     process.env.npm_config_registry ??
@@ -838,7 +830,7 @@ export async function fetchBulkAdvisories({
 }) {
   const url = `${registryBaseUrl}${BULK_ADVISORY_PATH}`;
   // At the default timeout, three fresh 60s request/body deadlines plus 1–2s / 2–4s
-  // backoff cap a chunk at 186s; timed-out attempts abort before the next starts.
+  // backoff cap a request at 186s; timed-out attempts abort before the next starts.
   for (let attempt = 0; ; attempt += 1) {
     let responseStatus;
     try {
@@ -906,15 +898,10 @@ export async function runPnpmAuditProd({
     return 0;
   }
 
-  const advisoryResults = {};
-  for (const payloadChunk of chunkEntries(payloadEntries, 400)) {
-    const chunkPayload = Object.fromEntries(payloadChunk);
-    const chunkResults = await fetchBulkAdvisories({
-      payload: chunkPayload,
-      fetchImpl,
-    });
-    Object.assign(advisoryResults, chunkResults);
-  }
+  const advisoryResults = await fetchBulkAdvisories({
+    payload,
+    fetchImpl,
+  });
 
   const findings = filterFindingsBySeverity(
     advisoryResults,
