@@ -39,7 +39,7 @@ export function createSettledFinalizationTestInput(
     initial: {
       attempt,
       attemptAssistant: attempt.currentAttemptAssistant,
-      currentAttemptCompletedAssistant: undefined,
+      currentAttemptCompletedAssistant: attempt.currentAttemptCompletedAssistant,
       sessionIdUsed: attempt.sessionIdUsed,
       sessionFileUsed: attempt.sessionFileUsed,
       terminalState: resolveEmbeddedRunAttemptTerminalState({

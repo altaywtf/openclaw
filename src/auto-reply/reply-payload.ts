@@ -288,6 +288,8 @@ export type SessionWriterDeliveryAuthority = {
 export type ReplyPayloadMetadata = {
   /** The model failed after a committed recovery compaction in the same turn. */
   postCompactionModelFailure?: true;
+  /** User-facing error generated for a terminal model failure, not assistant-authored output. */
+  terminalModelFailure?: true;
   assistantMessageIndex?: number;
   /** Persisted assistant speech facts; never serialized into channel payloads. */
   tts?: AssistantDeliveryTtsFacts;

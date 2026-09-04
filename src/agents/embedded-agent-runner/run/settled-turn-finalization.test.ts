@@ -102,6 +102,40 @@ function settledFailedAttempt(): EmbeddedRunAttemptWithReceiptEvidence {
   return { ...attempt, successfulNestedToolNames: ["memory_search"] };
 }
 
+function settledProviderFailureAttempt(): EmbeddedRunAttemptWithReceiptEvidence {
+  const toolAssistant = buildEmbeddedRunnerAssistant({
+    stopReason: "toolUse",
+    content: [{ type: "toolCall", id: "tool-read", name: "read", arguments: {} }],
+  });
+  const errorAssistant = buildEmbeddedRunnerAssistant({
+    stopReason: "error",
+    errorMessage: "connect ECONNRESET",
+    content: [],
+  });
+  const messagesSnapshot = [
+    toolAssistant,
+    { role: "toolResult", toolCallId: "tool-read", toolName: "read", isError: false },
+    errorAssistant,
+  ] as never;
+  return makeEmbeddedRunnerAttempt({
+    terminal: {
+      kind: "failed",
+      source: "prompt",
+      error: new Error("connect ECONNRESET"),
+    },
+    assistantTexts: [],
+    toolMetas: [{ toolName: "read", toolCallId: "tool-read", isError: false, replaySafe: false }],
+    itemLifecycle: { startedCount: 1, completedCount: 1, activeCount: 0 },
+    messagesSnapshot,
+    lastAssistant: errorAssistant,
+    currentAttemptAssistant: errorAssistant,
+    currentAttemptCompletedAssistant: errorAssistant,
+    currentAttemptReplayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
+    replayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
+    settledTurnFinalizationContext: { source: "openclaw-transcript", messages: messagesSnapshot },
+  });
+}
+
 let admittedRunContext: AdmittedRunContext;
 
 function finalizationInput(attempt: ReturnType<typeof settledFailedAttempt>) {
@@ -263,10 +297,10 @@ describe("resolveSettledTurnFinalizationRequest", () => {
         ],
       }),
     ).toBeNull();
-    expect(request({ settledTurnFinalizationAvailable: false })).toBeNull();
     expect(
-      request({ payloadsWithToolMedia: [{ text: "⚠️ 🛠️ Exec failed", isError: true }] }),
-    ).toContain(SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION);
+      request({ payloadsWithToolMedia: [{ text: "Review the failed operation.", isError: true }] }),
+    ).toBeNull();
+    expect(request({ settledTurnFinalizationAvailable: false })).toBeNull();
   });
 });
 
@@ -281,6 +315,28 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
   afterEach(() => {
     admission.close();
     vi.useRealTimers();
+  });
+
+  it("replaces a transient provider error after settled tools with isolated final output", async () => {
+    const attempt = settledProviderFailureAttempt();
+    const input = finalizationInput(attempt);
+    backendMocks.runSettledFinalization.mockResolvedValueOnce({
+      outcome: "answered",
+      result: {
+        assistant: buildEmbeddedRunnerAssistant({
+          content: [{ type: "text", text: "The file was read successfully." }],
+        }),
+      },
+    });
+
+    const result = await prepareTerminalWithSettledTurnFinalization(input);
+
+    expect(backendMocks.runSettledFinalization).toHaveBeenCalledOnce();
+    expect(result.finalizationOutcome).toBe("answered");
+    expect(result.prepared.payloadsWithToolMedia).toEqual([
+      expect.objectContaining({ text: "The file was read successfully." }),
+    ]);
+    expect(result.prepared.payloadsWithToolMedia?.[0]?.isError).not.toBe(true);
   });
 
   it.each([false, true])(
