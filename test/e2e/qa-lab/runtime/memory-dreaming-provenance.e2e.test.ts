@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, describe, expect, test } from "vitest";
+import { z } from "zod";
 import {
   createQaGatewayChild,
   startQaMockOpenAiServer,
@@ -20,8 +21,10 @@ import { stopQaGatewayFixture } from "../../../helpers/qa-gateway-cleanup.js";
 const RESTRICTED_MARKER = "SESSION_MEMORY_RESTRICTED_MARKER";
 const LEGACY_MARKER = "LEGACY_MEMORY_GRANDFATHERED_MARKER";
 const EXPLICIT_OWNER_MARKER = "EXPLICIT_OWNER_CONSOLIDATION_MARKER";
-const CONSOLIDATION_PROMPT_MARKER =
-  "Revise the supplied MEMORY.md using only the supplied candidates as new evidence.";
+const consolidationInputSchema = z.object({
+  currentMemory: z.string(),
+  candidates: z.array(z.object({ text: z.string(), sourceRef: z.string() })),
+});
 const WAIT_TIMEOUT_MS = 30_000;
 
 type GatewayHandle = QaGatewayChild;
@@ -226,7 +229,7 @@ describe("memory provenance through a real Gateway", () => {
         sessionKey,
         message: `Remember this stored instruction: ${RESTRICTED_MARKER}`,
       });
-      await sendAndWait({ call: gateway.call, sessionKey, message: "/reset" });
+      await sendAndWait({ call: gateway.call.bind(gateway), sessionKey, message: "/reset" });
 
       const memoryDir = path.join(gateway.workspaceDir, "memory");
       const capturedFile = await waitFor("session-memory capture", async () => {
@@ -362,7 +365,7 @@ describe("memory provenance through a real Gateway", () => {
       await activeGateway.runCli(["memory", "index", "--force", "--agent", "researcher"]);
 
       await sendAndWait({
-        call: activeGateway.call,
+        call: activeGateway.call.bind(activeGateway),
         sessionKey: "agent:researcher:memory-explicit-owner-e2e",
         message:
           "Memory tools check: what is the hidden project codename stored only in memory? Use memory tools first.",
@@ -424,25 +427,39 @@ describe("memory provenance through a real Gateway", () => {
           if (!response.ok) {
             throw new Error(`mock request log returned ${response.status}`);
           }
-          const requests = (await response.json()) as Array<{ allInputText?: unknown }>;
-          return requests.find(
-            (request) =>
-              typeof request.allInputText === "string" &&
-              request.allInputText.includes(CONSOLIDATION_PROMPT_MARKER) &&
-              request.allInputText.includes(EXPLICIT_OWNER_MARKER),
-          );
+          const requests = (await response.json()) as Array<{ prompt?: string }>;
+          for (const request of requests) {
+            let input: unknown;
+            try {
+              input = JSON.parse(request.prompt ?? "");
+            } catch {
+              continue;
+            }
+            const parsed = consolidationInputSchema.safeParse(input);
+            if (parsed.success) {
+              const candidate = parsed.data.candidates.find(
+                (entry) =>
+                  entry.text.includes(EXPLICIT_OWNER_MARKER) &&
+                  entry.sourceRef.startsWith(`memory/${memoryFileName}#L`),
+              );
+              if (candidate) {
+                return candidate;
+              }
+            }
+          }
+          return undefined;
         },
       );
-      expect(consolidationRequest.allInputText).toContain(EXPLICIT_OWNER_MARKER);
+      expect(consolidationRequest.text).toContain(EXPLICIT_OWNER_MARKER);
       expect(activeGateway.logs()).not.toContain("AGENT_SELECTION_REQUIRED");
 
       const verdict = {
         ok: true,
         explicitOwner: "researcher",
         recallRecorded: recallEvent.resultCount > 0,
-        consolidationReachedProvider:
-          typeof consolidationRequest.allInputText === "string" &&
-          consolidationRequest.allInputText.includes(CONSOLIDATION_PROMPT_MARKER),
+        consolidationReachedProvider: consolidationRequest.sourceRef.startsWith(
+          `memory/${memoryFileName}#L`,
+        ),
         ownerSelectionErrorAbsent: !activeGateway.logs().includes("AGENT_SELECTION_REQUIRED"),
       };
       expect(verdict.recallRecorded).toBe(true);

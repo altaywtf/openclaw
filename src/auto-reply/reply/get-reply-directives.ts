@@ -23,6 +23,7 @@ import {
 } from "../../skills/discovery/chat-command-invocation.js";
 import type { SkillCommandSpec } from "../../skills/types.js";
 import { isExplicitCommandTurn, resolveCommandTurnContext } from "../command-turn-context.js";
+import { normalizeCommandTarget } from "../commands-registry-normalize.js";
 import { shouldHandleTextCommands } from "../commands-text-routing.js";
 import { markCommandReplyForDelivery } from "../reply-payload.js";
 import type {
@@ -41,6 +42,7 @@ import type { GetReplyOptions, ReplyPayload } from "../types.js";
 import { resolveBlockStreamingChunking } from "./block-streaming.js";
 import { buildCommandContext } from "./commands-context.js";
 import { type InlineDirectives, resolveReplyDirectiveCommand } from "./directive-handling.parse.js";
+import { extractExecDirective } from "./exec/directive.js";
 import {
   reserveSkillCommandNames,
   resolveConfiguredDirectiveAliases,
@@ -319,15 +321,26 @@ export async function resolveReplyDirectives(params: {
         : commandRegistry.resolveTextCommand(command.commandBodyNormalized, cfg)?.command.key
       : undefined,
   );
+  // Text directives may precede a task; command normalization discards multiline bodies.
   const directiveCommandText =
-    explicitDirectiveCommand && commandTurn.kind === "text-slash"
-      ? command.commandBodyNormalized
+    canInterpretMessageDirectives && explicitDirectiveCommand
+      ? normalizeCommandTarget(commandText, { botUsername: ctx.BotUsername })
       : commandText;
+  const nativeDirectiveCommand =
+    commandTurn.kind === "native" ||
+    (explicitDirectiveCommand === "exec" &&
+      !extractExecDirective(directiveCommandText).hasExecOptions)
+      ? explicitDirectiveCommand
+      : undefined;
+  const directiveAgentText =
+    canInterpretMessageDirectives && explicitDirectiveCommand
+      ? normalizeCommandTarget(sessionCtx.agentText, { botUsername: ctx.BotUsername })
+      : sessionCtx.agentText;
   const routedDirectives = resolveReplyDirectiveRouting({
     commandText: directiveCommandText,
-    agentText: sessionCtx.agentText,
+    agentText: directiveAgentText,
     modelAliases: configuredAliases,
-    nativeCommand: explicitDirectiveCommand,
+    nativeCommand: nativeDirectiveCommand,
     canInterpretTextDirectives: canInterpretMessageDirectives,
     isAuthorizedSender: command.isAuthorizedSender,
     isGroup,

@@ -100,7 +100,6 @@ export async function handleDirectiveOnly(
       directives,
       ignoredDirective,
       persistenceState: params.persistenceState,
-      allowPrivilegedPersistence,
       applyRemainingDirectives: (remainingDirectives) =>
         handleDirectiveOnly({ ...params, directives: remainingDirectives }),
     });
@@ -422,11 +421,10 @@ export async function handleDirectiveOnly(
     );
   }
 
-  const nextThinkLevel = directives.hasThinkDirective
-    ? directives.thinkLevel
-    : ((sessionEntry?.thinkingLevel as ThinkLevel | undefined) ?? currentThinkLevel);
+  // Model changes normalize stored choices; inherited defaults must remain unpinned.
+  const nextThinkLevel = sessionEntry.thinkingLevel as ThinkLevel | undefined;
   const remappedUnsupportedThinkLevel =
-    !directives.hasThinkDirective && nextThinkLevel
+    nextThinkLevel && (params.persistenceState ? modelSelection : !directives.hasThinkDirective)
       ? resolveSupportedThinkingLevel({
           ...thinkingPolicy,
           level: nextThinkLevel,
@@ -445,16 +443,14 @@ export async function handleDirectiveOnly(
     elevatedAllowed;
   let modelSelectionUpdated = false;
   let configuredDefaultUpdate: ReturnType<typeof persistStickyModelSelectionBestEffort> | undefined;
-  const appliedSessionEntry = sessionEntry;
   const touchedSessionFields = resolveDirectiveTouchedSessionFields({
     directives,
     allowPrivilegedPersistence,
+    directiveOnly: !params.persistenceState,
   });
   if (shouldRemapUnsupportedThinkLevel && !touchedSessionFields.includes("thinkingLevel")) {
     touchedSessionFields.push("thinkingLevel");
   }
-  // Validated, authorized directives have already named every field they can mutate.
-  const shouldPersistSessionEntry = touchedSessionFields.length > 0;
   const fastModeChanged =
     (directives.hasFastDirective &&
       directives.fastMode !== undefined &&
@@ -464,20 +460,21 @@ export async function handleDirectiveOnly(
     directives.hasReasoningDirective &&
     directives.reasoningLevel !== undefined &&
     directives.reasoningLevel !== prevReasoningLevel;
-  if (shouldPersistSessionEntry) {
+  // Validated, authorized directives have already named every field they can mutate.
+  if (touchedSessionFields.length > 0) {
     const authProfileError = modelResolution.validateAuthProfileSelection?.();
     if (authProfileError) {
       return rejectModelTransaction(authProfileError);
     }
     const initialSessionEntry = { ...sessionEntry };
-    applySessionDirectiveFields({
-      directives,
-      sessionEntry,
-      allowPrivilegedPersistence,
-      allowTracePersistence: true,
-      allowElevatedPersistence: elevatedEnabled && elevatedAllowed,
-      persistDirectiveOnlyFields: true,
-    });
+    if (!params.persistenceState) {
+      applySessionDirectiveFields({
+        directives,
+        sessionEntry,
+        allowPrivilegedPersistence,
+        allowElevatedPersistence: elevatedEnabled && elevatedAllowed,
+      });
+    }
     if (shouldRemapUnsupportedThinkLevel && remappedUnsupportedThinkLevel) {
       sessionEntry.thinkingLevel = remappedUnsupportedThinkLevel;
     }
@@ -536,7 +533,7 @@ export async function handleDirectiveOnly(
       emitSessionLifecycleEvent({ sessionKey, agentId: activeAgentId, reason: "patch" });
       triggerSessionPatchHook({
         cfg: params.cfg,
-        sessionEntry: appliedSessionEntry,
+        sessionEntry,
         sessionKey,
         patch: {
           key: sessionKey,
@@ -553,12 +550,12 @@ export async function handleDirectiveOnly(
         nextModel: modelSelection.model,
         nextRouteResolution: "resolved",
         nextModelOverrideSource: modelSelection.isDefault ? undefined : "user",
-        nextAuthProfileId: appliedSessionEntry.authProfileOverride,
-        nextAuthProfileIdSource: resolveCollapsedSessionAuthPinSource(appliedSessionEntry),
+        nextAuthProfileId: sessionEntry.authProfileOverride,
+        nextAuthProfileIdSource: resolveCollapsedSessionAuthPinSource(sessionEntry),
         nextThinking: {
-          level: appliedSessionEntry.thinkingLevel,
+          level: sessionEntry.thinkingLevel,
           catalog: thinkingCatalog,
-          agentRuntime: resolveThinkingRuntime(appliedSessionEntry),
+          agentRuntime: resolveThinkingRuntime(sessionEntry),
         },
       });
     }
@@ -572,13 +569,15 @@ export async function handleDirectiveOnly(
       });
     }
   }
-  enqueueModeSwitchEvents({
-    enqueueSystemEvent,
-    sessionEntry: appliedSessionEntry,
-    sessionKey,
-    elevatedChanged,
-    reasoningChanged,
-  });
+  if (!params.persistenceState) {
+    enqueueModeSwitchEvents({
+      enqueueSystemEvent,
+      sessionEntry,
+      sessionKey,
+      elevatedChanged,
+      reasoningChanged,
+    });
+  }
   if (params.persistenceState) {
     params.persistenceState.outcome = {
       kind: "applied",
@@ -676,11 +675,7 @@ export async function handleDirectiveOnly(
   }
   // Report the model change before the thinking remap it triggered: the remap is a
   // consequence of the model switch, so the cause should be announced first.
-  if (
-    !directives.hasThinkDirective &&
-    shouldRemapUnsupportedThinkLevel &&
-    remappedUnsupportedThinkLevel
-  ) {
+  if (shouldRemapUnsupportedThinkLevel && remappedUnsupportedThinkLevel) {
     parts.push(
       `Thinking level set to ${remappedUnsupportedThinkLevel} (${nextThinkLevel} not supported for ${resolvedProvider}/${resolvedModel}).`,
     );
@@ -699,7 +694,7 @@ export async function handleDirectiveOnly(
   if (directives.hasQueueDirective && directives.dropPolicy) {
     parts.push(formatDirectiveAck(`Queue drop set to ${directives.dropPolicy}.`));
   }
-  if (fastModeChanged) {
+  if (fastModeChanged && !params.persistenceState) {
     const nextFastMode = directives.clearFastMode ? fastModeState.mode : sessionEntry.fastMode;
     const nextFastModeText =
       nextFastMode === "auto"

@@ -28,7 +28,7 @@ type CommandRegistryLookup = {
 let cachedRegistryLookup: CommandRegistryLookup | undefined;
 
 const TARGETED_COMMAND_BODY_RE =
-  /^\/([^\s@]+)@([A-Za-z0-9_]+)(?=$|\s|[.!?！？…,，。;；:：'"’”)\]}])([\s\S]*)$/u;
+  /^(\s*)\/([^\s@]+)@([A-Za-z0-9_]+)(?=$|\s|[.!?！？…,，。;；:：'"’”)\]}])([\s\S]*)$/u;
 
 function appendMultilineTail(head: string, tail: string | undefined, spec?: TextAliasSpec): string {
   if (!tail) {
@@ -83,6 +83,20 @@ function getCommandRegistryLookup(): CommandRegistryLookup {
   return cachedRegistryLookup;
 }
 
+/** Removes only an addressed bot target, preserving the task's whitespace and line endings. */
+export function normalizeCommandTarget(raw: string, options?: CommandNormalizeOptions): string {
+  const normalizedBotUsername = normalizeOptionalLowercaseString(options?.botUsername);
+  const mentionMatch = raw.match(TARGETED_COMMAND_BODY_RE);
+  const targetBotUsername = normalizeOptionalLowercaseString(mentionMatch?.[3]);
+  const targetMatchesBot =
+    normalizedBotUsername !== undefined && targetBotUsername === normalizedBotUsername;
+  const resolveBeforeIdentity =
+    normalizedBotUsername === undefined && options?.targetedCommandMode === "pre-identity";
+  return mentionMatch && (targetMatchesBot || resolveBeforeIdentity)
+    ? `${mentionMatch[1]}/${mentionMatch[2]}${mentionMatch[4] ?? ""}`
+    : raw;
+}
+
 /** Normalizes command text to canonical aliases, removing bot mentions when appropriate. */
 export function normalizeCommandBody(raw: string, options?: CommandNormalizeOptions): string {
   const trimmed = raw.trim();
@@ -104,17 +118,7 @@ export function normalizeCommandBody(raw: string, options?: CommandNormalizeOpti
       })()
     : singleLine;
 
-  const normalizedBotUsername = normalizeOptionalLowercaseString(options?.botUsername);
-  const mentionMatch = normalized.match(TARGETED_COMMAND_BODY_RE);
-  const targetBotUsername = normalizeOptionalLowercaseString(mentionMatch?.[2]);
-  const targetMatchesBot =
-    normalizedBotUsername !== undefined && targetBotUsername === normalizedBotUsername;
-  const resolveBeforeIdentity =
-    normalizedBotUsername === undefined && options?.targetedCommandMode === "pre-identity";
-  const commandBody =
-    mentionMatch && (targetMatchesBot || resolveBeforeIdentity)
-      ? `/${mentionMatch[1]}${mentionMatch[3] ?? ""}`
-      : normalized;
+  const commandBody = normalizeCommandTarget(normalized, options);
 
   const lowered = normalizeLowercaseStringOrEmpty(commandBody);
   const textAliasMap = getCommandRegistryLookup().aliases;
