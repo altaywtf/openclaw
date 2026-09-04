@@ -56,7 +56,7 @@ async function control(root: string, label: string, command: string): Promise<vo
   });
 }
 
-async function prepare(root: string, heldHandle = false) {
+async function prepare(root: string, heldHandle: boolean | "stdio" = false) {
   const candidate = path.join(root, "candidate.mjs");
   await fs.mkdir(path.join(root, "dist"), { recursive: true });
   await fs.writeFile(path.join(root, "package.json"), '{"type":"module","name":"openclaw"}');
@@ -82,7 +82,7 @@ await admission.finish(result.cleanup === 'normal' || result.cleanup === 'cooper
 process.exitCode=result.code ?? 1;
 `,
   );
-  if (heldHandle) {
+  if (heldHandle === true) {
     await fs.writeFile(
       candidate,
       `
@@ -100,6 +100,41 @@ await new Promise(resolve=>server.listen(root+'/'+label+'.sock',resolve));
 fs.writeFileSync(root+'/'+label+'.pids',JSON.stringify({pid:process.pid,start:getFileLockProcessStartTime(process.pid)})+'\\n');
 fs.writeFileSync(root+'/'+label+'.cli',String(process.pid));
 admission.signal.addEventListener('abort',()=>fs.writeFileSync(root+'/'+label+'.cancelled','held cleanup'));
+`,
+    );
+  }
+  if (heldHandle === "stdio") {
+    await fs.writeFile(
+      path.join(root, "stdio-writer.mjs"),
+      `
+import fs from 'node:fs'; import net from 'node:net';
+import {getFileLockProcessStartTime} from ${source("identity")};
+const root=${JSON.stringify(root)},label=process.argv[2];
+fs.appendFileSync(root+'/'+label+'.pids',JSON.stringify({pid:process.pid,start:getFileLockProcessStartTime(process.pid)})+'\\n');
+const server=net.createServer(socket=>socket.once('data',data=>{
+  socket.end();
+  if(String(data)==='report'){
+    fs.writeSync(1,'retained stdout final\\n');fs.writeSync(2,'retained stderr final\\n');
+    server.close();
+  }
+}));
+await new Promise(resolve=>server.listen(root+'/'+label+'.writer.sock',resolve));
+process.send('ready',()=>process.disconnect());
+`,
+    );
+    await fs.writeFile(
+      candidate,
+      `
+import fs from 'node:fs'; import {spawn} from 'node:child_process';
+import {acceptTriageContinuation} from ${source("continuation")};
+import {getFileLockProcessStartTime} from ${source("identity")};
+const admission=await acceptTriageContinuation(),root=${JSON.stringify(root)},label=admission.failure.phase;
+fs.writeFileSync(root+'/'+label+'.pids',JSON.stringify({pid:process.pid,start:getFileLockProcessStartTime(process.pid)})+'\\n');
+const writer=spawn(process.execPath,[${JSON.stringify(path.join(root, "stdio-writer.mjs"))},label],{stdio:['ignore','inherit','inherit','ipc']});
+writer.unref();
+await new Promise(resolve=>writer.once('message',resolve));
+await admission.finish('uncertain');
+fs.writeFileSync(root+'/'+label+'.cli',String(process.pid));
 `,
     );
   }
@@ -131,6 +166,16 @@ ${
     ? `
 const {mock}=await import('node:test'); const net=await import('node:net');
 mock.timers.enable({apis:['setTimeout']});
+${
+  heldHandle === "stdio"
+    ? `
+const fs=await import('node:fs'),kill=process.kill;
+process.kill=function(pid,signal){
+  if(signal && signal!==0)fs.appendFileSync(${JSON.stringify(path.join(root, "signals.jsonl"))},JSON.stringify({pid,signal})+'\\n');
+  return kill.call(process,pid,signal);
+};`
+    : ""
+}
 const timerControl=net.createServer(socket=>socket.once('data',data=>{socket.end();mock.timers.tick(Number(String(data).slice(5)));}));
 await new Promise(resolve=>timerControl.listen(${JSON.stringify(root)}+'/'+phase+'.parent.sock',resolve));
 `
@@ -640,4 +685,60 @@ unix.each([
     expect(readClaim(root)?.owner).toBe(running.owner);
   },
   30_000,
+);
+
+unix.each(["drained", "deadline"] as const)(
+  "retains final diagnostics until inherited stdio is %s after executor exit",
+  async (settlement) => {
+    const root = await createRoot();
+    await prepare(root, "stdio");
+    cleanups.push(() => rescue(root));
+    const owner = foreground(root, "pipes");
+    await vi.waitFor(() => fs.access(path.join(root, "pipes.cli")), { timeout: 30_000 });
+    const held = readClaim(root)!;
+    const executor = JSON.parse(String(held.payload_json)).executor;
+    await vi.waitFor(() => expect(isPidAlive(executor.pid)).toBe(false), { timeout: 5000 });
+    const members = (await fs.readFile(path.join(root, "pipes.pids"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    const writer = members.find((member) => member.pid !== executor.pid)!;
+    expect(isPidAlive(writer.pid)).toBe(true);
+    expect(JSON.parse(String(readClaim(root)!.payload_json)).action.phase).toBe("uncertain");
+    // The terminal root cannot stand in for the still-open output handles.
+    expect(owner.child.exitCode).toBeNull();
+    expect(owner.output().stderr).not.toContain("retained stdout final");
+    if (settlement === "drained") {
+      await control(root, "pipes.writer", "report");
+    } else {
+      await control(root, "pipes.parent", "tick:29999");
+      expect(owner.child.exitCode).toBeNull();
+      expect(isPidAlive(writer.pid)).toBe(true);
+      await control(root, "pipes.parent", "tick:1");
+    }
+    expect(await owner.exit).toEqual({ code: 7, signal: null });
+    expect(owner.output().stdout).toBe('{"status":"error","reason":"original"}\n');
+    expect(owner.output().stderr).toContain("cleanup is uncertain");
+    if (settlement === "drained") {
+      expect(owner.output().stderr).toContain("retained stdout final");
+      expect(owner.output().stderr).toContain("retained stderr final");
+      await vi.waitFor(() => expect(isPidAlive(writer.pid)).toBe(false));
+    } else {
+      expect(isPidAlive(writer.pid)).toBe(true);
+    }
+    const signals = (await fs.readFile(path.join(root, "signals.jsonl"), "utf8").catch(() => ""))
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    expect(signals.filter((entry) => Math.abs(entry.pid) === executor.pid)).toEqual([]);
+    const fenced = readClaim(root)!;
+    expect(fenced.owner).toBe(held.owner);
+    expect(JSON.parse(String(fenced.payload_json)).action.phase).toBe("uncertain");
+    const loser = foreground(root, "loser");
+    expect(await loser.exit).toEqual({ code: 7, signal: null });
+    expect(loser.output().stderr).toContain("already owned");
+    expect(readClaim(root)).toEqual(fenced);
+  },
+  60_000,
 );

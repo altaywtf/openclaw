@@ -155,19 +155,16 @@ export async function queueManagedUpdateTriage(
   }
   // This dispatch transfers ownership. Cancellation after it belongs to the
   // helper; an uncertain send must never cause another automatic attempt.
-  await new Promise<void>((resolve, reject) => {
-    process.send!({ type: "triage-commit", version: 2 }, (error) => {
-      if (error) {
-        reject(
-          new Error("automatic triage handoff confirmation lost; inspect the handoff log", {
-            cause: error,
-          }),
-        );
-      } else {
-        resolve();
-      }
+  try {
+    // A send callback confirms bytes written, not a live helper's acceptance.
+    z.strictObject({ type: z.literal("triage-committed"), version: z.literal(2) }).parse(
+      await exchangeWithParent({ type: "triage-commit", version: 2 }),
+    );
+  } catch (error) {
+    throw new Error("automatic triage handoff confirmation lost; inspect the handoff log", {
+      cause: error,
     });
-  });
+  }
   return true;
 }
 
@@ -201,6 +198,7 @@ export async function continueTriageInFreshProcess(params: {
   let admitted = false;
   let cancelled = false;
   let closed = false;
+  let exited = false;
   let output = "";
   let timeout: ReturnType<typeof setTimeout> | undefined;
   let shutdown: ReturnType<typeof setTimeout> | undefined;
@@ -219,7 +217,10 @@ export async function continueTriageInFreshProcess(params: {
       }
       try {
         // PID reuse or an unavailable identity never authorizes a group kill.
-        if (JSON.stringify(store.processIdentity(child.pid)) === JSON.stringify(lease.executor)) {
+        if (
+          !exited &&
+          JSON.stringify(store.processIdentity(child.pid)) === JSON.stringify(lease.executor)
+        ) {
           forceKillChildProcessTree(child);
         }
       } catch {
@@ -235,6 +236,9 @@ export async function continueTriageInFreshProcess(params: {
       return;
     }
     armShutdown();
+    if (exited) {
+      return;
+    }
     if (admitted) {
       try {
         lease = store.revoke(lease) ?? lease;
@@ -287,7 +291,12 @@ export async function continueTriageInFreshProcess(params: {
       closed = true;
       completion.resolve({ code: 1, signal: null });
     });
-    child.once("exit", (code, signal) => {
+    child.once("exit", () => {
+      exited = true;
+      // Root exit leaves pipe readers alive; bound their drain without signalling a dead PID.
+      armShutdown();
+    });
+    child.once("close", (code, signal) => {
       closed = true;
       completion.resolve({ code, signal });
     });
@@ -312,6 +321,7 @@ export async function continueTriageInFreshProcess(params: {
     child.on("message", (message: unknown) => {
       if (
         closed ||
+        exited ||
         cancelled ||
         admitted ||
         params.signal.aborted ||

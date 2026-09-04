@@ -3,9 +3,11 @@ import { once } from "node:events";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { embeddedAgentLog } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readAttemptTerminal } from "./attempt-terminal.test-helper.js";
 import { CodexAppServerClient } from "./client.js";
+import { isJsonObject } from "./protocol.js";
 import {
   createNativeRunParams as createParams,
   runCodexAppServerAttempt,
@@ -216,7 +218,6 @@ describe("Codex one-shot cleanup receipts", () => {
       const rootPath = path.join(tempDir, "cleanup-root.mjs");
       const descendantPath = path.join(tempDir, "cleanup-descendant.mjs");
       const descendantPidPath = path.join(tempDir, "cleanup-descendant.pid");
-      const turnStartedPath = path.join(tempDir, "cleanup-turn-started");
       await fs.writeFile(descendantPath, "setInterval(() => {}, 1_000);\n");
       await fs.writeFile(
         rootPath,
@@ -224,7 +225,7 @@ describe("Codex one-shot cleanup receipts", () => {
 import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
-const [descendantPath, descendantPidPath, turnStartedPath] = process.argv.slice(2);
+const [descendantPath, descendantPidPath] = process.argv.slice(2);
 const descendant = spawn(process.execPath, [descendantPath], { detached: true, stdio: "ignore" });
 descendant.unref();
 writeFileSync(descendantPidPath, String(descendant.pid));
@@ -243,7 +244,9 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     send({ method: "turn/completed", params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed" } } });
   } else if (request.id !== undefined) {
     send({ id: request.id, result: results[request.method] ?? {} });
-    if (request.method === "turn/start") writeFileSync(turnStartedPath, "started");
+    if (request.method === "turn/start") {
+      send({ method: "turn/started", params: { threadId: "thread-1", turn: results["turn/start"].turn } });
+    }
   }
 });
 process.stdin.on("end", () => ${
@@ -255,11 +258,10 @@ process.stdin.on("end", () => ${
         });
 `,
       );
-      const child = spawn(
-        process.execPath,
-        [rootPath, descendantPath, descendantPidPath, turnStartedPath],
-        { detached: true, stdio: ["pipe", "pipe", "pipe"] },
-      );
+      const child = spawn(process.execPath, [rootPath, descendantPath, descendantPidPath], {
+        detached: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
       const exited = once(child, "exit");
       const client = CodexAppServerClient.fromTransportForTests(child);
       vi.spyOn(CodexAppServerClient, "start").mockResolvedValueOnce(client);
@@ -268,6 +270,19 @@ process.stdin.on("end", () => ${
           new processSnapshot.ProcessInspectionError("unavailable"),
         );
       }
+      const turnStarted = createDeferred<void>();
+      const removeTurnStartedHandler = client.addNotificationHandler((notification) => {
+        if (
+          notification.method === "turn/started" &&
+          isJsonObject(notification.params) &&
+          notification.params.threadId === "thread-1" &&
+          isJsonObject(notification.params.turn) &&
+          notification.params.turn.id === "turn-1" &&
+          notification.params.turn.status === "inProgress"
+        ) {
+          turnStarted.resolve();
+        }
+      });
       const warning = vi.spyOn(embeddedAgentLog, "warn");
       const params = createParams(
         path.join(tempDir, "cleanup-session.jsonl"),
@@ -279,10 +294,13 @@ process.stdin.on("end", () => ${
         bindingStore: testCodexAppServerBindingStore,
       });
       try {
-        await expect
-          .poll(() => fs.readFile(turnStartedPath, "utf8").catch(() => ""))
-          .toBe("started");
-        child.stdin.write(`${JSON.stringify({ method: "test/complete" })}\n`);
+        await Promise.race([
+          turnStarted.promise,
+          run.then(() => {
+            throw new Error("Codex attempt settled before the fixture emitted turn/started");
+          }),
+        ]);
+        client.notify("test/complete");
         expect(readAttemptTerminal(await run)).toMatchObject({ aborted: false, timedOut: false });
         await exited;
         const descendantPid = Number(await fs.readFile(descendantPidPath, "utf8"));
@@ -310,6 +328,7 @@ process.stdin.on("end", () => ${
           );
         }
       } finally {
+        removeTurnStartedHandler();
         client.close();
         child.kill("SIGKILL");
         await exited;

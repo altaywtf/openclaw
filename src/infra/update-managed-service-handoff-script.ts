@@ -265,6 +265,8 @@ async function runOwnedUpdateCommand(phase, commandArgv, timeoutMs, cwd = params
             // Never infer this decision from its exit code or disconnected IPC.
             continuation = stagedContinuation;
             stagedContinuation = undefined;
+            // The updater stays alive until it receives this accepted transfer.
+            child.send({ type: "triage-committed", version: 2 }, () => {});
           } else throw new Error("invalid or repeated managed handoff continuation");
         } catch (error) {
           if (!continuation) {

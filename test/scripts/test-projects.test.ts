@@ -88,6 +88,8 @@ describe("test runtime prerequisites", () => {
       ["src/gateway/gateway-cron-process-identity.windows.test.ts"],
       "runtime",
     ],
+    ["real Gateway config edits", ["src/gateway/server.config-patch.test.ts"], "runtime"],
+    ["Gateway server config", ["test/vitest/vitest.gateway-server.config.ts"], "runtime"],
     ["Gateway directory", ["src/gateway"], "runtime"],
     ["Gateway core config", ["test/vitest/vitest.gateway-core.config.ts"], "runtime"],
     ["Gateway umbrella config", ["test/vitest/vitest.gateway.config.ts"], "runtime"],
@@ -3386,7 +3388,7 @@ describe("scripts/test-projects changed-target routing", () => {
   });
 
   it.each([
-    "ui/src/pages/workboard/view.test.ts",
+    "ui/src/pages/chat/chat-pane.test.ts",
     "ui/src/components/mcp-app-view.test.ts",
     "ui/src/pages/chat/chat-page.test.ts",
   ])("routes isolated ui test %s to the isolated project", (testFile) => {
@@ -3404,7 +3406,7 @@ describe("scripts/test-projects changed-target routing", () => {
       "test/vitest/vitest.ui-isolated.config.ts",
       "test/vitest/vitest.ui-browser.config.ts",
     ]);
-    expect(plans[1]?.includePatterns).toContain("ui/src/pages/workboard/view.test.ts");
+    expect(plans[1]?.includePatterns).toContain("ui/src/pages/chat/chat-pane.test.ts");
     expect(plans[2]?.includePatterns).toContain(
       "ui/src/components/markdown-mermaid.runtime.browser.test.ts",
     );

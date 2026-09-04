@@ -101,6 +101,70 @@ fsp.readFile=async function(...args) {
     },
   );
 
+  itUnix.each(["received", "lost"] as const)(
+    "keeps one helper-owned repair when the commit acknowledgment is %s",
+    async (acknowledgment) => {
+      const boundary = await start("update", undefined, undefined, async (root) => {
+        const updater = path.join(root, "updater.cjs");
+        let source = await fs.readFile(updater, "utf8");
+        source = source.replace(
+          "event('updater');",
+          `event('updater');
+let accepted=false;
+const emit=process.emit,send=process.send.bind(process);
+process.send=function(message,...args){
+  if(message.type==='triage-commit')event('commit-dispatched');
+  return send(message,...args);
+};
+process.emit=function(kind,message,...args){
+  if(kind==='message' && message?.type==='triage-committed'){
+    event('commit-accepted');accepted=true;
+    ${acknowledgment === "lost" ? "process.disconnect();return false;" : ""}
+  }
+  return emit.call(this,kind,message,...args);
+};`,
+        );
+        source = source.replace("event('triage-queued');", "event('triage-queued',{accepted});");
+        source = source.replace(
+          "console.error(error);",
+          "event('queue-rejected',{error:String(error)});console.error(error);",
+        );
+        source = source.replaceAll(
+          "process.disconnect();process.exitCode",
+          "if(process.connected)process.disconnect();process.exitCode",
+        );
+        await fs.writeFile(updater, source);
+      });
+      await ready(boundary);
+      expect(await boundary.control("park")).toBe("parked");
+      expect(await boundary.control("commit")).toBe("committed");
+      boundary.parent.kill();
+      await fixing(boundary);
+      const events = await boundary.readEvents();
+      expect(events.filter((event) => event.kind === "updater")).toHaveLength(1);
+      expect(events.filter((event) => event.kind === "commit-dispatched")).toHaveLength(1);
+      expect(events.filter((event) => event.kind === "commit-accepted")).toHaveLength(1);
+      expect(events.filter((event) => event.kind === "fixer")).toHaveLength(1);
+      if (acknowledgment === "received") {
+        expect(events.find((event) => event.kind === "triage-queued")).toMatchObject({
+          accepted: true,
+        });
+        expect(events.filter((event) => event.kind === "queue-rejected")).toEqual([]);
+      } else {
+        expect(events.filter((event) => event.kind === "triage-queued")).toEqual([]);
+        expect(events.find((event) => event.kind === "queue-rejected")?.error).toContain(
+          "handoff confirmation lost",
+        );
+      }
+      expect(await boundary.log()).toContain(
+        `exited code=${acknowledgment === "received" ? 7 : 9} signal=null`,
+      );
+      expect(JSON.parse(String(boundary.readLease()!.payload_json)).action.phase).toBe("running");
+      await boundary.native("stop");
+      await closed(boundary);
+    },
+  );
+
   itUnix("releases a partial native fixture when setup rejects", async () => {
     const failure = new Error("fixture setup rejected");
     let root: string | undefined;
