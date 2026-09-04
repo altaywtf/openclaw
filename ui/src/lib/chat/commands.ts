@@ -77,6 +77,7 @@ const COMMAND_ICON_OVERRIDES: Partial<Record<string, IconName>> = {
   export: "download",
   export_session: "download",
   tools: "terminal",
+  dashboard: "layoutDashboard",
   skill: "zap",
   commands: "book",
   new: "plus",
