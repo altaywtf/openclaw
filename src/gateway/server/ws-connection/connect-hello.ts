@@ -17,11 +17,11 @@ import { getGatewaySuspendAdmissionPhase } from "../../../process/gateway-work-a
 import { hasMultipleSessionSharingIdentities } from "../../../state/user-profiles.js";
 import { resolveRuntimeServiceBuildId, resolveRuntimeServiceVersion } from "../../../version.js";
 import { resolveChatAttachmentPolicy } from "../../chat-attachment-policy.js";
+import { resolveControlUiIdentityUrl } from "../../control-ui-identity.js";
 import {
   listControlUiPluginTabs,
   listControlUiPluginWidgetKinds,
 } from "../../control-ui-plugin-tabs.js";
-import { resolveControlUiIdentityUrl } from "../../control-ui-shared.js";
 import {
   broadcastSetupHandoffDeliveryUncertain,
   broadcastSetupHandoffCompletion,
@@ -113,12 +113,6 @@ export async function sendGatewayHello(
     revisionProjector: buildRequestContext().configRevisionProjector,
   });
   const cachedHealth = getHealthCache();
-  if (role === "operator") {
-    const identityUrl = resolveControlUiIdentityUrl(context.configSnapshot, resolvedAuth);
-    if (identityUrl) {
-      snapshot.controlUiIdentityUrl = identityUrl;
-    }
-  }
   if (cachedHealth) {
     snapshot.health = cachedHealth;
     snapshot.stateVersion.health = getHealthVersion();
@@ -234,7 +228,13 @@ export async function sendGatewayHello(
     }
   }
   try {
-    // Bootstrap bookkeeping can await; hello must supersede any earlier admission event.
+    // Bootstrap bookkeeping can await; read live ingress and suspension at delivery.
+    if (role === "operator") {
+      const identityUrl = resolveControlUiIdentityUrl(context.configSnapshot, resolvedAuth);
+      if (identityUrl) {
+        snapshot.controlUiIdentityUrl = identityUrl;
+      }
+    }
     snapshot.suspension = { phase: getGatewaySuspendAdmissionPhase() };
     await sendFrame({ type: "res", id: frame.id, ok: true, payload: helloOk });
   } catch (err) {
