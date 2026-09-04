@@ -79,9 +79,11 @@ function sessionReferencesMediaSource(params: {
         role?: unknown;
       };
       const role = event.message?.role ?? event.role;
+      // Tool results can own rendered attachments, but their text must not
+      // grant file access merely by mentioning a MEDIA directive.
       if (
         !found &&
-        (role === "assistant" || role === "user") &&
+        (role === "assistant" || role === "user" || role === "toolResult") &&
         valueReferencesMediaSource(entry.event, params.source, undefined, 0, role === "assistant")
       ) {
         found = true;

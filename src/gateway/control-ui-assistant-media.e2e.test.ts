@@ -353,10 +353,13 @@ describe("Control UI assistant media e2e", () => {
       },
       {
         message: {
-          role: "assistant",
+          role: "toolResult",
+          toolCallId: "research-media",
+          toolName: "media_fixture",
           content: [
             { type: "image", url: homeRelativeSource },
             { type: "image", url: researchFile },
+            { type: "text", text: `MEDIA:${unreferencedResearchFile}` },
           ],
           timestamp: Date.now(),
         },

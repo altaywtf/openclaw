@@ -24,7 +24,11 @@ import { safeFileURLToPath } from "../infra/local-file-access.js";
 import { isWithinDir } from "../infra/path-safety.js";
 import { assertLocalMediaAllowed, getDefaultLocalRootsCore } from "../media/local-media-access.js";
 import { getAgentScopedMediaLocalRoots } from "../media/local-roots.js";
-import { probePlaybackMediaFileDescriptor, type MediaProbeResult } from "../media/media-probe.js";
+import {
+  probePlaybackMediaFileDescriptor,
+  toMediaProbeResult,
+  type MediaProbeResult,
+} from "../media/media-probe.js";
 import {
   resolveMediaReferenceLocalPath,
   resolveMediaReferenceLocalPathInfo,
@@ -447,14 +451,6 @@ async function resolveAssistantMediaCapability(
           ? await probePlaybackMediaFileDescriptor(opened.handle.fd, mediaKind)
           : null;
       assertActive?.();
-      const probe: MediaProbeResult = playbackProbe
-        ? {
-            ...(playbackProbe.durationMs ? { durationMs: playbackProbe.durationMs } : {}),
-            ...(playbackProbe.width && playbackProbe.height
-              ? { width: playbackProbe.width, height: playbackProbe.height }
-              : {}),
-          }
-        : {};
       const playback =
         mimeType && (mediaKind === "audio" || mediaKind === "video")
           ? await resolvePlaybackModeForSource({
@@ -470,7 +466,7 @@ async function resolveAssistantMediaCapability(
         ...(mimeType ? { mimeType } : {}),
         ...(playback ? { playback } : {}),
         sizeBytes,
-        ...probe,
+        ...toMediaProbeResult(playbackProbe),
       };
     } finally {
       await opened.handle.close().catch(() => {});
