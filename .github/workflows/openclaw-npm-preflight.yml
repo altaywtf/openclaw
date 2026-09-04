@@ -759,7 +759,9 @@ jobs:
           for package_dir in "${package_dirs[@]}"; do
             runtime_args+=(--package "$package_dir")
           done
-          node --import tsx scripts/check-plugin-npm-runtime-builds.mts "${runtime_args[@]}"
+          tooling_dir="${GITHUB_WORKSPACE}/.artifacts/plugin-sdk-release-tooling"
+          TSX_TSCONFIG_PATH="$tooling_dir/tsconfig.json" \
+            node --import "$tooling_dir/scripts/tsx.mjs" "$tooling_dir/scripts/check-plugin-npm-runtime-builds.mts" "${runtime_args[@]}"
 
           for package_dir in "${package_dirs[@]}"; do
             OPENCLAW_PLUGIN_NPM_RUNTIME_BUILD=0 \
