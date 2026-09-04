@@ -169,7 +169,7 @@ describe("getSlashCommandCompletions", () => {
 
     expect(dashboard).toMatchObject({
       category: "tools",
-      capturesRemainingArgs: true,
+      allowsInlineMultiWordArgs: true,
       icon: "layoutDashboard",
       source: "native",
     });

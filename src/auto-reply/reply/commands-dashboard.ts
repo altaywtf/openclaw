@@ -13,15 +13,25 @@ const CONTROL_UI_SKILL = "control-ui";
 const DEFAULT_DASHBOARD_REQUEST = "Create a dashboard for this session.";
 
 function findControlUiSkill(skills: SkillCommandSpec[]): SkillCommandSpec | undefined {
-  return skills.find((skill) => skill.skillName.trim().toLowerCase() === CONTROL_UI_SKILL);
+  return skills.find(
+    (skill) =>
+      skill.skillSource === "bundled" && skill.skillName.trim().toLowerCase() === CONTROL_UI_SKILL,
+  );
 }
 
 async function loadDashboardSkills(
   params: HandleCommandsParams,
 ): Promise<{ controlUi: SkillCommandSpec; available: SkillCommandSpec[] } | null> {
   const loaded = (await params.loadSkillCommands?.()) ?? params.skillCommands ?? [];
-  const controlUi = findControlUiSkill(loaded);
-  return controlUi ? { controlUi, available: loaded } : null;
+  const controlUi =
+    (await params.loadBundledSkillCommand?.(CONTROL_UI_SKILL)) ?? findControlUiSkill(loaded);
+  if (!controlUi) {
+    return null;
+  }
+  return {
+    controlUi,
+    available: [controlUi, ...loaded.filter((skill) => skill.skillFile !== controlUi.skillFile)],
+  };
 }
 
 function buildDashboardRequest(requirements: string): string {

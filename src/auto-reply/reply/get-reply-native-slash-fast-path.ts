@@ -382,6 +382,16 @@ export async function maybeResolveNativeSlashCommandFastReply(params: {
         }),
         isGroup: sessionState.isGroup,
         loadSkillCommands: loadNativeSkillCommands,
+        loadBundledSkillCommand: async (skillName) =>
+          (await skillCommandsRuntimeLoader.load()).findBundledSkillCommandForWorkspace({
+            workspaceDir: params.workspaceDir,
+            cfg: params.cfg,
+            skillName,
+            agentId: params.agentId,
+            skillFilter: params.skillFilter,
+            sessionEntry: sessionState.sessionEntry,
+            sessionKey: sessionState.sessionKey,
+          }),
         typing: params.typing,
       });
   const commandSessionMetadataChanges = takeCommandSessionMetadataChangesFromTargets([

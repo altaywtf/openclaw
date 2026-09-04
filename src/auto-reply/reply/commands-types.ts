@@ -89,6 +89,7 @@ export type HandleCommandsParams = {
   isGroup: boolean;
   skillCommands?: SkillCommandSpec[];
   loadSkillCommands?: () => Promise<SkillCommandSpec[]>;
+  loadBundledSkillCommand?: (skillName: string) => Promise<SkillCommandSpec | undefined>;
   typing?: TypingController;
   /** Invocation authority for host-bound plugin command capabilities. */
   commandInvocationSignal?: AbortSignal;

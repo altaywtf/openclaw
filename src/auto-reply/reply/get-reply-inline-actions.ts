@@ -647,6 +647,17 @@ export async function handleInlineActions(params: {
           sessionKey,
           execOverrides,
         }),
+      loadBundledSkillCommand: async (skillName) =>
+        (await loadSkillCommandsRuntime()).findBundledSkillCommandForWorkspace({
+          workspaceDir,
+          cfg,
+          skillName,
+          agentId,
+          skillFilter,
+          sessionEntry: targetSessionEntry,
+          sessionKey,
+          execOverrides,
+        }),
       typing,
     });
   };

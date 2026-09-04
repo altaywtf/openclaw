@@ -10,8 +10,14 @@ const controlUiSkill: SkillCommandSpec = {
   skillName: "control-ui",
   displayName: "Control UI",
   description: "Operate the Control UI and build session dashboards.",
-  skillFile: "/workspace/skills/control-ui/SKILL.md",
+  skillFile: "/bundled/skills/control-ui/SKILL.md",
+  skillSource: "bundled",
   modelVisible: true,
+};
+const workspaceControlUiSkill: SkillCommandSpec = {
+  ...controlUiSkill,
+  skillFile: "/workspace/skills/control-ui/SKILL.md",
+  skillSource: "workspace",
 };
 const releaseNotesSkill: SkillCommandSpec = {
   name: "release_notes",
@@ -76,7 +82,7 @@ describe("dashboard command", () => {
     expect(result).toEqual({
       shouldContinue: true,
       explicitSkillSelections: [
-        { name: "control-ui", path: "/workspace/skills/control-ui/SKILL.md" },
+        { name: "control-ui", path: "/bundled/skills/control-ui/SKILL.md" },
       ],
     });
     expect(prompt).toContain("Use the following explicitly referenced skills");
@@ -103,7 +109,7 @@ describe("dashboard command", () => {
     const result = await handleDashboardCommand(params, true);
 
     expect(result?.explicitSkillSelections).toEqual([
-      { name: "control-ui", path: "/workspace/skills/control-ui/SKILL.md" },
+      { name: "control-ui", path: "/bundled/skills/control-ui/SKILL.md" },
       { name: "release_notes", path: "/workspace/skills/release-notes/SKILL.md" },
     ]);
     expect(params.ctx.BodyForAgent).toContain("- release-notes");
@@ -116,9 +122,21 @@ describe("dashboard command", () => {
     const result = await handleDashboardCommand(params, true);
 
     expect(result?.explicitSkillSelections).toEqual([
-      { name: "control-ui", path: "/workspace/skills/control-ui/SKILL.md" },
+      { name: "control-ui", path: "/bundled/skills/control-ui/SKILL.md" },
     ]);
     expect(params.ctx.BodyForAgent).toContain("- control-ui");
+  });
+
+  it("selects the bundled Control UI skill across a workspace name collision", async () => {
+    const params = buildParams("/dashboard release health", [workspaceControlUiSkill]);
+    params.loadBundledSkillCommand = async () => controlUiSkill;
+
+    const result = await handleDashboardCommand(params, true);
+
+    expect(result?.explicitSkillSelections).toEqual([
+      { name: "control-ui", path: "/bundled/skills/control-ui/SKILL.md" },
+    ]);
+    expect(params.ctx.BodyForAgent).toContain("release health");
   });
 
   it("returns a deterministic reply when the Control UI skill is unavailable", async () => {

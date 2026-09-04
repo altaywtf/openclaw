@@ -39,6 +39,7 @@ import {
   resolveSkillKey,
 } from "./frontmatter.js";
 import {
+  loadSingleSkillDirectory,
   loadSkillsFromDirSafe,
   readSkillFrontmatterSafe,
   type LocalSkillLoadDiagnostic,
@@ -706,6 +707,65 @@ export function loadVisibleSkills(
     opts?.skillOverrides,
     opts?.eligibility,
   );
+}
+
+/** Loads one eligible bundled skill before higher-precedence workspace sources can replace it. */
+export function loadBundledSkillEntryByName(
+  skillName: string,
+  opts?: {
+    config?: OpenClawConfig;
+    bundledSkillsDir?: string;
+    skillFilter?: string[];
+    agentId?: string;
+    eligibility?: SkillEligibilityContext;
+  },
+): SkillEntry | undefined {
+  const normalizedName = skillName.trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9-]*$/u.test(normalizedName)) {
+    return undefined;
+  }
+  const bundledSkillsDir = opts?.bundledSkillsDir ?? resolveBundledSkillsDir();
+  const rootRealPath = bundledSkillsDir ? tryRealpath(bundledSkillsDir) : undefined;
+  if (!rootRealPath) {
+    return undefined;
+  }
+  const limits = resolveSkillDiscoveryLimits(opts?.config);
+  const loaded = loadSingleSkillDirectory({
+    skillDir: path.join(rootRealPath, normalizedName),
+    source: "openclaw-bundled",
+    rootRealPath,
+    maxBytes: limits.maxSkillFileBytes,
+    rejectHardlinks: shouldRejectHardlinkedPluginFiles({
+      origin: "bundled",
+      rootDir: rootRealPath,
+    }),
+    onDiagnostic: (diagnostic) => warnInvalidSkill("openclaw-bundled", diagnostic),
+  });
+  if (!loaded || loaded.skill.name.trim().toLowerCase() !== normalizedName) {
+    return undefined;
+  }
+  const invocation = resolveSkillInvocationPolicy(loaded.frontmatter);
+  const entry: SkillEntry = {
+    skill: loaded.skill,
+    frontmatter: loaded.frontmatter,
+    metadata: resolveSkillEntryMetadata({
+      frontmatter: loaded.frontmatter,
+      skillDir: loaded.skill.baseDir,
+    }),
+    invocation,
+    exposure: {
+      includeInRuntimeRegistry: true,
+      includeInAvailableSkillsPrompt: !invocation.disableModelInvocation,
+      userInvocable: invocation.userInvocable ?? true,
+    },
+  };
+  return filterSkillEntries(
+    [entry],
+    opts?.config,
+    resolveEffectiveWorkspaceSkillFilter(opts),
+    undefined,
+    opts?.eligibility,
+  )[0];
 }
 
 export function filterWorkspaceSkills(
