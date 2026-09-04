@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
@@ -22,15 +22,21 @@ const params = {
   nowMs: Date.parse("2026-06-17"),
 };
 
-function renderSummary(manifest: unknown) {
+function readWorkflowRun(job: "resolve" | "verify", name: string) {
   const workflow = parse(
     readFileSync(".github/workflows/openclaw-stable-main-closeout.yml", "utf8"),
-  ) as { jobs: { verify: { steps: { name: string; run?: string }[] } } };
-  const run = workflow.jobs.verify.steps.find(
-    (step) => step.name === "Verify stable state and write closeout manifest",
-  )?.run;
+  ) as { jobs: Record<string, { steps: { name: string; run?: string }[] }> };
+  const run = workflow.jobs[job]?.steps.find((step) => step.name === name)?.run;
+  if (!run) {
+    throw new Error(`Missing workflow step ${job}/${name}`);
+  }
+  return run;
+}
+
+function renderSummary(manifest: unknown) {
+  const run = readWorkflowRun("verify", "Verify stable state and write closeout manifest");
   // Execute the workflow-owned jq program, not a test copy of its rendering.
-  const filter = /^jq -r '([\s\S]*?)' \\\n/mu.exec(run ?? "")?.[1];
+  const filter = /^jq -r '([\s\S]*?)' \\\n/mu.exec(run)?.[1];
   if (!filter) {
     throw new Error("Missing closeout summary jq program");
   }
@@ -39,6 +45,72 @@ function renderSummary(manifest: unknown) {
     encoding: "utf8",
   });
 }
+
+// These Ubuntu helpers require Bash 4+; do not run them under macOS system Bash 3.
+// Execute actual helper bodies with gh and sleep shell stubs, never host commands.
+describe.skipIf(process.platform !== "linux").each(["resolve", "verify"] as const)(
+  "stable closeout %s API backoff",
+  (job) => {
+    it.each([
+      { name: "nontransient failure", message: "synthetic failure", code: 42, delays: [] },
+      {
+        name: "rate-limit exhaustion",
+        message: "API RATE LIMIT exceeded",
+        code: 42,
+        delays: [5, 20, 45, 80, 125],
+      },
+      {
+        name: "HTTP 429 exhaustion",
+        message: "HTTP 429 synthetic",
+        code: 42,
+        delays: [5, 20, 45, 80, 125],
+      },
+      { name: "success", message: "synthetic success", code: 0, delays: [] },
+    ])("preserves status, output, and retry budget for $name", ({ message, code, delays }) => {
+      const run = readWorkflowRun(job, "Install GitHub API backoff helper");
+      const helper = /<<'BASH'\n([\s\S]*?)\nBASH/u.exec(run)?.[1];
+      if (!helper) {
+        throw new Error("Missing API backoff helper heredoc");
+      }
+      const result = spawnSync(
+        "bash",
+        [
+          "--noprofile",
+          "--norc",
+          "-c",
+          `
+        set -euo pipefail
+        gh() {
+          printf "gh\n" >&3
+          printf "%s\n" "$STUB_MESSAGE"
+          return "$STUB_EXIT"
+        }
+        sleep() { printf "sleep:%s\n" "$1" >&3; }
+        ${helper}
+        gh_with_retry synthetic
+      `,
+        ],
+        {
+          encoding: "utf8",
+          env: { PATH: process.env.PATH, STUB_MESSAGE: message, STUB_EXIT: String(code) },
+          stdio: ["ignore", "pipe", "pipe", "pipe"],
+          timeout: 5_000,
+        },
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(code);
+      expect(result.stdout).toBe(code === 0 ? `${message}\n` : "");
+      if (code === 0) {
+        expect(result.stderr).toBe("");
+      } else {
+        expect(result.stderr).toContain(message);
+      }
+      const trace =
+        delays.length > 0 ? delays.flatMap((delay) => ["gh", `sleep:${delay}`]) : ["gh"];
+      expect(result.output[3]).toBe(`${trace.join("\n")}\n`);
+    });
+  },
+);
 
 // The owning workflow runs on Ubuntu and uses the runner-provided jq binary.
 describe.skipIf(process.platform === "win32")("stable closeout summary", () => {
