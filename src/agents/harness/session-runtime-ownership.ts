@@ -11,12 +11,20 @@ export function readSessionRuntimeOwnership(params: {
   agentId?: string;
   sessionKey?: string;
   sessionEntry?: Partial<
-    Pick<SessionEntry, "sessionId" | "agentHarnessId" | "modelSelectionLocked" | "pluginOwnerId">
+    Pick<
+      SessionEntry,
+      | "sessionId"
+      | "previousSessionId"
+      | "agentHarnessId"
+      | "modelSelectionLocked"
+      | "pluginOwnerId"
+    >
   >;
   assertCurrent?: () => void;
 }): AgentHarnessSessionRuntimeOwnership | undefined {
   const entry = params.sessionEntry;
   const sessionId = entry?.sessionId;
+  const previousSessionId = entry?.previousSessionId;
   const harnessId = resolveSessionPinnedHarnessId(entry);
   if (!sessionId || !harnessId) {
     return undefined;
@@ -32,6 +40,7 @@ export function readSessionRuntimeOwnership(params: {
       !active ||
       getRegisteredAgentHarness(harnessId)?.harness !== harness ||
       entry?.sessionId !== sessionId ||
+      entry?.previousSessionId !== previousSessionId ||
       resolveSessionPinnedHarnessId(entry) !== harnessId
     ) {
       throw new AgentHarnessPreflightError(
@@ -45,6 +54,7 @@ export function readSessionRuntimeOwnership(params: {
       config: params.config,
       agentId: params.agentId,
       sessionId,
+      ...(previousSessionId ? { previousSessionId } : {}),
       sessionKey: params.sessionKey,
       assertCurrent,
     });

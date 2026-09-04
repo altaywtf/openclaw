@@ -6,6 +6,7 @@ export type ChatMetadataSessionEntry = Partial<
   Pick<
     SessionEntry,
     | "sessionId"
+    | "previousSessionId"
     | "agentHarnessId"
     | "modelSelectionLocked"
     | "pluginOwnerId"

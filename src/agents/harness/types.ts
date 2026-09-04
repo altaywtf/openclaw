@@ -404,6 +404,7 @@ type AgentHarnessRunCapability<
     config?: OpenClawConfig;
     agentId?: string;
     sessionId: string;
+    previousSessionId?: string;
     sessionKey?: string;
     assertCurrent: () => void;
   }): AgentHarnessSessionRuntimeOwnership | undefined;

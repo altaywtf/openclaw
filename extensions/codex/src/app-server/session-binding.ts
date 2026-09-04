@@ -25,8 +25,10 @@ import type { CodexManagedThreadStore } from "./managed-thread-store.js";
 import type { PluginAppPolicyContext } from "./plugin-thread-config.js";
 import {
   bindingStoreKey,
+  classifyCodexCompactionTransitionHostLineage,
   ownsStoredSessionGeneration,
   readCodexAppServerThreadBinding,
+  readCodexAppServerRuntimeOwnershipBinding,
   readCodexBindingTimestamp,
   readCurrentCodexAppServerBinding,
   readStoredCodexAppServerBinding,
@@ -34,6 +36,7 @@ import {
   stripUndefinedBinding,
   validateBindingForWrite,
   type CodexAppServerBindingIdentity,
+  type CodexHostSessionGeneration,
   type CodexAppServerPendingSupervisionBranch,
   type CodexAppServerThreadBinding,
   type StoredCodexAppServerBinding,
@@ -42,6 +45,7 @@ import {
 } from "./session-binding-record.js";
 export {
   bindingStoreKey,
+  classifyCodexCompactionTransitionHostLineage,
   readCodexAppServerThreadBinding,
   readStoredCodexAppServerBinding,
   sessionBindingIdentity,
@@ -51,6 +55,7 @@ export {
   type CodexAppServerContextEngineProjectionBinding,
   type CodexAppServerPendingSupervisionBranch,
   type CodexAppServerThreadBinding,
+  type CodexHostSessionGeneration,
   type StoredCodexAppServerBinding,
 } from "./session-binding-record.js";
 
@@ -185,7 +190,6 @@ export type CodexSessionGenerationReconciliation = {
   kind: "current" | "predecessor" | "successor" | "descendant" | "reset" | "busy" | "conflict";
   sessionId?: string;
 };
-type CodexHostSessionGeneration = { sessionId: string; previousSessionId?: string };
 type CodexCompactionTransaction = Parameters<
   Parameters<NonNullable<AgentHarnessV2["withContextEngineCompaction"]>>[1]
 >[0];
@@ -361,6 +365,10 @@ export type CodexAppServerBindingStore = {
   /** Durable ownership rows kept separate from replaceable session bindings. */
   managedThreads?: CodexManagedThreadStore;
   read(identity: CodexAppServerBindingIdentity): CodexAppServerThreadBinding | undefined;
+  readRuntimeOwnership?(
+    identity: Extract<CodexAppServerBindingIdentity, { kind: "session" }>,
+    host: CodexHostSessionGeneration,
+  ): CodexAppServerThreadBinding | undefined;
   hasOtherThreadOwner(
     threadId: string,
     currentIdentity?: CodexAppServerBindingIdentity,
@@ -416,9 +424,16 @@ export function scopeCodexRunBindingStore(params: {
   const mapIdentity = (identity: CodexAppServerBindingIdentity) =>
     identity.kind === "session" ? mapSessionIdentity(identity) : identity;
   const store = params.bindingStore;
+  const readRuntimeOwnership = store.readRuntimeOwnership?.bind(store);
   return {
     ...store,
     read: (identity) => store.read(mapIdentity(identity)),
+    ...(readRuntimeOwnership
+      ? {
+          readRuntimeOwnership: (identity, host) =>
+            readRuntimeOwnership(mapSessionIdentity(identity), host),
+        }
+      : {}),
     hasOtherThreadOwner: (threadId, identity) =>
       store.hasOtherThreadOwner(threadId, identity && mapIdentity(identity)),
     mutate: (identity, ...args) => store.mutate(mapIdentity(identity), ...args),
@@ -827,6 +842,8 @@ export function createCodexAppServerBindingStore(
 
   return {
     read: (identity) => readCurrentCodexAppServerBinding(state, identity),
+    readRuntimeOwnership: (identity, host) =>
+      readCodexAppServerRuntimeOwnershipBinding(state, identity, host),
 
     async hasOtherThreadOwner(threadId, currentIdentity) {
       const currentKey = currentIdentity ? bindingStoreKey(currentIdentity) : undefined;
@@ -906,20 +923,12 @@ export function createCodexAppServerBindingStore(
             reconciled = { kind: "busy" };
             return undefined;
           }
-          const successor =
-            current.toSessionId !== undefined && host.sessionId === current.toSessionId;
-          const descendant =
-            host.previousSessionId === (current.toSessionId ?? current.fromSessionId);
-          const predecessor = host.sessionId === current.fromSessionId;
-          if (!successor && !descendant && !predecessor) {
+          const lineage = classifyCodexCompactionTransitionHostLineage(current, host);
+          if (!lineage) {
             return undefined;
           }
-          const sessionId = successor || descendant ? host.sessionId : current.fromSessionId;
-          reconciled = {
-            kind: successor ? "successor" : descendant ? "descendant" : "predecessor",
-            sessionId,
-          };
-          return resolvedTransitionBinding(current, sessionId);
+          reconciled = lineage;
+          return resolvedTransitionBinding(current, lineage.sessionId);
         });
         if (reconciled?.kind !== "busy" || Date.now() >= deadline) {
           return reconciled ?? { kind: "conflict" };

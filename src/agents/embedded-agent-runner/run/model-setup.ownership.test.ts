@@ -11,6 +11,7 @@ import {
   loadSessionEntryReadOnly,
   patchSessionEntryCore,
   replaceSessionEntry,
+  replaceSessionEntrySync,
 } from "../../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import {
@@ -187,6 +188,41 @@ describe("model chat and native model ownership", () => {
       contextWindow: 8_192,
       maxTokens: 2_048,
     });
+  });
+
+  it("forwards canonical session lineage into native ownership selection", async () => {
+    const observedLineage: Array<{ sessionId: string; previousSessionId?: string }> = [];
+    const fixture = await createFixture({}, (params) => {
+      observedLineage.push({
+        sessionId: params.sessionId,
+        previousSessionId: params.previousSessionId,
+      });
+      return { model: "native", auth: "native" };
+    });
+    fixture.entry.previousSessionId = "model-chat-previous";
+    await replaceSessionEntry(fixture.target, fixture.entry);
+
+    const setup = await fixture.resolve();
+
+    expect(setup.nativeModelOwned).toBe(true);
+    expect(observedLineage).toEqual([
+      { sessionId: fixture.entry.sessionId, previousSessionId: "model-chat-previous" },
+    ]);
+  });
+
+  it("rejects native ownership when canonical previous-session lineage changes during setup", async () => {
+    const fixture = await createFixture({}, (params) => {
+      params.assertCurrent();
+      replaceSessionEntrySync(fixture.target, {
+        ...fixture.entry,
+        previousSessionId: "replacement-previous-session",
+      });
+      return { model: "native", auth: "native" };
+    });
+    fixture.entry.previousSessionId = "model-chat-previous";
+    await replaceSessionEntry(fixture.target, fixture.entry);
+
+    await expect(fixture.resolve()).rejects.toThrow("ownership changed");
   });
 
   it("keeps model and plugin ownership across usage writes and subsequent turns", async () => {

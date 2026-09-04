@@ -95,10 +95,12 @@ native session's model and connection.
 ### Bound native session ownership
 
 The optional `resolveSessionRuntimeOwnership({ config, agentId, sessionId,
-sessionKey, assertCurrent })` callback reports private binding ownership. Core
+previousSessionId, sessionKey, assertCurrent })` callback reports private binding ownership. Core
 calls it only on the exact pinned harness after validating the durable session
 identity. `sessionId` and `assertCurrent` are required; `config`, `agentId`, and
-`sessionKey` are optional. Return synchronously:
+`previousSessionId`, and `sessionKey` are optional. When present, `previousSessionId`
+is the same canonical session entry's prior transcript generation and can classify
+a durable owner transition without mutating it. Return synchronously:
 
 - `{ model: "native", auth: "native" }` when the binding owns both model selection
   and authentication through its native connection.

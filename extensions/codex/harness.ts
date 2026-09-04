@@ -124,7 +124,13 @@ export function createCodexAppServerAgentHarness(
         }
       };
       assertCurrent();
-      const binding = options.bindingStore.read(sessionBindingIdentity(params));
+      if (!options.bindingStore.readRuntimeOwnership) {
+        throw new Error("Codex app-server binding store cannot project runtime ownership");
+      }
+      const binding = options.bindingStore.readRuntimeOwnership(sessionBindingIdentity(params), {
+        sessionId: params.sessionId,
+        ...(params.previousSessionId ? { previousSessionId: params.previousSessionId } : {}),
+      });
       assertCurrent();
       return binding?.preserveNativeModel === true
         ? {

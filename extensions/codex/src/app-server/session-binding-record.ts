@@ -325,6 +325,11 @@ const storedBindingValueSchema = z.union([storedBindingSchema, compactionTransit
 export type StoredCodexAppServerBindingV1 = z.infer<typeof storedBindingSchema>;
 export type StoredCodexAppServerCompactionTransition = z.infer<typeof compactionTransitionSchema>;
 export type StoredCodexAppServerBinding = z.infer<typeof storedBindingValueSchema>;
+export type CodexHostSessionGeneration = { sessionId: string; previousSessionId?: string };
+export type CodexCompactionTransitionHostLineage = {
+  kind: "predecessor" | "successor" | "descendant";
+  sessionId: string;
+};
 
 const parseStoredBinding =
   <T>(schema: z.ZodType<T>) =>
@@ -373,6 +378,25 @@ export function ownsStoredSessionGeneration(
   return (
     identity.kind !== "session" || !current?.sessionId || current.sessionId === identity.sessionId
   );
+}
+
+/** Classifies only authoritative host lineage; transition leases remain dispatch concerns. */
+export function classifyCodexCompactionTransitionHostLineage(
+  transition: StoredCodexAppServerCompactionTransition,
+  host: CodexHostSessionGeneration,
+): CodexCompactionTransitionHostLineage | undefined {
+  const successor =
+    transition.toSessionId !== undefined && host.sessionId === transition.toSessionId;
+  const descendant =
+    host.previousSessionId === (transition.toSessionId ?? transition.fromSessionId);
+  const predecessor = host.sessionId === transition.fromSessionId;
+  if (!successor && !descendant && !predecessor) {
+    return undefined;
+  }
+  return {
+    kind: successor ? "successor" : descendant ? "descendant" : "predecessor",
+    sessionId: successor || descendant ? host.sessionId : transition.fromSessionId,
+  };
 }
 
 export function validateBindingForWrite(
@@ -438,4 +462,33 @@ export function readCurrentCodexAppServerBinding(
   return stored?.state === "active" && ownsStoredSessionGeneration(identity, stored)
     ? stored.binding
     : undefined;
+}
+
+/** Projects runtime ownership without resolving or mutating a durable generation transition. */
+export function readCodexAppServerRuntimeOwnershipBinding(
+  state: Pick<PluginStateSyncKeyedStore<StoredCodexAppServerBinding>, "lookup">,
+  identity: Extract<CodexAppServerBindingIdentity, { kind: "session" }>,
+  host: CodexHostSessionGeneration,
+): CodexAppServerThreadBinding | undefined {
+  if (identity.sessionId !== host.sessionId) {
+    return undefined;
+  }
+  const key = bindingStoreKey(identity);
+  const raw = state.lookup(key);
+  const stored = readStoredCodexAppServerBindingValue(raw);
+  if (raw !== undefined && !stored) {
+    throw new Error(`Invalid Codex app-server binding row: ${key}`);
+  }
+  if (stored?.state !== "compaction-transition") {
+    return stored?.state === "active" && ownsStoredSessionGeneration(identity, stored)
+      ? stored.binding
+      : undefined;
+  }
+  if (!classifyCodexCompactionTransitionHostLineage(stored, host)) {
+    return undefined;
+  }
+  return {
+    ...stored.previous.binding,
+    ...(stored.nativeCompactionSyncPending ? { nativeCompactionSyncPending: true } : {}),
+  };
 }

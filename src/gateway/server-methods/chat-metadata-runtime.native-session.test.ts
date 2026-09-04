@@ -34,6 +34,7 @@ describe("gateway chat metadata native session ownership", () => {
     harness.buildProjection.mockResolvedValue({ modelCatalog: hostModels, models: hostModels });
     const sessionEntry: InternalSessionEntry = {
       sessionId: "native-metadata-session",
+      previousSessionId: "native-metadata-previous",
       updatedAt: 1,
       agentHarnessId: "test-native",
       modelSelectionLocked: true,
@@ -44,6 +45,7 @@ describe("gateway chat metadata native session ownership", () => {
       sessionEntry,
     };
     let boundSessionId = sessionEntry.sessionId;
+    const observedPreviousSessionIds: Array<string | undefined> = [];
     let ownership:
       | { model: "native"; auth: "native" | "host"; modelRef?: { provider: string; model: string } }
       | undefined = {
@@ -63,6 +65,7 @@ describe("gateway chat metadata native session ownership", () => {
         },
         resolveSessionRuntimeOwnership: (params) => {
           params.assertCurrent();
+          observedPreviousSessionIds.push(params.previousSessionId);
           return params.sessionKey === request.sessionKey && params.sessionId === boundSessionId
             ? ownership
             : undefined;
@@ -76,6 +79,7 @@ describe("gateway chat metadata native session ownership", () => {
     expect(neutral.models).toEqual(hostModels);
 
     const pending = await harness.runtime.read(request);
+    expect(observedPreviousSessionIds).toEqual(["native-metadata-previous"]);
     expect(pending.models).toEqual([
       { id: "gpt-5.6-sol", name: "Sol", provider: "openai" },
       hostModels[1],

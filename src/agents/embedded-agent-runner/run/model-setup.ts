@@ -37,7 +37,7 @@ function prepareNativeSessionRuntime(
   if (!admission || !pinnedHarnessId || !harness.resolveSessionRuntimeOwnership) {
     return undefined;
   }
-  const { sessionId, lifecycleRevision } = admission.entry;
+  const { sessionId, previousSessionId, lifecycleRevision } = admission.entry;
   const resolveOwnership = () =>
     readSessionRuntimeOwnership({
       config: runParams.config,
@@ -54,6 +54,7 @@ function prepareNativeSessionRuntime(
         if (
           getRegisteredAgentHarness(pinnedHarnessId)?.harness !== harness ||
           current?.sessionId !== sessionId ||
+          current?.previousSessionId !== previousSessionId ||
           current?.lifecycleRevision !== lifecycleRevision ||
           resolveSessionPinnedHarnessId(current) !== pinnedHarnessId ||
           (expectedWriter !== undefined && current?.activeWriterRunId !== expectedWriter)

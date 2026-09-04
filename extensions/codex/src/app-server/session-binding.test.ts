@@ -13,6 +13,7 @@ import { createLazyCodexAppServerBindingStore } from "./session-binding-store.js
 import {
   bindingStoreKey,
   CODEX_APP_SERVER_BINDING_MAX_ENTRIES,
+  classifyCodexCompactionTransitionHostLineage,
   createCodexAppServerBindingStore,
   createStoredCodexAppServerBinding,
   hashCodexAppServerBindingFingerprint,
@@ -1035,7 +1036,22 @@ describe("Codex app-server binding store", () => {
         nativeCompactionSyncPending: true,
       });
       const restarted = createCodexAppServerBindingStore(state);
+      const lazyRestarted = createLazyCodexAppServerBindingStore(state);
+      const transition = values.get(bindingStoreKey(identity));
+      if (transition?.state !== "compaction-transition") {
+        throw new Error("expected durable compaction transition");
+      }
 
+      expect(classifyCodexCompactionTransitionHostLineage(transition, host)).toEqual(expected);
+      expect(restarted.readRuntimeOwnership?.(identity, host)).toMatchObject({
+        ...binding,
+        nativeCompactionSyncPending: true,
+      });
+      expect(lazyRestarted.readRuntimeOwnership?.(identity, host)).toEqual(
+        restarted.readRuntimeOwnership?.(identity, host),
+      );
+      expect(() => restarted.read(identity)).toThrow("compaction transition is unresolved");
+      expect(values.get(bindingStoreKey(identity))).toEqual(transition);
       await expect(restarted.reconcileSessionGeneration(identity, host)).resolves.toEqual(expected);
       expect(values.get(bindingStoreKey(identity))).toMatchObject({
         version: 1,
@@ -1075,6 +1091,10 @@ describe("Codex app-server binding store", () => {
     state.register(bindingStoreKey(identity), transition);
     const restarted = createCodexAppServerBindingStore(state);
 
+    expect(restarted.readRuntimeOwnership?.(identity, { sessionId: identity.sessionId })).toEqual(
+      transition.previous.binding,
+    );
+    expect(() => restarted.read(identity)).toThrow("compaction transition is unresolved");
     const reconciliation = restarted.reconcileSessionGeneration(identity, {
       sessionId: identity.sessionId,
     });
@@ -1108,10 +1128,14 @@ describe("Codex app-server binding store", () => {
     };
     state.register(bindingStoreKey(identity), transition);
     const restarted = createCodexAppServerBindingStore(state);
+    const host = { sessionId: identity.sessionId };
 
-    await expect(
-      restarted.reconcileSessionGeneration(identity, { sessionId: identity.sessionId }),
-    ).resolves.toEqual({ kind: "conflict" });
+    expect(classifyCodexCompactionTransitionHostLineage(transition, host)).toBeUndefined();
+    expect(restarted.readRuntimeOwnership?.(identity, host)).toBeUndefined();
+    expect(() => restarted.read(identity)).toThrow("compaction transition is unresolved");
+    await expect(restarted.reconcileSessionGeneration(identity, host)).resolves.toEqual({
+      kind: "conflict",
+    });
     expect(values.get(bindingStoreKey(identity))).toEqual(transition);
   });
 

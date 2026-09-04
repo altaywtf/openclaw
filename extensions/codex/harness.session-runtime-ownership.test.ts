@@ -2,9 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import { createCodexAppServerAgentHarness } from "./harness.js";
 import { clearCodexBindingAfterInvalidImagePayload } from "./src/app-server/run-attempt-state.js";
 import {
-  createCodexTestBindingStore,
+  bindingStoreKey,
+  createCodexAppServerBindingStore,
+  createCodexTestBindingStateStore,
   sessionBindingIdentity,
   type CodexAppServerThreadBinding,
+  type StoredCodexAppServerBinding,
 } from "./src/app-server/session-binding.test-helpers.js";
 
 const session = {
@@ -22,13 +25,15 @@ const observedBinding: CodexAppServerThreadBinding = {
 };
 
 function createOwnershipFixture() {
-  const bindingStore = createCodexTestBindingStore();
+  const state = createCodexTestBindingStateStore();
+  const bindingStore = createCodexAppServerBindingStore(state);
   const harness = createCodexAppServerAgentHarness({ bindingStore });
   const resolveOwnership = harness.resolveSessionRuntimeOwnership?.bind(harness);
   if (!resolveOwnership) {
     throw new Error("expected Codex session runtime ownership capability");
   }
   return {
+    state,
     bindingStore,
     harness,
     resolveOwnership: (overrides: Partial<Parameters<typeof resolveOwnership>[0]> = {}) =>
@@ -122,6 +127,66 @@ describe("Codex session runtime ownership", () => {
     expect(fixture.bindingStore.read(identity)).toEqual(binding);
   });
 
+  it("projects persisted compaction-transition ownership without mutating it", () => {
+    const fixture = createOwnershipFixture();
+    const transition: StoredCodexAppServerBinding = {
+      version: 2,
+      state: "compaction-transition",
+      transitionId: "transition-restart",
+      fromSessionId: "session-previous",
+      toSessionId: session.sessionId,
+      previous: {
+        version: 1,
+        state: "active",
+        sessionId: "session-previous",
+        binding: {
+          ...observedBinding,
+          preserveNativeModel: true,
+        },
+      },
+      nativeCompactionSyncPending: true,
+    };
+    fixture.state.register(bindingStoreKey(identity), transition);
+
+    expect(
+      fixture.resolveOwnership({
+        previousSessionId: "session-previous",
+      }),
+    ).toEqual({
+      model: "native",
+      auth: "host",
+      modelRef: { provider: "native-provider", model: "native-model" },
+    });
+    expect(fixture.state.lookup(bindingStoreKey(identity))).toEqual(transition);
+    expect(() => fixture.bindingStore.read(identity)).toThrow(
+      "compaction transition is unresolved",
+    );
+  });
+
+  it("fails closed for unrelated persisted compaction-transition ownership", () => {
+    const fixture = createOwnershipFixture();
+    fixture.state.register(bindingStoreKey(identity), {
+      version: 2,
+      state: "compaction-transition",
+      transitionId: "transition-unrelated",
+      fromSessionId: "session-previous",
+      toSessionId: "session-successor",
+      previous: {
+        version: 1,
+        state: "active",
+        sessionId: "session-previous",
+        binding: { ...observedBinding, preserveNativeModel: true },
+      },
+    });
+
+    expect(
+      fixture.resolveOwnership({
+        sessionId: "session-unrelated",
+        previousSessionId: "session-other",
+      }),
+    ).toBeUndefined();
+  });
+
   it("does not reuse model ownership after binding retirement", async () => {
     const fixture = createOwnershipFixture();
     await fixture.bindingStore.mutate(identity, {
@@ -142,7 +207,7 @@ describe("Codex session runtime ownership", () => {
     "refuses %s admission before reading private state",
     async (reason) => {
       const fixture = createOwnershipFixture();
-      const read = vi.spyOn(fixture.bindingStore, "read");
+      const read = vi.spyOn(fixture.bindingStore, "readRuntimeOwnership");
       if (reason === "disposed") {
         await fixture.harness.dispose?.();
       }
@@ -167,21 +232,23 @@ describe("Codex session runtime ownership", () => {
         kind: "set",
         binding: { ...observedBinding, preserveNativeModel: true },
       });
-      const readBinding = fixture.bindingStore.read.bind(fixture.bindingStore);
+      const readBinding = fixture.bindingStore.readRuntimeOwnership!.bind(fixture.bindingStore);
       let current = true;
       const cleanup: { disposal?: Promise<void> } = {};
-      vi.spyOn(fixture.bindingStore, "read").mockImplementationOnce((requestedIdentity) => {
-        const binding = readBinding(requestedIdentity);
-        if (reason === "disposed") {
-          const disposal = fixture.harness.dispose?.();
-          if (disposal) {
-            cleanup.disposal = disposal;
+      vi.spyOn(fixture.bindingStore, "readRuntimeOwnership").mockImplementationOnce(
+        (requestedIdentity, host) => {
+          const binding = readBinding(requestedIdentity, host);
+          if (reason === "disposed") {
+            const disposal = fixture.harness.dispose?.();
+            if (disposal) {
+              cleanup.disposal = disposal;
+            }
+          } else {
+            current = false;
           }
-        } else {
-          current = false;
-        }
-        return binding;
-      });
+          return binding;
+        },
+      );
       try {
         expect(() =>
           fixture.resolveOwnership({
