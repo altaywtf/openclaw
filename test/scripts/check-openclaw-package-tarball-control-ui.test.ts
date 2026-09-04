@@ -63,7 +63,7 @@ function withPackedPackage(
   try {
     mkdirSync(packageRoot, { recursive: true });
     const version = "2026.7.2";
-    const typescriptRoot = resolve("node_modules/typescript");
+    const typescriptRoot = isolatedTypescriptPackage();
     const typescriptVersion = (
       JSON.parse(readFileSync(join(typescriptRoot, "package.json"), "utf8")) as {
         version: string;
@@ -173,7 +173,7 @@ function installPackedPackage(root: string, tarball: string) {
       "--no-audit",
       "--no-fund",
       "--offline",
-      TYPESCRIPT_PACKAGE_ROOT,
+      isolatedTypescriptPackage(),
       tarball,
     ],
     {
