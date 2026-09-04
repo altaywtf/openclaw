@@ -12,6 +12,7 @@ import {
 } from "../plugins/runtime.js";
 import { DEFAULT_ACCOUNT_ID } from "../routing/account-id.js";
 import { isPlainObject } from "../utils.js";
+import { canHotReloadGatewayAuthCredentials } from "./auth-resolve.js";
 
 export type ChannelKind = ChannelId;
 
@@ -27,7 +28,6 @@ export type GatewayReloadPlan = {
   restartCron: boolean;
   restartHeartbeat: boolean;
   reconcileSkillReviewJobs?: boolean;
-  restartHealthMonitor: boolean;
   reloadPlugins: boolean;
   restartChannels: Set<ChannelKind>;
   disposeMcpRuntimes: boolean;
@@ -46,7 +46,6 @@ export function isNoopGatewayReloadPlan(plan: GatewayReloadPlan): boolean {
     !plan.restartCron &&
     !plan.restartHeartbeat &&
     !plan.reconcileSkillReviewJobs &&
-    !plan.restartHealthMonitor &&
     !plan.reloadPlugins &&
     !plan.disposeMcpRuntimes &&
     plan.restartChannels.size === 0 &&
@@ -72,7 +71,6 @@ type ReloadAction =
   | "restart-cron"
   | "restart-heartbeat"
   | "reconcile-skill-review-jobs"
-  | "restart-health-monitor"
   | "reload-plugins"
   | "dispose-mcp-runtimes"
   | `restart-channel-account:${ChannelId}`
@@ -83,13 +81,16 @@ type GatewayReloadPlanOptions = {
   forceChangedPaths?: Iterable<string>;
   /** Candidate config used to reject removed, unknown, or unresolvable account targets. */
   candidateConfig?: OpenClawConfig;
+  previousConfig?: OpenClawConfig;
 };
 
 const PLUGIN_INSTALL_TIMESTAMP_KEYS = ["installedAt", "resolvedAt"] as const;
+const AUTH_CREDENTIAL_PATHS = ["gateway.auth.token", "gateway.auth.password"];
 
 const BASE_RELOAD_RULES: ReloadRule[] = [
   { prefix: "gateway.remote", kind: "none" },
   { prefix: "gateway.reload", kind: "none" },
+  ...AUTH_CREDENTIAL_PATHS.map((prefix): ReloadRule => ({ prefix, kind: "restart" })),
   // Request policy reads the published config; listeners and startup-owned
   // resources retain the broad Gateway restart rule below.
   { prefix: "gateway.http.endpoints", kind: "hot" },
@@ -104,11 +105,15 @@ const BASE_RELOAD_RULES: ReloadRule[] = [
   { prefix: "gateway.controlUi.embedSandbox", kind: "hot" },
   { prefix: "gateway.controlUi.allowExternalEmbedUrls", kind: "hot" },
   { prefix: "gateway.controlUi.automaticallyFetchFavicons", kind: "hot" },
+  { prefix: "gateway.controlUi.allowedOrigins", kind: "hot" },
+  { prefix: "gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback", kind: "hot" },
   { prefix: "gateway.nodes.browser", kind: "hot" },
   { prefix: "gateway.nodes.pairing", kind: "hot" },
+  { prefix: "gateway.nodes.commands", kind: "hot" },
+  { prefix: "gateway.nodes.pluginTools.enabled", kind: "hot" },
+  { prefix: "gateway.nodes.allowSkills", kind: "hot" },
   { prefix: "gateway.push.apns.relay", kind: "hot" },
-  // New PTYs use the committed shell; availability/CSP and detach timers stay startup-owned.
-  { prefix: "gateway.terminal.shell", kind: "hot" },
+  { prefix: "gateway.terminal", kind: "hot" },
   { prefix: "hooks.gmail", kind: "hot", actions: ["restart-gmail-watcher"] },
   { prefix: "hooks", kind: "hot", actions: ["reload-hooks"] },
   {
@@ -232,12 +237,10 @@ function listReloadRules(): ReloadRule[] {
         return rule;
       })
       .concat(
-        (plugin.reload?.noopPrefixes ?? []).map(
-          (prefix): ReloadRule => ({
-            prefix,
-            kind: "none",
-          }),
-        ),
+        (plugin.reload?.noopPrefixes ?? []).map((prefix): ReloadRule => ({
+          prefix,
+          kind: "none",
+        })),
       );
   });
   const channelPluginStateRules: ReloadRule[] = channelPlugins.flatMap((plugin) => [
@@ -253,25 +256,19 @@ function listReloadRules(): ReloadRule[] {
   ]);
   const pluginReloadRules: ReloadRule[] = (registry?.reloads ?? []).flatMap((entry) =>
     (entry.registration.restartPrefixes ?? [])
-      .map(
-        (prefix): ReloadRule => ({
-          prefix,
-          kind: "restart",
-        }),
-      )
+      .map((prefix): ReloadRule => ({
+        prefix,
+        kind: "restart",
+      }))
       .concat(
-        (entry.registration.hotPrefixes ?? []).map(
-          (prefix): ReloadRule => ({
-            prefix,
-            kind: "hot",
-          }),
-        ),
-        (entry.registration.noopPrefixes ?? []).map(
-          (prefix): ReloadRule => ({
-            prefix,
-            kind: "none",
-          }),
-        ),
+        (entry.registration.hotPrefixes ?? []).map((prefix): ReloadRule => ({
+          prefix,
+          kind: "hot",
+        })),
+        (entry.registration.noopPrefixes ?? []).map((prefix): ReloadRule => ({
+          prefix,
+          kind: "none",
+        })),
       ),
   );
   const rules: ReloadRule[] = [
@@ -279,13 +276,15 @@ function listReloadRules(): ReloadRule[] {
     ...pluginReloadRules,
     ...channelReloadRules,
     ...channelPluginStateRules,
-    // Channel snapshots capture the shared fallback. Fan out by default while
+    // Channel snapshots capture shared policy. Fan out by default while
     // preserving explicit plugin/channel policies above on equal-prefix ties.
-    {
-      prefix: "agents.defaults.mediaMaxMb",
-      kind: "hot",
-      actions: channelPlugins.map(({ id }): ReloadAction => `restart-channel:${id}`),
-    },
+    ...["agents.defaults.mediaMaxMb", "channels.defaults", "channels.modelByChannel"].map(
+      (prefix): ReloadRule => ({
+        prefix,
+        kind: "hot",
+        actions: channelPlugins.map(({ id }): ReloadAction => `restart-channel:${id}`),
+      }),
+    ),
     ...BASE_RELOAD_RULES_TAIL,
   ];
   // Narrow config contracts must override broad owner fallbacks. Sort once per
@@ -451,7 +450,6 @@ export function buildGatewayReloadPlan(
     restartCron: false,
     restartHeartbeat: false,
     reconcileSkillReviewJobs: false,
-    restartHealthMonitor: false,
     reloadPlugins: false,
     restartChannels: new Set(),
     disposeMcpRuntimes: false,
@@ -514,9 +512,6 @@ export function buildGatewayReloadPlan(
       case "reconcile-skill-review-jobs":
         plan.reconcileSkillReviewJobs = true;
         break;
-      case "restart-health-monitor":
-        plan.restartHealthMonitor = true;
-        break;
       case "reload-plugins":
         plan.reloadPlugins = true;
         break;
@@ -542,7 +537,10 @@ export function buildGatewayReloadPlan(
       plan.restartReasons.push(path);
       continue;
     }
-    if (rule.kind === "restart") {
+    const isCredentialRotation =
+      AUTH_CREDENTIAL_PATHS.includes(rule.prefix) &&
+      canHotReloadGatewayAuthCredentials(options.previousConfig, options.candidateConfig);
+    if (rule.kind === "restart" && !isCredentialRotation) {
       plan.restartGateway = true;
       plan.restartReasons.push(path);
       continue;

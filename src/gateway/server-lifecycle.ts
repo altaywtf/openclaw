@@ -88,7 +88,6 @@ export async function prepareGatewayLifecycle(params: {
     activeTaskCount,
     desktopSessionRegistry,
     nodeDesktopStreamBroker,
-    nodeDesktopObserveAvailable,
     bindDeviceNodeControl,
     bindWorkerNodeDesktopControl,
     workerPlacementRuntime,
@@ -123,8 +122,7 @@ export async function prepareGatewayLifecycle(params: {
     sessionEventSubscribers,
     sessionMessageSubscribers,
     listRegisteredNodePluginToolCommands: () => pluginRuntime.registry.nodeHostCommands,
-    nodePluginToolsEnabled: cfgAtStart.gateway?.nodes?.pluginTools?.enabled !== false,
-    nodeSkillsEnabled: cfgAtStart.gateway?.nodes?.allowSkills !== false,
+    getConfig: getRuntimeConfig,
     onRunnerStateChanged: (nodeId, change) => {
       if (change.availabilityChanged) {
         workerPlacementRuntime?.runnerAvailability.markChanged();
@@ -143,15 +141,12 @@ export async function prepareGatewayLifecycle(params: {
       void nodeDesktopServiceRef.current?.stopNode(nodeId);
     },
   });
-  const nodeDesktopService =
-    nodeDesktopObserveAvailable && desktopSessionRegistry && nodeDesktopStreamBroker
-      ? (await import("./desktop/node-source.js")).createNodeDesktopService({
-          getConfig: getRuntimeConfig,
-          nodeRegistry,
-          desktopRegistry: desktopSessionRegistry,
-          streamBroker: nodeDesktopStreamBroker,
-        })
-      : undefined;
+  const nodeDesktopService = (await import("./desktop/node-source.js")).createNodeDesktopService({
+    getConfig: getRuntimeConfig,
+    nodeRegistry,
+    desktopRegistry: desktopSessionRegistry,
+    streamBroker: nodeDesktopStreamBroker,
+  });
   nodeDesktopServiceRef.current = nodeDesktopService;
   bindDeviceNodeControl?.(nodeWorkerSupervisorTransport);
   bindWorkerNodeDesktopControl?.(nodeWorkerSupervisorTransport);
@@ -289,7 +284,6 @@ export async function prepareGatewayLifecycle(params: {
       hookClientIpConfig: runtimeState.hookClientIpConfig,
       heartbeatRunner: runtimeState.heartbeatRunner,
       cronState: runtimeState.cronState,
-      channelHealthMonitor: runtimeState.channelHealthMonitor,
     }),
     setReloadHookState: (next: {
       hooksConfig: typeof runtimeState.hooksConfig;
@@ -398,7 +392,7 @@ export async function prepareGatewayLifecycle(params: {
     // plugin/channel or shared-state runtime they still need.
     void stopOutboundDeliveryRecoveryForClose();
     void stopMediaCleanupForClose();
-    runtimeState.stopGatewayUpdateCheck();
+    void runtimeState.stopGatewayUpdateCheck().catch(() => {});
     runtimeState.controlUiSessionPullRequests?.stop();
     runtimeState.sessionViewerPresence?.stop();
     kernel.setDispatchReady(false);
@@ -421,6 +415,7 @@ export async function prepareGatewayLifecycle(params: {
     await Promise.all([
       stopOutboundDeliveryRecoveryForClose(),
       stopMediaCleanupForClose(),
+      runtimeState.stopGatewayUpdateCheck(),
       stopConfigReloaderForClose().catch(() => {}),
     ]);
   };
