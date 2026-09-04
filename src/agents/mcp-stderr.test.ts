@@ -2,6 +2,7 @@ import { once } from "node:events";
 import process from "node:process";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import { disposeMcpClient } from "./mcp-client-lifecycle.js";
 import { OpenClawStdioClientTransport } from "./mcp-stdio-transport.js";
 import { resolveMcpTransport } from "./mcp-transport.js";
@@ -126,7 +127,7 @@ describe("MCP stderr diagnostics", () => {
   it("keeps diagnostics attached through forced disposal", async () => {
     vi.useFakeTimers();
     const probe = createStderrProbe();
-    const closed = Promise.withResolvers<void>();
+    const closed = createDeferred();
     const close = vi.spyOn(probe.transport, "close").mockReturnValue(closed.promise);
     const forceClose = vi.spyOn(probe.transport, "forceClose").mockImplementation(async () => {
       probe.stderr.write("forced shutdown tail");
