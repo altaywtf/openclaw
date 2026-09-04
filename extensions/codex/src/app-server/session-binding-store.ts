@@ -37,19 +37,16 @@ export function createLazyCodexAppServerBindingStore(
   return {
     ...(managedThreads ? { managedThreads } : {}),
     read: (identity) => readCurrentCodexAppServerBinding(state, identity),
-    hasOtherThreadOwner: async (threadId, currentIdentity) =>
-      (await store()).hasOtherThreadOwner(threadId, currentIdentity),
-    mutate: async (identity, mutation, assertCurrent) =>
-      (await store()).mutate(identity, mutation, assertCurrent),
-    prepareSessionGenerationReclaim: async (identity) =>
-      (await store()).prepareSessionGenerationReclaim(identity),
-    adoptSessionGeneration: async (identity, previousSessionId) =>
-      (await store()).adoptSessionGeneration(identity, previousSessionId),
-    resetSessionGeneration: async (identity) => (await store()).resetSessionGeneration(identity),
-    retireSessionGeneration: async (identity) => (await store()).retireSessionGeneration(identity),
-    withSessionDeletion: async (identity, assertCurrent, run) =>
-      (await store()).withSessionDeletion(identity, assertCurrent, run),
-    withThreadArchiveFence: async (run) => (await store()).withThreadArchiveFence(run),
-    withLease: async (identity, run) => (await store()).withLease(identity, run),
+    hasOtherThreadOwner: async (...args) => (await store()).hasOtherThreadOwner(...args),
+    mutate: async (...args) => (await store()).mutate(...args),
+    reconcileSessionGeneration: async (...args) =>
+      (await store()).reconcileSessionGeneration(...args),
+    withContextEngineCompaction: async (...args) =>
+      (await store()).withContextEngineCompaction(...args),
+    resetSessionGeneration: async (...args) => (await store()).resetSessionGeneration(...args),
+    retireSessionGeneration: async (...args) => (await store()).retireSessionGeneration(...args),
+    withSessionDeletion: async (...args) => (await store()).withSessionDeletion(...args),
+    withThreadArchiveFence: async (...args) => (await store()).withThreadArchiveFence(...args),
+    withLease: async (...args) => (await store()).withLease(...args),
   };
 }

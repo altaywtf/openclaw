@@ -287,7 +287,12 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
           );
           session = createdSession.session;
           session[agentSessionSetContextReplacementHook](
-            accountingRecorder?.recordCompaction,
+            accountingRecorder
+              ? (tokensAfter) => {
+                  accountingRecorder.onCompactionCommitted?.();
+                  accountingRecorder.recordCompaction(tokensAfter);
+                }
+              : undefined,
             assertActive,
           );
           session.setActiveToolsByName(sessionToolAllowlist);
@@ -498,6 +503,7 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
                 enabled: compactionReplayEnabled,
               },
             });
+            accountingRecorder?.onCompactionCommitted?.();
             accountingRecorder?.recordCompaction(serverTokensAfter);
           };
           const serverResult = await attemptServerEndpointCompaction({

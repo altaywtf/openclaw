@@ -62,8 +62,12 @@ vi.mock("./run/session-bootstrap.js", async () => {
 });
 
 type RecoveryInput = Parameters<typeof recoverEmbeddedRunOverflow>[0];
+type RecoverySession = ReturnType<RecoveryInput["prepareRecoveryOwner"]>["session"];
 type RecoveryInputOverrides = Omit<Partial<RecoveryInput>, "attempt"> & {
   attempt?: Partial<EmbeddedRunAttemptResult>;
+  session?: Omit<RecoverySession, "target"> & {
+    target?: RecoverySession["target"] | undefined;
+  };
 };
 type CompactionResult = Awaited<ReturnType<RecoveryInput["contextEngine"]["compact"]>>;
 
@@ -105,6 +109,8 @@ function makeAssistantMessage(
 }
 
 function makeInput(overrides: RecoveryInputOverrides = {}): RecoveryInput {
+  const { session = { id: "session-1", file: "/tmp/session-1.jsonl" }, ...inputOverrides } =
+    overrides;
   const promptError = Object.hasOwn(overrides, "promptError")
     ? overrides.promptError
     : overflowError();
@@ -139,7 +145,6 @@ function makeInput(overrides: RecoveryInputOverrides = {}): RecoveryInput {
         input.assertRecoveryActive();
       };
       assertActive();
-      const session = input.getActiveSession();
       return {
         session: {
           ...session,
@@ -195,7 +200,7 @@ function makeInput(overrides: RecoveryInputOverrides = {}): RecoveryInput {
     workspaceDir: "/tmp/workspace",
     provider: "openai",
     modelId: "gpt-5.6-luna",
-    harnessRuntime: "embedded",
+    harnessRuntime: "openclaw",
     thinkLevel: "off",
     authProfileIdSource: "auto",
     resolveContextEnginePluginId: () => undefined,
@@ -212,13 +217,12 @@ function makeInput(overrides: RecoveryInputOverrides = {}): RecoveryInput {
     runOwnsCompactionBeforeHook: vi.fn(async () => {}),
     runOwnsCompactionAfterHook: vi.fn(async () => {}),
     adoptCompactionTranscript: vi.fn(async () => undefined),
-    getActiveSession: () => ({ id: "session-1", file: "/tmp/session-1.jsonl" }),
     prepareCurrentTranscriptRetry: vi.fn(),
     prepareCompactedTranscriptRetry: vi.fn(async () => {}),
     markOwnedTranscriptRetry: vi.fn(),
     armPostCompactionGuard: vi.fn(),
     usageAccumulator: createUsageAccumulator(),
-    ...overrides,
+    ...inputOverrides,
     attempt,
   };
   return input;
@@ -770,17 +774,17 @@ describe("recoverEmbeddedRunOverflow", () => {
   });
 
   it("runs hooks and maintenance against the adopted compacted transcript", async () => {
-    let activeSession = {
+    const activeSession = {
       id: "session-1",
       file: "/tmp/session-1.jsonl",
       target: undefined,
     };
     const adoptCompactionTranscript = vi.fn(async () => {
-      activeSession = {
+      Object.assign(activeSession, {
         id: "rotated-session",
         file: "/tmp/rotated-session.jsonl",
         target: undefined,
-      };
+      });
       return "session-1";
     });
     const input = makeInput({
@@ -792,7 +796,7 @@ describe("recoverEmbeddedRunOverflow", () => {
         maintain: mocks.maintenance,
       } as RecoveryInput["contextEngine"],
       adoptCompactionTranscript,
-      getActiveSession: () => activeSession,
+      session: activeSession,
     });
 
     expect(await recoverEmbeddedRunOverflow(input)).toEqual({ action: "retry" });

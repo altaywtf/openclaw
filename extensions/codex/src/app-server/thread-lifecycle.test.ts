@@ -5658,9 +5658,16 @@ describe("Codex app-server supervised branch lifecycle", () => {
                 patch: { model: "native-effective", modelProvider: "native-provider" },
               });
             } else if (owner === "other generation") {
-              await testCodexAppServerBindingStore.adoptSessionGeneration(
-                { ...identity, sessionId: "successor" },
-                identity.sessionId,
+              await testCodexAppServerBindingStore.withContextEngineCompaction(
+                identity,
+                false,
+                () => {},
+                async (transaction) => {
+                  transaction?.markProducerCommitted();
+                  const successor = transaction?.prepareSuccessor("successor");
+                  successor?.commit();
+                  successor?.complete();
+                },
               );
             }
             preserved = testCodexAppServerBindingStore.read(

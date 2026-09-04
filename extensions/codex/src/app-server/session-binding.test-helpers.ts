@@ -92,7 +92,12 @@ export function registerCodexTestSessionIdentity(
   if (previousKey !== nextKey) {
     const value = sharedStateStore.lookup(previousKey);
     if (value) {
-      sharedStateStore.register(nextKey, { ...value, sessionId });
+      sharedStateStore.register(
+        nextKey,
+        value.state === "compaction-transition"
+          ? { ...value, toSessionId: sessionId }
+          : { ...value, sessionId },
+      );
       sharedStateStore.delete(previousKey);
     }
   }

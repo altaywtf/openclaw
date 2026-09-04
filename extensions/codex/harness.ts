@@ -319,6 +319,33 @@ export function createCodexAppServerAgentHarness(
         pluginConfig: options?.resolvePluginConfig?.() ?? options?.pluginConfig,
       });
     },
+    withContextEngineCompaction: async (params, run) => {
+      const sessionBinding = await import("./src/app-server/session-binding.js");
+      const assertCurrent = () => {
+        params.assertCurrent();
+        if (disposed) {
+          throw new Error("Codex agent harness is disposed");
+        }
+      };
+      const identity = sessionBindingIdentity(params);
+      assertCurrent();
+      if (
+        !(await sessionBinding.reclaimCurrentCodexSessionGeneration({
+          bindingStore: options.bindingStore,
+          identity,
+          storePath: params.storePath,
+          assertCurrent,
+        }))
+      ) {
+        throw sessionBinding.createCodexSessionGenerationSupersededError(identity.sessionId);
+      }
+      return await options.bindingStore.withContextEngineCompaction(
+        identity,
+        params.requiresNativeCompactionSync,
+        assertCurrent,
+        run,
+      );
+    },
     withSessionDeletion: async (params, run) => {
       const { withCodexAppServerSessionDeletion } =
         await import("./src/app-server/session-retirement.js");
@@ -327,35 +354,20 @@ export function createCodexAppServerAgentHarness(
     },
     reset: async (params) => {
       if (params.sessionId && params.reason !== "deleted") {
-        const [
-          { reclaimCurrentCodexSessionGeneration },
-          { retireCodexAppServerSessionGeneration },
-        ] = await Promise.all([
-          import("./src/app-server/session-binding.js"),
-          import("./src/app-server/session-retirement.js"),
-        ]);
+        const { retireCodexAppServerSessionGeneration } =
+          await import("./src/app-server/session-retirement.js");
         const identity = sessionBindingIdentity({
           agentId: params.agentId,
           sessionId: params.sessionId,
           sessionKey: params.sessionKey,
         });
-        const resetGeneration = () =>
-          retireCodexAppServerSessionGeneration({
-            bindingStore: options.bindingStore,
-            identity,
-            mode: "reset",
-          });
-        let reset = await resetGeneration();
-        if (reset === "conflict") {
-          const reclaimed = await reclaimCurrentCodexSessionGeneration({
-            bindingStore: options.bindingStore,
-            identity,
-            config: options.resolveConfig?.(),
-          });
-          if (reclaimed) {
-            reset = await resetGeneration();
-          }
-        }
+        const reset = await retireCodexAppServerSessionGeneration({
+          bindingStore: options.bindingStore,
+          identity,
+          mode: "reset",
+          config: options.resolveConfig?.(),
+          storePath: params.storePath,
+        });
         if (reset === "conflict") {
           throw new Error(
             `Codex binding generation changed before session ${params.sessionId} could reset`,

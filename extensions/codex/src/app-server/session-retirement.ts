@@ -1,7 +1,9 @@
+import { isDeepStrictEqual } from "node:util";
 import type {
   AgentHarnessSessionDeletionMutation,
   AgentHarnessSessionDeletionParams,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { isIncognitoSessionKey } from "../incognito-session.js";
 import {
   CODEX_APP_SERVER_UNSUBSCRIBE_TIMEOUT_MS,
@@ -15,11 +17,13 @@ import {
   releaseCodexAppServerLiveThread,
 } from "./client-runtime.js";
 import { codexNativeSubagentMonitorRuntime } from "./native-subagent-monitor.js";
-import type {
-  CodexAppServerBindingIdentity,
-  CodexAppServerBindingStore,
-  CodexAppServerThreadBinding,
-  CodexSessionGenerationRetirementResult,
+import {
+  reconcileCurrentCodexSessionGeneration,
+  sessionBindingIdentity,
+  type CodexAppServerBindingIdentity,
+  type CodexAppServerBindingStore,
+  type CodexAppServerThreadBinding,
+  type CodexSessionGenerationRetirementResult,
 } from "./session-binding.js";
 import { getCodexSessionInitializationRollback } from "./session-initialization.js";
 import { retainSharedCodexAppServerClientByInstanceId } from "./shared-client.js";
@@ -63,90 +67,101 @@ export async function withCodexAppServerSessionDeletion<T>(
   run: (mutation: AgentHarnessSessionDeletionMutation) => Promise<T>,
 ): Promise<T> {
   const { assertCurrent } = params;
-  const identity = {
-    kind: "session" as const,
-    agentId: params.agentId,
-    sessionKey: params.sessionKey,
-    sessionId: params.sessionId,
-  };
-  const remove = () =>
-    bindingStore.withSessionDeletion(identity, assertCurrent, async (binding, mutation) => {
-      assertCurrent();
-      const rollbackInitialization = getCodexSessionInitializationRollback(
-        bindingStore,
-        params,
-        identity,
-        binding,
-      );
-      if (binding?.connectionScope === "supervision" && !rollbackInitialization) {
-        throw new Error("Cannot delete a session while its Codex binding is owned by supervision");
-      }
-      const clientLease = binding?.clientId
-        ? retainSharedCodexAppServerClientByInstanceId(binding.clientId)
-        : undefined;
-      const assertUnclaimed = () => {
+  const identity = sessionBindingIdentity(params);
+  const remove = async () => {
+    const reconciled = await reconcileCurrentCodexSessionGeneration({
+      bindingStore,
+      identity,
+      storePath: params.storePath,
+      assertCurrent,
+    });
+    if (reconciled.kind === "conflict") {
+      throw new Error("Codex binding generation changed before session deletion");
+    }
+    return await bindingStore.withSessionDeletion(
+      identity,
+      assertCurrent,
+      async (binding, mutation) => {
         assertCurrent();
-        if (
-          clientLease &&
-          binding &&
-          isCodexAppServerLiveThreadClaimed(clientLease.client, binding.threadId)
-        ) {
+        const rollbackInitialization = getCodexSessionInitializationRollback(
+          bindingStore,
+          params,
+          identity,
+          binding,
+        );
+        if (binding?.connectionScope === "supervision" && !rollbackInitialization) {
           throw new Error(
-            "Cannot delete a session while its Codex thread is claimed by active work",
+            "Cannot delete a session while its Codex binding is owned by supervision",
           );
         }
-      };
-      let committed = false;
-      try {
-        assertUnclaimed();
-        return await run({
-          commit() {
-            assertUnclaimed();
-            mutation.commit();
-            committed = true;
-          },
-          rollback() {
-            mutation.rollback();
-            committed = false;
-          },
-        });
-      } finally {
+        const clientLease = binding?.clientId
+          ? retainSharedCodexAppServerClientByInstanceId(binding.clientId)
+          : undefined;
+        const assertUnclaimed = () => {
+          assertCurrent();
+          if (
+            clientLease &&
+            binding &&
+            isCodexAppServerLiveThreadClaimed(clientLease.client, binding.threadId)
+          ) {
+            throw new Error(
+              "Cannot delete a session while its Codex thread is claimed by active work",
+            );
+          }
+        };
+        let committed = false;
         try {
-          if (committed && rollbackInitialization) {
-            assertCurrent();
-            await rollbackInitialization();
-          }
-          // An artifact publication failure after COMMIT still ends this subscription;
-          // only the session owner's transaction rollback may restore the binding.
-          if (committed && binding && clientLease) {
-            await withCodexAppServerThreadMutation(binding.threadId, async () => {
-              assertCurrent();
-              // Most expired bindings no longer have a live subscription. Only
-              // live threads need the persisted-owner check (idle retention is bounded).
-              if (
-                !hasCodexAppServerLiveThread(clientLease.client, binding.threadId) &&
-                !isIncognitoSessionKey(params.sessionKey)
-              ) {
-                return;
-              }
-              // The deleted row is absent now. Any surviving owner, including a
-              // successor at the same key, keeps its connection-scoped subscription.
-              if (await bindingStore.hasOtherThreadOwner(binding.threadId)) {
-                return;
-              }
-              await releaseSessionSubscription(
-                clientLease.client,
-                binding,
-                params.sessionKey,
-                assertUnclaimed,
-              );
-            });
-          }
+          assertUnclaimed();
+          return await run({
+            commit() {
+              assertUnclaimed();
+              mutation.commit();
+              committed = true;
+            },
+            rollback() {
+              mutation.rollback();
+              committed = false;
+            },
+          });
         } finally {
-          clientLease?.release();
+          try {
+            if (committed && rollbackInitialization) {
+              assertCurrent();
+              await rollbackInitialization();
+            }
+            // An artifact publication failure after COMMIT still ends this subscription;
+            // only the session owner's transaction rollback may restore the binding.
+            if (committed && binding && clientLease) {
+              await withCodexAppServerThreadMutation(binding.threadId, async () => {
+                assertCurrent();
+                // Most expired bindings no longer have a live subscription. Only
+                // live threads need the persisted-owner check (idle retention is bounded).
+                if (
+                  !hasCodexAppServerLiveThread(clientLease.client, binding.threadId) &&
+                  !isIncognitoSessionKey(params.sessionKey)
+                ) {
+                  return;
+                }
+                // The deleted row is absent now. Any surviving owner, including a
+                // successor at the same key, keeps its connection-scoped subscription.
+                if (await bindingStore.hasOtherThreadOwner(binding.threadId)) {
+                  return;
+                }
+                await releaseSessionSubscription(
+                  clientLease.client,
+                  binding,
+                  params.sessionKey,
+                  assertUnclaimed,
+                );
+              });
+            }
+          } finally {
+            clientLease?.release();
+          }
         }
-      }
-    });
+      },
+    );
+  };
   return params.initialization ? await bindingStore.withThreadArchiveFence(remove) : await remove();
 }
 
@@ -155,21 +170,40 @@ export async function retireCodexAppServerSessionGeneration(params: {
   bindingStore: CodexAppServerBindingStore;
   identity: Extract<CodexAppServerBindingIdentity, { kind: "session" }>;
   mode: "reset" | "retire";
+  config?: OpenClawConfig;
+  storePath?: string;
+  expectedBinding?: CodexAppServerThreadBinding;
 }): Promise<CodexSessionGenerationRetirementResult> {
+  const { bindingStore, identity } = params;
   const retireGeneration = () =>
     params.mode === "reset"
-      ? params.bindingStore.resetSessionGeneration(params.identity)
-      : params.bindingStore.retireSessionGeneration(params.identity);
-  const expectedBinding = params.bindingStore.read(params.identity);
+      ? bindingStore.resetSessionGeneration(identity)
+      : bindingStore.retireSessionGeneration(identity);
+  const { kind, sessionId } = await reconcileCurrentCodexSessionGeneration(params);
+  if (kind === "conflict") {
+    return "conflict";
+  }
+  if ((kind === "successor" || kind === "descendant") && sessionId !== identity.sessionId) {
+    return "absent";
+  }
+  const expectedBinding = params.expectedBinding ?? bindingStore.read(identity);
   if (!expectedBinding) {
     // Leasing an absent/retired row manufactures state or rejects its fence;
     // callers need the original absent/conflict result for reset reclamation.
     return await retireGeneration();
   }
+  const matchesExpectedBinding = (binding: CodexAppServerThreadBinding | undefined) =>
+    binding !== undefined &&
+    (params.expectedBinding
+      ? isDeepStrictEqual(binding, expectedBinding)
+      : isSameCodexAppServerThreadOwner(binding, expectedBinding));
+  if (!matchesExpectedBinding(bindingStore.read(identity))) {
+    return "conflict";
+  }
   return await withCodexAppServerThreadMutation(expectedBinding.threadId, () =>
-    params.bindingStore.withLease(params.identity, async () => {
-      const binding = params.bindingStore.read(params.identity);
-      if (!binding || !isSameCodexAppServerThreadOwner(binding, expectedBinding)) {
+    bindingStore.withLease(identity, async () => {
+      const binding = bindingStore.read(identity);
+      if (!matchesExpectedBinding(binding)) {
         return "conflict";
       }
       const result = await retireGeneration();
@@ -184,7 +218,7 @@ export async function retireCodexAppServerSessionGeneration(params: {
         return result;
       }
       try {
-        await releaseSessionSubscription(clientLease.client, binding, params.identity.sessionKey);
+        await releaseSessionSubscription(clientLease.client, binding, identity.sessionKey);
       } finally {
         clientLease.release();
       }

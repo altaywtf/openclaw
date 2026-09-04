@@ -476,6 +476,59 @@ describe("codex conversation controls", () => {
     expect(sharedClientMocks.getSharedCodexAppServerClient).not.toHaveBeenCalled();
   });
 
+  it("uses the exact custom store for reconciled model and fast controls", async () => {
+    const sessionKey = "agent:main:custom-control-store";
+    const sessionId = "session-custom-control-store";
+    const identity = { kind: "session" as const, agentId: "main", sessionId, sessionKey };
+    const storePath = path.join(tempDir, "custom", "sessions.json");
+    await upsertSessionEntry({
+      agentId: "main",
+      storePath,
+      sessionKey,
+      entry: { sessionId, updatedAt: Date.now() },
+    });
+    await testCodexAppServerBindingStore.mutate(identity, {
+      kind: "set",
+      binding: {
+        threadId: "thread-custom-control-store",
+        cwd: tempDir,
+        model: "gpt-5.4",
+        modelProvider: "openai",
+        nativeCompactionSyncPending: true,
+      },
+    });
+
+    await expect(
+      setCodexConversationModelImpl({
+        identity,
+        bindingStore: testCodexAppServerBindingStore,
+        model: "gpt-5.5",
+        config: { session: { store: path.join(tempDir, "wrong", "sessions.json") } },
+        storePath,
+      }),
+    ).resolves.toBe("Codex model set to gpt-5.5.");
+    await expect(
+      setCodexConversationFastModeImpl({
+        identity,
+        bindingStore: testCodexAppServerBindingStore,
+        enabled: true,
+        config: { session: { store: path.join(tempDir, "wrong", "sessions.json") } },
+        storePath,
+      }),
+    ).resolves.toBe("Codex fast mode enabled.");
+
+    expect(getSessionEntry({ storePath, sessionKey, readConsistency: "latest" })).toMatchObject({
+      modelOverride: "gpt-5.5",
+      liveModelSwitchPending: true,
+    });
+    expect(testCodexAppServerBindingStore.read(identity)).toMatchObject({
+      threadId: "thread-custom-control-store",
+      serviceTier: "priority",
+      nativeCompactionSyncPending: true,
+    });
+    expect(sharedClientMocks.getSharedCodexAppServerClient).not.toHaveBeenCalled();
+  });
+
   it("clears incompatible direct-session auth when the selected provider changes", async () => {
     const sessionKey = "agent:main:model-provider-switch";
     const sessionId = "session-provider-switch";

@@ -3,6 +3,7 @@ import type { Model } from "openclaw/plugin-sdk/llm";
  * Routes compaction through selected native agent harnesses when supported.
  */
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import { capturePluginLifecycleAuthority } from "../../plugins/registry-lifecycle.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { resolveUserPath } from "../../utils.js";
 import { isDefaultAgentRuntimeId, normalizeOptionalAgentRuntimeId } from "../agent-runtime-id.js";
@@ -42,7 +43,12 @@ import {
   selectAgentHarnessForPreparedModelProviders,
 } from "./selection.js";
 import { projectPreparedModelProvider } from "./support.js";
-import type { AgentHarness, AgentHarnessNativeCompactionRequest } from "./types.js";
+import type {
+  AgentHarness,
+  AgentHarnessContextEngineCompactionParams,
+  AgentHarnessContextEngineCompactionTransaction,
+  AgentHarnessNativeCompactionRequest,
+} from "./types.js";
 
 /**
  * Delegates session compaction to the selected agent harness when that runtime owns compaction.
@@ -58,6 +64,52 @@ type InternalAgentHarnessCompactionOptions = {
 type HarnessCompactionResolvedAuth = { apiKey?: string };
 
 const log = createSubsystemLogger("agents/harness-compaction");
+
+export async function withHarnessContextEngineCompaction<T>(params: {
+  harnessRuntime?: string;
+  preparedModelRuntime: PreparedModelRuntimeSnapshot;
+  compaction: Omit<AgentHarnessContextEngineCompactionParams, "assertCurrent">;
+  run: (transaction?: AgentHarnessContextEngineCompactionTransaction) => Promise<T>;
+}): Promise<T> {
+  const id = normalizeOptionalAgentRuntimeId(params.harnessRuntime);
+  if (!id || id === "openclaw") {
+    return await params.run();
+  }
+  const registry = params.preparedModelRuntime.pluginRegistry;
+  const registration = registry?.agentHarnesses.find(({ harness }) => harness.id === id);
+  if (!registry || !registration) {
+    throw new Error(`Agent harness ${id} context-engine compaction owner is unavailable`);
+  }
+  const record = registry.plugins.find(({ id: pluginId }) => pluginId === registration.pluginId);
+  const lifecycle =
+    record && capturePluginLifecycleAuthority(registry, record, { scopedRuntime: true });
+  if (!lifecycle) {
+    throw new Error(`Agent harness ${id} context-engine compaction owner is unavailable`);
+  }
+  const prepare = registration.harness.withContextEngineCompaction;
+  let active = true;
+  const assertCurrent = () => {
+    if (
+      !active ||
+      !params.preparedModelRuntime.isCurrent() ||
+      !lifecycle() ||
+      !registry.agentHarnesses.includes(registration) ||
+      registration.harness.withContextEngineCompaction !== prepare
+    ) {
+      throw new Error(`Agent harness ${id} changed during context-engine compaction`);
+    }
+  };
+  try {
+    assertCurrent();
+    const result = prepare
+      ? await prepare({ ...params.compaction, assertCurrent }, params.run)
+      : await params.run();
+    assertCurrent();
+    return result;
+  } finally {
+    active = false;
+  }
+}
 
 function runtimePlanRequiresHostApiKey(plan?: AgentRuntimeAuthPlan): boolean {
   return plan?.modelRoute?.authRequirement === "api-key";

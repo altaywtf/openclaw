@@ -1206,6 +1206,7 @@ async function initSessionStateAttemptLocked(
       sessionId: previousSessionEntry.sessionId,
       sessionKey,
       sessionFile: sessionKey,
+      storePath,
       reason: previousSessionEndReason ?? "unknown",
     });
     // Direct-message browser tabs use a peer-scoped runtime identity even when

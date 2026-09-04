@@ -5,6 +5,7 @@ import {
   createPluginRuntimeMock,
   resetPluginRuntimeStateForTest,
 } from "openclaw/plugin-sdk/plugin-test-runtime";
+import { upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import {
   closeOpenClawAgentDatabasesForTest,
   closeOpenClawStateDatabaseForTest,
@@ -82,6 +83,56 @@ afterEach(() => {
 });
 
 describe("forkCodexUpstreamSession", () => {
+  it("rejects pending native history before pinning or reading upstream history", async () => {
+    const params = forkParams();
+    params.source.storePath = path.join(stateDir, "sessions.json");
+    await upsertSessionEntry({
+      agentId: params.source.agentId,
+      storePath: params.source.storePath,
+      sessionKey: params.source.sessionKey,
+      entry: { sessionId: params.source.sessionId, updatedAt: Date.now() },
+    });
+    const bindingStore = createCodexTestBindingStore();
+    await bindingStore.mutate(
+      {
+        kind: "session",
+        agentId: params.source.agentId,
+        sessionId: params.source.sessionId,
+        sessionKey: params.source.sessionKey,
+      },
+      {
+        kind: "set",
+        binding: {
+          threadId: "thread-canonical",
+          cwd: "/tmp",
+          nativeCompactionSyncPending: true,
+        },
+      },
+    );
+    const { control, controlFactory, forkThread } = forkControl();
+    const withPinnedConnection = vi.spyOn(control, "withPinnedConnection");
+    const runtime = createForkTestRuntime(params.source.storePath, bindingStore);
+
+    await expect(
+      forkCodexUpstreamSession(params, {
+        bindingStore,
+        controlFactory,
+        harnessRuntimeId: "codex",
+        resolveConfig: () => ({ session: { store: params.source.storePath } }),
+        runtime,
+      }),
+    ).resolves.toMatchObject({
+      status: "failed",
+      code: "upstream-unavailable",
+      message: expect.stringContaining("native history is synchronizing"),
+    });
+
+    expect(withPinnedConnection).not.toHaveBeenCalled();
+    expect(boundaryMocks.listTurns).not.toHaveBeenCalled();
+    expect(forkThread).not.toHaveBeenCalled();
+    expect(runtime.agent.session.createSessionEntry).not.toHaveBeenCalled();
+  });
+
   it("verifies the original source cut, imports history, then links before binding", async () => {
     const sourceThreadId = "thread-source";
     const retainedTurn = codexForkTurn("turn-1", "one");
@@ -204,6 +255,10 @@ describe("forkCodexUpstreamSession", () => {
       await expect(
         forkCodexUpstreamSession(params, {
           bindingStore: {
+            reconcileSessionGeneration: vi.fn(async (identity) => ({
+              kind: "current",
+              sessionId: identity.sessionId,
+            })),
             read: vi.fn(() => ({
               threadId: "thread-canonical",
               connectionScope: "supervision",

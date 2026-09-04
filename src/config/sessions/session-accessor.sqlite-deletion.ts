@@ -93,6 +93,9 @@ export async function withSqliteSessionDeletions<T>(
   run: (assertCurrent: () => void) => Promise<T>,
   options: { additionalIdentities?: readonly string[] } = {},
 ): Promise<T> {
+  const ownerStorePath =
+    scope.ownerStorePath ??
+    resolveSessionStorePathCore(undefined, { agentId: scope.agentId, env: scope.env });
   const targets: AgentHarnessSessionDeletionTarget[] = [
     ...new Map(
       entries
@@ -103,15 +106,13 @@ export async function withSqliteSessionDeletions<T>(
             agentId: parseAgentSessionKey(sessionKey)?.agentId ?? scope.agentId,
             sessionKey,
             sessionId: entry.sessionId,
+            storePath: ownerStorePath,
             ...(entry.lifecycleRevision ? { lifecycleRevision: entry.lifecycleRevision } : {}),
             ...(entry.agentHarnessId ? { agentHarnessId: entry.agentHarnessId } : {}),
           },
         ]),
     ).values(),
   ].toSorted((a, b) => a.sessionKey.localeCompare(b.sessionKey));
-  const ownerStorePath =
-    scope.ownerStorePath ??
-    resolveSessionStorePathCore(undefined, { agentId: scope.agentId, env: scope.env });
   for (const target of targets) {
     target.initialization = getSessionInitializationRollback({
       ...target,
@@ -194,11 +195,26 @@ export function commitSqliteSessionDeletion(sessionKey: string, entry: SessionEn
 
 /** Roll back companion state only if SQLite failed before COMMIT, never after publication. */
 export function runSqliteSessionDeletionTransaction<T>(
-  operation: (database: OpenClawAgentDatabase) => T,
+  operation: (database: OpenClawAgentDatabase, commitCompanion?: () => void) => T,
   options: Parameters<typeof runOpenClawAgentWriteTransaction>[1],
   transactionOptions?: Parameters<typeof runOpenClawAgentWriteTransaction>[2],
+  companion?: AgentHarnessSessionDeletionMutation,
 ): T {
-  if (!deletions.getStore() || transactionMutations.getStore()) {
+  const commitCompanion = (rollback: AgentHarnessSessionDeletionMutation[]) => () => {
+    if (companion) {
+      rollback.push(companion);
+      companion.commit();
+    }
+  };
+  const active = transactionMutations.getStore();
+  if (active) {
+    return runOpenClawAgentWriteTransaction(
+      (database) => operation(database, commitCompanion(active.rollback)),
+      options,
+      transactionOptions,
+    );
+  }
+  if (!deletions.getStore() && !companion) {
     return runOpenClawAgentWriteTransaction(operation, options, transactionOptions);
   }
   const rollback: AgentHarnessSessionDeletionMutation[] = [];
@@ -212,7 +228,7 @@ export function runSqliteSessionDeletionTransaction<T>(
             committed = true;
             initializations.forEach(commitSessionInitializationRollback);
           });
-          return operation(database);
+          return operation(database, commitCompanion(rollback));
         },
         options,
         transactionOptions,
@@ -232,7 +248,7 @@ export function runSqliteSessionDeletionTransaction<T>(
     if (failures.length > 1) {
       throw createSqliteLifecycleAggregateError(
         failures,
-        "Session deletion rollback failed",
+        "Session companion rollback failed",
         error,
       );
     }

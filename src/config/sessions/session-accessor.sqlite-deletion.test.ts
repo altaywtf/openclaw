@@ -379,10 +379,19 @@ describe("session deletion and native owner state", () => {
     database.db.exec(
       "CREATE TEMP TRIGGER reject_session_delete BEFORE DELETE ON session_nodes BEGIN SELECT RAISE(ABORT, 'injected session delete failure'); END",
     );
-    const owner = nativeOwner();
+    const prepare = vi.fn(async () => {});
+    const owner = nativeOwner({ prepare });
 
     await expect(owner.run(() => remove())).rejects.toThrow("injected session delete failure");
 
+    expect(prepare).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "main",
+        sessionId,
+        sessionKey,
+        storePath,
+      }),
+    );
     expect(read()?.sessionId).toBe(sessionId);
     expect(bindings.get(sessionKey)).toBe(`thread:${sessionKey}`);
   });

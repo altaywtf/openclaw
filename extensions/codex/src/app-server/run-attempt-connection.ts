@@ -24,6 +24,7 @@ import {
 } from "./binding-connection.js";
 import {
   canUseCodexModelBackedApprovalsReviewerForModel,
+  isCodexSandboxExecServerEnabled,
   isCodexPairedNodeRemoteExecPlacementSandbox,
   isCodexRemoteExecPlacementSandbox,
   readCodexPluginConfig,
@@ -34,7 +35,10 @@ import {
   resolveOpenClawExecPolicyForCodexAppServer,
   type CodexAppServerRuntimeOptions,
 } from "./config.js";
-import { createCodexDynamicToolBuildStageTracker } from "./dynamic-tool-build.js";
+import {
+  createCodexDynamicToolBuildStageTracker,
+  shouldEnableCodexAppServerNativeToolSurface,
+} from "./dynamic-tool-build.js";
 import { resolveCodexNativeHookRelayEvents } from "./native-hook-relay.js";
 import { isCodexAppServerProfilerEnabled } from "./profiler-flag.js";
 import { ensureCodexWorkspaceDirOnce } from "./run-attempt-lifecycle.js";
@@ -207,20 +211,20 @@ export async function prepareCodexAttemptConnection({ params, options }: CodexRu
       bindingIdentity = physicalIdentity;
     }
   }
-  let startupBinding = bindingStore.read(bindingIdentity);
-  assertCodexSessionRuntimeOwnership(startupBinding, params.expectedSessionRuntimeOwnership);
-  if (!startupBinding && bindingIdentity.kind === "session" && bindingIdentity.sessionKey) {
+  if (bindingIdentity.kind === "session" && bindingIdentity.sessionKey) {
     const reclaimed = await reclaimCurrentCodexSessionGeneration({
       bindingStore,
       identity: bindingIdentity,
       config: params.config,
       storePath: params.sessionTarget?.storePath,
+      assertCurrent: () => params.abortSignal?.throwIfAborted(),
     });
     if (!reclaimed) {
       throw createCodexSessionGenerationSupersededError(bindingIdentity.sessionId);
     }
-    startupBinding = bindingStore.read(bindingIdentity);
   }
+  let startupBinding = bindingStore.read(bindingIdentity);
+  assertCodexSessionRuntimeOwnership(startupBinding, params.expectedSessionRuntimeOwnership);
   preDynamicStartupStages.mark("read-binding");
   const usesSupervisionConnection = startupBinding?.connectionScope === "supervision";
   if (usesSupervisionConnection) {
@@ -458,6 +462,12 @@ export async function prepareCodexAttemptConnection({ params, options }: CodexRu
     params.sessionRoot = sessionPermissionPolicy.root;
     (params.execOverrides ??= {}).mode = sessionPermissionPolicy.execMode;
   }
+  const sandboxExecServerEnabled = isCodexSandboxExecServerEnabled(pluginConfig, sandbox);
+  const nativeToolSurfaceEnabled = shouldEnableCodexAppServerNativeToolSurface(params, sandbox, {
+    agentId: policyAgentId,
+    runtimeSessionKey: sandboxSessionKey,
+    sandboxExecServerEnabled,
+  });
   const nativeHookRelayEvents = resolveCodexNativeHookRelayEvents({
     configuredEvents: options.nativeHookRelay?.events,
     appServer,
@@ -515,6 +525,8 @@ export async function prepareCodexAttemptConnection({ params, options }: CodexRu
     effectiveCwd,
     appServer,
     sessionPermissionPolicy,
+    sandboxExecServerEnabled,
+    nativeToolSurfaceEnabled,
     nativeHookRelayEvents,
     runAbortController,
     terminalState,

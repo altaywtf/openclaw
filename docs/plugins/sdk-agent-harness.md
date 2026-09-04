@@ -965,7 +965,22 @@ idempotent history match must report `false`.
 Store native bindings in plugin state. Implement `reset(...)` for an in-place
 session reset and `withSessionDeletion(params, run)` for removal of a session
 key, including expiry and maintenance. A physical session ID changing at the
-same key is a transfer, not deletion; preserve any compaction adoption path.
+same key is a lifecycle transition, not deletion.
+
+Harnesses that preserve native state across context-engine compaction can
+implement `withContextEngineCompaction(params, run)`. Use the exact
+`params.storePath` and treat `params.assertCurrent()` as revocable authority:
+recheck it after awaited work and before each native-state mutation.
+
+Inside `run(transaction)`, call `markProducerCommitted()` only after the
+compaction producer has durably completed. `prepareSuccessor(sessionId)`
+returns the companion mutation whose synchronous `commit()` runs with the host
+session-row write and whose `rollback()` runs if that write fails. Call
+`complete()` only after the committed successor has been published to the
+caller. If completion is interrupted or ambiguous after the host commit, leave
+the transition durable; the next authoritative session operation reconciles it
+against the exact host row instead of guessing which generation owns the
+binding.
 
 `withSessionDeletion` acquires the native owner's lease before calling
 `run({ commit, rollback })`. Core invokes the synchronous `commit()` at the

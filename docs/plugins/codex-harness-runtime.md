@@ -508,15 +508,32 @@ bundle.
 
 ## Compaction and transcript mirror
 
-When the selected model uses the Codex harness, native thread compaction
-belongs to Codex app-server. OpenClaw does not run preflight compaction for
-Codex turns, replace Codex compaction with context-engine compaction, or fall
-back to OpenClaw or public OpenAI summarization when native compaction cannot
-be started. OpenClaw keeps a transcript mirror for channel history, search,
-`/new`, `/reset`, and future model or harness switching.
+When the selected model uses the Codex harness, Codex app-server owns native
+token-pressure and native manual compaction. OpenClaw does not fall back to
+public OpenAI summarization when native compaction cannot start. It keeps a
+separate transcript mirror for channel history, search, `/new`, `/reset`, and
+future model or harness switching.
 
-Explicit compaction requests, such as `/compact` or a plugin-requested manual
-compact operation, start native Codex compaction with `thread/compact/start`.
+Context-engine compaction of that host-owned mirror can rotate the OpenClaw session while
+preserving the exact Codex thread binding. The transition is stored until the
+host session-row commit is confirmed. When native synchronization is required,
+the successor binding keeps that fact pending across Gateway restarts. The next
+normal source-session turn reconciles the host generation and completes the
+required native preflight before starting inference.
+
+A `thread/compact/start` response only acknowledges the RPC. OpenClaw clears
+pending native synchronization only after Codex emits the matching terminal
+`contextCompaction` item and terminal compaction turn. Cancellation,
+interruption, transport ambiguity, or a non-terminal response leaves the
+pending state intact and normal continuation fails closed.
+
+History-copy and model-executing workflows also fail closed while native
+history is synchronizing. State-only goal, model, and fast controls remain
+available. `/codex compact` delegates to the active host compaction owner so it
+can finish or reconcile the transition rather than bypassing it.
+
+Native manual compact operations start Codex compaction with
+`thread/compact/start`.
 OpenClaw keeps the request and shared-client lease open until Codex emits the
 matching `contextCompaction` completion item and then reports the compaction
 turn as completed. If that terminal turn exceeds the configured compaction

@@ -41,8 +41,9 @@ import type { EmbeddedRunAttemptResult } from "./types.js";
 type ContextEngine = Awaited<ReturnType<typeof resolveContextEngine>>;
 type SessionPromptState = ReturnType<typeof createEmbeddedRunSessionPromptState>;
 type CompactionResult = Awaited<ReturnType<ContextEngine["compact"]>>;
+type CompactionRuntime = ReturnType<typeof createEmbeddedRunCompactionRuntime>;
 
-export type EmbeddedRunCompactionRecoveryInput = {
+export type EmbeddedRunCompactionRecoveryInput = CompactionRuntime & {
   runParams: RunEmbeddedAgentParams;
   state: EmbeddedRunContextRecoveryState;
   contextEngine: ContextEngine;
@@ -66,32 +67,6 @@ export type EmbeddedRunCompactionRecoveryInput = {
     tokenBudget?: number | null;
     degradedReason?: string | null;
   }) => ReturnType<typeof buildContextEngineRuntimeSettings>;
-  onCompactionHookMessages: (payload: {
-    phase: "before" | "after";
-    messages: string[];
-  }) => Promise<void>;
-  runOwnsCompactionBeforeHook: (reason: string) => Promise<void>;
-  runOwnsCompactionAfterHook: (
-    reason: string,
-    result: CompactionResult,
-    previousSessionId?: string,
-  ) => Promise<void>;
-  adoptCompactionTranscript: (
-    result: CompactionResult,
-    onAccepted?: () => void,
-  ) => Promise<string | undefined>;
-  getActiveSession: () => {
-    id: string;
-    file: string;
-    target?: ContextEngineSessionTarget;
-  };
-  assertRecoveryActive: () => void;
-  prepareRecoveryOwner: ReturnType<
-    typeof createEmbeddedRunCompactionRuntime
-  >["prepareRecoveryOwner"];
-  prepareRecoverySession: ReturnType<
-    typeof createEmbeddedRunCompactionRuntime
-  >["prepareRecoverySession"];
   prepareCompactedTranscriptRetry: (assertActive: () => void) => Promise<void>;
   armPostCompactionGuard: () => void;
   usageAccumulator: UsageAccumulator;
@@ -294,7 +269,7 @@ export async function compactEmbeddedRunForRecovery(
     sameTarget &&
     (target?.threadId === undefined || target.threadId === activeSession.target.threadId);
   const previousSessionId =
-    result.compacted && !retainMemoryTranscript
+    result.ok && result.compacted && !retainMemoryTranscript
       ? await input.adoptCompactionTranscript(result, sameTarget ? undefined : recordTokensAfter)
       : undefined;
   input.assertRecoveryActive();
@@ -309,11 +284,9 @@ export function createEmbeddedRunCompactionRuntime(input: {
   sessionPromptState: SessionPromptState;
 }) {
   const { runParams: params, contextEngine, hookRunner, hookContext, sessionPromptState } = input;
-  const abortSignal = params.abortSignal;
   const admittedAssertion = params.admittedRunContext
     ? resolveAdmittedRunActiveAssertion(params.admittedRunContext)
     : undefined;
-  const runId = params.runId;
   const memoryManager =
     params.sessionManager && !params.sessionManager.getSessionTarget()
       ? params.sessionManager
@@ -321,7 +294,7 @@ export function createEmbeddedRunCompactionRuntime(input: {
   const detached = params.sessionPersistence === "detached";
   const assertAdmittedActive = () => {
     // Preserve the caller's reason before a closed admission can replace it.
-    abortSignal?.throwIfAborted();
+    params.abortSignal?.throwIfAborted();
     if (!admittedAssertion) {
       throw new Error("compaction recovery requires an active admitted run");
     }
@@ -339,7 +312,6 @@ export function createEmbeddedRunCompactionRuntime(input: {
     const entry =
       target?.sessionKey && target.storePath
         ? loadSessionEntry({
-            agentId: target.agentId,
             sessionKey: target.sessionKey,
             storePath: target.storePath,
             readConsistency: "latest",
@@ -347,7 +319,7 @@ export function createEmbeddedRunCompactionRuntime(input: {
         : undefined;
     if (
       !writerFence ||
-      writerFence.expectedWriterRunId !== runId ||
+      writerFence.expectedWriterRunId !== params.runId ||
       entry?.sessionId !== sessionId ||
       entry.lifecycleRevision !== writerFence.expectedLifecycleRevision ||
       entry.activeWriterRunId !== writerFence.expectedWriterRunId
@@ -371,9 +343,7 @@ export function createEmbeddedRunCompactionRuntime(input: {
   };
   const prepareRecoveryOwner = () => {
     assertRecoveryActive();
-    const sessionId = sessionPromptState.sessionId;
-    const sessionFile = sessionPromptState.sessionFile;
-    const writerFence = sessionPromptState.sessionWriterFence;
+    const { sessionId, sessionFile, sessionWriterFence: writerFence } = sessionPromptState;
     const target = { ...getPreparedTarget(), ...writerFence };
     const assertActive = () => {
       assertRecoveryTarget(target, sessionId, writerFence);

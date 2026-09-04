@@ -158,10 +158,6 @@ function makeRecoveryInput(
     runOwnsCompactionBeforeHook: vi.fn(async () => {}),
     runOwnsCompactionAfterHook: vi.fn(async () => {}),
     adoptCompactionTranscript: vi.fn(async () => undefined),
-    getActiveSession: () => ({
-      id: "session-1",
-      file: runParams.sessionFile ?? runParams.sessionKey ?? runParams.sessionId,
-    }),
     prepareCompactedTranscriptRetry: vi.fn(async () => {}),
     armPostCompactionGuard: vi.fn(),
     usageAccumulator: createUsageAccumulator(),
@@ -411,9 +407,7 @@ describe("compactEmbeddedRunForRecovery", () => {
         const completedFact = { ok: false, compacted: true, reason: error.message };
         expect.soft(settled.result).toMatchObject(completedFact);
         expect.soft(settled.result.result).toBeUndefined();
-        expect
-          .soft(input.adoptCompactionTranscript)
-          .toHaveBeenCalledExactlyOnceWith(completedFact, undefined);
+        expect.soft(input.adoptCompactionTranscript).not.toHaveBeenCalled();
       } else {
         await expect(pending).resolves.toMatchObject({ result: { ok: outcome === "returned" } });
       }

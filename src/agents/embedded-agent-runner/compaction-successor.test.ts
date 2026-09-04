@@ -13,6 +13,7 @@ import {
 } from "../../process/gateway-work-admission.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import type { PreparedAgentRunAdmission } from "../admitted-run-context.js";
+import type { AgentHarnessContextEngineCompactionTransaction } from "../harness/types.js";
 import type {
   AcceptedCompactionSuccessor,
   acceptCompactionSuccessor,
@@ -272,24 +273,47 @@ describe("acceptCompactionSuccessor", () => {
     },
   );
 
-  it.each([false, true])(
-    "does not write or notify when the accepted identity is unchanged (compacted=%s)",
-    async (compacted) => {
-      await withAcceptanceFixture({}, async (fixture) => {
-        const before = fixture.loadEntry();
-        const identity = vi.fn();
-        fixture.observeIdentity(identity);
-        const accepted = await fixture.accept({ result: { ok: true, compacted } });
-        expect(accepted.previousSessionId).toBeUndefined();
-        expect(accepted.sessionTarget).toEqual(fixture.target);
-        expect(fixture.loadEntry()).toEqual(before);
-        expect(fixture.facts).toEqual([]);
-        expect(identity).not.toHaveBeenCalled();
-        expect(hooks.runSessionEnd).not.toHaveBeenCalled();
-        expect(hooks.runSessionStart).not.toHaveBeenCalled();
+  it("rejects an unsuccessful same-identity compaction without writing or notifying", async () => {
+    await withAcceptanceFixture({}, async (fixture) => {
+      const before = fixture.loadEntry();
+      const identity = vi.fn();
+      fixture.observeIdentity(identity);
+
+      await expect(fixture.accept({ result: { ok: true, compacted: false } })).rejects.toThrow(
+        "without a successful completed compaction",
+      );
+
+      expect(fixture.loadEntry()).toEqual(before);
+      expect(fixture.facts).toEqual([]);
+      expect(identity).not.toHaveBeenCalled();
+      expect(hooks.runSessionEnd).not.toHaveBeenCalled();
+      expect(hooks.runSessionStart).not.toHaveBeenCalled();
+    });
+  });
+
+  it("publishes a successful same-identity compaction without rotating lifecycle", async () => {
+    await withAcceptanceFixture({}, async (fixture) => {
+      const before = fixture.loadEntry();
+      const identity = vi.fn();
+      fixture.observeIdentity(identity);
+
+      const accepted = await fixture.accept({
+        result: {
+          ok: true,
+          compacted: true,
+          result: { sessionId: fixture.target.sessionId, tokensBefore: 4_097 },
+        },
       });
-    },
-  );
+
+      expect(accepted.previousSessionId).toBeUndefined();
+      expect(accepted.sessionTarget).toEqual(fixture.target);
+      expect(fixture.loadEntry()).toEqual(before);
+      expect(fixture.facts).toEqual([accepted]);
+      expect(identity).not.toHaveBeenCalled();
+      expect(hooks.runSessionEnd).not.toHaveBeenCalled();
+      expect(hooks.runSessionStart).not.toHaveBeenCalled();
+    });
+  });
 
   it.each([
     { ok: false, compacted: true },
@@ -392,6 +416,107 @@ describe("acceptCompactionSuccessor", () => {
       expect(hooks.runSessionEnd).toHaveBeenCalledOnce();
       expect(hooks.runSessionStart).toHaveBeenCalledOnce();
       await vi.waitFor(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
+    });
+  });
+
+  it.each([
+    { label: "P->S", sameSession: false },
+    { label: "P->P", sameSession: true },
+  ])("publishes $label only after the host mutation commits", async ({ sameSession }) => {
+    await withAcceptanceFixture({}, async (fixture) => {
+      const phases: string[] = [];
+      const nextSessionId = sameSession ? fixture.target.sessionId : fixture.successorId;
+      const harnessTransaction: AgentHarnessContextEngineCompactionTransaction = {
+        markProducerCommitted: vi.fn(),
+        rollbackBeforeProducerCommit: vi.fn(),
+        prepareSuccessor: vi.fn((sessionId) => {
+          phases.push(`prepare:${sessionId}`);
+          return {
+            commit: () => phases.push("host-commit"),
+            rollback: () => phases.push("host-rollback"),
+            complete: () => phases.push("host-complete"),
+          };
+        }),
+      };
+
+      const accepted = await fixture.accept({
+        harnessTransaction,
+        result: {
+          ok: true,
+          compacted: true,
+          result: { sessionId: nextSessionId, tokensBefore: 4_097, tokensAfter: 3_000 },
+        },
+        onCommitted: (fact) => {
+          phases.push(`published:${fact.entry.sessionId}`);
+          expect(fixture.loadEntry()?.sessionId).toBe(nextSessionId);
+        },
+      });
+
+      expect(accepted.entry.sessionId).toBe(nextSessionId);
+      expect(phases).toEqual([
+        `prepare:${nextSessionId}`,
+        "host-commit",
+        `published:${nextSessionId}`,
+        "host-complete",
+      ]);
+    });
+  });
+
+  it("rolls back the prepared host mutation when the SQLite commit fails", async () => {
+    await withAcceptanceFixture({}, async (fixture) => {
+      const phases: string[] = [];
+      const commitError = new Error("host mutation failed");
+      const before = fixture.loadEntry();
+
+      await expect(
+        fixture.accept({
+          harnessTransaction: {
+            markProducerCommitted: vi.fn(),
+            rollbackBeforeProducerCommit: vi.fn(),
+            prepareSuccessor: () => ({
+              commit: () => {
+                phases.push("host-commit");
+                throw commitError;
+              },
+              rollback: () => phases.push("host-rollback"),
+              complete: () => phases.push("host-complete"),
+            }),
+          },
+        }),
+      ).rejects.toBe(commitError);
+
+      expect(phases).toEqual(["host-commit", "host-rollback"]);
+      expect(fixture.loadEntry()).toEqual(before);
+      expect(fixture.facts).toEqual([]);
+    });
+  });
+
+  it("returns the committed successor when host completion becomes ambiguous", async () => {
+    await withAcceptanceFixture({}, async (fixture) => {
+      const phases: string[] = [];
+      const accepted = await fixture.accept({
+        harnessTransaction: {
+          markProducerCommitted: vi.fn(),
+          rollbackBeforeProducerCommit: vi.fn(),
+          prepareSuccessor: () => ({
+            commit: () => phases.push("host-commit"),
+            rollback: () => phases.push("host-rollback"),
+            complete: () => {
+              phases.push("host-complete");
+              throw new Error("completion receipt lost");
+            },
+          }),
+        },
+        onCommitted: (fact) => {
+          phases.push("published");
+          fixture.stop();
+          expect(fact.entry.sessionId).toBe(fixture.successorId);
+        },
+      });
+
+      expect(accepted.entry.sessionId).toBe(fixture.successorId);
+      expect(fixture.loadEntry()).toEqual(accepted.entry);
+      expect(phases).toEqual(["host-commit", "published", "host-complete"]);
     });
   });
 });

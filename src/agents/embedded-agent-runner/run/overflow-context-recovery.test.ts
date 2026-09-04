@@ -130,11 +130,6 @@ describe("recoverEmbeddedRunOverflow transcript ownership", () => {
             }),
           runOwnsCompactionAfterHook: afterHook,
           adoptCompactionTranscript,
-          getActiveSession: () => ({
-            id: sessionPromptState.sessionId,
-            file: sessionPromptState.sessionFile,
-            target: sessionPromptState.sessionTarget,
-          }),
           prepareCurrentTranscriptRetry,
           prepareCompactedTranscriptRetry: async () => {},
           markOwnedTranscriptRetry: vi.fn(),

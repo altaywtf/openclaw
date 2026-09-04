@@ -13,11 +13,13 @@ import {
   resolveCodexNativeExecutionBlock,
   resolveCodexNativeSandboxBlock,
 } from "./app-server/sandbox-guard.js";
-import type {
-  CodexAppServerBindingIdentity,
-  CodexAppServerThreadBinding,
+import {
+  assertCodexNativeHistoryReady,
+  readReconciledCodexSessionBinding,
+  sessionBindingIdentity,
+  type CodexAppServerBindingIdentity,
+  type CodexAppServerThreadBinding,
 } from "./app-server/session-binding.js";
-import { sessionBindingIdentity } from "./app-server/session-binding.js";
 import { isSameCodexAppServerThreadOwner } from "./app-server/thread-ownership.js";
 import { assertCodexSupervisionThreadLineage } from "./app-server/thread-policy.js";
 import {
@@ -37,6 +39,7 @@ import { CODEX_CONTROL_METHODS, type CodexCommandDeps } from "./command-handler-
 import {
   resolveCodexConversationControlScope,
   resolveControlTarget,
+  readControlTargetBinding,
 } from "./command-handler-scope.js";
 import type { CodexControlRequestOptions } from "./command-rpc.js";
 import { parseCodexFastModeArg, parseCodexPermissionsModeArg } from "./conversation-control.js";
@@ -194,7 +197,7 @@ export async function handleNativeGoal(
   if (!target) {
     return "Cannot manage the Codex goal because this command has no stable binding identity.";
   }
-  const binding = deps.bindingStore.read(target.identity);
+  const binding = await readControlTargetBinding(deps, ctx, target);
   if (!binding?.threadId) {
     return "No Codex thread is attached to this OpenClaw session yet.";
   }
@@ -265,9 +268,8 @@ export async function handleNativeGoal(
       },
       {
         ...goalRequestOptions,
-        ...((isObjectiveUpdate || requestedStatus === "active") &&
-        connection.usesSupervisionConnection
-          ? { beforeRequest: supervisedCommandGuard(deps, target.identity, binding) }
+        ...(isObjectiveUpdate || requestedStatus === "active"
+          ? { beforeRequest: modelExecutionGuard(deps, target.identity, binding) }
           : {}),
       },
     ),
@@ -355,7 +357,9 @@ export async function setConversationModel(
     const currentSession =
       ctx.sessionId && ctx.sessionKey
         ? getSessionEntry({
-            storePath: resolveStorePath(ctx.config.session?.store, { agentId: target.agentId }),
+            storePath:
+              ctx.sessionTarget?.storePath ??
+              resolveStorePath(ctx.config.session?.store, { agentId: target.agentId }),
             sessionKey: ctx.sessionKey,
             hydrateSkillPromptRefs: false,
             readConsistency: "latest",
@@ -365,7 +369,7 @@ export async function setConversationModel(
       currentSession && currentSession.sessionId === ctx.sessionId
         ? (currentSession.modelOverride ?? currentSession.model)
         : undefined;
-    const binding = deps.bindingStore.read(target.identity);
+    const binding = await readControlTargetBinding(deps, ctx, target);
     // Direct sessions report their desired selection; bound conversations
     // must never mistake an ambient outer-session model for native ownership.
     const activeModel =
@@ -381,6 +385,7 @@ export async function setConversationModel(
     model: normalized,
     agentDir: target.agentDir,
     config: ctx.config,
+    storePath: ctx.sessionTarget?.storePath,
   });
 }
 
@@ -404,7 +409,9 @@ export async function setConversationFastMode(
   return await deps.setCodexConversationFastMode({
     identity: target.identity,
     bindingStore: deps.bindingStore,
+    config: ctx.config,
     enabled: parsed,
+    storePath: ctx.sessionTarget?.storePath,
   });
 }
 
@@ -455,7 +462,7 @@ export async function startThreadAction(
   if (!target) {
     return `Cannot start Codex ${kind === "compact" ? "compaction" : "review"} because this command did not include a stable binding identity.`;
   }
-  const binding = deps.bindingStore.read(target.identity);
+  const binding = await readControlTargetBinding(deps, ctx, target);
   if (!binding?.threadId) {
     return `No Codex thread is attached to this OpenClaw session yet.`;
   }
@@ -483,16 +490,17 @@ export async function startThreadAction(
       return "Codex compaction is unavailable because the current OpenClaw session is not using the Codex runtime.";
     }
     if (target.identity.kind === "conversation") {
-      const sessionBinding = ctx.sessionId
-        ? deps.bindingStore.read(
-            sessionBindingIdentity({
-              sessionId: ctx.sessionId,
-              sessionKey: ctx.sessionKey,
-              agentId: sessionTarget.agentId,
-              config: ctx.config,
-            }),
-          )
-        : undefined;
+      const sessionBinding = await readReconciledCodexSessionBinding(
+        deps.bindingStore,
+        sessionBindingIdentity({
+          sessionId: ctx.sessionId,
+          sessionKey: ctx.sessionKey,
+          agentId: sessionTarget.agentId,
+          config: ctx.config,
+        }),
+        ctx.config,
+        sessionTarget.storePath,
+      );
       if (!isSameCodexAppServerThreadOwner(binding, sessionBinding)) {
         return "Codex compaction is unavailable because the conversation-bound thread differs from the current session binding. Resume that thread into the session first.";
       }
@@ -519,11 +527,11 @@ export async function startThreadAction(
       {
         agentDir: target.agentDir,
         authProfileId: connection.clientAuthProfileId,
+        beforeRequest: modelExecutionGuard(deps, target.identity, binding),
         config: ctx.config,
         ...(connection.usesSupervisionConnection
           ? {
               startOptions: connection.appServer.start,
-              beforeRequest: supervisedCommandGuard(deps, target.identity, binding),
             }
           : {}),
       },
@@ -532,21 +540,27 @@ export async function startThreadAction(
   return `Started Codex review for thread ${formatCodexDisplayText(binding.threadId)}.`;
 }
 
-function supervisedCommandGuard(
+function modelExecutionGuard(
   deps: CodexCommandDeps,
   identity: CodexAppServerBindingIdentity,
   binding: CodexAppServerThreadBinding,
 ): NonNullable<CodexControlRequestOptions["beforeRequest"]> {
   return async (_request, client, scope) => {
-    const { thread } = await client.request("thread/read", {
-      threadId: binding.threadId,
-      includeTurns: false,
-    });
-    scope.assertCurrent();
-    if (!isDeepStrictEqual(deps.bindingStore.read(identity), binding)) {
-      throw new Error("Codex command binding changed before model execution");
+    const assertReady = () => {
+      scope.assertCurrent();
+      if (!isDeepStrictEqual(deps.bindingStore.read(identity), binding)) {
+        throw new Error("Codex command binding changed before model execution");
+      }
+      assertCodexNativeHistoryReady(binding);
+    };
+    assertReady();
+    if (binding.connectionScope === "supervision") {
+      const { thread } = await client.request("thread/read", {
+        threadId: binding.threadId,
+        includeTurns: false,
+      });
+      assertReady();
+      assertCodexSupervisionThreadLineage(binding, thread);
     }
-    scope.assertCurrent();
-    assertCodexSupervisionThreadLineage(binding, thread);
   };
 }

@@ -314,6 +314,13 @@ export const resolveSandboxContextMock = vi.fn<
 export const maybeCompactAgentHarnessSessionMock: Mock<
   (params?: unknown, options?: unknown) => Promise<unknown>
 > = vi.fn(async () => undefined);
+export const withHarnessContextEngineCompactionMock: Mock<
+  (
+    params: Parameters<
+      typeof import("../harness/compaction.js").withHarnessContextEngineCompaction
+    >[0],
+  ) => Promise<unknown>
+> = vi.fn(async (params) => await params.run());
 export const rotateTranscriptAfterCompactionMock: Mock<
   (_params?: unknown) => Promise<{
     rotated: boolean;
@@ -616,6 +623,8 @@ export function resetCompactHooksHarnessMocks(workspaceDir: string): void {
     reason: undefined,
     result: { summary: "engine-summary", tokensBefore: 120, tokensAfter: 50 },
   });
+  withHarnessContextEngineCompactionMock.mockReset();
+  withHarnessContextEngineCompactionMock.mockImplementation(async (params) => await params.run());
 
   resolveModelMock.mockReset();
   resolveModelMock.mockImplementation((provider?: string, modelId?: string) => ({
@@ -718,6 +727,7 @@ export async function loadCompactHooksHarness(options: { durableSession?: boolea
 
   vi.doMock("../harness/compaction.js", () => ({
     maybeCompactAgentHarnessSession: maybeCompactAgentHarnessSessionMock,
+    withHarnessContextEngineCompaction: withHarnessContextEngineCompactionMock,
   }));
   vi.doMock("../cli-runner.js", () => ({ runCliAgent: runCliAgentMock }));
   vi.doMock("../cli-backends.js", async () => {

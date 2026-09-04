@@ -9,8 +9,14 @@ import {
   hasCodexAppServerLiveThread,
   isCodexAppServerLiveThreadClaimed,
 } from "./client-runtime.js";
-import { createCodexTestBindingStore } from "./session-binding.test-helpers.js";
-import { withCodexAppServerSessionDeletion } from "./session-retirement.js";
+import {
+  createCodexTestBindingStore,
+  type CodexAppServerBindingStore,
+} from "./session-binding.test-helpers.js";
+import {
+  retireCodexAppServerSessionGeneration,
+  withCodexAppServerSessionDeletion,
+} from "./session-retirement.js";
 import * as sharedClients from "./shared-client.js";
 import { createClientHarness } from "./test-support.js";
 import {
@@ -97,6 +103,48 @@ describe("Codex session deletion subscriptions", () => {
     expect(transaction).not.toHaveBeenCalled();
     expect(fixture.bindingStore.read(session)).toEqual(fixture.binding);
     expect(isCodexAppServerLiveThreadClaimed(fixture.client, fixture.binding.threadId)).toBe(true);
+    expect(fixture.request).not.toHaveBeenCalled();
+  });
+
+  it("restores the exact binding when the host deletion transaction rolls back", async () => {
+    const fixture = createFixture();
+    await fixture.seed();
+    await retainCodexAppServerBindingSubscription(fixture.client, fixture.binding.threadId);
+
+    await fixture.remove(session, async (mutation) => {
+      mutation.commit();
+      expect(fixture.bindingStore.read(session)).toBeUndefined();
+      mutation.rollback();
+    });
+
+    expect(fixture.bindingStore.read(session)).toEqual(fixture.binding);
+    expect(
+      await consumeCodexAppServerLiveThread(fixture.client, fixture.binding.threadId),
+    ).toBeDefined();
+    expect(fixture.request).not.toHaveBeenCalled();
+  });
+
+  it("rejects retirement when same-thread binding metadata changes inside the lease", async () => {
+    const fixture = createFixture();
+    await fixture.seed();
+    const replacement = { ...fixture.binding, cwd: "/replacement" };
+    const racingStore: CodexAppServerBindingStore = {
+      ...fixture.bindingStore,
+      async withLease(identity, run) {
+        await fixture.bindingStore.mutate(identity, { kind: "set", binding: replacement });
+        return await fixture.bindingStore.withLease(identity, run);
+      },
+    };
+
+    await expect(
+      retireCodexAppServerSessionGeneration({
+        bindingStore: racingStore,
+        identity: session,
+        mode: "reset",
+        expectedBinding: fixture.binding,
+      }),
+    ).resolves.toBe("conflict");
+    expect(fixture.bindingStore.read(session)).toEqual(replacement);
     expect(fixture.request).not.toHaveBeenCalled();
   });
 

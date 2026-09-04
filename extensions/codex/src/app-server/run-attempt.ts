@@ -1,6 +1,8 @@
+import { isDeepStrictEqual } from "node:util";
 import type { EmbeddedRunAttemptParamsV2 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { createCodexAttemptPreparationTiming } from "./attempt-preparation-timing.js";
 import type { EmbeddedRunAttemptResult } from "./attempt-terminal.js";
+import { synchronizePendingCodexNativeCompaction } from "./compact.js";
 import { activateCodexAttemptTurn } from "./run-attempt-active-turn.js";
 import { cleanupCodexAttempt } from "./run-attempt-cleanup.js";
 import { prepareCodexAttemptConnection } from "./run-attempt-connection.js";
@@ -19,15 +21,103 @@ import { prepareCodexAttemptTurnRequest } from "./run-attempt-turn-request.js";
 import { startCodexAttemptTurn } from "./run-attempt-turn-start.js";
 import { createCodexAttemptTurnState } from "./run-attempt-turn-state.js";
 import type { CodexRunAttemptOptions } from "./run-attempt-types.js";
+import { assertCodexBindingMayBeReplaced } from "./session-binding.js";
+import { retireCodexAppServerSessionGeneration } from "./session-retirement.js";
+
+async function retryPendingCodexNativeCompaction(
+  connection: Awaited<ReturnType<typeof prepareCodexAttemptConnection>>,
+): Promise<"continue" | "reprepare" | "reprepare_after_nonapply"> {
+  const { bindingIdentity, bindingStore, mutable, nativeToolSurfaceEnabled, options, params } =
+    connection;
+  const pendingBinding = mutable.startupBinding;
+  if (pendingBinding?.nativeCompactionSyncPending !== true) {
+    return "continue";
+  }
+  const outcome = await synchronizePendingCodexNativeCompaction(
+    {
+      ...params,
+      model: params.modelId,
+      trigger:
+        params.trigger === "manual" || params.trigger === "overflow" ? params.trigger : undefined,
+      senderId: params.senderId ?? undefined,
+      senderName: params.senderName ?? undefined,
+      senderUsername: params.senderUsername ?? undefined,
+      senderE164: params.senderE164 ?? undefined,
+      nativeToolSurface: nativeToolSurfaceEnabled ? "unrestricted" : "host-isolated",
+    },
+    {
+      bindingStore,
+      pluginConfig: options.pluginConfig,
+      ...(options.clientFactory ? { clientFactory: options.clientFactory } : {}),
+      allowNonManualNativeRequest: true,
+      nativeCompactionRequest: "required_preflight",
+      expectedBinding: pendingBinding,
+    },
+  );
+  const currentBinding = bindingStore.read(bindingIdentity);
+  mutable.startupBinding = currentBinding;
+  mutable.startupContextTokens = undefined;
+  if (outcome.kind === "synchronized" || outcome.kind === "deferred_for_transient_restriction") {
+    return "continue";
+  }
+  params.abortSignal?.removeEventListener("abort", connection.abortFromUpstream);
+  if (outcome.kind === "binding_changed" || !isDeepStrictEqual(currentBinding, outcome.binding)) {
+    return "reprepare";
+  }
+  if (outcome.kind === "retry_pending") {
+    throw new Error(
+      "Codex native compaction retry remains pending before turn/start. Retry the turn after native compaction becomes available.",
+    );
+  }
+  assertCodexBindingMayBeReplaced(
+    outcome.binding,
+    outcome.kind === "stale_thread"
+      ? "recovering stale native compaction history"
+      : "rotating a thread whose persisted restrictions prohibit native compaction",
+    params.expectedSessionRuntimeOwnership,
+  );
+  if (bindingIdentity.kind !== "session") {
+    throw new Error("Codex native compaction recovery requires a session binding");
+  }
+  const retirement = await retireCodexAppServerSessionGeneration({
+    bindingStore,
+    identity: bindingIdentity,
+    mode: "reset",
+    config: params.config,
+    storePath: params.sessionTarget?.storePath,
+    expectedBinding: outcome.binding,
+  });
+  return retirement === "applied" ? "reprepare" : "reprepare_after_nonapply";
+}
 
 export async function runCodexAppServerAttempt(
   params: EmbeddedRunAttemptParamsV2,
   options: CodexRunAttemptOptions,
 ): Promise<EmbeddedRunAttemptResult> {
   const preparation = createCodexAttemptPreparationTiming(params);
-  const connection = await preparation.measure("connection", () =>
-    prepareCodexAttemptConnection({ params, options }),
-  );
+  let connection: Awaited<ReturnType<typeof prepareCodexAttemptConnection>>;
+  for (let repreparations = 0; ; repreparations += 1) {
+    connection = await preparation.measure("connection", () =>
+      prepareCodexAttemptConnection({ params, options }),
+    );
+    let preflight: Awaited<ReturnType<typeof retryPendingCodexNativeCompaction>>;
+    try {
+      preflight = await preparation.measure("native-compaction-sync", () =>
+        retryPendingCodexNativeCompaction(connection),
+      );
+    } catch (error) {
+      params.abortSignal?.removeEventListener("abort", connection.abortFromUpstream);
+      throw error;
+    }
+    if (preflight === "continue") {
+      break;
+    }
+    if (repreparations >= 2) {
+      throw new Error(
+        "Codex binding changed repeatedly during native compaction recovery after 2 repreparations",
+      );
+    }
+  }
   const runtime = await preparation.measure("runtime", () =>
     prepareCodexAttemptRuntime(connection),
   );

@@ -82,7 +82,8 @@ type SourceMigrationResult = {
 };
 
 // Keep the doctor contract graph independent from the full Codex runtime.
-// The runtime parser loaded in migrateSource validates binding payloads before writes.
+// The runtime V1 parser loaded in migrateSource validates binding payloads before writes;
+// in-flight V2 transitions stay untouched until runtime reconciliation completes.
 type MigratedBindingRow =
   | {
       version: 1;

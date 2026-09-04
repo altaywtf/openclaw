@@ -304,11 +304,6 @@ export async function recoverEmbeddedRunAttempt(input: {
     resolveContextEnginePluginId: input.resolveContextEnginePluginId,
     buildRuntimeSettings: input.buildRuntimeSettings,
     ...compactionRuntime,
-    getActiveSession: () => ({
-      id: sessionPromptState.sessionId,
-      file: sessionPromptState.sessionFile,
-      target: sessionPromptState.sessionTarget,
-    }),
     prepareCompactedTranscriptRetry: sessionPromptState.prepareCompactedTranscriptRetry,
     armPostCompactionGuard: input.armPostCompactionGuard,
     usageAccumulator: input.usageAccumulator,

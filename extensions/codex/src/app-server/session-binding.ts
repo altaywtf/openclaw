@@ -6,6 +6,7 @@ import {
   AgentHarnessPreflightError,
   AgentHarnessSessionSupersededError,
   embeddedAgentLog,
+  type AgentHarnessV2,
   type AgentHarnessSessionDeletionMutation,
   type EmbeddedRunAttemptParamsV2,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
@@ -29,12 +30,15 @@ import {
   readCodexBindingTimestamp,
   readCurrentCodexAppServerBinding,
   readStoredCodexAppServerBinding,
+  readStoredCodexAppServerBindingValue,
   stripUndefinedBinding,
   validateBindingForWrite,
   type CodexAppServerBindingIdentity,
   type CodexAppServerPendingSupervisionBranch,
   type CodexAppServerThreadBinding,
   type StoredCodexAppServerBinding,
+  type StoredCodexAppServerBindingV1,
+  type StoredCodexAppServerCompactionTransition,
 } from "./session-binding-record.js";
 export {
   bindingStoreKey,
@@ -172,21 +176,19 @@ type CodexAppServerBindingMutation =
       patch: Partial<Omit<CodexAppServerThreadBinding, "threadId" | "pendingSupervisionBranch">>;
     }
   | {
-      kind: "reclaim-generation";
-      expectedPreviousSessionId: string;
-    }
-  | {
       kind: "clear";
       threadId?: string;
     };
 
-export type CodexSessionGenerationAdoptionResult = "adopted" | "current" | "absent" | "conflict";
-
 export type CodexSessionGenerationRetirementResult = "applied" | "absent" | "conflict";
-
-export type CodexSessionGenerationReclaimPlan =
-  | { kind: "resolved"; result: boolean }
-  | { kind: "verify"; expectedPreviousSessionId: string };
+export type CodexSessionGenerationReconciliation = {
+  kind: "current" | "predecessor" | "successor" | "descendant" | "reset" | "busy" | "conflict";
+  sessionId?: string;
+};
+type CodexHostSessionGeneration = { sessionId: string; previousSessionId?: string };
+type CodexCompactionTransaction = Parameters<
+  Parameters<NonNullable<AgentHarnessV2["withContextEngineCompaction"]>>[1]
+>[0];
 
 export function hashCodexAppServerBindingFingerprint(canonical: string): string {
   return `sha256:${createHash("sha256").update(canonical).digest("hex")}`;
@@ -229,7 +231,7 @@ function normalizeLegacyBindingFingerprints<
 
 export function normalizeStoredCodexAppServerBindingFingerprints(
   value: unknown,
-): StoredCodexAppServerBinding | undefined {
+): StoredCodexAppServerBindingV1 | undefined {
   const stored = readStoredCodexAppServerBinding(value);
   if (!stored || stored.state !== "active") {
     return stored;
@@ -303,6 +305,58 @@ function bindingLeaseLostError(key: string, cause?: unknown): Error {
   return new Error(`Lost Codex binding lease: ${key}`, cause === undefined ? undefined : { cause });
 }
 
+function readBindingValueOrThrow(
+  raw: unknown,
+  key: string,
+): StoredCodexAppServerBinding | undefined {
+  const stored = readStoredCodexAppServerBindingValue(raw);
+  if (raw !== undefined && !stored) {
+    throw new Error(`Invalid Codex app-server binding row: ${key}`);
+  }
+  return stored;
+}
+
+function readNormalBindingOrThrow(
+  raw: unknown,
+  key: string,
+): StoredCodexAppServerBindingV1 | undefined {
+  const stored = readBindingValueOrThrow(raw, key);
+  if (stored?.state === "compaction-transition") {
+    throw new Error(`Codex binding compaction transition is unresolved: ${key}`);
+  }
+  return stored;
+}
+
+function withoutBindingLease<T extends { lease?: unknown }>(value: T) {
+  const { lease: _lease, ...rest } = value;
+  return rest;
+}
+
+function isCurrentSessionGeneration(
+  binding: StoredCodexAppServerBinding,
+  sessionId: string,
+): boolean {
+  return (
+    binding.state !== "compaction-transition" &&
+    (!binding.sessionId || binding.sessionId === sessionId) &&
+    (binding.state !== "cleared" || binding.retired !== true)
+  );
+}
+
+function resolvedTransitionBinding(
+  transition: StoredCodexAppServerCompactionTransition,
+  sessionId: string,
+): StoredCodexAppServerBindingV1 {
+  return {
+    ...transition.previous,
+    sessionId,
+    binding: {
+      ...transition.previous.binding,
+      ...(transition.nativeCompactionSyncPending ? { nativeCompactionSyncPending: true } : {}),
+    },
+  };
+}
+
 export type CodexAppServerBindingStore = {
   /** Durable ownership rows kept separate from replaceable session bindings. */
   managedThreads?: CodexManagedThreadStore;
@@ -316,13 +370,17 @@ export type CodexAppServerBindingStore = {
     mutation: CodexAppServerBindingMutation,
     assertCurrent?: () => void,
   ): Promise<boolean>;
-  prepareSessionGenerationReclaim(
+  reconcileSessionGeneration(
     identity: Extract<CodexAppServerBindingIdentity, { kind: "session" }>,
-  ): Promise<CodexSessionGenerationReclaimPlan>;
-  adoptSessionGeneration(
+    host: CodexHostSessionGeneration | undefined,
+    assertCurrent?: () => void,
+  ): Promise<CodexSessionGenerationReconciliation>;
+  withContextEngineCompaction<T>(
     identity: Extract<CodexAppServerBindingIdentity, { kind: "session" }>,
-    expectedPreviousSessionId: string,
-  ): Promise<CodexSessionGenerationAdoptionResult>;
+    requiresNativeCompactionSync: boolean,
+    assertCurrent: () => void,
+    run: (transaction?: CodexCompactionTransaction) => Promise<T>,
+  ): Promise<T>;
   resetSessionGeneration(
     identity: Extract<CodexAppServerBindingIdentity, { kind: "session" }>,
   ): Promise<CodexSessionGenerationRetirementResult>;
@@ -357,59 +415,46 @@ export function scopeCodexRunBindingStore(params: {
       : identity;
   const mapIdentity = (identity: CodexAppServerBindingIdentity) =>
     identity.kind === "session" ? mapSessionIdentity(identity) : identity;
+  const store = params.bindingStore;
   return {
-    ...params.bindingStore,
-    read: (identity) => params.bindingStore.read(mapIdentity(identity)),
+    ...store,
+    read: (identity) => store.read(mapIdentity(identity)),
     hasOtherThreadOwner: (threadId, identity) =>
-      params.bindingStore.hasOtherThreadOwner(
-        threadId,
-        identity ? mapIdentity(identity) : undefined,
-      ),
-    mutate: (identity, mutation, assertCurrent) =>
-      params.bindingStore.mutate(mapIdentity(identity), mutation, assertCurrent),
-    prepareSessionGenerationReclaim: (identity) =>
-      params.bindingStore.prepareSessionGenerationReclaim(mapSessionIdentity(identity)),
-    adoptSessionGeneration: (identity, expectedPreviousSessionId) =>
-      params.bindingStore.adoptSessionGeneration(
-        mapSessionIdentity(identity),
-        expectedPreviousSessionId,
-      ),
+      store.hasOtherThreadOwner(threadId, identity && mapIdentity(identity)),
+    mutate: (identity, ...args) => store.mutate(mapIdentity(identity), ...args),
+    reconcileSessionGeneration: (identity, ...args) =>
+      store.reconcileSessionGeneration(mapSessionIdentity(identity), ...args),
+    withContextEngineCompaction: (identity, ...args) =>
+      store.withContextEngineCompaction(mapSessionIdentity(identity), ...args),
     resetSessionGeneration: (identity) =>
-      params.bindingStore.resetSessionGeneration(mapSessionIdentity(identity)),
+      store.resetSessionGeneration(mapSessionIdentity(identity)),
     retireSessionGeneration: (identity) =>
-      params.bindingStore.retireSessionGeneration(mapSessionIdentity(identity)),
+      store.retireSessionGeneration(mapSessionIdentity(identity)),
     withSessionDeletion: (identity, assertCurrent, run) =>
-      params.bindingStore.withSessionDeletion(mapSessionIdentity(identity), assertCurrent, run),
-    withThreadArchiveFence: (run) => params.bindingStore.withThreadArchiveFence(run),
-    withLease: (identity, run) => params.bindingStore.withLease(mapIdentity(identity), run),
+      store.withSessionDeletion(mapSessionIdentity(identity), assertCurrent, run),
+    withThreadArchiveFence: (...args) => store.withThreadArchiveFence(...args),
+    withLease: (identity, ...args) => store.withLease(mapIdentity(identity), ...args),
   };
 }
 
 /** Lets the authoritative OpenClaw session generation claim a stale stable binding row. */
-export async function reclaimCurrentCodexSessionGeneration(params: {
+export async function reconcileCurrentCodexSessionGeneration(params: {
   assertCurrent?: () => void;
   bindingStore: CodexAppServerBindingStore;
   identity: Extract<CodexAppServerBindingIdentity, { kind: "session" }>;
   config?: OpenClawConfig;
   storePath?: string;
-}): Promise<boolean> {
+}): Promise<CodexSessionGenerationReconciliation> {
   params.assertCurrent?.();
   const sessionKey = params.identity.sessionKey?.trim();
   if (!sessionKey) {
-    return true;
+    return { kind: "current" };
   }
-  const plan = await params.bindingStore.prepareSessionGenerationReclaim(params.identity);
-  params.assertCurrent?.();
-  if (plan.kind === "resolved") {
-    return plan.result;
-  }
-
-  // Only a stale stable-key owner needs session-store authority. Resolve it before
-  // the second mutation so the session read never runs inside the binding write transaction.
+  const storePath =
+    params.storePath?.trim() ||
+    resolveStorePath(params.config?.session?.store, { agentId: params.identity.agentId });
+  let host: CodexHostSessionGeneration | undefined;
   try {
-    const storePath =
-      params.storePath?.trim() ||
-      resolveStorePath(params.config?.session?.store, { agentId: params.identity.agentId });
     const entry = getSessionEntry({
       agentId: params.identity.agentId,
       hydrateSkillPromptRefs: false,
@@ -417,20 +462,62 @@ export async function reclaimCurrentCodexSessionGeneration(params: {
       sessionKey,
       storePath,
     });
-    if (entry?.sessionId !== params.identity.sessionId) {
-      return false;
-    }
+    host = entry?.sessionId
+      ? {
+          sessionId: entry.sessionId,
+          previousSessionId: entry.previousSessionId,
+        }
+      : undefined;
   } catch {
-    return false;
+    return { kind: "conflict" };
   }
-  return await params.bindingStore.mutate(
+  const reconciled = await params.bindingStore.reconcileSessionGeneration(
     params.identity,
-    {
-      kind: "reclaim-generation",
-      expectedPreviousSessionId: plan.expectedPreviousSessionId,
-    },
+    host,
     params.assertCurrent,
   );
+  if (reconciled.kind === "busy") {
+    throw new Error("Codex binding compaction transition is still active");
+  }
+  return reconciled;
+}
+
+export async function reclaimCurrentCodexSessionGeneration(
+  params: Parameters<typeof reconcileCurrentCodexSessionGeneration>[0],
+): Promise<boolean> {
+  return (await reconcileCurrentCodexSessionGeneration(params)).kind !== "conflict";
+}
+
+export async function readReconciledCodexSessionBinding(
+  bindingStore: CodexAppServerBindingStore,
+  identity: CodexAppServerBindingIdentity,
+  config?: OpenClawConfig,
+  storePath?: string,
+  assertCurrent?: () => void,
+): Promise<CodexAppServerThreadBinding | undefined> {
+  if (
+    identity.kind === "session" &&
+    identity.sessionKey &&
+    !(await reclaimCurrentCodexSessionGeneration({
+      bindingStore,
+      identity,
+      config,
+      storePath,
+      assertCurrent,
+    }))
+  ) {
+    throw createCodexSessionGenerationSupersededError(identity.sessionId);
+  }
+  assertCurrent?.();
+  return bindingStore.read(identity);
+}
+
+export function assertCodexNativeHistoryReady(binding?: CodexAppServerThreadBinding): void {
+  if (binding?.nativeCompactionSyncPending) {
+    throw new Error(
+      "Codex native history is synchronizing. A normal source-session message must complete before retrying.",
+    );
+  }
 }
 
 /** Creates the single binding facade owned by the Codex plugin runtime. */
@@ -491,10 +578,7 @@ export function createCodexAppServerBindingStore(
       let renewed = false;
       owner.assertCurrent?.();
       const stored = update(key, (raw) => {
-        const current = readStoredCodexAppServerBinding(raw);
-        if (raw !== undefined && !current) {
-          throw new Error(`Invalid Codex app-server binding row: ${key}`);
-        }
+        const current = readBindingValueOrThrow(raw, key);
         const lease = current?.lease;
         const now = Date.now();
         if (!lease || lease.token !== owner.token || lease.expiresAt <= now) {
@@ -517,10 +601,10 @@ export function createCodexAppServerBindingStore(
   const transactKey = async <T>(
     key: string,
     apply: (
-      current: StoredCodexAppServerBinding | undefined,
+      current: StoredCodexAppServerBindingV1 | undefined,
       leaseToken?: string,
     ) => {
-      next?: StoredCodexAppServerBinding;
+      next?: StoredCodexAppServerBindingV1;
       result: T;
     },
     ttlMs?: number,
@@ -544,10 +628,7 @@ export function createCodexAppServerBindingStore(
       update(
         key,
         (raw) => {
-          const current = readStoredCodexAppServerBinding(raw);
-          if (raw !== undefined && !current) {
-            throw new Error(`Invalid Codex app-server binding row: ${key}`);
-          }
+          const current = readNormalBindingOrThrow(raw, key);
           const activeLease = current?.lease;
           const now = Date.now();
           if (
@@ -667,10 +748,12 @@ export function createCodexAppServerBindingStore(
       owner.phase = "closed";
       options.assertCurrent?.();
       try {
-        const current = readStoredCodexAppServerBinding(state.lookup(key));
+        const current = readBindingValueOrThrow(state.lookup(key), key);
         if (current?.lease?.token === token) {
           const ttlMs =
-            current.state === "active" || (current.retired === true && !key.startsWith("session:"))
+            current.state === "active" ||
+            current.state === "compaction-transition" ||
+            (current.retired === true && !key.startsWith("session:"))
               ? undefined
               : current.retired === true
                 ? PHYSICAL_SESSION_RETIRE_TTL_MS
@@ -679,7 +762,7 @@ export function createCodexAppServerBindingStore(
           update(
             key,
             (raw) => {
-              const stored = readStoredCodexAppServerBinding(raw);
+              const stored = readBindingValueOrThrow(raw, key);
               if (stored?.lease?.token !== token) {
                 return undefined;
               }
@@ -697,11 +780,11 @@ export function createCodexAppServerBindingStore(
     }
   };
 
-  const transitionSessionGeneration = async (
+  const transitionSessionGeneration = (
     identity: Extract<CodexAppServerBindingIdentity, { kind: "session" }>,
     mode: "reset" | "retire",
-  ): Promise<CodexSessionGenerationRetirementResult> => {
-    return await runBindingMutation(async () => {
+  ): Promise<CodexSessionGenerationRetirementResult> =>
+    runBindingMutation(async () => {
       const key = bindingStoreKey(identity);
       const ttlMs =
         mode === "reset"
@@ -741,7 +824,6 @@ export function createCodexAppServerBindingStore(
         ttlMs,
       );
     });
-  };
 
   return {
     read: (identity) => readCurrentCodexAppServerBinding(state, identity),
@@ -749,45 +831,225 @@ export function createCodexAppServerBindingStore(
     async hasOtherThreadOwner(threadId, currentIdentity) {
       const currentKey = currentIdentity ? bindingStoreKey(currentIdentity) : undefined;
       return state.entries().some(({ key, value }) => {
-        const stored = readStoredCodexAppServerBinding(value);
+        const stored = readBindingValueOrThrow(value, key);
         if (!stored) {
           throw new Error(`Invalid Codex app-server binding row: ${key}`);
         }
+        const active = stored.state === "compaction-transition" ? stored.previous : stored;
         const isCurrentOwner =
           currentIdentity !== undefined &&
           key === currentKey &&
           (currentIdentity.kind === "conversation" ||
-            stored.sessionId === currentIdentity.sessionId.trim());
-        if (stored.state !== "active" || stored.binding.threadId !== threadId || isCurrentOwner) {
-          return false;
-        }
-        return true;
+            (stored.state === "compaction-transition"
+              ? stored.fromSessionId === currentIdentity.sessionId.trim() ||
+                stored.toSessionId === currentIdentity.sessionId.trim()
+              : stored.sessionId === currentIdentity.sessionId.trim()));
+        return active.state === "active" && active.binding.threadId === threadId && !isCurrentOwner;
       });
     },
 
-    async prepareSessionGenerationReclaim(identity) {
+    async reconcileSessionGeneration(identity, host, assertCurrent) {
       const key = bindingStoreKey(identity);
-      const raw = state.lookup(key);
-      const current = readStoredCodexAppServerBinding(raw);
-      if (raw !== undefined && !current) {
-        throw new Error(`Invalid Codex app-server binding row: ${key}`);
+      const initial = readBindingValueOrThrow(state.lookup(key), key);
+      if (!initial || isCurrentSessionGeneration(initial, identity.sessionId)) {
+        return { kind: "current", sessionId: identity.sessionId };
       }
-      if (!current) {
-        return { kind: "resolved", result: true };
+      const deadline = Date.now() + BINDING_LEASE_WAIT_MS;
+      while (true) {
+        let reconciled: CodexSessionGenerationReconciliation | undefined;
+        update(key, (raw) => {
+          assertCurrent?.();
+          const current = readBindingValueOrThrow(raw, key);
+          if (!current || isCurrentSessionGeneration(current, identity.sessionId)) {
+            reconciled = { kind: "current", sessionId: identity.sessionId };
+            return undefined;
+          }
+          if (!host) {
+            return undefined;
+          }
+          if (current.state !== "compaction-transition") {
+            if (
+              host.sessionId !== identity.sessionId ||
+              (current.state === "active" && current.binding.connectionScope === "supervision") ||
+              initial.state === "compaction-transition" ||
+              !isDeepStrictEqual(withoutBindingLease(current), withoutBindingLease(initial))
+            ) {
+              return undefined;
+            }
+            const reset =
+              current.state === "cleared" &&
+              current.sessionId === identity.sessionId &&
+              current.retired === true;
+            const descendant =
+              current.sessionId !== undefined && host.previousSessionId === current.sessionId;
+            if (!reset && !descendant) {
+              return undefined;
+            }
+            reconciled = {
+              kind: reset ? "reset" : "descendant",
+              sessionId: identity.sessionId,
+            };
+            return {
+              version: 1,
+              state: "cleared",
+              sessionId: identity.sessionId,
+              ...(current.lease ? { lease: current.lease } : {}),
+            };
+          }
+          if (
+            initial.state !== "compaction-transition" ||
+            current.transitionId !== initial.transitionId
+          ) {
+            return undefined;
+          }
+          if (current.lease && current.lease.expiresAt > Date.now()) {
+            reconciled = { kind: "busy" };
+            return undefined;
+          }
+          const successor =
+            current.toSessionId !== undefined && host.sessionId === current.toSessionId;
+          const descendant =
+            host.previousSessionId === (current.toSessionId ?? current.fromSessionId);
+          const predecessor = host.sessionId === current.fromSessionId;
+          if (!successor && !descendant && !predecessor) {
+            return undefined;
+          }
+          const sessionId = successor || descendant ? host.sessionId : current.fromSessionId;
+          reconciled = {
+            kind: successor ? "successor" : descendant ? "descendant" : "predecessor",
+            sessionId,
+          };
+          return resolvedTransitionBinding(current, sessionId);
+        });
+        if (reconciled?.kind !== "busy" || Date.now() >= deadline) {
+          return reconciled ?? { kind: "conflict" };
+        }
+        await sleep(BINDING_LEASE_RETRY_INTERVAL_MS);
       }
-      const currentSessionId = current.sessionId;
-      if (!currentSessionId) {
-        return {
-          kind: "resolved",
-          result: current.state !== "cleared" || current.retired !== true,
-        };
-      }
-      if (currentSessionId === identity.sessionId) {
-        return current.state === "cleared" && current.retired === true
-          ? { kind: "verify", expectedPreviousSessionId: currentSessionId }
-          : { kind: "resolved", result: true };
-      }
-      return { kind: "verify", expectedPreviousSessionId: currentSessionId };
+    },
+
+    async withContextEngineCompaction(identity, requiresNativeCompactionSync, assertCurrent, run) {
+      return await runBindingMutation(async () => {
+        const key = bindingStoreKey(identity);
+        if (!identity.sessionKey?.trim()) {
+          throw new Error("Codex context-engine compaction requires a stable session key");
+        }
+        const initial = readBindingValueOrThrow(state.lookup(key), key);
+        if (initial?.state === "compaction-transition") {
+          throw new Error(`Codex binding compaction transition is unresolved: ${key}`);
+        }
+        if (!initial || initial.state === "cleared") {
+          return await run();
+        }
+        if (initial?.sessionId && initial.sessionId !== identity.sessionId) {
+          throw new Error("Codex binding changed before compaction transition preparation");
+        }
+        const initialValue = withoutBindingLease(
+          initial.sessionId ? initial : { ...initial, sessionId: identity.sessionId },
+        );
+        return await withBindingLease(
+          identity,
+          async () => {
+            const owner = leaseContext.getStore()!.get(key)!;
+            const leased = readNormalBindingOrThrow(state.lookup(key), key);
+            if (
+              leased?.state !== "active" ||
+              leased.lease?.token !== owner.token ||
+              !isDeepStrictEqual(withoutBindingLease(leased), initialValue)
+            ) {
+              throw bindingLeaseLostError(key);
+            }
+            const transition: StoredCodexAppServerCompactionTransition = {
+              version: 2,
+              state: "compaction-transition",
+              transitionId: randomUUID(),
+              fromSessionId: identity.sessionId,
+              previous: withoutBindingLease(leased),
+              ...(requiresNativeCompactionSync ? { nativeCompactionSyncPending: true } : {}),
+              lease: leased.lease,
+            };
+            let currentTransition: StoredCodexAppServerCompactionTransition = transition;
+            const replaceTransition = (next: StoredCodexAppServerBinding) => {
+              assertCurrent();
+              if (
+                !update(key, (raw) => {
+                  const current = readBindingValueOrThrow(raw, key);
+                  return current?.state === "compaction-transition" &&
+                    current.transitionId === currentTransition.transitionId &&
+                    current.lease?.token === owner.token &&
+                    isDeepStrictEqual(
+                      withoutBindingLease(current),
+                      withoutBindingLease(currentTransition),
+                    )
+                    ? { ...next, lease: current.lease }
+                    : undefined;
+                })
+              ) {
+                throw new Error("Codex binding changed during compaction transition");
+              }
+              currentTransition = next.state === "compaction-transition" ? next : currentTransition;
+            };
+            if (
+              !update(key, (raw) =>
+                isDeepStrictEqual(readNormalBindingOrThrow(raw, key), leased)
+                  ? transition
+                  : undefined,
+              )
+            ) {
+              throw new Error("Codex binding changed before compaction transition preparation");
+            }
+            let producerCommitted = false;
+            let successorPrepared = false;
+            const rollbackBeforeProducerCommit = () => {
+              if (!producerCommitted && !successorPrepared) {
+                replaceTransition(resolvedTransitionBinding(currentTransition, identity.sessionId));
+                successorPrepared = true;
+              }
+            };
+            try {
+              return await run({
+                markProducerCommitted: () => {
+                  producerCommitted = true;
+                },
+                rollbackBeforeProducerCommit,
+                prepareSuccessor(sessionId) {
+                  const successorId = sessionId.trim();
+                  if (!producerCommitted || successorPrepared || !successorId) {
+                    throw new Error("Codex compaction successor is not admissible");
+                  }
+                  successorPrepared = true;
+                  let committed = false;
+                  return {
+                    commit() {
+                      if (!committed) {
+                        replaceTransition({ ...currentTransition, toSessionId: successorId });
+                        committed = true;
+                      }
+                    },
+                    rollback() {
+                      if (committed) {
+                        const { toSessionId: _toSessionId, ...next } = currentTransition;
+                        replaceTransition(next);
+                        committed = false;
+                      }
+                    },
+                    complete() {
+                      if (!committed) {
+                        throw bindingLeaseLostError(key);
+                      }
+                      replaceTransition(resolvedTransitionBinding(currentTransition, successorId));
+                    },
+                  };
+                },
+              });
+            } catch (error) {
+              rollbackBeforeProducerCommit();
+              throw error;
+            }
+          },
+          { assertCurrent },
+        );
+      });
     },
 
     async mutate(identity, mutation, assertCurrent) {
@@ -803,55 +1065,6 @@ export function createCodexAppServerBindingStore(
             const ownsGeneration = ownsStoredSessionGeneration(identity, current);
             const ownedLease =
               current?.lease && current.lease.token === leaseToken ? { lease: current.lease } : {};
-            if (mutation.kind === "reclaim-generation") {
-              if (identity.kind !== "session" || !identity.sessionKey?.trim()) {
-                return { result: false };
-              }
-              if (!current) {
-                return { result: true };
-              }
-              if (ownsGeneration) {
-                if (
-                  current.state === "cleared" &&
-                  current.retired === true &&
-                  current.sessionId === mutation.expectedPreviousSessionId
-                ) {
-                  // Reset boundaries now retain the OpenClaw session id. The
-                  // authoritative session-store check above proves this fence
-                  // belongs to the previous in-place lifecycle, not live work.
-                  return {
-                    result: true,
-                    next: {
-                      version: 1,
-                      state: "cleared",
-                      sessionId: identity.sessionId,
-                      ...ownedLease,
-                    },
-                  };
-                }
-                return {
-                  result: current.state !== "cleared" || current.retired !== true,
-                };
-              }
-              if (current.sessionId !== mutation.expectedPreviousSessionId) {
-                return { result: false };
-              }
-              // A stale physical generation must never turn private user-home ownership into
-              // an ordinary empty binding. Supervision adoption has an explicit generation
-              // transfer path; every other successor fails closed and preserves this owner.
-              if (current.state === "active" && current.binding.connectionScope === "supervision") {
-                return { result: false };
-              }
-              return {
-                result: true,
-                next: {
-                  version: 1,
-                  state: "cleared",
-                  sessionId: identity.sessionId,
-                  ...ownedLease,
-                },
-              };
-            }
             const storedActive = current?.state === "active" ? current : undefined;
             const active = ownsGeneration ? storedActive : undefined;
             const retiredGeneration =
@@ -935,42 +1148,13 @@ export function createCodexAppServerBindingStore(
           },
           // Plain clears may expire immediately: a stale generation that re-sets
           // the key afterwards is fenced by ownsStoredSessionGeneration on read
-          // and displaced via reclaim-generation; durable stable-key fences come
+          // and displaced via generation reconciliation; durable stable-key fences come
           // from retireSessionGeneration, not runtime clears.
           mutation.kind === "clear" && !retainLegacyClear && !leaseContext.getStore()?.has(key)
             ? 1
             : undefined,
           assertCurrent,
         );
-      });
-    },
-
-    async adoptSessionGeneration(identity, expectedPreviousSessionId) {
-      return await runBindingMutation(async () => {
-        const key = bindingStoreKey(identity);
-        const expectedSessionId = expectedPreviousSessionId.trim();
-        const targetSessionId = identity.sessionId.trim();
-        if (!expectedSessionId) {
-          throw new Error("Codex session generation adoption requires the previous session id");
-        }
-        // Context-engine compaction rotates the physical OpenClaw session before
-        // secondary native compaction. Compare both generations so a delayed hook
-        // cannot move a newer binding back to its stale predecessor.
-        return await transactKey(key, (current) => {
-          if (current?.state !== "active") {
-            return { result: "absent" as const };
-          }
-          if (current.sessionId === targetSessionId) {
-            return { result: "current" as const };
-          }
-          if (current.sessionId !== expectedSessionId) {
-            return { result: "conflict" as const };
-          }
-          return {
-            result: "adopted" as const,
-            next: { ...current, sessionId: targetSessionId },
-          };
-        });
       });
     },
 
@@ -1128,7 +1312,7 @@ function isSameSupervisionOwner(
 
 function storedSessionGeneration(
   identity: CodexAppServerBindingIdentity,
-  current: StoredCodexAppServerBinding | undefined,
+  current: StoredCodexAppServerBindingV1 | undefined,
 ): { sessionId?: string } {
   if (identity.kind === "session") {
     return { sessionId: identity.sessionId };
@@ -1138,7 +1322,7 @@ function storedSessionGeneration(
 
 function preservedSessionGeneration(
   identity: CodexAppServerBindingIdentity,
-  current: StoredCodexAppServerBinding | undefined,
+  current: StoredCodexAppServerBindingV1 | undefined,
 ): { sessionId?: string } {
   if (current?.sessionId) {
     return { sessionId: current.sessionId };

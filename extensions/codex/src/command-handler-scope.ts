@@ -4,6 +4,7 @@ import type { PluginCommandContext } from "openclaw/plugin-sdk/plugin-entry";
 import { resolveCodexAppServerAuthProfileIdForAgent } from "./app-server/auth-bridge.js";
 import { resolveCodexBindingAppServerConnection } from "./app-server/binding-connection.js";
 import {
+  readReconciledCodexSessionBinding,
   sessionBindingIdentity,
   type CodexAppServerBindingIdentity,
 } from "./app-server/session-binding.js";
@@ -11,12 +12,24 @@ import type { CodexCommandDeps } from "./command-handler-deps.js";
 import type { CodexControlRequestOptions } from "./command-rpc.js";
 import { readCodexConversationBindingData } from "./conversation-binding-data.js";
 
-type CodexConversationControlTarget = {
+export type CodexConversationControlTarget = {
   identity: CodexAppServerBindingIdentity;
   agentId: string;
   agentDir: string;
   requestedAuthProfileId?: string;
 };
+
+export const readControlTargetBinding = (
+  deps: CodexCommandDeps,
+  ctx: PluginCommandContext,
+  target: CodexConversationControlTarget,
+) =>
+  readReconciledCodexSessionBinding(
+    deps.bindingStore,
+    target.identity,
+    ctx.config,
+    ctx.sessionTarget?.storePath,
+  );
 
 export async function resolveControlTarget(
   ctx: PluginCommandContext,
@@ -59,7 +72,7 @@ export async function resolveCommandAppServerScope(
   const target = await resolveControlTarget(ctx);
   const fallback = resolveCodexConversationControlScope(ctx);
   const agentDir = target?.agentDir ?? fallback.agentDir;
-  const binding = target ? deps.bindingStore.read(target.identity) : undefined;
+  const binding = target ? await readControlTargetBinding(deps, ctx, target) : undefined;
   const authProfileId =
     binding?.connectionScope === "supervision"
       ? undefined

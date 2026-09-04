@@ -898,6 +898,7 @@ export async function cleanupSessionBeforeMutation(params: {
       sessionId: params.entry.sessionId,
       sessionKey: params.target.canonicalKey ?? params.key,
       sessionFile: params.target.canonicalKey ?? params.key,
+      storePath: params.target.storePath,
       reason: params.reason === "session-reset" ? "reset" : "deleted",
     } satisfies Parameters<typeof resetRegisteredAgentHarnessSessions>[0];
     await resetRegisteredAgentHarnessSessions(resetParams);
@@ -1481,6 +1482,7 @@ export async function performGatewaySessionReset(params: {
           sessionId: entry.sessionId,
           sessionKey: target.canonicalKey ?? params.key,
           sessionFile: target.canonicalKey ?? params.key,
+          storePath,
           reason: "reset",
         });
       }

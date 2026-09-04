@@ -32,7 +32,7 @@ setupRunAttemptTestHooks();
 
 describe("prepareCodexAttemptConnection", () => {
   it.each(["missing", "ordinary", "auth-changed", "model-changed", "provider-changed"] as const)(
-    "rejects %s expected native ownership before reclaim or connection preparation",
+    "rejects %s expected native ownership before connection preparation",
     async (state) => {
       const sessionFile = path.join(tempDir, "expected-ownership.jsonl");
       const workspaceDir = path.join(tempDir, "expected-ownership-workspace");
@@ -54,7 +54,7 @@ describe("prepareCodexAttemptConnection", () => {
         });
       }
       const before = await readCodexAppServerBinding(sessionFile);
-      const reclaim = vi.spyOn(testCodexAppServerBindingStore, "prepareSessionGenerationReclaim");
+      const reclaim = vi.spyOn(testCodexAppServerBindingStore, "reconcileSessionGeneration");
       const connect = vi
         .spyOn(bindingConnection, "resolveCodexBindingAppServerConnection")
         .mockImplementation(() => {
@@ -70,7 +70,17 @@ describe("prepareCodexAttemptConnection", () => {
         name: "AgentHarnessPreflightError",
         message: expect.stringContaining("Reattach the original native session"),
       });
-      expect(reclaim).not.toHaveBeenCalled();
+      expect(reclaim).toHaveBeenCalledOnce();
+      expect(reclaim).toHaveBeenCalledWith(
+        {
+          kind: "session",
+          agentId: "main",
+          sessionId: "session-1",
+          sessionKey: "agent:main:session-1",
+        },
+        { sessionId: "session-1" },
+        expect.any(Function),
+      );
       expect(connect).not.toHaveBeenCalled();
       await expect(readCodexAppServerBinding(sessionFile)).resolves.toEqual(before);
     },

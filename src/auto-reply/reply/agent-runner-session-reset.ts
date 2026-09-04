@@ -169,6 +169,7 @@ export async function resetReplyRunSession(params: {
     sessionId: nextSessionId,
     sessionKey: params.sessionKey,
     sessionFile: nextSessionFile,
+    storePath: params.storePath,
     reason: "reset",
   });
   params.followupRun.run.sessionId = nextSessionId;

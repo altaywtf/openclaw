@@ -1,6 +1,7 @@
 // sessions.create parent-disposition coverage. Kept separate because the main
 // reset-hook suite is already at its max-lines budget.
 import { expect, test, vi } from "vitest";
+import { clearAgentHarnesses, registerAgentHarness } from "../agents/harness/registry.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { embeddedRunMock, writeSessionStore } from "./test-helpers.js";
 import {
@@ -219,4 +220,44 @@ test("completed wait keeps cleanup armed when a same-id replacement starts durin
   await vi.waitFor(() => {
     expect(providerRuntimeMocks.cleanupSessionResources).toHaveBeenCalledTimes(1);
   });
+});
+
+test("sessions.reset sends the exact store target to the durable harness owner", async () => {
+  const { storePath } = await createSessionStoreDir();
+  await writeSessionStore({
+    entries: {
+      main: {
+        sessionId: "sess-native-reset",
+        updatedAt: Date.now(),
+        agentHarnessId: "native-test",
+      },
+    },
+  });
+  const reset = vi.fn(async () => {});
+  registerAgentHarness({
+    id: "native-test",
+    label: "Native test",
+    supports: () => ({ supported: true }),
+    runAttempt: async () => {
+      throw new Error("not used");
+    },
+    reset,
+  });
+
+  try {
+    expect((await directSessionReq("sessions.reset", { key: "main", reason: "new" })).ok).toBe(
+      true,
+    );
+    expect(reset).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "main",
+        sessionId: "sess-native-reset",
+        sessionKey: "agent:main:main",
+        storePath,
+        reason: "reset",
+      }),
+    );
+  } finally {
+    clearAgentHarnesses();
+  }
 });

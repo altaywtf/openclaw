@@ -29,6 +29,7 @@ import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { runWithGatewayIndependentRootWorkContinuation } from "../../process/gateway-work-admission.js";
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { resolvePreferredSessionKeyForSessionIdMatches } from "../../sessions/session-id-resolution.js";
+import type { AgentHarnessContextEngineCompactionTransaction } from "../harness/types.js";
 import { resolveAgentRunSessionTarget } from "../run-session-target.js";
 import { captureSessionPlacementCompactionSuccessorAssertion } from "../session-placement-admission.js";
 import { log } from "./logger.js";
@@ -178,6 +179,7 @@ export async function acceptCompactionSuccessor(params: {
   result: CompactResult;
   currentTarget: SessionTranscriptRuntimeTarget;
   currentSessionFile?: string;
+  harnessTransaction?: AgentHarnessContextEngineCompactionTransaction;
   expectedEntry: Readonly<{
     sessionId: InternalSessionEntry["sessionId"];
     lifecycleRevision: InternalSessionEntry["lifecycleRevision"];
@@ -218,34 +220,39 @@ export async function acceptCompactionSuccessor(params: {
       readConsistency: "latest",
     }),
   );
-  if (successor.sessionId === currentTarget.sessionId) {
-    return { ...successor, entry: previousEntry };
-  }
   if (!params.result.ok || !params.result.compacted) {
     throw new Error("Cannot accept a successor without a successful completed compaction");
   }
+  const rotated = successor.sessionId !== currentTarget.sessionId;
   const assertCommitAllowed = () => {
     params.assertActive();
-    assertPlacement({ currentTarget, successorSessionId: successor.sessionId });
+    if (rotated) {
+      assertPlacement({ currentTarget, successorSessionId: successor.sessionId });
+    }
   };
   assertCommitAllowed();
+  const successorMutation = params.harnessTransaction?.prepareSuccessor(successor.sessionId);
   let committed: AcceptedCompactionSuccessor | undefined;
+  const publishCommitted = (entry: InternalSessionEntry) => {
+    committed = {
+      ...successor,
+      entry,
+      ...(rotated ? { previousSessionId: currentTarget.sessionId } : {}),
+    };
+    params.onCommitted?.(committed);
+  };
   try {
     await patchSessionEntryCore(
       currentTarget,
       (entry) => {
         requireExpectedEntry(entry);
-        return { sessionId: successor.sessionId };
+        return rotated ? { sessionId: successor.sessionId } : null;
       },
       {
         skipMaintenance: true,
         assertCommitAllowed,
-        onCommitted: (entry) => {
-          // Capture the actual commit before identity observers can abort the caller.
-          // This sink records facts only; no authority checks or lifecycle hooks.
-          committed = { ...successor, entry, previousSessionId: currentTarget.sessionId };
-          params.onCommitted?.(committed);
-        },
+        ...(successorMutation ? { preparedTransactionMutation: successorMutation } : {}),
+        onCommitted: publishCommitted,
       },
     );
     if (!committed) {
@@ -260,7 +267,7 @@ export async function acceptCompactionSuccessor(params: {
     log.warn(`compaction successor committed but publication failed: ${String(error)}`);
     return committed;
   } finally {
-    if (committed && params.config) {
+    if (committed?.previousSessionId && params.config) {
       try {
         emitCompactionSessionLifecycleHooks({
           agentId: currentTarget.agentId,

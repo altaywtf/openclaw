@@ -15,6 +15,7 @@ import {
   maybeCompactAgentHarnessSessionMock,
   resetCompactHooksHarnessMocks,
   resolveContextEngineMock,
+  withHarnessContextEngineCompactionMock,
 } from "./compact.hooks.harness.js";
 import type { AcceptedCompactionSuccessor } from "./compaction-successor.js";
 
@@ -336,6 +337,61 @@ describe("queued compaction successor ownership", () => {
       expect(engineInput).toBeDefined();
       expect(engineInput?.runtimeContext).not.toHaveProperty("onCommitted");
       expect(engineInput?.runtimeContext?.sessionEntry).not.toHaveProperty("activeWriterRunId");
+    },
+  );
+
+  it.each([
+    { label: "P->S", resultSessionId: "successor", completionAmbiguous: false },
+    { label: "P->P", resultSessionId: sessionId, completionAmbiguous: false },
+    { label: "host completion ambiguity", resultSessionId: "successor", completionAmbiguous: true },
+  ])(
+    "publishes $label before post-commit work and never reuses the predecessor",
+    async ({ resultSessionId, completionAmbiguous }) => {
+      const phases: string[] = [];
+      withHarnessContextEngineCompactionMock.mockImplementationOnce(async (params) =>
+        params.run({
+          markProducerCommitted: () => phases.push("producer-committed"),
+          rollbackBeforeProducerCommit: () => phases.push("host-rollback"),
+          prepareSuccessor: (successorId) => {
+            phases.push(`prepare:${successorId}`);
+            return {
+              commit: () => phases.push("host-commit"),
+              rollback: () => phases.push("host-rollback"),
+              complete: () => {
+                phases.push("host-complete");
+                if (completionAmbiguous) {
+                  throw new Error("completion receipt lost");
+                }
+              },
+            };
+          },
+        }),
+      );
+      contextEngineCompactMock.mockResolvedValueOnce(completed(resultSessionId));
+      const onCommitted = vi.fn((accepted: AcceptedCompactionSuccessor) => {
+        phases.push(`published:${accepted.entry.sessionId}`);
+        expect(loadSessionEntry(target())?.sessionId).toBe(resultSessionId);
+      });
+
+      await expect(compact(compactParams(), { onCommitted })).resolves.toMatchObject({
+        ok: true,
+        compacted: true,
+      });
+
+      expect(phases).toEqual([
+        "producer-committed",
+        `prepare:${resultSessionId}`,
+        "host-commit",
+        `published:${resultSessionId}`,
+        "host-complete",
+      ]);
+      expect(loadSessionEntry(target())?.sessionId).toBe(resultSessionId);
+      expect(maintain).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: resultSessionId,
+          sessionTarget: expect.objectContaining({ sessionId: resultSessionId }),
+        }),
+      );
     },
   );
 

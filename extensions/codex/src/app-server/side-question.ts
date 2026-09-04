@@ -125,7 +125,12 @@ import {
   type CodexSandboxExecEnvironment,
 } from "./sandbox-exec-server.js";
 import { resolveCodexNativeExecutionBlock } from "./sandbox-guard.js";
-import { sessionBindingIdentity, type CodexAppServerBindingStore } from "./session-binding.js";
+import {
+  assertCodexNativeHistoryReady,
+  readReconciledCodexSessionBinding,
+  sessionBindingIdentity,
+  type CodexAppServerBindingStore,
+} from "./session-binding.js";
 import {
   applyCodexSessionPermissionPolicy,
   CODEX_SESSION_PERMISSION_EXEC_MODES,
@@ -207,12 +212,23 @@ export async function runCodexAppServerSideQuestion(
     agentId: params.agentId,
     config: params.cfg,
   });
-  const binding = options.bindingStore.read(bindingIdentity);
+  const assertActive = () => {
+    params.hostCapabilities.assertActive();
+    params.opts?.abortSignal?.throwIfAborted();
+  };
+  const binding = await readReconciledCodexSessionBinding(
+    options.bindingStore,
+    bindingIdentity,
+    params.cfg,
+    params.storePath,
+    assertActive,
+  );
   if (!binding?.threadId) {
     throw new Error(
       "Codex /btw needs an active Codex thread. Send a normal message first, then try /btw again.",
     );
   }
+  assertCodexNativeHistoryReady(binding);
   if (isCodexPairedNodeRemoteExecPlacementSandbox(params.sandbox)) {
     throw new Error(
       "Normal Codex turns are supported on nodes, but /btw is not yet bound to the active placement.",
@@ -743,7 +759,7 @@ export async function runCodexAppServerSideQuestion(
       run: async (forkClient, requestOptions) =>
         options.bindingStore.withLease(bindingIdentity, async () => {
           const assertCurrentBinding = () => {
-            params.hostCapabilities.assertActive();
+            assertActive();
             runAbortController.signal.throwIfAborted();
             if (!isDeepStrictEqual(options.bindingStore.read(bindingIdentity), binding)) {
               throw new Error("Codex side-question binding changed before fork");

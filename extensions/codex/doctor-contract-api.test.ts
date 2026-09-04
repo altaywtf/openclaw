@@ -1219,6 +1219,45 @@ describe("codex doctor contract", () => {
     await removeCodexDoctorFixture(fixture.stateDir);
   });
 
+  it("retains a zero-owner sidecar while canonical plugin state is transitioning", async () => {
+    const fixture = await createBindingMigrationFixture({
+      name: "orphan-transition",
+      threadId: "thread-sidecar",
+    });
+    const bindingKey = bindingStoreKey({
+      kind: "conversation",
+      bindingId: legacyCodexConversationBindingId(fixture.transcriptPath),
+    });
+    const active = createStoredCodexAppServerBinding(
+      JSON.parse(await fs.readFile(fixture.sidecarPath, "utf8")),
+    );
+    if (!active) {
+      throw new Error("missing imported Codex binding");
+    }
+    const transition: StoredCodexAppServerBinding = {
+      version: 2,
+      state: "compaction-transition",
+      transitionId: "transition-1",
+      fromSessionId: "session-before",
+      toSessionId: "session-after",
+      previous: { ...active, sessionId: "session-before" },
+      nativeCompactionSyncPending: true,
+    };
+    const store = openBindingStore(fixture.env);
+    await store.register(bindingKey, transition);
+
+    const result = await fixture.migration.migrateLegacyState(fixture.params);
+
+    expect(result.changes).toEqual([]);
+    expect(result.warnings).toEqual([
+      expect.stringContaining(`canonical plugin state is invalid at ${bindingKey}`),
+    ]);
+    await expect(fs.access(fixture.sidecarPath)).resolves.toBeUndefined();
+    await expect(store.lookup(bindingKey)).resolves.toEqual(transition);
+
+    await removeCodexDoctorFixture(fixture.stateDir);
+  });
+
   it("retains mixed Codex and foreign ambiguous binding owners", async () => {
     const fixture = await createBindingMigrationFixture({
       name: "shared",

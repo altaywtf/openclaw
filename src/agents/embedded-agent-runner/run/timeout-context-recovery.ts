@@ -102,7 +102,7 @@ export async function recoverEmbeddedRunTimeout(
       input.contextEngine.info.ownsCompaction === true &&
       input.runParams.sessionPersistence !== "detached"
     ) {
-      const activeSession = input.getActiveSession();
+      const activeSession = input.prepareRecoveryOwner().session;
       await runPostCompactionSideEffects({
         config: input.runParams.config,
         sessionKey: input.runParams.sessionKey,

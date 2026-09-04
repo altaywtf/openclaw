@@ -235,6 +235,7 @@ describe("resetReplyRunSession", () => {
       sessionId: "session",
       sessionKey,
       sessionFile: sessionKey,
+      storePath,
       reason: "reset",
     });
     expect(errorMock).toHaveBeenCalledWith("reset session");

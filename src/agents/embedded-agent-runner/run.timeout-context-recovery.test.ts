@@ -33,8 +33,12 @@ vi.mock("./logger.js", () => ({
 }));
 
 type RecoveryInput = Parameters<typeof recoverEmbeddedRunTimeout>[0];
+type RecoverySession = ReturnType<RecoveryInput["prepareRecoveryOwner"]>["session"];
 type RecoveryOverrides = Omit<Partial<RecoveryInput>, "attempt" | "state"> & {
   attempt?: Partial<EmbeddedRunAttemptResult>;
+  session?: Omit<RecoverySession, "target"> & {
+    target?: RecoverySession["target"] | undefined;
+  };
   state?: RecoveryInput["state"];
 };
 type CompactionResult = Awaited<ReturnType<RecoveryInput["contextEngine"]["compact"]>>;
@@ -54,6 +58,7 @@ const successfulCompaction = (overrides: Record<string, unknown> = {}): Compacti
 function makeInput(overrides: RecoveryOverrides = {}): RecoveryInput {
   const {
     attempt: attemptOverride,
+    session = { id: "session-1", file: "/tmp/session-1.jsonl" },
     state = createEmbeddedRunContextRecoveryState(),
     ...inputOverrides
   } = overrides;
@@ -84,7 +89,6 @@ function makeInput(overrides: RecoveryOverrides = {}): RecoveryInput {
         input.assertRecoveryActive();
       };
       assertActive();
-      const session = input.getActiveSession();
       return {
         session: {
           ...session,
@@ -153,7 +157,6 @@ function makeInput(overrides: RecoveryOverrides = {}): RecoveryInput {
     runOwnsCompactionBeforeHook: vi.fn(async () => {}),
     runOwnsCompactionAfterHook: vi.fn(async () => {}),
     adoptCompactionTranscript: vi.fn(async () => undefined),
-    getActiveSession: () => ({ id: "session-1", file: "/tmp/session-1.jsonl" }),
     prepareCompactedTranscriptRetry: vi.fn(async () => {}),
     armPostCompactionGuard: vi.fn(),
     usageAccumulator: createUsageAccumulator(),
@@ -363,7 +366,7 @@ describe("recoverEmbeddedRunTimeout", () => {
           assemble: vi.fn(),
           compact: mocks.compact,
         } as RecoveryInput["contextEngine"],
-        getActiveSession: () => ({ id: "rotated", file: "/tmp/rotated.jsonl" }),
+        session: { id: "rotated", file: "/tmp/rotated.jsonl" },
       });
       input.runParams.sessionPersistence = sessionPersistence;
 

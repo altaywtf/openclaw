@@ -6851,6 +6851,90 @@ describe("runCodexAppServerAttempt", () => {
     const resumeRequestParams = resumeRequest?.params as Record<string, unknown> | undefined;
     expect(resumeRequestParams?.developerInstructions).not.toContain(CODEX_GPT5_BEHAVIOR_CONTRACT);
   });
+
+  it("completes pending native compaction before admitting the resumed turn", async () => {
+    const { sessionFile, workspaceDir } = createRunPaths();
+    await writeExistingBinding(sessionFile, workspaceDir, {
+      dynamicToolsFingerprint: "[]",
+      nativeCompactionSyncPending: true,
+    });
+    const harness = createAppServerHarness(
+      async (method, params) => {
+        if (method === "configRequirements/read") {
+          return { requirements: null };
+        }
+        if (method === "config/read") {
+          return { config: {}, origins: {} };
+        }
+        if (method === "thread/resume") {
+          return threadStartResult((params as { threadId?: string }).threadId ?? "thread-existing");
+        }
+        if (method === "thread/compact/start") {
+          return {};
+        }
+        if (method === "turn/start") {
+          return turnStartResult("turn-after-native-sync");
+        }
+        return {};
+      },
+      { persistedThreads: ["thread-existing"] },
+    );
+
+    const run = runCodexAppServerAttempt(createParams(sessionFile, workspaceDir));
+    await harness.waitForMethod("thread/compact/start");
+    expect(harness.requests.some(({ method }) => method === "turn/start")).toBe(false);
+    await expect(readCodexAppServerBinding(sessionFile)).resolves.toMatchObject({
+      nativeCompactionSyncPending: true,
+    });
+
+    await harness.notify({
+      method: "turn/started",
+      params: {
+        threadId: "thread-existing",
+        turn: { id: "compact-turn", threadId: "thread-existing", status: "inProgress" },
+      },
+    });
+    await harness.notify({
+      method: "item/started",
+      params: {
+        threadId: "thread-existing",
+        turnId: "compact-turn",
+        item: { id: "compact-item", type: "contextCompaction" },
+      },
+    });
+    await harness.notify({
+      method: "item/completed",
+      params: {
+        threadId: "thread-existing",
+        turnId: "compact-turn",
+        item: { id: "compact-item", type: "contextCompaction" },
+      },
+    });
+    expect(harness.requests.some(({ method }) => method === "turn/start")).toBe(false);
+    await harness.notify({
+      method: "turn/completed",
+      params: {
+        threadId: "thread-existing",
+        turn: { id: "compact-turn", threadId: "thread-existing", status: "completed" },
+      },
+    });
+
+    await harness.waitForMethod("turn/start");
+    await harness.completeTurn({
+      threadId: "thread-existing",
+      turnId: "turn-after-native-sync",
+    });
+    await expect(run).resolves.toBeDefined();
+    expect(await readCodexAppServerBinding(sessionFile)).not.toHaveProperty(
+      "nativeCompactionSyncPending",
+    );
+    expect(
+      harness.requests
+        .filter(({ method }) => method === "thread/compact/start" || method === "turn/start")
+        .map(({ method }) => method),
+    ).toEqual(["thread/compact/start", "turn/start"]);
+  });
+
   it("sends the current recorded sender on successive turns of one resumed Codex thread", async () => {
     const { sessionFile, workspaceDir } = createRunPaths();
     await writeExistingBinding(sessionFile, workspaceDir, { dynamicToolsFingerprint: "[]" });

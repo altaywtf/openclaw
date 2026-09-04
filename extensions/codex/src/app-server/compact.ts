@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { isDeepStrictEqual } from "node:util";
 import {
   embeddedAgentLog,
   resolveCompactionTimeoutMs,
@@ -67,6 +68,7 @@ type CodexAppServerCompactOptions = {
   nativeCompactionRequest?: "required_preflight" | "after_context_engine";
   nativeCompletionTimeoutMs?: number;
   nativeInterruptGraceMs?: number;
+  expectedBinding?: CodexAppServerThreadBinding;
 };
 
 type CodexNativeCompactionCompletion =
@@ -356,6 +358,38 @@ export async function maybeCompactCodexAppServerSession(
   return compactCodexNativeThread(params, options);
 }
 
+/** Synchronize one exact pending binding before a normal source-session turn. */
+export async function synchronizePendingCodexNativeCompaction(
+  params: CompactEmbeddedAgentSessionParams,
+  options: Omit<CodexAppServerCompactOptions, "expectedBinding"> & {
+    expectedBinding: CodexAppServerThreadBinding;
+  },
+) {
+  const identity = sessionBindingIdentity(params);
+  const result = await compactCodexNativeThread(params, options);
+  const binding = await options.bindingStore.withLease(identity, async () =>
+    options.bindingStore.read(identity),
+  );
+  if (!binding || !isExpectedPendingSyncBinding(binding, options.expectedBinding)) {
+    return { kind: "binding_changed" };
+  }
+  if (
+    result?.failure?.reason === "stale_thread_binding" ||
+    isCodexThreadNotFoundError(result?.reason)
+  ) {
+    return { kind: "stale_thread", binding };
+  }
+  if (!binding.nativeCompactionSyncPending) {
+    return { kind: "synchronized", binding };
+  }
+  if (binding.nativeToolPolicyRestricted || binding.ringZeroConfigFingerprint !== undefined) {
+    return { kind: "rotation_required", binding };
+  }
+  return params.nativeToolSurface === "host-isolated"
+    ? { kind: "deferred_for_transient_restriction", binding }
+    : { kind: "retry_pending", binding };
+}
+
 function warnIfIgnoringOpenClawCompactionOverrides(
   params: CompactEmbeddedAgentSessionParams,
 ): void {
@@ -462,6 +496,17 @@ async function compactCodexNativeThread(
     return failedCodexThreadBindingCompactionResult(params, {
       reason: "no codex app-server thread binding",
       recovery: "missing_thread_binding",
+    });
+  }
+  const matchesExpectedBinding = (current: CodexAppServerThreadBinding) =>
+    options.expectedBinding
+      ? isDeepStrictEqual(current, options.expectedBinding)
+      : isSameNativeCompactionBinding(current, initialBinding);
+  if (!matchesExpectedBinding(initialBinding)) {
+    return failedCodexThreadBindingCompactionResult(params, {
+      threadId: initialBinding.threadId,
+      reason: "codex app-server binding changed before native compaction",
+      recovery: "stale_thread_binding",
     });
   }
   if (
@@ -658,7 +703,7 @@ async function compactCodexNativeThread(
                 }),
               };
             }
-            if (!currentBinding || !isSameNativeCompactionBinding(currentBinding, binding)) {
+            if (!currentBinding || !matchesExpectedBinding(currentBinding)) {
               embeddedAgentLog.warn(
                 "codex app-server compaction could not use the thread binding because it changed",
                 {
@@ -756,6 +801,16 @@ async function compactCodexNativeThread(
           const completion = await completionWatch.completion;
           if (!completion.completed) {
             throw new Error(completion.reason);
+          }
+          if (
+            binding.nativeCompactionSyncPending === true &&
+            !(await options.bindingStore.mutate(bindingIdentity, {
+              kind: "patch",
+              threadId: binding.threadId,
+              patch: { nativeCompactionSyncPending: undefined },
+            }))
+          ) {
+            throw new Error("Codex binding changed before native compaction synchronization");
           }
           tokensAfter = completion.tokensAfter;
           if (completion.turnId && completion.itemId) {
@@ -984,15 +1039,33 @@ function isSameNativeCompactionBinding(
   );
 }
 
+function isExpectedPendingSyncBinding(
+  current: CodexAppServerThreadBinding,
+  expected: CodexAppServerThreadBinding,
+): boolean {
+  const {
+    nativeCompactionSyncPending: _currentPending,
+    contextEngine: currentContextEngine,
+    ...currentBinding
+  } = current;
+  const {
+    nativeCompactionSyncPending: _expectedPending,
+    contextEngine: expectedContextEngine,
+    ...expectedBinding
+  } = expected;
+  const { projection: _currentProjection, ...currentEngine } = currentContextEngine ?? {};
+  const { projection: _expectedProjection, ...expectedEngine } = expectedContextEngine ?? {};
+  return (
+    (currentContextEngine === undefined) === (expectedContextEngine === undefined) &&
+    isDeepStrictEqual(currentBinding, expectedBinding) &&
+    isDeepStrictEqual(currentEngine, expectedEngine)
+  );
+}
+
 function isCodexThreadNotFoundError(error: unknown): boolean {
-  // codex-rs exposes no dedicated error code for a missing compaction thread:
-  // thread/compact/start returns generic INVALID_REQUEST (-32600), and the
-  // app-server's own contract/test asserts the "thread not found" MESSAGE as
-  // the discriminator (thread_processor.rs load_thread → invalid_request;
-  // compaction.rs asserts message.contains("thread not found")). So the message
-  // is the authoritative positive signal here, not the generic code. This is a
-  // self-heal recovery gate, not user-facing classification.
-  return coerceErrorMessage(error).toLowerCase().includes("thread not found");
+  // Both messages use generic INVALID_REQUEST, so text is the self-heal signal.
+  const message = coerceErrorMessage(error).toLowerCase();
+  return message.includes("thread not found") || message.includes("no rollout found for thread id");
 }
 
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

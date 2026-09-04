@@ -619,6 +619,20 @@ describe("runCodexAppServerSideQuestion", () => {
     vi.useRealTimers();
   });
 
+  it("rejects pending native history before acquiring a client or forking", async () => {
+    readCodexAppServerBindingMock.mockReturnValue({
+      threadId: "parent-thread",
+      cwd: "/tmp/workspace",
+      nativeCompactionSyncPending: true,
+    });
+
+    await expect(runCodexAppServerSideQuestion(sideParams())).rejects.toThrow(
+      "Codex native history is synchronizing",
+    );
+
+    expect(getSharedCodexAppServerClientMock).not.toHaveBeenCalled();
+  });
+
   it("forks an ephemeral side thread and returns the completed assistant text", async () => {
     vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-09-02T00:30:00.000Z"));
     const client = createFakeClient();

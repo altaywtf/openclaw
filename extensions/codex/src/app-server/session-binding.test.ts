@@ -888,17 +888,22 @@ describe("Codex app-server binding store", () => {
       kind: "set",
       binding: { threadId: "thread-1", cwd: "/repo" },
     });
-    expect(store.read(second)).toBeUndefined();
-    await store.withLease(second, async () => undefined);
+    await store.withContextEngineCompaction(
+      first,
+      true,
+      () => {},
+      async (transaction) => {
+        transaction?.markProducerCommitted();
+        const successor = transaction?.prepareSuccessor(second.sessionId);
+        successor?.commit();
+        successor?.complete();
+      },
+    );
 
-    expect(bindingStoreKey(first)).toBe(bindingStoreKey(second));
-    expect(values.size).toBe(1);
-    expect(values.get(bindingStoreKey(second))).toMatchObject({ sessionId: "session-1" });
-    await expect(store.adoptSessionGeneration(second, first.sessionId)).resolves.toBe("adopted");
     expect(values.get(bindingStoreKey(second))).toMatchObject({
       state: "active",
       sessionId: "session-2",
-      binding: { threadId: "thread-1" },
+      binding: { threadId: "thread-1", nativeCompactionSyncPending: true },
     });
     await expect(
       store.mutate(first, {
@@ -912,34 +917,206 @@ describe("Codex app-server binding store", () => {
     await expect(store.mutate(second, { kind: "clear" })).resolves.toBe(true);
   });
 
-  it("rejects a delayed adoption after a newer session generation wins", async () => {
-    const { state } = createStateStore();
+  it("normalizes a generationless active binding before starting an in-place transition", async () => {
+    const { state, values } = createStateStore();
     const store = createCodexAppServerBindingStore(state);
-    const first = {
+    const identity = {
       kind: "session" as const,
       agentId: "main",
-      sessionId: "session-1",
-      sessionKey: "agent:main:telegram:chat-1",
+      sessionId: "session-current",
+      sessionKey: "agent:main:telegram:generationless",
     };
-    const second = { ...first, sessionId: "session-2" };
-    const third = { ...first, sessionId: "session-3" };
-    await store.mutate(first, {
-      kind: "set",
-      binding: { threadId: "thread-1", cwd: "/repo" },
+    state.register(bindingStoreKey(identity), {
+      version: 1,
+      state: "active",
+      binding: { threadId: "thread-current", cwd: "/repo" },
     });
 
-    await expect(store.adoptSessionGeneration(second, first.sessionId)).resolves.toBe("adopted");
-    await expect(store.adoptSessionGeneration(third, second.sessionId)).resolves.toBe("adopted");
-    await expect(store.adoptSessionGeneration(third, second.sessionId)).resolves.toBe("current");
-    await expect(store.adoptSessionGeneration(second, first.sessionId)).resolves.toBe("conflict");
-    await expect(store.retireSessionGeneration(second)).resolves.toBe("conflict");
+    await store.withContextEngineCompaction(
+      identity,
+      true,
+      () => {},
+      async (transaction) => {
+        transaction?.markProducerCommitted();
+        const successor = transaction?.prepareSuccessor(identity.sessionId);
+        successor?.commit();
+        successor?.complete();
+      },
+    );
 
-    expect(store.read(second)).toBeUndefined();
-    expect(store.read(third)).toMatchObject({ threadId: "thread-1" });
+    expect(values.get(bindingStoreKey(identity))).toEqual({
+      version: 1,
+      state: "active",
+      sessionId: identity.sessionId,
+      binding: {
+        threadId: "thread-current",
+        cwd: "/repo",
+        nativeCompactionSyncPending: true,
+      },
+    });
   });
 
-  it("rejects reclaim when another session generation wins after verification", async () => {
-    const { state } = createStateStore();
+  it.each([
+    {
+      label: "ordinary predecessor",
+      host: { sessionId: "session-p" },
+      expected: { kind: "predecessor", sessionId: "session-p" },
+      resolvedSessionId: "session-p",
+      supervision: false,
+      toSessionId: "session-s",
+    },
+    {
+      label: "producer-committed predecessor",
+      host: { sessionId: "session-p" },
+      expected: { kind: "predecessor", sessionId: "session-p" },
+      resolvedSessionId: "session-p",
+      supervision: false,
+      toSessionId: undefined,
+    },
+    {
+      label: "supervised successor",
+      host: { sessionId: "session-s", previousSessionId: "session-p" },
+      expected: { kind: "successor", sessionId: "session-s" },
+      resolvedSessionId: "session-s",
+      supervision: true,
+      toSessionId: "session-s",
+    },
+    {
+      label: "ordinary direct descendant",
+      host: { sessionId: "session-d", previousSessionId: "session-s" },
+      expected: { kind: "descendant", sessionId: "session-d" },
+      resolvedSessionId: "session-d",
+      supervision: false,
+      toSessionId: "session-s",
+    },
+    {
+      label: "same-ID successor",
+      host: { sessionId: "session-p" },
+      expected: { kind: "successor", sessionId: "session-p" },
+      resolvedSessionId: "session-p",
+      supervision: false,
+      sameId: true,
+      toSessionId: "session-p",
+    },
+  ])(
+    "reconciles a durable $label transition after restart",
+    async ({ host, expected, resolvedSessionId, supervision, toSessionId }) => {
+      const { state, values } = createStateStore();
+      const identity = {
+        kind: "session" as const,
+        agentId: "main",
+        sessionId: host.sessionId,
+        sessionKey: "agent:main:telegram:restart",
+      };
+      const binding = supervision
+        ? {
+            threadId: "thread-native",
+            cwd: "/repo",
+            connectionScope: "supervision" as const,
+            supervisionSourceThreadId: "thread-source",
+            preserveNativeModel: true as const,
+            conversationSourceTransferComplete: true as const,
+            model: "gpt-5.6",
+            modelProvider: "openai",
+          }
+        : { threadId: "thread-native", cwd: "/repo" };
+      state.register(bindingStoreKey(identity), {
+        version: 2,
+        state: "compaction-transition",
+        transitionId: `transition-${host.sessionId}`,
+        fromSessionId: "session-p",
+        ...(toSessionId ? { toSessionId } : {}),
+        previous: {
+          version: 1,
+          state: "active",
+          sessionId: "session-p",
+          binding,
+        },
+        nativeCompactionSyncPending: true,
+      });
+      const restarted = createCodexAppServerBindingStore(state);
+
+      await expect(restarted.reconcileSessionGeneration(identity, host)).resolves.toEqual(expected);
+      expect(values.get(bindingStoreKey(identity))).toMatchObject({
+        version: 1,
+        state: "active",
+        sessionId: resolvedSessionId,
+        binding: {
+          threadId: "thread-native",
+          nativeCompactionSyncPending: true,
+          ...(supervision ? { connectionScope: "supervision" } : {}),
+        },
+      });
+    },
+  );
+
+  it("reports a live transition lease as busy without changing durable state", async () => {
+    vi.useFakeTimers();
+    const { state, values } = createStateStore();
+    const identity = {
+      kind: "session" as const,
+      agentId: "main",
+      sessionId: "session-p",
+      sessionKey: "agent:main:telegram:busy",
+    };
+    const transition: StoredCodexAppServerBinding = {
+      version: 2,
+      state: "compaction-transition",
+      transitionId: "transition-busy",
+      fromSessionId: "session-p",
+      previous: {
+        version: 1,
+        state: "active",
+        sessionId: "session-p",
+        binding: { threadId: "thread-native", cwd: "/repo" },
+      },
+      lease: { token: "live-owner", expiresAt: Date.now() + 300_000 },
+    };
+    state.register(bindingStoreKey(identity), transition);
+    const restarted = createCodexAppServerBindingStore(state);
+
+    const reconciliation = restarted.reconcileSessionGeneration(identity, {
+      sessionId: identity.sessionId,
+    });
+    await vi.advanceTimersByTimeAsync(120_000);
+
+    await expect(reconciliation).resolves.toEqual({ kind: "busy" });
+    expect(values.get(bindingStoreKey(identity))).toEqual(transition);
+  });
+
+  it("preserves an unrelated durable transition on terminal conflict", async () => {
+    const { state, values } = createStateStore();
+    const identity = {
+      kind: "session" as const,
+      agentId: "main",
+      sessionId: "session-unrelated",
+      sessionKey: "agent:main:telegram:conflict",
+    };
+    const transition: StoredCodexAppServerBinding = {
+      version: 2,
+      state: "compaction-transition",
+      transitionId: "transition-conflict",
+      fromSessionId: "session-p",
+      toSessionId: "session-s",
+      previous: {
+        version: 1,
+        state: "active",
+        sessionId: "session-p",
+        binding: { threadId: "thread-native", cwd: "/repo" },
+      },
+      nativeCompactionSyncPending: true,
+    };
+    state.register(bindingStoreKey(identity), transition);
+    const restarted = createCodexAppServerBindingStore(state);
+
+    await expect(
+      restarted.reconcileSessionGeneration(identity, { sessionId: identity.sessionId }),
+    ).resolves.toEqual({ kind: "conflict" });
+    expect(values.get(bindingStoreKey(identity))).toEqual(transition);
+  });
+
+  it("rejects a delayed adoption after a newer session generation wins", async () => {
+    const { state, values } = createStateStore();
     const store = createCodexAppServerBindingStore(state);
     const first = {
       kind: "session" as const,
@@ -953,20 +1130,33 @@ describe("Codex app-server binding store", () => {
       kind: "set",
       binding: { threadId: "thread-1", cwd: "/repo" },
     });
-
-    const plan = await store.prepareSessionGenerationReclaim(second);
-    expect(plan).toEqual({ kind: "verify", expectedPreviousSessionId: first.sessionId });
-    await expect(store.adoptSessionGeneration(third, first.sessionId)).resolves.toBe("adopted");
-    if (plan.kind !== "verify") {
-      throw new Error("expected stale session generation");
+    for (const [predecessor, successorId] of [
+      [first, second.sessionId],
+      [second, third.sessionId],
+    ] as const) {
+      await store.withContextEngineCompaction(
+        predecessor,
+        false,
+        () => {},
+        async (transaction) => {
+          transaction?.markProducerCommitted();
+          const successor = transaction?.prepareSuccessor(successorId);
+          successor?.commit();
+          successor?.complete();
+        },
+      );
     }
+
     await expect(
-      store.mutate(second, {
-        kind: "reclaim-generation",
-        expectedPreviousSessionId: plan.expectedPreviousSessionId,
+      store.reconcileSessionGeneration(second, {
+        sessionId: second.sessionId,
+        previousSessionId: first.sessionId,
       }),
-    ).resolves.toBe(false);
+    ).resolves.toEqual({ kind: "conflict" });
+    await expect(store.retireSessionGeneration(second)).resolves.toBe("conflict");
+    expect(store.read(second)).toBeUndefined();
     expect(store.read(third)).toMatchObject({ threadId: "thread-1" });
+    expect(values.get(bindingStoreKey(third))).toMatchObject({ sessionId: third.sessionId });
   });
 
   it("falls back to physical session identity when no stable session key exists", () => {
@@ -1073,11 +1263,11 @@ describe("Codex app-server binding store", () => {
       }),
     ).resolves.toBe(false);
     await expect(
-      store.mutate(current, {
-        kind: "reclaim-generation",
-        expectedPreviousSessionId: previous.sessionId,
+      store.reconcileSessionGeneration(current, {
+        sessionId: current.sessionId,
+        previousSessionId: previous.sessionId,
       }),
-    ).resolves.toBe(true);
+    ).resolves.toEqual({ kind: "descendant", sessionId: current.sessionId });
     await expect(
       store.mutate(current, {
         kind: "set",
@@ -1117,22 +1307,19 @@ describe("Codex app-server binding store", () => {
       binding: { threadId: "thread-old", cwd: "/old" },
     });
     await expect(
-      store.mutate(current, {
-        kind: "reclaim-generation",
-        expectedPreviousSessionId: "other-session",
-      }),
-    ).resolves.toBe(false);
+      store.reconcileSessionGeneration(current, { sessionId: "other-session" }),
+    ).resolves.toEqual({ kind: "conflict" });
     expect(values.get(bindingStoreKey(previous))).toMatchObject({
       state: "active",
       sessionId: "session-1",
     });
 
     await expect(
-      store.mutate(current, {
-        kind: "reclaim-generation",
-        expectedPreviousSessionId: previous.sessionId,
+      store.reconcileSessionGeneration(current, {
+        sessionId: current.sessionId,
+        previousSessionId: previous.sessionId,
       }),
-    ).resolves.toBe(true);
+    ).resolves.toEqual({ kind: "descendant", sessionId: current.sessionId });
     expect(values.get(bindingStoreKey(current))).toEqual({
       version: 1,
       state: "cleared",
@@ -1153,11 +1340,8 @@ describe("Codex app-server binding store", () => {
     ).resolves.toBe(true);
 
     await expect(
-      store.mutate(previous, {
-        kind: "reclaim-generation",
-        expectedPreviousSessionId: previous.sessionId,
-      }),
-    ).resolves.toBe(false);
+      store.reconcileSessionGeneration(previous, { sessionId: current.sessionId }),
+    ).resolves.toEqual({ kind: "conflict" });
     await expect(
       store.mutate(previous, {
         kind: "set",
@@ -1201,11 +1385,11 @@ describe("Codex app-server binding store", () => {
     ).resolves.toBe(false);
 
     await expect(
-      store.mutate(current, {
-        kind: "reclaim-generation",
-        expectedPreviousSessionId: previous.sessionId,
+      store.reconcileSessionGeneration(current, {
+        sessionId: current.sessionId,
+        previousSessionId: previous.sessionId,
       }),
-    ).resolves.toBe(false);
+    ).resolves.toEqual({ kind: "conflict" });
     expect(values.get(bindingStoreKey(previous))).toMatchObject({
       state: "active",
       sessionId: previous.sessionId,
@@ -1266,11 +1450,11 @@ describe("Codex app-server binding store", () => {
     ).resolves.toBe(false);
 
     await expect(
-      store.mutate(current, {
-        kind: "reclaim-generation",
-        expectedPreviousSessionId: previous.sessionId,
+      store.reconcileSessionGeneration(current, {
+        sessionId: current.sessionId,
+        previousSessionId: previous.sessionId,
       }),
-    ).resolves.toBe(true);
+    ).resolves.toEqual({ kind: "descendant", sessionId: current.sessionId });
     await expect(
       store.mutate(current, {
         kind: "set",
@@ -1325,20 +1509,9 @@ describe("Codex app-server binding store", () => {
     });
     await store.retireSessionGeneration(identity);
 
-    const plan = await store.prepareSessionGenerationReclaim(identity);
-    expect(plan).toEqual({
-      kind: "verify",
-      expectedPreviousSessionId: identity.sessionId,
-    });
-    if (plan.kind !== "verify") {
-      throw new Error("expected the current retired generation to require verification");
-    }
     await expect(
-      store.mutate(identity, {
-        kind: "reclaim-generation",
-        expectedPreviousSessionId: plan.expectedPreviousSessionId,
-      }),
-    ).resolves.toBe(true);
+      store.reconcileSessionGeneration(identity, { sessionId: identity.sessionId }),
+    ).resolves.toEqual({ kind: "reset", sessionId: identity.sessionId });
     expect(values.get(bindingStoreKey(identity))).toEqual({
       version: 1,
       state: "cleared",

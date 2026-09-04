@@ -13,11 +13,7 @@ import {
   resolveCodexAppServerFallbackApiKeyCacheKey,
   resolveCodexAppServerPreparedApiKeyCacheKey,
 } from "./auth-bridge.js";
-import { isCodexSandboxExecServerEnabled } from "./config.js";
-import {
-  resolveCodexAppServerHookChannelId,
-  shouldEnableCodexAppServerNativeToolSurface,
-} from "./dynamic-tool-build.js";
+import { resolveCodexAppServerHookChannelId } from "./dynamic-tool-build.js";
 import { resolveCodexProviderWebSearchSupport } from "./provider-capabilities.js";
 import { prewarmCodexAttemptClient } from "./run-attempt-client-prewarm.js";
 import type { CodexAttemptConnection } from "./run-attempt-connection.js";
@@ -40,7 +36,6 @@ function resolveCodexAttemptBundleManifestRegistry(
 export async function prepareCodexAttemptRuntime(connection: CodexAttemptConnection) {
   const {
     params,
-    pluginConfig,
     usesSupervisionConnection,
     appServer,
     startupAuthProfileId,
@@ -52,11 +47,11 @@ export async function prepareCodexAttemptRuntime(connection: CodexAttemptConnect
     contextSessionKey,
     sandboxSessionKey,
     sessionAgentId,
-    policyAgentId,
-    sandbox,
     attemptClientFactory,
     runAbortController,
     activeContextEngine,
+    sandboxExecServerEnabled,
+    nativeToolSurfaceEnabled,
     mutable,
   } = connection;
   const preparedAuthBinding =
@@ -222,12 +217,6 @@ export async function prepareCodexAttemptRuntime(connection: CodexAttemptConnect
       hasStaticConfiguredMcp: bundleMcpThreadConfig.staticServerNames.length > 0,
     });
   preDynamicStartupStages.mark("bundle-mcp");
-  const sandboxExecServerEnabled = isCodexSandboxExecServerEnabled(pluginConfig, sandbox);
-  const nativeToolSurfaceEnabled = shouldEnableCodexAppServerNativeToolSurface(
-    runtimeParams,
-    sandbox,
-    { agentId: policyAgentId, runtimeSessionKey: sandboxSessionKey, sandboxExecServerEnabled },
-  );
   const configuredMcpSurface = scheduledConfiguredMcpSurface
     ? "scheduled"
     : !nativeToolSurfaceEnabled && bundleMcpThreadConfig.staticServerNames.length > 0

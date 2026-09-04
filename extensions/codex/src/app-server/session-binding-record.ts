@@ -134,6 +134,7 @@ const threadBindingSchema = z
     // Codex App Server owns selection for supervised and adopted threads. Keep
     // this marker across resumes so OpenClaw never substitutes a default or fallback.
     preserveNativeModel: z.literal(true).optional().catch(undefined),
+    nativeCompactionSyncPending: z.literal(true).optional().catch(undefined),
     // Continue creates the OpenClaw Chat before native execution. This closed
     // snapshot state is materialized only inside the fully configured harness.
     pendingSupervisionBranch: pendingSupervisionBranchSchema.optional(),
@@ -284,14 +285,15 @@ const storedSessionIdSchema = z
   .pipe(z.string().min(1))
   .optional()
   .catch(undefined);
+const storedActiveBindingSchema = z.object({
+  version: z.literal(1),
+  state: z.literal("active"),
+  binding: threadBindingSchema,
+  sessionId: storedSessionIdSchema,
+  lease: bindingLeaseSchema.optional().catch(undefined),
+});
 const storedBindingSchema = z.discriminatedUnion("state", [
-  z.object({
-    version: z.literal(1),
-    state: z.literal("active"),
-    binding: threadBindingSchema,
-    sessionId: storedSessionIdSchema,
-    lease: bindingLeaseSchema.optional().catch(undefined),
-  }),
+  storedActiveBindingSchema,
   z.object({
     version: z.literal(1),
     state: z.literal("cleared"),
@@ -300,10 +302,40 @@ const storedBindingSchema = z.discriminatedUnion("state", [
     retired: z.literal(true).optional().catch(undefined),
   }),
 ]);
+const compactionTransitionSchema = z
+  .object({
+    version: z.literal(2),
+    state: z.literal("compaction-transition"),
+    transitionId: z.string().trim().min(1),
+    fromSessionId: z.string().trim().min(1),
+    toSessionId: z.string().trim().min(1).optional(),
+    previous: storedActiveBindingSchema.omit({ lease: true }),
+    nativeCompactionSyncPending: z.literal(true).optional().catch(undefined),
+    lease: bindingLeaseSchema.optional().catch(undefined),
+  })
+  .strict()
+  .refine(
+    (transition) => transition.previous.sessionId === transition.fromSessionId,
+    "compaction transition predecessor generation is inconsistent",
+  );
+const storedBindingValueSchema = z.union([storedBindingSchema, compactionTransitionSchema]);
 
 // Session-key rows survive transcript/session-id rotation. The stored physical
 // id fences delayed lifecycle cleanup so an old generation cannot clear its successor.
-export type StoredCodexAppServerBinding = z.infer<typeof storedBindingSchema>;
+export type StoredCodexAppServerBindingV1 = z.infer<typeof storedBindingSchema>;
+export type StoredCodexAppServerCompactionTransition = z.infer<typeof compactionTransitionSchema>;
+export type StoredCodexAppServerBinding = z.infer<typeof storedBindingValueSchema>;
+
+const parseStoredBinding =
+  <T>(schema: z.ZodType<T>) =>
+  (value: unknown): T | undefined => {
+    const result = schema.safeParse(value);
+    if (!result.success) {
+      return undefined;
+    }
+    // SAFETY: Parsing validated required fields; normalization only removes optional undefined fields.
+    return stripUndefinedValue(result.data) as T;
+  };
 
 /** Stable plugin-state key for one current binding owner. */
 export function bindingStoreKey(identity: CodexAppServerBindingIdentity): string {
@@ -331,20 +363,12 @@ export function bindingStoreKey(identity: CodexAppServerBindingIdentity): string
   return `conversation:${bindingId}`;
 }
 
-export function readStoredCodexAppServerBinding(
-  value: unknown,
-): StoredCodexAppServerBinding | undefined {
-  const result = storedBindingSchema.safeParse(value);
-  if (!result.success) {
-    return undefined;
-  }
-  // SAFETY: Parsing validated required fields; normalization only removes optional undefined fields.
-  return stripUndefinedValue(result.data) as StoredCodexAppServerBinding;
-}
+export const readStoredCodexAppServerBinding = parseStoredBinding(storedBindingSchema);
+export const readStoredCodexAppServerBindingValue = parseStoredBinding(storedBindingValueSchema);
 
 export function ownsStoredSessionGeneration(
   identity: CodexAppServerBindingIdentity,
-  current: StoredCodexAppServerBinding | undefined,
+  current: StoredCodexAppServerBindingV1 | undefined,
 ): boolean {
   return (
     identity.kind !== "session" || !current?.sessionId || current.sessionId === identity.sessionId
@@ -404,9 +428,12 @@ export function readCurrentCodexAppServerBinding(
 ): CodexAppServerThreadBinding | undefined {
   const key = bindingStoreKey(identity);
   const raw = state.lookup(key);
-  const stored = readStoredCodexAppServerBinding(raw);
+  const stored = readStoredCodexAppServerBindingValue(raw);
   if (raw !== undefined && !stored) {
     throw new Error(`Invalid Codex app-server binding row: ${key}`);
+  }
+  if (stored?.state === "compaction-transition") {
+    throw new Error(`Codex binding compaction transition is unresolved: ${key}`);
   }
   return stored?.state === "active" && ownsStoredSessionGeneration(identity, stored)
     ? stored.binding

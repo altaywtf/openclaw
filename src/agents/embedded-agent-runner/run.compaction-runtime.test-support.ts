@@ -296,11 +296,6 @@ async function createRecoveryFixture(state: OpenClawTestState, options: FixtureO
             degradedReason,
           }),
         ...runtime,
-        getActiveSession: () => ({
-          id: sessionPromptState.sessionId,
-          file: sessionPromptState.sessionFile,
-          target: sessionPromptState.sessionTarget,
-        }),
         prepareCompactedTranscriptRetry: sessionPromptState.prepareCompactedTranscriptRetry,
         armPostCompactionGuard,
       };

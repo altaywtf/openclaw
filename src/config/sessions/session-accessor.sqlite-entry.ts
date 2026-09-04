@@ -1,3 +1,4 @@
+import type { AgentHarnessSessionDeletionMutation } from "../../agents/harness/types.js";
 import { normalizeInternalTurnContext } from "../../auto-reply/internal-turn-source.js";
 import type { MsgContext } from "../../auto-reply/templating.js";
 import {
@@ -28,6 +29,7 @@ import type {
   SessionEntryTargetPatchScope,
   SessionTranscriptReadScope,
 } from "./session-accessor.sqlite-contract.js";
+import { runSqliteSessionDeletionTransaction } from "./session-accessor.sqlite-deletion.js";
 import { readSessionEntryCache } from "./session-accessor.sqlite-entry-cache.js";
 import {
   assertLifecycleTargetSnapshotUnchanged,
@@ -82,6 +84,9 @@ export { ensureSessionEntrySync } from "./session-accessor.sqlite-initial-entry.
 
 type SqliteSessionEntryPatchOptions = SessionEntryPatchOptions & {
   skipMaintenance?: boolean;
+  preparedTransactionMutation?: AgentHarnessSessionDeletionMutation & {
+    complete: () => void;
+  };
   /** Synchronous owner bookkeeping after COMMIT, before observers can cancel the caller. */
   onCommitted?: (entry: SessionEntry) => void;
 };
@@ -546,28 +551,35 @@ async function patchSqliteSessionEntrySnapshot(
     let result: SessionEntry | null = null;
     let previousIdentity = new Map<string, SessionEntry>();
     let currentIdentity = new Map<string, SessionEntry>();
-    runOpenClawAgentWriteTransaction((writeDatabase) => {
-      const fresh = params.readSnapshot(writeDatabase);
-      assertLifecycleTargetSnapshotUnchanged(prepared, fresh, params.operationLabel);
-      options.assertCommitAllowed?.();
-      if (!next) {
-        result = cloneSessionEntry(writeBase);
-        return;
-      }
-      // Commit reads own these entries; update callbacks only receive detached copies.
-      previousIdentity = new Map(fresh.map((row) => [row.sessionKey, row.entry]));
-      const selectedPreviousEntry = fresh[0]?.entry ?? writeBase;
-      const persisted = writeSessionEntry(writeDatabase, sessionKey, next, {
-        ...(options.consumePendingReset ? { consumePendingReset: true } : {}),
-        previousEntry: selectedPreviousEntry,
-      });
-      wrote = true;
-      currentIdentity = readSessionIdentitySnapshot(writeDatabase, [sessionKey]);
-      result = cloneSessionEntry(persisted);
-    }, toDatabaseOptions(resolved));
+    const transactionMutation = options.preparedTransactionMutation;
+    runSqliteSessionDeletionTransaction(
+      (writeDatabase, commitCompanion) => {
+        const fresh = params.readSnapshot(writeDatabase);
+        assertLifecycleTargetSnapshotUnchanged(prepared, fresh, params.operationLabel);
+        options.assertCommitAllowed?.();
+        commitCompanion?.();
+        if (!next) {
+          result = cloneSessionEntry(writeBase);
+          return;
+        }
+        previousIdentity = new Map(fresh.map((row) => [row.sessionKey, row.entry]));
+        const selectedPreviousEntry = fresh[0]?.entry ?? writeBase;
+        const persisted = writeSessionEntry(writeDatabase, sessionKey, next, {
+          ...(options.consumePendingReset ? { consumePendingReset: true } : {}),
+          previousEntry: selectedPreviousEntry,
+        });
+        wrote = true;
+        currentIdentity = readSessionIdentitySnapshot(writeDatabase, [sessionKey]);
+        result = cloneSessionEntry(persisted);
+      },
+      toDatabaseOptions(resolved),
+      undefined,
+      transactionMutation,
+    );
     try {
-      if (next && result) {
+      if (result) {
         options.onCommitted?.(cloneSessionEntry(result));
+        transactionMutation?.complete();
       }
     } finally {
       emitCommittedSessionIdentityDiff(previousIdentity, currentIdentity);

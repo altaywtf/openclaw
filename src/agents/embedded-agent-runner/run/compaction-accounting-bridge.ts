@@ -12,6 +12,7 @@ type CompactionAccountingRecorder = {
   };
   recordUsage: (usage: NormalizedUsage) => void;
   recordCompaction: (tokensAfter: number | undefined) => void;
+  onCompactionCommitted?: () => void;
 };
 
 // Bind to the actual invocation context after watchdog projection. Public
@@ -21,8 +22,18 @@ const recorderByRuntimeContext = new WeakMap<object, CompactionAccountingRecorde
 export function attachCompactionAccountingRecorder(
   runtimeContext: ContextEngineRuntimeContext,
   recorder: CompactionAccountingRecorder,
-): void {
-  recorderByRuntimeContext.set(runtimeContext, recorder);
+): () => void {
+  const previous = recorderByRuntimeContext.get(runtimeContext);
+  const next = { ...previous, ...recorder };
+  recorderByRuntimeContext.set(runtimeContext, next);
+  return () => {
+    if (recorderByRuntimeContext.get(runtimeContext) === next) {
+      recorderByRuntimeContext.delete(runtimeContext);
+      if (previous) {
+        recorderByRuntimeContext.set(runtimeContext, previous);
+      }
+    }
+  };
 }
 
 export function readCompactionAccountingRecorder(

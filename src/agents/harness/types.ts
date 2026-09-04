@@ -305,6 +305,7 @@ export type AgentHarnessResetParams = {
   sessionId?: string;
   sessionKey?: string;
   sessionFile?: string;
+  storePath?: string;
   reason?: "new" | "reset" | "idle" | "daily" | "compaction" | "deleted" | "unknown";
 };
 
@@ -454,6 +455,7 @@ export type AgentHarnessSessionDeletionParams = {
   agentId: string;
   sessionKey: string;
   sessionId: string;
+  storePath?: string;
   lifecycleRevision?: string;
   /** Revalidate the captured registry, harness, and operation before each side effect. */
   assertCurrent: () => void;
@@ -466,7 +468,27 @@ export type AgentHarnessSessionDeletionMutation = {
   rollback: () => void;
 };
 
+export type AgentHarnessContextEngineCompactionParams = Pick<
+  AgentHarnessSessionDeletionParams,
+  "agentId" | "sessionKey" | "sessionId" | "storePath" | "assertCurrent"
+> & {
+  requiresNativeCompactionSync: boolean;
+};
+
+export type AgentHarnessContextEngineCompactionTransaction = {
+  markProducerCommitted: () => void;
+  rollbackBeforeProducerCommit: () => void;
+  prepareSuccessor: (
+    sessionId: string,
+  ) => AgentHarnessSessionDeletionMutation & { complete: () => void };
+};
+
 type AgentHarnessSessionLifecycleCapability = {
+  withContextEngineCompaction?<T>(
+    this: void,
+    params: AgentHarnessContextEngineCompactionParams,
+    run: (transaction?: AgentHarnessContextEngineCompactionTransaction) => Promise<T>,
+  ): Promise<T>;
   reset?(params: AgentHarnessResetParams): Promise<void> | void;
   /** Prepare outside the session writer; release native resources after its commit completes. */
   withSessionDeletion?<T>(

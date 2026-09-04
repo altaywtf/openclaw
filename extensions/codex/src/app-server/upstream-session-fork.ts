@@ -10,7 +10,12 @@ import { codexLastTerminalTurnId, codexUpstreamBaseline } from "../session-upstr
 import { forkCanonicalCodexSession } from "./canonical-session-fork.js";
 import { assertCodexThreadForkResponse } from "./protocol-validators.js";
 import type { CodexThread } from "./protocol.js";
-import { sessionBindingIdentity, type CodexAppServerBindingStore } from "./session-binding.js";
+import {
+  assertCodexNativeHistoryReady,
+  readReconciledCodexSessionBinding,
+  sessionBindingIdentity,
+  type CodexAppServerBindingStore,
+} from "./session-binding.js";
 import { createImportedCodexSession } from "./session-history-import.js";
 import { withCodexAppServerThreadMutation } from "./thread-ownership.js";
 import {
@@ -54,10 +59,16 @@ export async function forkCodexUpstreamSession(
           "This Codex thread is not available on the current connection. Reconnect to its host and try again.",
       };
     }
+    const config = options.resolveConfig?.() ?? {};
+    const sourceIdentity = sessionBindingIdentity({ ...params.source, config });
+    const sourceBinding = await readReconciledCodexSessionBinding(
+      options.bindingStore,
+      sourceIdentity,
+      config,
+      params.source.storePath,
+    );
+    assertCodexNativeHistoryReady(sourceBinding);
     return await requestControl.withPinnedConnection(async (control) => {
-      const sourceBinding = options.bindingStore.read(
-        sessionBindingIdentity({ ...params.source, config: options.resolveConfig?.() }),
-      );
       // Imported identities remain rooted at S; new canonical turns belong to C.
       const supervised = sourceBinding?.connectionScope === "supervision";
       const sourceThreadId = params.upstream.threadId;
@@ -115,7 +126,7 @@ export async function forkCodexUpstreamSession(
           bindingStore: options.bindingStore,
           runtime: options.runtime,
           harnessRuntimeId: options.harnessRuntimeId,
-          config: options.resolveConfig?.() ?? {},
+          config,
         });
       }
       const liveTurns = await listCodexUpstreamTurns(control, sourceThreadId);
@@ -164,7 +175,6 @@ export async function forkCodexUpstreamSession(
         const throughTurnId =
           codexLastTerminalTurnId(forkedThread, normalizeOptionalString) ?? null;
         const marker = codexUpstreamBaseline(forkedThread, normalizeOptionalString);
-        const config = options.resolveConfig?.() ?? {};
         const created = await createImportedCodexSession({
           runtime: options.runtime,
           bindingStore: options.bindingStore,

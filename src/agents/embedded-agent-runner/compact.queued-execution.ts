@@ -27,7 +27,10 @@ import type { ProviderRuntimeModel } from "../../plugins/provider-runtime-model.
 import { enqueueCommandInLane } from "../../process/command-queue.js";
 import { normalizeOptionalAgentRuntimeId } from "../agent-runtime-id.js";
 import { resolveSessionAgentIds } from "../agent-scope.js";
-import { maybeCompactAgentHarnessSession } from "../harness/compaction.js";
+import {
+  maybeCompactAgentHarnessSession,
+  withHarnessContextEngineCompaction,
+} from "../harness/compaction.js";
 import type { PreparedModelRuntimeSnapshot } from "../prepared-model-runtime.js";
 import { SessionManager } from "../sessions/index.js";
 import type { CompactEmbeddedAgentSessionParams } from "./compact.types.js";
@@ -44,6 +47,7 @@ import {
 import { runContextEngineMaintenance } from "./context-engine-maintenance.js";
 import { resolveGlobalLane, resolveSessionLane } from "./lanes.js";
 import { log } from "./logger.js";
+import { attachCompactionAccountingRecorder } from "./run/compaction-accounting-bridge.js";
 import type { EmbeddedAgentCompactResult } from "./types.js";
 
 /** Host-only bookkeeping, deliberately separate from plugin compaction parameters. */
@@ -244,66 +248,7 @@ export async function executeQueuedContextEngineCompaction(input: {
         assertActive();
         // Preserve the delegate's progress-aware watchdog and bound other engines.
         // Queued callers keep result-based failures; recovery rejects cancellation.
-        let result: Awaited<ReturnType<typeof contextEngine.compact>>;
-        try {
-          const compactionSessionTarget = projectQueuedCompactionSessionTarget(params);
-          const compact = bindContextEngineCompaction(contextEngine);
-          const ownedCompactor: Pick<ContextEngine, "compact" | "info"> = {
-            info: contextEngine.info,
-            compact: inheritRuntimeCompactionDelegate(compact, (backendParams) => {
-              // Retained backend work keeps the original owner and the timer's
-              // composed signal, never a later accepted successor's authority.
-              const writeContext = createTranscriptWriteContext(
-                runtimeTarget,
-                expectedEntry,
-                backendParams.abortSignal,
-              );
-              return withOwnedSessionTranscriptWrites(writeContext, () => compact(backendParams));
-            }),
-          };
-          result = await compactContextEngineWithSafetyTimeout(
-            ownedCompactor,
-            {
-              sessionId: params.sessionId,
-              sessionKey: hookSessionKey,
-              ...(compactionSessionTarget.agentId
-                ? { agentId: compactionSessionTarget.agentId }
-                : {}),
-              sessionTarget: compactionSessionTarget,
-              tokenBudget: contextTokenBudget,
-              currentTokenCount: params.currentTokenCount,
-              compactionTarget: params.trigger === "manual" ? "threshold" : "budget",
-              customInstructions: params.customInstructions,
-              force:
-                params.force === true ||
-                params.forcePreflight === true ||
-                params.preflightRequired === true ||
-                params.trigger === "manual",
-              runtimeContext: {
-                ...runtimeContext,
-                forceReason:
-                  params.forcePreflight === true || params.preflightRequired === true
-                    ? "preflight_required"
-                    : params.trigger === "manual"
-                      ? "manual"
-                      : undefined,
-                preflightCompactionTrigger: params.preflightCompactionTrigger,
-              },
-              runtimeSettings: contextEngineRuntimeSettings,
-            },
-            resolveCompactionTimeoutMs(params.config),
-            params.abortSignal,
-          );
-        } catch (compactErr) {
-          log.warn("context-engine compaction failed", {
-            errorMessage: formatErrorMessage(compactErr),
-          });
-          result = {
-            ok: false,
-            compacted: false,
-            reason: formatErrorMessage(compactErr),
-          };
-        }
+        let result!: Awaited<ReturnType<typeof contextEngine.compact>>;
         let successor: Pick<
           AcceptedCompactionSuccessor,
           "sessionId" | "sessionFile" | "sessionTarget"
@@ -313,43 +258,130 @@ export async function executeQueuedContextEngineCompaction(input: {
           sessionFile: params.sessionFile,
           sessionTarget: runtimeTarget,
         };
-        let tokensAfter = result.result?.tokensAfter;
-        if (result.ok && result.compacted) {
-          const proposed = resolveCompactionSuccessorTranscript(result);
-          const target = result.result?.sessionTarget;
-          const sameTarget =
-            (!proposed.sessionId || proposed.sessionId === runtimeTarget.sessionId) &&
-            (!proposed.sessionFile || proposed.sessionFile === params.sessionFile) &&
-            (!target?.agentId || target.agentId === runtimeTarget.agentId) &&
-            (!target?.sessionKey || target.sessionKey === runtimeTarget.sessionKey) &&
-            (!target?.storePath || target.storePath === runtimeTarget.storePath);
-          // Completion survives cancellation; a proposed successor's token snapshot
-          // belongs to that identity only after the host accepts it.
-          tokensAfter = sameTarget ? result.result?.tokensAfter : undefined;
-          try {
-            successor = await acceptCompactionSuccessor({
-              config: params.config,
-              currentSessionFile: params.sessionFile,
-              currentTarget: runtimeTarget,
-              expectedEntry,
-              assertActive: assertCallerActive,
-              result,
-              onCommitted: (accepted) => {
-                expected = {
-                  sessionId: accepted.entry.sessionId,
-                  lifecycleRevision: accepted.entry.lifecycleRevision,
-                  activeWriterRunId: accepted.entry.activeWriterRunId,
-                };
-                host.onCommitted?.(accepted);
-              },
-            });
-            tokensAfter = result.result?.tokensAfter;
-          } catch (error) {
-            if (!params.abortSignal?.aborted) {
-              throw error;
+        let tokensAfter: number | undefined;
+        await withHarnessContextEngineCompaction({
+          ...(preparedHarnessRuntime ? { harnessRuntime: preparedHarnessRuntime } : {}),
+          preparedModelRuntime,
+          compaction: {
+            ...runtimeTarget,
+            requiresNativeCompactionSync: engineOwnsCompaction,
+          },
+          run: async (harnessTransaction) => {
+            try {
+              const compactionSessionTarget = projectQueuedCompactionSessionTarget(params);
+              const compact = bindContextEngineCompaction(contextEngine);
+              const ownedCompactor: Pick<ContextEngine, "compact" | "info"> = {
+                info: contextEngine.info,
+                compact: inheritRuntimeCompactionDelegate(compact, (backendParams) => {
+                  const writeContext = createTranscriptWriteContext(
+                    runtimeTarget,
+                    expectedEntry,
+                    backendParams.abortSignal,
+                  );
+                  return withOwnedSessionTranscriptWrites(writeContext, async () => {
+                    const restoreRecorder = backendParams.runtimeContext
+                      ? attachCompactionAccountingRecorder(backendParams.runtimeContext, {
+                          recordUsage() {},
+                          recordCompaction() {},
+                          onCompactionCommitted: () => harnessTransaction?.markProducerCommitted(),
+                        })
+                      : undefined;
+                    try {
+                      return await compact(backendParams);
+                    } finally {
+                      restoreRecorder?.();
+                    }
+                  });
+                }),
+              };
+              result = await compactContextEngineWithSafetyTimeout(
+                ownedCompactor,
+                {
+                  sessionId: params.sessionId,
+                  sessionKey: hookSessionKey,
+                  ...(compactionSessionTarget.agentId
+                    ? { agentId: compactionSessionTarget.agentId }
+                    : {}),
+                  sessionTarget: compactionSessionTarget,
+                  tokenBudget: contextTokenBudget,
+                  currentTokenCount: params.currentTokenCount,
+                  compactionTarget: params.trigger === "manual" ? "threshold" : "budget",
+                  customInstructions: params.customInstructions,
+                  force:
+                    params.force === true ||
+                    params.forcePreflight === true ||
+                    params.preflightRequired === true ||
+                    params.trigger === "manual",
+                  runtimeContext: {
+                    ...runtimeContext,
+                    forceReason:
+                      params.forcePreflight === true || params.preflightRequired === true
+                        ? "preflight_required"
+                        : params.trigger === "manual"
+                          ? "manual"
+                          : undefined,
+                    preflightCompactionTrigger: params.preflightCompactionTrigger,
+                  },
+                  runtimeSettings: contextEngineRuntimeSettings,
+                },
+                resolveCompactionTimeoutMs(params.config),
+                params.abortSignal,
+              );
+            } catch (compactErr) {
+              log.warn("context-engine compaction failed", {
+                errorMessage: formatErrorMessage(compactErr),
+              });
+              result = {
+                ok: false,
+                compacted: false,
+                reason: formatErrorMessage(compactErr),
+              };
             }
-          }
-        }
+            if (result.ok && result.compacted) {
+              harnessTransaction?.markProducerCommitted();
+            } else {
+              harnessTransaction?.rollbackBeforeProducerCommit();
+            }
+            tokensAfter = result.result?.tokensAfter;
+            if (result.ok && result.compacted) {
+              const proposed = resolveCompactionSuccessorTranscript(result);
+              const target = result.result?.sessionTarget;
+              const sameTarget =
+                (!proposed.sessionId || proposed.sessionId === runtimeTarget.sessionId) &&
+                (!proposed.sessionFile || proposed.sessionFile === params.sessionFile) &&
+                (!target?.agentId || target.agentId === runtimeTarget.agentId) &&
+                (!target?.sessionKey || target.sessionKey === runtimeTarget.sessionKey) &&
+                (!target?.storePath || target.storePath === runtimeTarget.storePath);
+              // Completion survives cancellation; a proposed successor's token snapshot
+              // belongs to that identity only after the host accepts it.
+              tokensAfter = sameTarget ? result.result?.tokensAfter : undefined;
+              try {
+                successor = await acceptCompactionSuccessor({
+                  config: params.config,
+                  currentSessionFile: params.sessionFile,
+                  currentTarget: runtimeTarget,
+                  ...(harnessTransaction ? { harnessTransaction } : {}),
+                  expectedEntry,
+                  assertActive: assertCallerActive,
+                  result,
+                  onCommitted: (accepted) => {
+                    expected = {
+                      sessionId: accepted.entry.sessionId,
+                      lifecycleRevision: accepted.entry.lifecycleRevision,
+                      activeWriterRunId: accepted.entry.activeWriterRunId,
+                    };
+                    host.onCommitted?.(accepted);
+                  },
+                });
+                tokensAfter = result.result?.tokensAfter;
+              } catch (error) {
+                if (!params.abortSignal?.aborted) {
+                  throw error;
+                }
+              }
+            }
+          },
+        });
         const postCompactionSessionId = successor.sessionId;
         const postCompactionSessionFile = successor.sessionFile;
         const postCompactionSessionTarget = successor.sessionTarget;
@@ -482,7 +514,10 @@ export async function executeQueuedContextEngineCompaction(input: {
                   contextTokenBudget,
                   contextEngineRuntimeContext,
                 },
-                { nativeCompactionRequest: "after_context_engine", preparedModelRuntime },
+                {
+                  nativeCompactionRequest: "after_context_engine",
+                  preparedModelRuntime,
+                },
               );
               if (secondaryNativeHarnessCompaction && !secondaryNativeHarnessCompaction.ok) {
                 log.warn(

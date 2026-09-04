@@ -748,6 +748,48 @@ describe("maybeCompactCodexAppServerSession", () => {
     });
   });
 
+  it("clears pending native sync only after the compaction item and turn complete", async () => {
+    const fake = createFakeCodexClient({
+      autoCompleteCompaction: false,
+      retainedThreadId: null,
+      subscribedThreadIds: ["thread-1"],
+    });
+    setCodexAppServerClientFactoryForTest(async () => fake.client);
+    const sessionFile = await writeTestBinding({ nativeCompactionSyncPending: true });
+
+    const pending = maybeCompactCodexAppServerSession(
+      {
+        sessionId: "session-1",
+        sessionKey: "agent:main:session-1",
+        sessionFile,
+        workspaceDir: tempDir,
+        trigger: "budget",
+        preflightRequired: true,
+      },
+      {
+        allowNonManualNativeRequest: true,
+        nativeCompactionRequest: "required_preflight",
+      },
+    );
+    await vi.waitFor(() => {
+      expect(fake.request).toHaveBeenCalledWith(
+        "thread/compact/start",
+        { threadId: "thread-1" },
+        { timeoutMs: 60_000 },
+      );
+    });
+    await expect(readCodexAppServerBinding(sessionFile)).resolves.toMatchObject({
+      nativeCompactionSyncPending: true,
+    });
+
+    fake.completeCompaction();
+
+    await expect(pending).resolves.toMatchObject({ ok: true, compacted: true });
+    expect(await readCodexAppServerBinding(sessionFile)).not.toHaveProperty(
+      "nativeCompactionSyncPending",
+    );
+  });
+
   it("preserves projection when aborted before guarded native compaction", async () => {
     const fake = createFakeCodexClient();
     setCodexAppServerClientFactoryForTest(async () => fake.client);
@@ -953,6 +995,41 @@ describe("maybeCompactCodexAppServerSession", () => {
     expect(result.compacted).toBe(false);
     expect(result.reason).toBe("codex app-server binding changed before native compaction");
     expect(result.failure?.reason).toBe("stale_thread_binding");
+  });
+
+  it("rejects an exact-binding change before acquiring a native client", async () => {
+    const sessionFile = await writeTestBinding();
+    const expectedBinding = await readCodexAppServerBinding(sessionFile);
+    if (!expectedBinding) {
+      throw new Error("expected Codex binding");
+    }
+    const clientFactory = vi.fn();
+
+    await expect(
+      maybeCompactCodexAppServerSession(
+        {
+          sessionId: "session-1",
+          sessionKey: "agent:main:session-1",
+          sessionFile,
+          workspaceDir: tempDir,
+          trigger: "budget",
+        },
+        {
+          bindingStore: {
+            ...testCodexAppServerBindingStore,
+            read: () => ({ ...expectedBinding, cwd: "/replacement" }),
+          },
+          clientFactory,
+          allowNonManualNativeRequest: true,
+          nativeCompactionRequest: "required_preflight",
+          expectedBinding,
+        },
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      failure: { reason: "stale_thread_binding" },
+    });
+    expect(clientFactory).not.toHaveBeenCalled();
   });
 
   it("blocks same-process binding writes until guarded native compaction starts", async () => {
@@ -1939,13 +2016,28 @@ describe("maybeCompactCodexAppServerSession", () => {
     expect(fake.closeAndWait).not.toHaveBeenCalled();
   });
 
-  it("retires the client before releasing an unconfirmed compaction start", async () => {
+  it("preserves pending native sync when the compaction start outcome is ambiguous", async () => {
     const fake = createFakeCodexClient();
     fake.request.mockRejectedValueOnce(new Error("thread/compact/start timed out"));
     setCodexAppServerClientFactoryForTest(async () => fake.client);
-    const sessionFile = await writeTestBinding();
+    const sessionFile = await writeTestBinding({ nativeCompactionSyncPending: true });
 
-    const result = requireCompactResult(await startCompaction(sessionFile));
+    const result = requireCompactResult(
+      await maybeCompactCodexAppServerSession(
+        {
+          sessionId: "session-1",
+          sessionKey: "agent:main:session-1",
+          sessionFile,
+          workspaceDir: tempDir,
+          trigger: "budget",
+          preflightRequired: true,
+        },
+        {
+          allowNonManualNativeRequest: true,
+          nativeCompactionRequest: "required_preflight",
+        },
+      ),
+    );
 
     expect(result).toMatchObject({
       ok: false,
@@ -1957,6 +2049,9 @@ describe("maybeCompactCodexAppServerSession", () => {
       forceKillDelayMs: 250,
     });
     expect(fake.close).toHaveBeenCalledTimes(1);
+    await expect(readCodexAppServerBinding(sessionFile)).resolves.toMatchObject({
+      nativeCompactionSyncPending: true,
+    });
   });
 
   it("keeps the lifecycle fence when an unconfirmed stdio process does not stop", async () => {

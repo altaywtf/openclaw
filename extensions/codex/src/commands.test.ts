@@ -1319,7 +1319,11 @@ describe("codex command", () => {
     await upsertSessionEntry({
       storePath,
       sessionKey,
-      entry: { sessionId: "session-new", updatedAt: Date.now() },
+      entry: {
+        sessionId: "session-new",
+        previousSessionId: "session-old",
+        updatedAt: Date.now(),
+      },
     });
     const codexControlRequest = createResumeControlRequest(
       createThreadResumeResponse({ threadId: "thread-new" }),
@@ -6346,7 +6350,9 @@ describe("codex command", () => {
     expect(setCodexConversationFastMode).toHaveBeenCalledWith({
       identity: { kind: "session", agentId: "main", sessionId: "session-1" },
       bindingStore: testCodexAppServerBindingStore,
+      config: {},
       enabled: true,
+      storePath: undefined,
     });
     expect(setCodexConversationPermissions).toHaveBeenCalledWith({
       mode: "yolo",
@@ -6594,6 +6600,136 @@ describe("codex command", () => {
     expect(setCodexConversationPermissions).toHaveBeenCalledOnce();
   });
 
+  it("blocks model execution while pending history leaves state controls and compact usable", async () => {
+    const runtime = await createCodexRuntimeContextOverrides(
+      "agent:main:test:pending-native-history",
+    );
+    const identity = {
+      kind: "session" as const,
+      agentId: "main",
+      sessionId: "session-1",
+      sessionKey: runtime.sessionKey,
+    };
+    await writeTestBinding(identity, {
+      threadId: "thread-pending",
+      cwd: "/repo",
+      model: "native-model",
+      serviceTier: "priority",
+      nativeCompactionSyncPending: true,
+    });
+    const beforeRequestGuard = vi.fn();
+    const executed = vi.fn();
+    const codexControlRequest = vi.fn(
+      async (
+        _pluginConfig: unknown,
+        method: string,
+        params: unknown,
+        options?: CodexControlRequestOptions,
+      ): Promise<JsonValue> => {
+        if (options?.beforeRequest) {
+          beforeRequestGuard();
+          await options.beforeRequest({} as never, {} as CodexAppServerClient, {
+            assertCurrent: () => undefined,
+          });
+          executed();
+        }
+        if (method === CODEX_CONTROL_METHODS.clearThreadGoal) {
+          return { cleared: true };
+        }
+        return {
+          goal: {
+            threadId: "thread-pending",
+            objective: "Ship safely",
+            status: (params as { status?: string } | undefined)?.status ?? "active",
+            tokenBudget: null,
+            tokensUsed: 1,
+            timeUsedSeconds: 1,
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        };
+      },
+    );
+    const setCodexConversationFastMode = vi.fn(async () => "Codex fast mode: on.");
+    const compactCurrent = vi.fn(async () => ({ compacted: true, tokensAfter: 42 }));
+    const deps = createDeps({ codexControlRequest, setCodexConversationFastMode });
+
+    for (const args of ["review", "goal set Ship safely", "goal resume"]) {
+      const result = await handleCodexCommand(createContext(args, undefined, runtime), { deps });
+      expect(result.text).toContain("native history is synchronizing");
+    }
+    expect(beforeRequestGuard).toHaveBeenCalledTimes(3);
+    expect(executed).not.toHaveBeenCalled();
+    beforeRequestGuard.mockClear();
+
+    await expect(
+      handleCodexCommand(createContext("goal", undefined, runtime), { deps }),
+    ).resolves.toMatchObject({ text: expect.stringContaining("Codex goal: Ship safely") });
+    for (const [args, expected] of [
+      ["goal clear", "Cleared the Codex goal."],
+      ["goal pause", "Codex goal: Ship safely\n- Status: paused\n- Tokens: 1"],
+      ["goal block", "Codex goal: Ship safely\n- Status: blocked\n- Tokens: 1"],
+      ["goal complete", "Codex goal: Ship safely\n- Status: complete\n- Tokens: 1"],
+    ] as const) {
+      await expect(
+        handleCodexCommand(createContext(args, undefined, runtime), { deps }),
+      ).resolves.toEqual({ text: expected });
+    }
+    expect(beforeRequestGuard).not.toHaveBeenCalled();
+    await expect(
+      handleCodexCommand(createContext("model", undefined, runtime), { deps }),
+    ).resolves.toEqual({ text: "Codex model: native-model" });
+    await expect(
+      handleCodexCommand(createContext("fast status", undefined, runtime), { deps }),
+    ).resolves.toEqual({ text: "Codex fast mode: on." });
+    await expect(
+      handleCodexCommand(
+        createContext("compact", undefined, {
+          ...runtime,
+          runtimeContext: { compactCurrent },
+        }),
+        { deps },
+      ),
+    ).resolves.toEqual({ text: "Compacted Codex session (42 tokens after)." });
+    expect(compactCurrent).toHaveBeenCalledOnce();
+  });
+
+  it("reads model status from the explicit session target store", async () => {
+    const sessionKey = "agent:main:test:explicit-model-store";
+    const exactStorePath = path.join(tempDir, "exact-model-sessions.json");
+    const configuredStorePath = path.join(tempDir, "configured-model-sessions.json");
+    await upsertSessionEntry({
+      storePath: exactStorePath,
+      sessionKey,
+      entry: { sessionId: "session-1", updatedAt: Date.now(), modelOverride: "exact-model" },
+    });
+    await upsertSessionEntry({
+      storePath: configuredStorePath,
+      sessionKey,
+      entry: { sessionId: "session-1", updatedAt: Date.now(), modelOverride: "wrong-model" },
+    });
+    await writeTestBinding(
+      { kind: "session", agentId: "main", sessionId: "session-1", sessionKey },
+      { threadId: "thread-explicit-store", cwd: "/repo", model: "bound-model" },
+    );
+
+    await expect(
+      handleCodexCommand(
+        createContext("model", undefined, {
+          config: { session: { store: configuredStorePath } },
+          sessionKey,
+          sessionTarget: {
+            agentId: "main",
+            sessionId: "session-1",
+            sessionKey,
+            storePath: exactStorePath,
+          },
+        }),
+        { deps: createDeps() },
+      ),
+    ).resolves.toEqual({ text: "Codex model: exact-model" });
+  });
+
   it("reports the desired direct-session model before its stale native binding reloads", async () => {
     const sessionKey = "agent:main:diverged-model";
     const storePath = resolveStorePath(undefined, { agentId: "main" });
@@ -6816,7 +6952,9 @@ describe("codex command", () => {
     expect(setCodexConversationFastMode).toHaveBeenCalledWith({
       identity: { kind: "conversation", bindingId: "binding-data-1" },
       bindingStore: testCodexAppServerBindingStore,
+      config: {},
       enabled: true,
+      storePath: undefined,
     });
   });
 

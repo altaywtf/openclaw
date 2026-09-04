@@ -17,6 +17,7 @@ import {
   bindingStoreKey,
   isCodexAppServerNativeAuthProfile,
   normalizeCodexAppServerBindingModelProvider,
+  readReconciledCodexSessionBinding,
   type CodexAppServerAuthProfileLookup,
   type CodexAppServerBindingIdentity,
   type CodexAppServerBindingStore,
@@ -187,13 +188,14 @@ export async function setCodexConversationModel(params: {
   pluginConfig?: unknown;
   agentDir?: string;
   config?: CodexAppServerBindingLookup["config"];
+  storePath?: string;
 }): Promise<string> {
   const model = params.model.trim();
   if (!model) {
     return "Usage: /codex model <model>";
   }
   const lookup = buildBindingLookup(params);
-  const binding = requireThreadBinding(params.bindingStore, params.identity);
+  const binding = await requireThreadBinding(params);
   if (binding.connectionScope === "supervision") {
     throw new ModelSelectionLockedError();
   }
@@ -227,7 +229,11 @@ export async function setCodexConversationModel(params: {
     // lifecycle reconciliation can rotate its native generation safely.
     const updated = await patchSessionEntry({
       agentId: identity.agentId,
-      storePath: resolveStorePath(params.config?.session?.store, { agentId: identity.agentId }),
+      storePath:
+        params.storePath ??
+        resolveStorePath(params.config?.session?.store, {
+          agentId: identity.agentId,
+        }),
       sessionKey: identity.sessionKey,
       requireWriteSuccess: true,
       replaceEntry: true,
@@ -271,8 +277,9 @@ export async function setCodexConversationFastMode(params: {
   pluginConfig?: unknown;
   agentDir?: string;
   config?: CodexAppServerBindingLookup["config"];
+  storePath?: string;
 }): Promise<string> {
-  const binding = requireThreadBinding(params.bindingStore, params.identity);
+  const binding = await requireThreadBinding(params);
   if (params.enabled == null) {
     return `Codex fast mode: ${isCodexFastServiceTier(binding.serviceTier) ? "on" : "off"}.`;
   }
@@ -358,11 +365,18 @@ export function formatPermissionsMode(
   return mode === "full" ? "full access" : (mode ?? "default");
 }
 
-function requireThreadBinding(
-  bindingStore: CodexAppServerBindingStore,
-  identity: CodexAppServerBindingIdentity,
-) {
-  const binding = bindingStore.read(identity);
+async function requireThreadBinding(params: {
+  bindingStore: CodexAppServerBindingStore;
+  identity: CodexAppServerBindingIdentity;
+  config?: CodexAppServerBindingLookup["config"];
+  storePath?: string;
+}) {
+  const binding = await readReconciledCodexSessionBinding(
+    params.bindingStore,
+    params.identity,
+    params.config,
+    params.storePath,
+  );
   if (!binding?.threadId) {
     throw new Error("No Codex thread is attached to this OpenClaw session yet.");
   }

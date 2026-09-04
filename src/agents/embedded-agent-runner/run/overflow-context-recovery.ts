@@ -164,7 +164,7 @@ export async function recoverEmbeddedRunOverflow(
     observedOverflowTokens ??
     preflightEstimatedPromptTokens ??
     (input.contextTokenBudget > 0 ? input.contextTokenBudget + 1 : undefined);
-  const activeSession = input.getActiveSession();
+  const activeSession = input.prepareRecoveryOwner().session;
   log.warn(
     `[context-overflow-diag] sessionKey=${runParams.sessionKey ?? runParams.sessionId} ` +
       `provider=${input.provider}/${input.modelId} source=${contextOverflowError.source} ` +
@@ -245,7 +245,7 @@ export async function recoverEmbeddedRunOverflow(
     const { result: compactResult, previousSessionId } = compaction;
     input.assertRecoveryActive();
     if (compactResult.ok && compactResult.compacted) {
-      const adoptedSession = input.getActiveSession();
+      const adoptedSession = input.prepareRecoveryOwner().session;
       // A parked Code Mode run cannot follow a rotated session. The compaction
       // stays committed, but only a same-session mid-turn continuation is safe.
       parkedWorkBlocksContinuation =
