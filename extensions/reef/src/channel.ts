@@ -485,7 +485,9 @@ export const reefPlugin: ChannelPlugin<ReefAccount> = {
               peerIdentity: reefPeerIdentity(friend),
               frame,
             };
-            await startFederatedPrompt(request);
+            // The synchronous prefix durably claims the proposal before returning. Approval and
+            // agent dispatch continue under the account-owned task so one peer cannot stall ingress.
+            void startFederatedPrompt(request);
             return;
           }
           const friend = trust.get(peer);
