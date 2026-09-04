@@ -103,8 +103,9 @@ const SIDEBAR_PANEL_LOADING_VARIANTS = {
 } satisfies Record<SidebarSlotId, PanelLoadingSkeletonVariant>;
 
 const CANVAS_ANNOTATION_GLYPH = strokeIcon(
-  svg`<path d="m4 4 7.07 17 2.51-7.39L21 11.07z" />
-    <path d="m13.58 13.61 3.34 3.34" />`,
+  svg`<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    <path d="M12 7v6" />
+    <path d="M9 10h6" />`,
 );
 
 function renderCanvasCommentAction(params: {

@@ -6527,6 +6527,11 @@ describe("chat attachment picker", () => {
     expect(group.querySelector(".chat-browser-annotation-group__summary")?.textContent).toContain(
       "2 annotations",
     );
+    expect(
+      group
+        .querySelector(".chat-browser-annotation-group__summary")
+        ?.getAttribute("data-attachment-id"),
+    ).toBe("annotation-title");
     expect(group.querySelector('[aria-label="Browser annotation"]')).not.toBeNull();
     expect(items[0]?.querySelector("img")?.getAttribute("alt")).toBe("Browser annotation preview");
     expect(items[0]?.querySelector("code")?.textContent).toBe("button");

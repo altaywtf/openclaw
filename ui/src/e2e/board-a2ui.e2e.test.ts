@@ -26,10 +26,6 @@ const allowMissingChromium = process.env.OPENCLAW_UI_E2E_ALLOW_MISSING_CHROMIUM 
 const describeControlUiE2e = chromiumAvailable || !allowMissingChromium ? describe : describe.skip;
 const sessionKey = "agent:main:board-a2ui";
 const scrollbarProofLabel = process.env.OPENCLAW_WIDGET_SCROLLBAR_PROOF_LABEL;
-const commenterProofDir = path.resolve(
-  process.cwd(),
-  ".artifacts/control-ui-e2e/canvas-element-commenter",
-);
 const basicCatalog = "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json";
 
 let browser: Browser;
@@ -66,7 +62,9 @@ async function openCommenterBoard(page: Page) {
       body { min-height: 320px; padding: 32px; background: var(--surface); }
       .panel { max-width: 520px; padding: 28px; border: 1px solid var(--border); border-radius: 16px; background: var(--card); }
       button { margin-top: 20px; }
+      #edge-target { position: fixed; inset: 2px auto auto 2px; width: 10px; height: 10px; margin: 0; padding: 0; }
     </style>
+    <button id="edge-target" aria-label="Edge target"></button>
     <main class="panel">
       <h1>Release dashboard</h1>
       <p>Review the candidate before promotion.</p>
@@ -166,14 +164,12 @@ describeControlUiE2e("Control UI dashboard A2UI", () => {
 
   it("comments on a specific shared Canvas HTML element from Board chat", async () => {
     const recordProof = process.env.OPENCLAW_UI_E2E_RECORD === "1";
-    if (recordProof) {
-      await mkdir(commenterProofDir, { recursive: true });
-    }
+    const proofDir = recordProof ? createControlUiE2eArtifactDir("canvas-element-commenter") : "";
     const context = await browser.newContext({
       permissions: ["local-network-access"],
       viewport: { width: 1280, height: 800 },
       ...(recordProof
-        ? { recordVideo: { dir: commenterProofDir, size: { width: 1280, height: 800 } } }
+        ? { recordVideo: { dir: proofDir, size: { width: 1280, height: 800 } } }
         : {}),
     });
     contexts.add(context);
@@ -188,16 +184,33 @@ describeControlUiE2e("Control UI dashboard A2UI", () => {
     const target = widgetFrame.locator("#save-profile");
     await target.waitFor();
     if (recordProof) {
-      await page.screenshot({ path: path.join(commenterProofDir, "inactive.png") });
+      await page.screenshot({ path: path.join(proofDir, "inactive.png") });
     }
 
     const dashboardHeader = page.locator(".side-panel__header");
     const toggle = dashboardHeader.getByRole("button", { name: "Annotate page" });
+    expect(
+      await page
+        .locator(".chat-pane__header-trailing")
+        .getByRole("button", {
+          name: "Annotate page",
+        })
+        .count(),
+    ).toBe(0);
     await toggle.click();
     await page.locator("[data-canvas-comment-overlay]").waitFor();
     await dashboardHeader.getByRole("button", { name: "Exit annotate mode" }).waitFor();
+    const edgeBounds = await widgetFrame.locator("#edge-target").boundingBox();
+    expect(edgeBounds).not.toBeNull();
+    await page.mouse.move(
+      edgeBounds!.x + edgeBounds!.width / 2,
+      edgeBounds!.y + edgeBounds!.height / 2,
+    );
+    await expect
+      .poll(() => page.locator(".board-widget__comment-label").textContent())
+      .toContain("#edge-target");
     if (recordProof) {
-      await page.screenshot({ path: path.join(commenterProofDir, "annotating.png") });
+      await page.screenshot({ path: path.join(proofDir, "annotating.png") });
       await page.waitForTimeout(600);
     }
     const targetBounds = await target.boundingBox();
@@ -221,7 +234,7 @@ describeControlUiE2e("Control UI dashboard A2UI", () => {
     });
     await commentInput.fill("Make this action less prominent.");
     if (recordProof) {
-      await page.screenshot({ path: path.join(commenterProofDir, "comment-editor.png") });
+      await page.screenshot({ path: path.join(proofDir, "comment-editor.png") });
       await page.waitForTimeout(700);
     }
     await page.getByRole("button", { name: "Comment on selected Canvas element" }).click();
@@ -253,7 +266,7 @@ describeControlUiE2e("Control UI dashboard A2UI", () => {
     await page.getByRole("button", { name: "Comment on selected Canvas element" }).click();
     await expect.poll(() => stageAnnotations.isEnabled()).toBe(true);
     if (recordProof) {
-      await page.screenshot({ path: path.join(commenterProofDir, "annotation-toolbar.png") });
+      await page.screenshot({ path: path.join(proofDir, "annotation-toolbar.png") });
       await page.waitForTimeout(900);
     }
     await stageAnnotations.click();
@@ -270,7 +283,7 @@ describeControlUiE2e("Control UI dashboard A2UI", () => {
       .waitFor();
     await annotationPopover.locator("img").waitFor();
     if (recordProof) {
-      await page.screenshot({ path: path.join(commenterProofDir, "composer-hover.png") });
+      await page.screenshot({ path: path.join(proofDir, "composer-hover.png") });
       await page.waitForTimeout(900);
     }
 
@@ -292,7 +305,7 @@ describeControlUiE2e("Control UI dashboard A2UI", () => {
 
     await page.close();
     if (recordProof && video) {
-      await video.saveAs(path.join(commenterProofDir, "canvas-element-commenter.webm"));
+      await video.saveAs(path.join(proofDir, "canvas-element-commenter.webm"));
     }
     await context.close();
     contexts.delete(context);
@@ -335,9 +348,7 @@ describeControlUiE2e("Control UI dashboard A2UI", () => {
       .fill("This capture must stay with its originating Board.");
     await page.evaluate(() => {
       document.querySelector<HTMLButtonElement>(".board-widget__comment-submit")?.click();
-      document
-        .querySelector<HTMLElement>('.chat-pane__face-switch wa-radio[value="chat"]')
-        ?.click();
+      document.querySelector<HTMLButtonElement>(".side-panel__minimize")?.click();
     });
 
     await page.locator(".board-session-surface").waitFor({ state: "hidden" });

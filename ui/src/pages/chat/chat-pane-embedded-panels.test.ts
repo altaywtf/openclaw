@@ -61,7 +61,8 @@ describe("chat pane embedded panels", () => {
       onDiscardCanvasComments,
       onSendCanvasComments,
     });
-    const action = sidebarPanelActions(definitions).dashboard;
+    const actions = sidebarPanelActions(definitions);
+    const action = actions.dashboard;
     const container = document.createElement("div");
 
     render(action, container);
@@ -76,6 +77,15 @@ describe("chat pane embedded panels", () => {
     expect(onExitCanvasComment).toHaveBeenCalledOnce();
     expect(onDiscardCanvasComments).toHaveBeenCalledOnce();
     expect(onSendCanvasComments).toHaveBeenCalledOnce();
+
+    for (const [slot, panelAction] of Object.entries(actions)) {
+      if (slot === "dashboard") {
+        continue;
+      }
+      const otherPanel = document.createElement("div");
+      render(panelAction, otherPanel);
+      expect(otherPanel.querySelector("[data-canvas-comment-toggle]"), slot).toBeNull();
+    }
   });
 
   it("enumerates a structural loading variant for every side-panel tab", async () => {

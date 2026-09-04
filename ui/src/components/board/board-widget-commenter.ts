@@ -240,10 +240,10 @@ class OpenClawBoardWidgetCommenter extends OpenClawLightDomElement {
     return this.parentElement?.querySelector<HTMLIFrameElement>(".board-widget__frame") ?? null;
   }
 
-  private point(event: PointerEvent): { x: number; y: number } {
-    const target = event.currentTarget;
-    const bounds =
-      target instanceof HTMLElement ? target.getBoundingClientRect() : this.getBoundingClientRect();
+  private point(frame: HTMLIFrameElement, event: PointerEvent): { x: number; y: number } {
+    // The overlay covers the padded widget body, while elementFromPoint runs in
+    // the iframe viewport. Measure from that viewport or every hit drifts by the inset.
+    const bounds = frame.getBoundingClientRect();
     return { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
   }
 
@@ -271,7 +271,11 @@ class OpenClawBoardWidgetCommenter extends OpenClawLightDomElement {
     if (this.selectedNode) {
       return;
     }
-    this.hoverPoint = this.point(event);
+    const frame = this.frame();
+    if (!frame) {
+      return;
+    }
+    this.hoverPoint = this.point(frame, event);
     if (this.hoverTimer === null) {
       this.hoverTimer = window.setTimeout(() => void this.inspectHover(), COMMENT_HOVER_DELAY_MS);
     }
@@ -337,7 +341,7 @@ class OpenClawBoardWidgetCommenter extends OpenClawLightDomElement {
     }
     const source = this.captureSource(frame);
     try {
-      const node = await requestWidgetInspection(frame, this.point(event));
+      const node = await requestWidgetInspection(frame, this.point(frame, event));
       if (!this.sourceIsCurrent(source)) {
         return;
       }
@@ -463,47 +467,51 @@ class OpenClawBoardWidgetCommenter extends OpenClawLightDomElement {
           >`,
       )}
       ${highlighted ? this.renderNodeHighlight(highlighted) : nothing}
-      ${this.selectedNode
-        ? html`<form
-            class="board-widget__comment-editor"
-            style=${this.editorPosition(this.selectedNode)}
-            @pointerdown=${(event: PointerEvent) => event.stopPropagation()}
-            @click=${(event: MouseEvent) => event.stopPropagation()}
-            @submit=${(event: SubmitEvent) => {
-              event.preventDefault();
-              void this.submitComment();
-            }}
-          >
-            <span class="board-widget__comment-editor-icon" aria-hidden="true"
-              >${icons.messageSquare}</span
-            >
-            <input
-              data-canvas-comment-input
-              .value=${this.comment}
-              maxlength="2000"
-              aria-label=${t("chat.board.commentInput")}
-              placeholder=${t("chat.board.commentInput")}
-              ?disabled=${this.capturing}
-              @input=${(event: InputEvent) => {
-                if (event.currentTarget instanceof HTMLInputElement) {
-                  this.comment = event.currentTarget.value;
-                }
+      ${
+        this.selectedNode
+          ? html`<form
+              class="board-widget__comment-editor"
+              style=${this.editorPosition(this.selectedNode)}
+              @pointerdown=${(event: PointerEvent) => event.stopPropagation()}
+              @click=${(event: MouseEvent) => event.stopPropagation()}
+              @submit=${(event: SubmitEvent) => {
+                event.preventDefault();
+                void this.submitComment();
               }}
-            />
-            <button
-              type="submit"
-              class="board-widget__comment-submit"
-              aria-label=${t("chat.board.commentInput")}
-              ?disabled=${!this.comment.trim() || this.capturing}
             >
-              ${this.capturing
-                ? html`<span class="btn__spinner" aria-hidden="true"></span>`
-                : icons.check}
-            </button>
-          </form>`
-        : html`<span class="board-widget__comment-label"
-            >${highlighted?.selector || highlighted?.tag || t("browser.inspect")}</span
-          >`}
+              <span class="board-widget__comment-editor-icon" aria-hidden="true"
+                >${icons.messageSquare}</span
+              >
+              <input
+                data-canvas-comment-input
+                .value=${this.comment}
+                maxlength="2000"
+                aria-label=${t("chat.board.commentInput")}
+                placeholder=${t("chat.board.commentInput")}
+                ?disabled=${this.capturing}
+                @input=${(event: InputEvent) => {
+                  if (event.currentTarget instanceof HTMLInputElement) {
+                    this.comment = event.currentTarget.value;
+                  }
+                }}
+              />
+              <button
+                type="submit"
+                class="board-widget__comment-submit"
+                aria-label=${t("chat.board.commentInput")}
+                ?disabled=${!this.comment.trim() || this.capturing}
+              >
+                ${
+                  this.capturing
+                    ? html`<span class="btn__spinner" aria-hidden="true"></span>`
+                    : icons.check
+                }
+              </button>
+            </form>`
+          : html`<span class="board-widget__comment-label"
+              >${highlighted?.selector || highlighted?.tag || t("browser.inspect")}</span
+            >`
+      }
     </div>`;
   }
 }
