@@ -967,12 +967,12 @@ export async function fetchBulkAdvisories({
         );
       }
     }
-    await delay(
-      Math.min(
-        1000 * 2 ** attempt * (1 + Math.random()),
-        Math.max(0, deadline - performance.now()),
-      ),
-    );
+    const backoffMs = 1000 * 2 ** attempt * (1 + Math.random());
+    // A clipped backoff can wake before the deadline and admit a near-zero-budget retry.
+    if (backoffMs >= deadline - performance.now()) {
+      throw budgetFailure;
+    }
+    await delay(backoffMs);
   }
 }
 

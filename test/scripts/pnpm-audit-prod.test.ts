@@ -650,23 +650,35 @@ snapshots:
     }
   });
 
-  it("includes retry backoff in the total budget", async () => {
-    const fetchImpl = vi.fn(async () => new Response("unavailable", { status: 503 }));
-    vi.mocked(delay).mockImplementationOnce(async (ms) => {
-      await new Promise((resolve) => {
-        setTimeout(resolve, Number(ms) + 2);
-      });
-    });
-    await expect(
-      fetchBulkAdvisories({
-        payload: { axios: ["1.0.0"] },
-        fetchImpl,
-        timeoutMs: 1000,
-        budgetMs: 20,
-      }),
-    ).rejects.toThrow("failed (503");
-    expect(fetchImpl).toHaveBeenCalledOnce();
-  });
+  it.each([999, 1000, 1001])(
+    "reserves the full retry backoff within a %sms budget",
+    async (budgetMs) => {
+      const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+      const random = vi.spyOn(Math, "random").mockReturnValue(0);
+      vi.mocked(delay).mockClear();
+      const fetchImpl = vi.fn(async () => Response.json({}));
+      fetchImpl.mockResolvedValueOnce(new Response("unavailable", { status: 503 }));
+      try {
+        const request = fetchBulkAdvisories({
+          payload: { axios: ["1.0.0"] },
+          fetchImpl,
+          budgetMs,
+        });
+        if (budgetMs <= 1000) {
+          await expect(request).rejects.toThrow("failed (503");
+          expect(fetchImpl).toHaveBeenCalledOnce();
+          expect(delay).not.toHaveBeenCalled();
+        } else {
+          await expect(request).resolves.toEqual({});
+          expect(fetchImpl).toHaveBeenCalledTimes(2);
+          expect(delay).toHaveBeenCalledExactlyOnceWith(1000);
+        }
+      } finally {
+        clock.mockRestore();
+        random.mockRestore();
+      }
+    },
+  );
 
   it.each([
     {
