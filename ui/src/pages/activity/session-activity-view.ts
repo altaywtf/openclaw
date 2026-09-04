@@ -502,7 +502,11 @@ export function renderSessionActivityView(props: SessionActivityViewProps) {
         ${renderPeopleControl(props, people, selectedPerson, projection.timeCount)}
       </div>
       <div class="activity-feed__main">
-        ${props.loading ? html`<p role="status">${t("common.loading")}</p>` : nothing}
+        ${
+          props.loading && !props.result
+            ? html`<p role="status">${t("common.loading")}</p>`
+            : nothing
+        }
         ${
           props.error
             ? html`<p role="alert">
