@@ -1,7 +1,7 @@
-diff --git a/dist/chunks/cac.Bf8-pv1O.js b/dist/chunks/cac.Bf8-pv1O.js
-index 2b8a73dbc702510947365273afb20ff5e64e2e9a..0d0a1f141a31fa8341b9ca4d0129ce12b52525ae 100644
---- a/dist/chunks/cac.Bf8-pv1O.js
-+++ b/dist/chunks/cac.Bf8-pv1O.js
+diff --git a/dist/chunks/cac.D805sv8h.js b/dist/chunks/cac.D805sv8h.js
+index 3b3446e1720bf0f2a6f78e11f091260fffc57c84..9b076b8fea2d246c5a1e3cc48f36a4c246a74510 100644
+--- a/dist/chunks/cac.D805sv8h.js
++++ b/dist/chunks/cac.D805sv8h.js
 @@ -2318,7 +2318,12 @@ function parseCLI(argv, config = {}) {
  	if (arrayArgs[0] !== "vitest") throw new Error(`Expected "vitest" as the first argument, received "${arrayArgs[0]}"`);
  	arrayArgs[0] = "/index.js";
@@ -16,10 +16,10 @@ index 2b8a73dbc702510947365273afb20ff5e64e2e9a..0d0a1f141a31fa8341b9ca4d0129ce12
  	if (arrayArgs[2] === "watch" || arrayArgs[2] === "dev") options.watch = true;
  	if (arrayArgs[2] === "run" && !options.watch) options.run = true;
  	if (arrayArgs[2] === "related") {
-diff --git a/dist/chunks/index.Cd7SnpwO.js b/dist/chunks/index.Cd7SnpwO.js
-index c84e03dc6f0f5a077d07ac99c9ea936b70f190fb..47768af8e302c8add73d94bd0ec4a5629a8ea338 100644
---- a/dist/chunks/index.Cd7SnpwO.js
-+++ b/dist/chunks/index.Cd7SnpwO.js
+diff --git a/dist/chunks/index.B89dZ0-N.js b/dist/chunks/index.B89dZ0-N.js
+index 50abf4fbed1dc8670b7941ee466a7c8443840c5f..d369712bd4c8cee79aed9f4bf805098608286a7e 100644
+--- a/dist/chunks/index.B89dZ0-N.js
++++ b/dist/chunks/index.B89dZ0-N.js
 @@ -10875,7 +10875,8 @@ class PoolRunner {
  							stopSpan.recordException(response.error);
  							this.project.vitest.state.catchError(response.error, "Teardown Error");
@@ -120,10 +120,10 @@ index c84e03dc6f0f5a077d07ac99c9ea936b70f190fb..47768af8e302c8add73d94bd0ec4a562
  		const errors = results.filter((result) => result.status === "rejected").map((result) => result.reason);
  		if (errors.length > 0) throw new AggregateError(errors, "Errors occurred while running tests. For more information, see serialized error.");
  	}
-diff --git a/dist/chunks/init-forks.BqnYxpzU.js b/dist/chunks/init-forks.BqnYxpzU.js
-index 899099f25792501098b03a50ddc464dcc14fa93b..b1ca66770d2e9b682fa1b35325beda6d1eb1b811 100644
---- a/dist/chunks/init-forks.BqnYxpzU.js
-+++ b/dist/chunks/init-forks.BqnYxpzU.js
+diff --git a/dist/chunks/init-forks.CiCtIMPj.js b/dist/chunks/init-forks.CiCtIMPj.js
+index dbb1a04882b2ff60ab0968d6dabd10dfad696eb2..818981f891f170e197a16e41dfe98b341b64fc3c 100644
+--- a/dist/chunks/init-forks.CiCtIMPj.js
++++ b/dist/chunks/init-forks.CiCtIMPj.js
 @@ -13,7 +13,12 @@ processOn("error", onError);
  function workerInit(options) {
  	const { runTests } = options;

@@ -1,5 +1,5 @@
 // Vitest UI package config tests validate UI package test project settings.
-import { globSync, writeFileSync } from "node:fs";
+import { globSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildVitestRunPlans } from "../scripts/test-projects.test-support.mts";
@@ -7,7 +7,9 @@ import uiConfig from "../ui/vitest.config.ts";
 import uiNodeConfig from "../ui/vitest.node.config.ts";
 import { useAutoCleanupTempDirTracker } from "./helpers/temp-dir.js";
 import { normalizeConfigPath } from "./helpers/vitest-config-paths.js";
+import { runVitestShutdownCommand } from "./helpers/vitest-shutdown-command.js";
 import { loadVitestPerformanceConfig } from "./vitest/vitest.performance-config.ts";
+import { DEFAULT_VITEST_TEST_TIMEOUT_MS } from "./vitest/vitest.timeouts.ts";
 import { createUiIsolatedVitestConfig } from "./vitest/vitest.ui-isolated.config.ts";
 import { createUiVitestConfig } from "./vitest/vitest.ui.config.ts";
 
@@ -94,6 +96,52 @@ describe("ui package vitest config", () => {
         packageFiles.includes(file.replaceAll("\\", "/")),
       ),
     ).toEqual([]);
+  });
+
+  it("preserves native Chromium discovery when loaded as a file project", async ({ signal }) => {
+    const root = tempDirs.make("ui-browser-project-root-");
+    const reportPath = path.join(root, "discovery.json");
+    const home = path.join(root, "home");
+    const tmp = path.join(root, "tmp");
+    mkdirSync(home);
+    mkdirSync(tmp);
+    const result = await runVitestShutdownCommand({
+      args: ["test/fixtures/vitest-browser-project-root.mjs", reportPath],
+      signal,
+      timeoutMs: DEFAULT_VITEST_TEST_TIMEOUT_MS,
+      env: {
+        PATH: process.env.PATH,
+        HOME: home,
+        USERPROFILE: home,
+        TMPDIR: tmp,
+        TMP: tmp,
+        TEMP: tmp,
+        XDG_CONFIG_HOME: path.join(home, ".config"),
+        XDG_DATA_HOME: path.join(home, ".local", "share"),
+        XDG_CACHE_HOME: path.join(home, ".cache"),
+        CI: "1",
+        OPENCLAW_VITEST_FS_MODULE_CACHE_PATH: path.join(root, "transforms"),
+      },
+    });
+    expect(result.code, result.stderr).toBe(0);
+    const reports = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+      projects: Array<{ name: string; root: string; setupFiles: string[] }>;
+      files: string[];
+    }>;
+    expect(reports).toHaveLength(2);
+    const [standalone, embedded] = reports;
+    const uiRoot = path.join(process.cwd(), "ui");
+    expect(standalone?.projects).toEqual([
+      {
+        name: "chromium",
+        root: uiRoot,
+        setupFiles: [path.join(uiRoot, "src/test-helpers/lit-warnings.setup.ts")],
+      },
+    ]);
+    expect(standalone?.files).toContain(
+      path.join(uiRoot, "src/components/markdown-mermaid.runtime.browser.test.ts"),
+    );
+    expect(embedded).toEqual(standalone);
   });
 
   it("keeps native Chromium files out of root jsdom without dropping Node-driven Playwright files", async () => {

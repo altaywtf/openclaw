@@ -266,7 +266,7 @@ Run the test toolchain on Node 22.22.3+, Node 24.15+, or Node 26+. Vitest 5
 excludes Node 25 from its declared engine range; OpenClaw's Node 25 runtime
 support is unchanged.
 
-The test toolchain pins Vitest `5.0.0-rc.4`, including its browser and coverage
+The test toolchain pins stable Vitest `5.0.0`, including its browser and coverage
 packages. Use `describe(name, { concurrent: false }, callback)` for ordered
 suites. Await asynchronous assertions, keep `vi.mock`/`vi.hoisted` at module
 scope, and perform actions whose mock calls you assert inside the test:

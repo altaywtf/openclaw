@@ -154,7 +154,6 @@ const chromiumLaunchOptions = resolveChromiumLaunchOptions();
 
 export function createUiBrowserVitestConfig(env = process.env): ViteUserConfig {
   return defineProject({
-    root: here,
     plugins: [controlUiLocaleModulesPlugin()],
     optimizeDeps: {
       include: [
@@ -175,6 +174,9 @@ export function createUiBrowserVitestConfig(env = process.env): ViteUserConfig {
     },
     test: {
       ...sharedUiTestConfig,
+      // File-project loading overrides Vite's root with the config directory.
+      // Keep discovery and setup paths rooted in the UI in every entrypoint.
+      root: here,
       name: "browser",
       // No cleanup runner: it imports node:fs and repo server modules, which
       // cannot load in browser mode. Browser files own their own teardown.

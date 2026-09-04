@@ -6,9 +6,8 @@ import { describe, expect, it } from "vitest";
 import { createDeferred } from "./helpers/promise.js";
 import { drainMockerResolveMocks, serializeMockerResolveMocks } from "./non-isolated-runner.js";
 
-// Mirrors BareModuleMocker.resolveMocks: snapshots the static queue's contents
-// at pass start, awaits its RPCs, then reassigns the static to [] so ids
-// pushed during the await land in the abandoned array.
+// BareModuleMocker detaches the pending queue before awaiting resolution;
+// registrations added during that await belong to the next pass.
 class FakeMocker {
   static pendingIds: unknown[] = [];
   beforeFirstPass?: () => Promise<void>;
@@ -26,18 +25,17 @@ class FakeMocker {
     this.active += 1;
     this.maxConcurrentPasses = Math.max(this.maxConcurrentPasses, this.active);
     this.passes += 1;
-    const snapshot = [...FakeMocker.pendingIds];
+    const snapshot = FakeMocker.pendingIds;
+    FakeMocker.pendingIds = [];
     // Every pass must suspend like the awaited RPCs, even without a gate.
     await (this.passes === 1 ? this.beforeFirstPass?.() : undefined);
     const passError = this.nextPassError;
     this.nextPassError = undefined;
     if (passError) {
-      FakeMocker.pendingIds = [];
       this.active -= 1;
       throw passError;
     }
     this.processed.push(...snapshot);
-    FakeMocker.pendingIds = [];
     this.active -= 1;
   }
 
@@ -84,9 +82,7 @@ describe("serializeMockerResolveMocks", () => {
 
     const first = mocker.resolveMocks();
     await started;
-    // Upstream would abandon this push when it reassigns pendingIds to [];
-    // the wrapper must requeue it and the second caller's own chained pass
-    // must register it before that caller proceeds with its fetch.
+    // A later registration must settle before its caller proceeds with the fetch.
     FakeMocker.pendingIds.push("mock-late");
     const second = mocker.resolveMocks();
     release();
