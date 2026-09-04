@@ -54,7 +54,9 @@ suite.define(() => {
         exact: true,
       });
       const allOwnersLabel = menu.locator('[value="owner:"] .session-menu__text');
-      const ownersLabel = ownerSubmenu.locator(":scope > .session-menu__text");
+      const ownersLabel = ownerSubmenu.locator(
+        ":scope > .session-menu__label > .session-menu__text",
+      );
       const labelAlignment = await allOwnersLabel.evaluate(
         (allOwners, owners) =>
           Math.abs(allOwners.getBoundingClientRect().left - owners.getBoundingClientRect().left),
@@ -275,10 +277,19 @@ suite.define(() => {
           }, theme);
           await captureUiProof(suite, page, `owner-filter-${name}-${theme}.png`);
         }
-        const selectedGeometry = await selected.evaluate((element) => {
+        const allOwnersLabel = page
+          .getByRole("menuitemradio", { name: "All owners", exact: true })
+          .locator(".session-menu__text");
+        const allOwnersLabelElement = await allOwnersLabel.elementHandle();
+        if (!allOwnersLabelElement) {
+          throw new Error("expected the all-owners label");
+        }
+        const selectedGeometry = await selected.evaluate((element, siblingLabel) => {
           const dropdown = element.closest("wa-dropdown");
           const menuPart = dropdown?.shadowRoot?.querySelector<HTMLElement>('[part="menu"]');
-          const label = element.querySelector<HTMLElement>(":scope > .session-menu__text");
+          const label = element.querySelector<HTMLElement>(
+            ":scope > .session-menu__label > .session-menu__text",
+          );
           const value = element.querySelector<HTMLElement>(".sidebar-session-owner-selection");
           const chevron =
             element.querySelector<HTMLElement>(".session-menu__chevron") ??
@@ -293,6 +304,9 @@ suite.define(() => {
           return {
             chevronRight: chevronBounds.right,
             labelFullyVisible: label.scrollWidth <= label.clientWidth,
+            labelOriginDelta: Math.abs(
+              labelBounds.left - siblingLabel.getBoundingClientRect().left,
+            ),
             labelRight: labelBounds.right,
             leadingIconCount: element.querySelectorAll(":scope > [slot='icon']").length,
             menuRight: menuBounds.right,
@@ -300,9 +314,10 @@ suite.define(() => {
             valueChevronGap: chevronBounds.left - valueBounds.right,
             valueLeft: valueBounds.left,
           };
-        });
+        }, allOwnersLabelElement);
         expect(selectedGeometry.menuWidth).toBeLessThanOrEqual(220);
         expect(selectedGeometry.labelFullyVisible).toBe(true);
+        expect(selectedGeometry.labelOriginDelta).toBeLessThanOrEqual(0.5);
         expect(selectedGeometry.leadingIconCount).toBe(0);
         expect(selectedGeometry.labelRight).toBeLessThanOrEqual(selectedGeometry.valueLeft);
         expect(selectedGeometry.valueChevronGap).toBeGreaterThanOrEqual(0);

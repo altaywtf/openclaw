@@ -141,7 +141,9 @@ function renderSidebarOwnerFilter(params: {
               class="sidebar-session-sort-menu__item sidebar-session-owner-submenu"
               aria-label=${accessibleLabel}
             >
-              <span class="session-menu__text">${t("sessionsView.specificOwner")}</span>
+              <span class="row session-menu__label">
+                <span class="session-menu__text">${t("sessionsView.specificOwner")}</span>
+              </span>
               <span
                 slot="details"
                 class="session-menu__shortcut sidebar-session-owner-selection"
