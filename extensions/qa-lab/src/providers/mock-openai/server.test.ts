@@ -3802,6 +3802,18 @@ Update and merge these partial structured summaries.`,
       for (const input of [
         [kickoff, spawnOutput, settle],
         [kickoff, spawnOutput, settle, settle],
+        ...(terminalCase === "silent" || terminalCase === "empty"
+          ? [
+              [
+                kickoff,
+                spawnOutput,
+                makeUserInput(
+                  settleText.slice(0, settleText.indexOf("1. qa-terminal-")) +
+                    "(each child result was announced individually in earlier completion events)",
+                ),
+              ],
+            ]
+          : []),
         [
           spawnOutput,
           makeUserInput(

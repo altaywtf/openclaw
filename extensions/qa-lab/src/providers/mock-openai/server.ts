@@ -1278,8 +1278,18 @@ async function buildResponsesPayload(
   if (settledTerminal && !settledRepresentation) {
     return buildAssistantEvents("QA-SUBAGENT-TERMINAL-MISSING-RESULT");
   }
+  // The findings producer omits captured intentional silence, but the settled
+  // requester still owes the visible no-output representation.
+  const settledWithoutOutput =
+    (terminalCompletionCase === "silent" || terminalCompletionCase === "empty") &&
+    currentTerminalTurn.includes("sourceTool=subagent_announce") &&
+    currentTerminalTurn.includes("Every subagent spawned from this session has now settled") &&
+    currentTerminalTurn.endsWith(
+      "(each child result was announced individually in earlier completion events)",
+    );
   if (
     settledRepresentation ||
+    settledWithoutOutput ||
     (terminalCompletionCase && /Internal task completion event/i.test(allInputText))
   ) {
     const visibleRepresentation =
@@ -1300,6 +1310,7 @@ async function buildResponsesPayload(
         );
         const requiresFinal =
           settledRepresentation !== undefined ||
+          settledWithoutOutput ||
           /visible source replies are not automatically delivered for this run\.[\s\S]*set `?final=true`?/i.test(
             deliveryInstructions,
           );
