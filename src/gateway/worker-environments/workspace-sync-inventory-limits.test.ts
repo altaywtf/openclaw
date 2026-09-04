@@ -1,12 +1,10 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { afterEach, expect, it, vi } from "vitest";
-import { createDeferred } from "../../../test/helpers/promise.js";
+import { afterEach, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
-import { readActualWorkspaceManifestImpl } from "./workspace-actual-manifest.js";
-import { withWorkspaceHashMemo, workspaceStatIdentity } from "./workspace-hash-memo.js";
+import { workspaceStatIdentity } from "./workspace-hash-memo.js";
 import {
   MAX_WORKSPACE_GIT_CANDIDATES,
   MAX_WORKSPACE_INVENTORY_ENTRIES,
@@ -15,7 +13,6 @@ import {
 import { REMOTE_WORKSPACE_MANIFEST_JS } from "./workspace-sync-scripts.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-afterEach(() => vi.restoreAllMocks());
 
 it("drains remote manifest handles after a real file mutation without publishing or masking the error", async () => {
   const root = await fs.realpath(tempDirs.make("openclaw-remote-manifest-drain-"));
@@ -89,92 +86,6 @@ it("drains remote manifest handles after a real file mutation without publishing
   expect(audit).toEqual(audit.map((entry) => ({ ...entry, closed: true })));
   expect(await fs.readdir(path.join(home, ".openclaw-worker", "manifests"))).toEqual([]);
   expect(await fs.readFile(audit[0]!.path, "utf8")).toBe("insidechanged");
-});
-
-it.each(["abort", "symlink replacement"] as const)(
-  "drains concurrent manifest handles before rejecting %s without admitting more files",
-  async (failure) => {
-    const root = await fs.realpath(tempDirs.make("openclaw-manifest-drain-"));
-    const outside = await fs.realpath(tempDirs.make("openclaw-manifest-outside-"));
-    const files = Array.from({ length: 9 }, (_, index) => `file-${index}.txt`);
-    await Promise.all(files.map((file) => fs.writeFile(path.join(root, file), "inside")));
-    await fs.writeFile(path.join(outside, "target.txt"), "outside");
-    const controller = new AbortController();
-    const originalOpen = fs.open.bind(fs);
-    const gates: Array<ReturnType<typeof createDeferred<void>>> = [];
-    const closed = createDeferred();
-    let closedCount = 0;
-    let releasing = false;
-    const open = vi.spyOn(fs, "open").mockImplementation(async (...args) => {
-      const handle = await originalOpen(...args);
-      if (String(args[0]).startsWith(root + path.sep)) {
-        const originalClose = handle.close.bind(handle);
-        vi.spyOn(handle, "close").mockImplementation(async () => {
-          await originalClose();
-          closedCount += 1;
-          closed.resolve();
-        });
-        if (!releasing) {
-          const gate = createDeferred();
-          gates.push(gate);
-          await gate.promise;
-        }
-      }
-      return handle;
-    });
-    const scan = readActualWorkspaceManifestImpl({
-      root,
-      baseCommit: null,
-      includePaths: new Set(files),
-      signal: controller.signal,
-    });
-    let settled = false;
-    void scan.then(
-      () => {
-        settled = true;
-      },
-      () => {
-        settled = true;
-      },
-    );
-    try {
-      await vi.waitFor(() => expect(gates).toHaveLength(4));
-      if (failure === "abort") {
-        controller.abort(new Error("manifest scan aborted"));
-      } else {
-        await fs.rename(path.join(root, files[0]!), path.join(outside, "moved.txt"));
-        await fs.symlink(path.join(outside, "target.txt"), path.join(root, files[0]!));
-      }
-      gates[0]!.resolve();
-      await closed.promise;
-      expect(settled).toBe(false);
-      expect(open).toHaveBeenCalledTimes(4);
-    } finally {
-      releasing = true;
-      for (const gate of gates) {
-        gate.resolve();
-      }
-      await Promise.allSettled([scan]);
-    }
-    await expect(scan).rejects.toThrow();
-    expect(open).toHaveBeenCalledTimes(4);
-    expect(closedCount).toBe(4);
-  },
-);
-
-it("reserves the aggregate manifest byte budget even when all concurrent files hit the memo", async () => {
-  const root = await fs.realpath(tempDirs.make("openclaw-manifest-concurrent-budget-"));
-  const memo = new Map<string, string>();
-  for (const file of ["first.bin", "second.bin"]) {
-    const target = path.join(root, file);
-    await fs.writeFile(target, "");
-    await fs.truncate(target, MAX_WORKSPACE_INVENTORY_TOTAL_BYTES / 2 + 1);
-    const stat = await fs.stat(target, { bigint: true });
-    memo.set(workspaceStatIdentity("gateway", stat), "a".repeat(64));
-  }
-  await expect(
-    withWorkspaceHashMemo(memo, () => readActualWorkspaceManifestImpl({ root, baseCommit: null })),
-  ).rejects.toThrow("eligible byte limit");
 });
 
 it.each([

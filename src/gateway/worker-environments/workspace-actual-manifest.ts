@@ -68,8 +68,8 @@ export async function readWorkspaceFileSnapshotWithLimit(
     if (!before.isFile() || (root && !isPathInside(root, realPath))) {
       throw new Error("Gateway workspace file changed while it was being read");
     }
-    // Reserve concurrent inventory bytes from the opened file before hashing;
-    // an earlier path stat cannot own the budget across a replacement race.
+    // Reserve from the opened descriptor: path metadata can race replacement,
+    // and concurrent memo hits must consume the same aggregate byte budget.
     const byteLimit = typeof maxBytes === "number" ? maxBytes : maxBytes(Number(before.size));
     if (before.size > BigInt(byteLimit)) {
       return { type: "unsupported" };
@@ -94,6 +94,9 @@ export async function readWorkspaceFileSnapshotWithLimit(
         }
         size += bytesRead;
         if (size > byteLimit) {
+          if (typeof maxBytes !== "number") {
+            throw new Error("Gateway workspace file changed while it was being read");
+          }
           return { type: "unsupported" };
         }
         hash.update(buffer.subarray(0, bytesRead));
@@ -155,8 +158,12 @@ export async function readActualWorkspaceManifestImpl(params: {
       throw new Error("Gateway workspace manifest has too many entries");
     }
   };
+  const scanController = new AbortController();
+  const scanSignal = params.signal
+    ? AbortSignal.any([params.signal, scanController.signal])
+    : scanController.signal;
   const checkTraversal = (relative: string): void => {
-    params.signal?.throwIfAborted();
+    scanSignal.throwIfAborted();
     traversedEntries += 1;
     traversedPathBytes += Buffer.byteLength(relative);
     if (traversedEntries > MAX_WORKSPACE_INVENTORY_ENTRIES) {
@@ -166,34 +173,52 @@ export async function readActualWorkspaceManifestImpl(params: {
       throw new Error("Gateway workspace manifest paths exceed their byte limit");
     }
   };
-  const fileReads: Array<() => Promise<void>> = [];
-  const fileController = new AbortController();
-  const fileSignal = params.signal
-    ? AbortSignal.any([params.signal, fileController.signal])
-    : fileController.signal;
-  const addFile = (relative: string): void => {
-    fileReads.push(async () => {
-      const snapshot = await readWorkspaceFileSnapshotWithLimit(
-        localPath(root, relative),
-        (size) => {
-          addBytes(size);
-          return size;
-        },
-        root,
-        fileSignal,
-      );
-      if (snapshot.type === "file") {
-        addEntry({
-          path: relative,
-          type: "file",
-          mode: snapshot.mode,
-          size: snapshot.size,
-          sha256: snapshot.sha256,
-        });
-        return;
-      }
-      throw new Error("Gateway workspace manifest exceeds its eligible byte limit");
+  const filePaths: string[] = [];
+  const runScans = async (
+    start: number,
+    end: number,
+    scan: (index: number) => Promise<void>,
+  ): Promise<void> => {
+    let next = start;
+    const result = await runTasksWithConcurrency({
+      // Keep the queued graph bounded too: each worker claims an index before
+      // awaiting I/O, rather than retaining one task per inventory entry.
+      tasks: Array.from({ length: Math.min(4, end - start) }, () => async () => {
+        while (next < end && !scanSignal.aborted) {
+          await scan(next++);
+        }
+      }),
+      limit: 4,
+      errorMode: "stop",
+      onTaskError: (error) => scanController.abort(error),
     });
+    // Cancellation while workers drain must not replace the first failure.
+    if (result.hasError) {
+      throw result.firstError;
+    }
+    scanSignal.throwIfAborted();
+  };
+  const addFile = async (relative: string): Promise<void> => {
+    const snapshot = await readWorkspaceFileSnapshotWithLimit(
+      localPath(root, relative),
+      (size) => {
+        addBytes(size);
+        return size;
+      },
+      root,
+      scanSignal,
+    );
+    if (snapshot.type === "file") {
+      addEntry({
+        path: relative,
+        type: "file",
+        mode: snapshot.mode,
+        size: snapshot.size,
+        sha256: snapshot.sha256,
+      });
+      return;
+    }
+    throw new Error("Gateway workspace manifest exceeds its eligible byte limit");
   };
   const addIncludedPath = async (
     relative: string,
@@ -250,7 +275,7 @@ export async function readActualWorkspaceManifestImpl(params: {
       return "absent";
     }
     if (stats.isFile()) {
-      addFile(relative);
+      filePaths.push(relative);
       return "included";
     }
     return "absent";
@@ -301,7 +326,7 @@ export async function readActualWorkspaceManifestImpl(params: {
         );
       } else if (stats.isFile()) {
         hasNonDerivedEntry = true;
-        addFile(relative);
+        filePaths.push(relative);
       } else {
         hasNonDerivedEntry = true;
         // Special local nodes cannot be represented in a cloud manifest. They
@@ -325,28 +350,30 @@ export async function readActualWorkspaceManifestImpl(params: {
       .toSorted(
         (left, right) => right.depth - left.depth || left.relative.localeCompare(right.relative),
       );
-    for (const { relative } of paths) {
-      const state = await addIncludedPath(relative, includedNodes, derivedOnlyDirectories);
-      if (state === "included") {
-        includedNodes.add(relative);
-      } else if (state === "derived-only") {
-        derivedOnlyDirectories.add(relative);
+    // Siblings are independent, but parent classification needs every deeper
+    // membership result. Join each depth before admitting the next one.
+    for (let start = 0; start < paths.length;) {
+      let end = start + 1;
+      while (end < paths.length && paths[end]!.depth === paths[start]!.depth) {
+        end++;
       }
+      await runScans(start, end, async (index) => {
+        const { relative } = paths[index]!;
+        const state = await addIncludedPath(relative, includedNodes, derivedOnlyDirectories);
+        if (state === "included") {
+          includedNodes.add(relative);
+        } else if (state === "derived-only") {
+          derivedOnlyDirectories.add(relative);
+        }
+      });
+      start = end;
     }
   } else {
     await walk("");
   }
-  // Keep the validation fence intact: stop admission on failure, cancel reads,
-  // and drain every opened handle before returning or publishing a manifest.
-  const reads = await runTasksWithConcurrency({
-    tasks: fileReads,
-    limit: 4,
-    errorMode: "stop",
-    onTaskError: (error) => fileController.abort(error),
-  });
-  if (reads.hasError) {
-    throw reads.firstError;
-  }
+  // No file readers overlap metadata selection; failures stop new admission
+  // and join all opened handles before any manifest can be returned.
+  await runScans(0, filePaths.length, (index) => addFile(filePaths[index]!));
   params.signal?.throwIfAborted();
   const directories = rawEntries
     .filter((entry) => entry.type === "directory")
