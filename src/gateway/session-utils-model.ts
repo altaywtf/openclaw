@@ -298,6 +298,7 @@ export function resolveGatewaySessionThinkingProjectionInternal(
       })
     : undefined;
   return {
+    catalogEntry,
     agentRuntime,
     thinkingLevel,
     effectiveThinkingLevel: thinkingLevel ?? metadata.thinkingDefault,
@@ -693,14 +694,8 @@ export async function projectSessionPatchResult(params: {
     entry: params.entry,
     modelCatalog,
   });
-  const catalogEntry = modelCatalog
-    ? findModelCatalogEntry(modelCatalog, {
-        provider: displayModel.provider ?? resolved.provider,
-        modelId: displayModel.model ?? resolved.model,
-      })
-    : undefined;
   const contextWindow = resolveModelContextWindowProfile({
-    catalogEntry,
+    catalogEntry: thinking.catalogEntry,
     selected: params.entry.contextWindow,
   });
   return {
