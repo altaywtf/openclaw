@@ -1,5 +1,5 @@
 const DATABASE_NAME = "openclaw-control-ui";
-const DATABASE_VERSION = 2;
+const DATABASE_VERSION = 3;
 const STORE_NAME = "composerDrafts";
 const OWNER_INDEX = "ownerKey";
 let databasePromise: Promise<IDBDatabase> | null = null;
@@ -51,6 +51,9 @@ export function openControlUiDatabase(): Promise<IDBDatabase> {
         const database = request.result;
         if (!database.objectStoreNames.contains("outboxPayloads")) {
           database.createObjectStore("outboxPayloads", { keyPath: "key" });
+        }
+        if (!database.objectStoreNames.contains("chatOutboxes")) {
+          database.createObjectStore("chatOutboxes", { keyPath: "key" });
         }
         const store = database.objectStoreNames.contains(STORE_NAME)
           ? request.transaction?.objectStore(STORE_NAME)

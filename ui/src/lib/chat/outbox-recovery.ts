@@ -1,6 +1,10 @@
 import { getSafeSessionStorage } from "../../local-storage.ts";
 import { resolveUiConversationIdentity, hasUiSessionDefaults } from "../sessions/session-key.ts";
 import {
+  hydrateChatOutboxMetadata,
+  migrateLegacyChatOutboxMetadata,
+} from "./outbox-metadata-store.runtime.ts";
+import {
   observeOutboxRecoveryOwner,
   outboxPayloadMatchesOwner,
 } from "./outbox-payload-store.runtime.ts";
@@ -70,17 +74,20 @@ export function captureChatOutboxRecoveryDestination(
   };
 }
 
-export function restoreChatOutboxRecovery(
+export async function restoreChatOutboxRecovery(
   state: ChatComposerScope,
   entry: ChatOutboxRecoveryEntry,
   destination: NonNullable<ReturnType<typeof captureChatOutboxRecoveryDestination>>,
   minimumRevision = 0,
-): ChatOutboxRecoveryResult {
+): Promise<ChatOutboxRecoveryResult> {
   const storage = getSafeSessionStorage();
   if (!storage) {
     return "storage-failed";
   }
   try {
+    if (!(await hydrateChatOutboxMetadata(state))) {
+      return "storage-failed";
+    }
     const current = captureChatOutboxRecoveryDestination(state, destination.scope);
     if (!current || JSON.stringify(current) !== JSON.stringify(destination)) {
       return "conflict";
@@ -138,6 +145,9 @@ export function restoreChatOutboxRecovery(
       return "storage-failed";
     }
     notifyStoredChatOutboxChanges();
+    if (!(await migrateLegacyChatOutboxMetadata(state, { allowOwnerless: true }))) {
+      return "storage-failed";
+    }
     return "restored";
   } catch {
     return "storage-failed";

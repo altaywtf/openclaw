@@ -1,7 +1,14 @@
 // Control UI page module owns Chat queue storage and queue item cleanup.
 import { compareChatQueueOrder, isMovableChatQueueItem } from "../../lib/chat/chat-queue-order.ts";
 import type { ChatAttachment, ChatQueueItem } from "../../lib/chat/chat-types.ts";
-import type { captureChatOutboxAdmission } from "../../lib/chat/outbox-store.ts";
+import {
+  hydrateChatOutboxMetadata,
+  releasePendingChatOutboxAdmission,
+  retirePendingChatOutboxAdmission,
+} from "../../lib/chat/outbox-metadata-store.runtime.ts";
+import { observeOutboxRecoveryOwner } from "../../lib/chat/outbox-payload-store.runtime.ts";
+import { protectChatOutboxRetirement } from "../../lib/chat/outbox-retirement-journal.ts";
+import { captureChatOutboxAdmission } from "../../lib/chat/outbox-store.ts";
 import type { SenderIdentity } from "../../lib/chat/sender-label.ts";
 import { scopedAgentIdForSession, type SessionScopeHost } from "../../lib/sessions/index.ts";
 import { resolveUiConversationIdentity } from "../../lib/sessions/session-key.ts";
@@ -48,6 +55,12 @@ function isProcessLiveQueueProjection(item: ChatQueueItem): boolean {
   return item.sendState === "sending" || item.sendState === "executing-command";
 }
 
+function hasCompleteDurablePayload(item: ChatQueueItem): boolean {
+  return (
+    !item.attachments?.length || Boolean(item.attachmentPayload || item.attachmentStorageError)
+  );
+}
+
 export function isVolatileQueuedMessage(host: ChatQueueScopedSessionHost, id: string): boolean {
   return chatOutboxOwner(host).hasVolatile(host, id);
 }
@@ -86,6 +99,14 @@ export function syncVisibleChatQueueProjection(
   options: { requestUpdate?: boolean } = {},
 ): void {
   chatOutboxOwner(host).syncHost(host, options);
+}
+
+export function projectLiveChatQueueItem(
+  host: ChatQueueScopedSessionHost,
+  scope: StoredChatOutboxScope,
+  item: ChatQueueItem,
+): void {
+  chatOutboxOwner(host).projectLive(host, scope, item.id, item);
 }
 
 export function subscribeChatOutboxProjection(host: ChatQueueScopedSessionHost): () => void {
@@ -176,11 +197,11 @@ export function updateVolatileQueuedMessage(
   return chatOutboxOwner(host).change(host, id, update, options.retryable);
 }
 
-export function updateQueuedMessage(
+export async function updateQueuedMessage(
   host: ChatQueueScopedSessionHost,
   id: string,
   update: (item: ChatQueueItem) => ChatQueueItem,
-): ChatQueueItem | null {
+): Promise<ChatQueueItem | null> {
   const owner = chatOutboxOwner(host);
   const located = owner.locate(host, id);
   if (!located) {
@@ -189,10 +210,20 @@ export function updateQueuedMessage(
   const { item: current, scope, durable } = located;
   const nextItem = update(current);
   if (!durable) {
-    return owner.change(host, id, () => nextItem);
+    const changed = owner.change(host, id, () => nextItem);
+    if (changed && isProcessLiveQueueProjection(nextItem)) {
+      owner.projectLive(host, scope, id, nextItem);
+    }
+    return changed;
   }
   if (
-    !updateStoredChatComposerQueueItem(host, scope.sessionKey, current, nextItem, scope.agentId)
+    !(await updateStoredChatComposerQueueItem(
+      host,
+      scope.sessionKey,
+      current,
+      nextItem,
+      scope.agentId,
+    ))
   ) {
     if (!isProcessLiveQueueProjection(nextItem)) {
       owner.projectLive(host, scope, id);
@@ -204,12 +235,20 @@ export function updateQueuedMessage(
   if (nextItem.sendState === "waiting-model") {
     owner.keep(host, scope, nextItem);
   } else {
-    owner.change(host, id);
+    owner.change(
+      host,
+      id,
+      undefined,
+      nextItem.sendState === "failed" || nextItem.sendState === "unconfirmed",
+    );
   }
   if (isProcessLiveQueueProjection(nextItem)) {
     owner.projectLive(host, scope, id, nextItem);
   } else {
     owner.projectLive(host, scope, id);
+  }
+  if (hasCompleteDurablePayload(nextItem)) {
+    releasePendingChatOutboxAdmission(id);
   }
   return nextItem;
 }
@@ -230,10 +269,10 @@ type QueuedMessageMoveRow = {
   next: ChatQueueItem;
 };
 
-export function updateQueuedMessagesForSession(
+export async function updateQueuedMessagesForSession(
   host: ChatQueueScopedSessionHost,
   updates: readonly { id: string; update: (item: ChatQueueItem) => ChatQueueItem }[],
-): boolean {
+): Promise<boolean> {
   const owner = chatOutboxOwner(host);
   const rows: QueuedMessageMoveRow[] = [];
   for (const { id, update } of updates) {
@@ -252,7 +291,7 @@ export function updateQueuedMessagesForSession(
   const durableRows = rows.filter((row) => row.durable);
   const outbox = durableRows[0]?.scope;
   if (outbox) {
-    const applied = updateStoredChatComposerQueueItems(
+    const applied = await updateStoredChatComposerQueueItems(
       host,
       outbox.sessionKey,
       durableRows.map((row) => ({ expected: row.current, next: row.next })),
@@ -281,16 +320,48 @@ export function updateQueuedMessagesForSession(
  * retires the source in the same write. A rejected write changes nothing, so an
  * edited message can never lose both its original and its replacement.
  */
-export function admitQueuedMessageForSession(
+export async function admitQueuedMessageForSession(
   host: ChatQueueScopedSessionHost,
   captured: ReturnType<typeof captureChatOutboxAdmission>,
   item: ChatQueueItem,
   replaces?: StoredChatQueueReplacement,
-): boolean {
-  const owner = chatOutboxOwner(host);
+): Promise<boolean> {
+  let owner = chatOutboxOwner(host);
   owner.keep(host, captured.scope, item);
-  if (!admitStoredChatComposerQueueItem(host, captured, item, replaces)) {
+  const admitted = await admitStoredChatComposerQueueItem(host, captured, item, replaces);
+  if (!admitted) {
     return false;
+  }
+  const currentOwner = chatOutboxOwner(host);
+  if (currentOwner !== owner && captured.recoveryOwner === undefined) {
+    await hydrateChatOutboxMetadata(host);
+    owner = currentOwner;
+    owner.keep(host, captured.scope, item);
+  }
+  if (!owner.hasLocal(host, item.id)) {
+    const recoveryOwnerChanged =
+      captured.recoveryOwner !== undefined &&
+      observeOutboxRecoveryOwner(host) !== captured.recoveryOwner;
+    if (recoveryOwnerChanged) {
+      if (hasCompleteDurablePayload(item)) {
+        releasePendingChatOutboxAdmission(item.id);
+      }
+      return true;
+    }
+    const removed = await removeStoredChatComposerQueueItem(
+      host,
+      captured.scope.sessionKey,
+      item.id,
+      item,
+      captured.scope.agentId,
+    );
+    if (removed) {
+      releasePendingChatOutboxAdmission(item.id);
+    }
+    return false;
+  }
+  if (hasCompleteDurablePayload(item)) {
+    releasePendingChatOutboxAdmission(item.id);
   }
   if (item.sendState !== "waiting-model") {
     owner.change(host, item.id);
@@ -298,45 +369,64 @@ export function admitQueuedMessageForSession(
   return true;
 }
 
-export function removeQueuedMessageWithoutReleasing(
+export async function removeQueuedMessageWithoutReleasing(
   host: ChatQueueScopedSessionHost,
   id: string,
-): ChatQueueItem | null {
+): Promise<ChatQueueItem | null> {
   const owner = chatOutboxOwner(host);
   const located = owner.locate(host, id);
   if (located && !owner.mayRemove(host, located.scope, id)) {
     owner.syncHost(host);
     return null;
   }
+  const releaseRetirement = located?.durable
+    ? protectChatOutboxRetirement(host, id)
+    : () => undefined;
+  if (!releaseRetirement) {
+    owner.syncHost(host);
+    return null;
+  }
+  if (located && !located.durable && !retirePendingChatOutboxAdmission(id)) {
+    owner.syncHost(host);
+    return null;
+  }
+  const hidden = located?.durable ? owner.hide(host, id) : false;
   if (
     located?.durable &&
-    !removeStoredChatComposerQueueItem(
+    !(await removeStoredChatComposerQueueItem(
       host,
       located.scope.sessionKey,
       id,
       located.item,
       located.scope.agentId,
-    )
+    ))
   ) {
+    releaseRetirement();
+    if (hidden && located) {
+      owner.keep(host, located.scope, located.item);
+      owner.publish(undefined, true);
+    }
     owner.syncHost(host);
     return null;
   }
-  if (located) {
+  releaseRetirement();
+  if (located && !hidden) {
     owner.projectLive(host, located.scope, id);
     owner.change(host, id);
+    retirePendingChatOutboxAdmission(id);
   }
   owner.publish(undefined, true);
   return located?.item ?? null;
 }
 
-export function removeVisibleOrScopedQueuedMessageWithoutReleasing(
+export async function removeVisibleOrScopedQueuedMessageWithoutReleasing(
   host: ChatQueueScopedSessionHost,
   id: string,
   sessionKey: string | undefined,
-): ChatQueueItem | null {
+): Promise<ChatQueueItem | null> {
   return (
-    removeQueuedMessageWithoutReleasing(host, id) ??
-    (sessionKey ? removeQueuedMessageWithoutReleasing(host, id) : null)
+    (await removeQueuedMessageWithoutReleasing(host, id)) ??
+    (sessionKey ? await removeQueuedMessageWithoutReleasing(host, id) : null)
   );
 }
 
@@ -351,25 +441,25 @@ export function excludeComposerAttachments(
   return attachments.filter((attachment) => !retainedIds.has(attachment.id));
 }
 
-export function removeQueuedMessage(host: ChatQueueScopedSessionHost, id: string) {
+export async function removeQueuedMessage(host: ChatQueueScopedSessionHost, id: string) {
   const item = readQueuedMessageById(host, id);
-  const removed = item ? removeQueuedMessageWithoutReleasing(host, id) : null;
+  const removed = item ? await removeQueuedMessageWithoutReleasing(host, id) : null;
   if (removed) {
     releaseChatAttachmentPayloads(excludeComposerAttachments(host, removed.attachments));
   }
   return removed ? ("removed" as const) : item ? ("rejected" as const) : ("absent" as const);
 }
 
-export function removeDeliveredQueuedChatSendForRun(
+export async function removeDeliveredQueuedChatSendForRun(
   host: ChatQueueScopedSessionHost,
   runId: string | undefined,
   scope: StoredChatOutboxScope,
-): ChatQueueItem | null {
+): Promise<ChatQueueItem | null> {
   const match = readDeliveredQueuedChatSendForRun(host, runId, scope);
   if (!match) {
     return null;
   }
-  const removed = removeQueuedMessageWithoutReleasing(host, match.item.id);
+  const removed = await removeQueuedMessageWithoutReleasing(host, match.item.id);
   if (!removed) {
     return null;
   }
@@ -411,7 +501,7 @@ export function clearPendingQueueItemsForRun(
   }
 }
 
-export function markQueuedChatSendsWaitingForReconnect(host: ChatQueueScopedSessionHost) {
+export async function markQueuedChatSendsWaitingForReconnect(host: ChatQueueScopedSessionHost) {
   const items = chatOutboxOwner(host).allItems(host);
   for (const item of items) {
     if (!item.sendRunId || (item.sendState !== "sending" && item.sendState !== "waiting-idle")) {
@@ -424,7 +514,7 @@ export function markQueuedChatSendsWaitingForReconnect(host: ChatQueueScopedSess
       }));
       continue;
     }
-    updateQueuedMessage(host, item.id, (current) => ({
+    await updateQueuedMessage(host, item.id, (current) => ({
       ...current,
       sendState: "waiting-reconnect",
     }));

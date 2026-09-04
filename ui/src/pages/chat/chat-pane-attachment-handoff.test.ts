@@ -222,7 +222,7 @@ describe("cross-region Home composer ownership", () => {
 });
 
 describe("staged chat attachment pane handoff", () => {
-  it("discards a mounted package before clearing a closed pane handoff", () => {
+  it("discards a mounted package before clearing a closed pane handoff", async () => {
     const calls: string[] = [];
     const root = {
       querySelectorAll: () => [
@@ -253,7 +253,7 @@ describe("staged chat attachment pane handoff", () => {
     expect(calls).toEqual(["discard-one", "discard-two", "clear"]);
   });
 
-  it("does not restage a closed pane when its id is reused after disconnect", () => {
+  it("does not restage a closed pane when its id is reused after disconnect", async () => {
     const owner = {} as GatewayBrowserClient;
     const { pane, state: current } = createTestChatPane({
       client: owner,
@@ -304,7 +304,7 @@ describe("staged chat attachment pane handoff", () => {
     ).toBeNull();
   });
 
-  it("hands off new work after a retained closed pane is reactivated", () => {
+  it("hands off new work after a retained closed pane is reactivated", async () => {
     const owner = {} as GatewayBrowserClient;
     const { pane, state: current } = createTestChatPane({
       client: owner,
@@ -338,7 +338,7 @@ describe("staged chat attachment pane handoff", () => {
     releaseChatAttachmentPayload(reopened.id);
   });
 
-  it("deduplicates current and fallback payload release", () => {
+  it("deduplicates current and fallback payload release", async () => {
     const shared = storedAttachment("shared");
     const fallback = storedAttachment("fallback", "application/pdf");
     const current = state([shared]);
@@ -359,7 +359,7 @@ describe("staged chat attachment pane handoff", () => {
     expect(current.chatComposerFallbackByScope.fallback?.attachments).toEqual([]);
   });
 
-  it("keeps plain staged attachments across a gateway client rotation", () => {
+  it("keeps plain staged attachments across a gateway client rotation", async () => {
     const previousOwner = {} as GatewayBrowserClient;
     const nextOwner = {} as GatewayBrowserClient;
     const handoff = createChatAttachmentHandoff();
@@ -390,7 +390,7 @@ describe("staged chat attachment pane handoff", () => {
     discardStateStagedAttachments(current);
   });
 
-  it("restores a mixed package only to the exact mounted owner", () => {
+  it("restores a mixed package only to the exact mounted owner", async () => {
     const owner = {} as GatewayBrowserClient;
     const otherOwner = {} as GatewayBrowserClient;
     const handoff = createChatAttachmentHandoff();
@@ -417,7 +417,7 @@ describe("staged chat attachment pane handoff", () => {
     discardStateStagedAttachments(remount);
   });
 
-  it("releases a restored fallback displaced by mounted state", () => {
+  it("releases a restored fallback displaced by mounted state", async () => {
     const owner = {} as GatewayBrowserClient;
     const handoff = createChatAttachmentHandoff();
     const context = { chatAttachmentHandoff: handoff } as unknown as ApplicationContext;

@@ -196,7 +196,7 @@ async function readCurrentStoredChatHistory(
     if (item.sendState === targetState && item.sendError === error) {
       return "blocked";
     }
-    const parked = updateQueuedMessage(host, item.id, (entry) => ({
+    const parked = await updateQueuedMessage(host, item.id, (entry) => ({
       ...entry,
       sendError: error,
       sendState: targetState,
@@ -235,7 +235,7 @@ async function readCurrentStoredChatHistory(
     // finish the outbox owner's attachment handoff before releasing local bytes.
     const retired =
       inputReceipt === "pending"
-        ? removeDeliveredQueuedChatSendForRun(host, item.sendRunId, outbox) !== null
+        ? (await removeDeliveredQueuedChatSendForRun(host, item.sendRunId, outbox)) !== null
         : (await retireDeliveredQueuedUserTurn(host, item.sendRunId, outbox)) === "retired";
     if (
       !retired ||
@@ -281,6 +281,15 @@ async function reconcileStoredChatOutboxHead(
   if (!client || !host.connected) {
     return "blocked";
   }
+  // Capture the live transport owner before history awaits can reconcile a
+  // storage notification over its pane-local sending projection.
+  const liveSendCurrent = anyChatOutboxPaneMatches(host, (pane) => {
+    const liveItem = pane.chatQueue.find((entry) => entry.id === item.id);
+    return (
+      liveItem?.sendState === "sending" &&
+      sameQueuedDeliveryVersion(liveItem, { ...item, sendState: "sending" })
+    );
+  });
   // A never-attempted head cannot be in server history, so its reconcile only
   // needs the active-run answer — which the event that woke this drain already
   // recorded into the session row. Skipping the 1000-message chat.history here
@@ -323,13 +332,6 @@ async function reconcileStoredChatOutboxHead(
     if (verifiedHistory === "blocked" || verifiedHistory === "continue") {
       return verifiedHistory;
     }
-    const liveSendCurrent = anyChatOutboxPaneMatches(host, (pane) => {
-      const liveItem = pane.chatQueue.find((entry) => entry.id === item.id);
-      return (
-        liveItem?.sendState === "sending" &&
-        sameQueuedDeliveryVersion(liveItem, { ...item, sendState: "sending" })
-      );
-    });
     if (liveSendCurrent) {
       // Elapsed time cannot turn a current-connection send into reconnect uncertainty.
       return "blocked";
@@ -337,7 +339,7 @@ async function reconcileStoredChatOutboxHead(
     if (retryUnconfirmed) {
       return "send";
     }
-    const parked = updateQueuedMessage(host, item.id, (entry) => ({
+    const parked = await updateQueuedMessage(host, item.id, (entry) => ({
       ...entry,
       sendError: UNCONFIRMED_CHAT_SEND_ERROR,
       sendState: "unconfirmed",
@@ -423,17 +425,17 @@ async function drainStoredChatOutbox(
       syncVisibleChatQueueProjection(host);
       if (item.localCommandName === "reset") {
         if ((item.sendAttempts ?? 0) > 0 || item.sendRequestStartedAtMs !== undefined) {
-          setCommandState("unconfirmed", UNCONFIRMED_CHAT_SEND_ERROR);
+          await setCommandState("unconfirmed", UNCONFIRMED_CHAT_SEND_ERROR);
           return "blocked";
         }
         const resetTarget = captureChatCommandTarget(host);
         if (!resetTarget) {
-          setCommandState("failed", "The Gateway connection changed. Retry the command.");
+          await setCommandState("failed", "The Gateway connection changed. Retry the command.");
           return "blocked";
         }
         const initialAccess = readChatResetTargetAccess(host, resetTarget);
         if (!initialAccess.allowed) {
-          setCommandState("failed", initialAccess.reason);
+          await setCommandState("failed", initialAccess.reason);
           dependencies.setChatError(host, initialAccess.reason);
           return "blocked";
         }
@@ -442,18 +444,18 @@ async function drainStoredChatOutbox(
           ...(outbox.agentId ? { agentId: outbox.agentId } : {}),
         });
         if (confirmation === "deferred") {
-          setCommandState("waiting-idle");
+          await setCommandState("waiting-idle");
           return "blocked";
         }
         if (confirmation === "cancelled") {
-          if (!removeQueuedMessageWithoutReleasing(host, item.id)) {
+          if (!(await removeQueuedMessageWithoutReleasing(host, item.id))) {
             return "blocked";
           }
           continue;
         }
         const currentAccess = readChatResetTargetAccess(host, resetTarget);
         if (!currentAccess.allowed) {
-          setCommandState("failed", currentAccess.reason);
+          await setCommandState("failed", currentAccess.reason);
           dependencies.setChatError(host, currentAccess.reason);
           return "blocked";
         }
@@ -490,7 +492,7 @@ async function drainStoredChatOutbox(
         return "blocked";
       }
       // Claim before execution to preserve FIFO and crash-review state.
-      const claimed = setCommandState("executing-command");
+      const claimed = await setCommandState("executing-command");
       if (!claimed) {
         return "blocked";
       }
@@ -501,8 +503,8 @@ async function drainStoredChatOutbox(
         host.client === commandClient &&
         host.connectionEpoch === commandConnectionEpoch &&
         visibleSessionMatches(host, outbox.sessionKey, outbox.agentId);
-      const failCommand = (error: string, expose = false): "blocked" => {
-        const updated = setCommandState("failed", error);
+      const failCommand = async (error: string, expose = false): Promise<"blocked"> => {
+        const updated = await setCommandState("failed", error);
         if (!updated || expose) {
           surfaceChatDeliveryFailure(
             host,
@@ -524,7 +526,7 @@ async function drainStoredChatOutbox(
           },
         );
         if (dispatchResult === "deferred") {
-          setCommandState("waiting-idle");
+          await setCommandState("waiting-idle");
           return "blocked";
         }
         if (dispatchResult === "failed") {
@@ -538,7 +540,7 @@ async function drainStoredChatOutbox(
             (commandStillCurrent ? host.lastError : null) ??
             `Command /${item.localCommandName} failed.`;
           const paneHidden = !visibleSessionMatches(host, outbox.sessionKey, outbox.agentId);
-          return failCommand(error, !commandStillCurrent && paneHidden);
+          return await failCommand(error, !commandStillCurrent && paneHidden);
         }
         if (dispatchResult === "uncertain") {
           const currentOutbox = readStoredChatOutbox(host, outbox);
@@ -547,18 +549,18 @@ async function drainStoredChatOutbox(
           const successor = currentIndex >= 0 ? currentOutbox?.queue[currentIndex + 1] : undefined;
           if (
             successor &&
-            !updateQueuedMessage(host, successor.id, (entry) => ({
+            !(await updateQueuedMessage(host, successor.id, (entry) => ({
               ...entry,
               sendError: UNCERTAIN_CLEAR_SUCCESSOR_ERROR,
               sendState: "unconfirmed",
-            }))
+            })))
           ) {
             dependencies.setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
             // Keep the claimed clear row as the reload-safe barrier.
             return "blocked";
           }
         }
-        if (!removeQueuedMessageWithoutReleasing(host, item.id)) {
+        if (!(await removeQueuedMessageWithoutReleasing(host, item.id))) {
           surfaceChatDeliveryFailure(
             host,
             outbox.sessionKey,
@@ -575,7 +577,7 @@ async function drainStoredChatOutbox(
           dependencies.setChatError(host, null);
         }
       } catch (err) {
-        return failCommand(formatUiError(err), true);
+        return await failCommand(formatUiError(err), true);
       }
       continue;
     }

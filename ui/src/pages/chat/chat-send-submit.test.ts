@@ -4,11 +4,19 @@ import { createDeferred } from "../../../../test/helpers/promise.js";
 import { GatewayRequestError } from "../../api/gateway.ts";
 import type { ChatAttachment } from "../../lib/chat/chat-types.ts";
 import {
+  hydrateChatOutboxMetadata,
+  readChatOutboxMetadata,
+} from "../../lib/chat/outbox-metadata-store.runtime.ts";
+import {
   captureChatOutboxAdmission,
   readStoredOutboxStore,
   storageTargetForGateway,
 } from "../../lib/chat/outbox-store.ts";
-import { createStorageMock } from "../../test-helpers/storage.ts";
+import { createSessionCapability } from "../../lib/sessions/index.ts";
+import {
+  createStorageMock,
+  installSafeLocalStorageForTesting,
+} from "../../test-helpers/storage.ts";
 import {
   getChatAttachmentDataUrl,
   registerChatAttachmentPayload,
@@ -38,6 +46,7 @@ const attachmentDataUrl = "data:application/pdf;base64,JVBERi0xLjQK";
 
 beforeEach(() => {
   installOutboxBrowserStorage();
+  installSafeLocalStorageForTesting();
   vi.stubGlobal("sessionStorage", createStorageMock());
   vi.stubGlobal("requestAnimationFrame", () => 1);
   vi.stubGlobal("cancelAnimationFrame", () => undefined);
@@ -178,7 +187,11 @@ describe("structured Goal admission", () => {
     // The same browser persistence owner used on reconnect restores this immutable row.
     const { admitQueuedMessageForSession } = await import("./chat-queue.ts");
     expect(
-      admitQueuedMessageForSession(host, captureChatOutboxAdmission(host, host.sessionKey), queued),
+      await admitQueuedMessageForSession(
+        host,
+        captureChatOutboxAdmission(host, host.sessionKey),
+        queued,
+      ),
     ).toBe(true);
     host.currentSessionId = "incarnation-b";
     host.chatDisplayedLeafEntryId = "leaf-b";
@@ -191,13 +204,13 @@ describe("structured Goal admission", () => {
 });
 
 describe("composeBrowserAnnotationContext", () => {
-  it("materializes an annotation-only message", () => {
+  it("materializes an annotation-only message", async () => {
     const attachment = createBrowserAnnotationAttachment("only", "Inspect the marked region.");
 
     expect(composeBrowserAnnotationContext("", [attachment])).toBe("Inspect the marked region.");
   });
 
-  it("prepends annotation context to the user's draft", () => {
+  it("prepends annotation context to the user's draft", async () => {
     const attachment = createBrowserAnnotationAttachment("mixed", "Browser context");
 
     expect(composeBrowserAnnotationContext("Please fix this", [attachment])).toBe(
@@ -205,7 +218,7 @@ describe("composeBrowserAnnotationContext", () => {
     );
   });
 
-  it("preserves attachment order across two annotations", () => {
+  it("preserves attachment order across two annotations", async () => {
     const first = createBrowserAnnotationAttachment("first", "First context");
     const second = createBrowserAnnotationAttachment("second", "Second context");
 
@@ -214,7 +227,7 @@ describe("composeBrowserAnnotationContext", () => {
     );
   });
 
-  it("omits context for an annotation removed before submit", () => {
+  it("omits context for an annotation removed before submit", async () => {
     const removed = createBrowserAnnotationAttachment("removed", "Removed context");
     const remaining = createBrowserAnnotationAttachment("remaining", "Remaining context");
     const attachments = [removed, remaining];
@@ -580,6 +593,7 @@ describe("human mention submission", () => {
     await vi.waitFor(() =>
       expect(host.request).toHaveBeenCalledWith("chat.history", expect.anything()),
     );
+    host.chatMessage = "@Alex please review";
     host.chatMentions = [{ profileId: "profile-second", start: 0, end: 5 }];
     history.resolve({
       messages: [],
@@ -925,7 +939,7 @@ describe("handleSendChat session ownership", () => {
     },
   );
 
-  it("holds an offline queue through cold recovery and an awaited history read", async () => {
+  it("holds a known-owner offline queue through an awaited history read", async () => {
     const history = createDeferred<unknown>();
     let pending = false;
     const host = makeChatHost({
@@ -937,7 +951,7 @@ describe("handleSendChat session ownership", () => {
       },
       hasPendingInitialTurn: () => pending,
     });
-    const readiness = vi.spyOn(host.client!, "recoveryScopeReady", "get").mockReturnValue(false);
+    const readiness = vi.spyOn(host.client!, "recoveryScopeReady", "get").mockReturnValue(true);
     await handleSendChat(host);
     expect(host.chatMessage).toBe("");
     expect(host.chatQueue).toMatchObject([{ text: "offline later turn", sendAttempts: 0 }]);
@@ -964,15 +978,20 @@ describe("handleSendChat session ownership", () => {
     await loading;
     expect(host.chatRunError?.summary).toContain("Earlier preparation failed");
     expect(host.request).not.toHaveBeenCalledWith("chat.send", expect.anything());
+    readiness.mockReturnValue(true);
+    await hydrateChatOutboxMetadata(host);
+    syncVisibleChatQueueProjection(host);
     expect(host.chatQueue).toMatchObject([
       { text: "offline later turn", sendAttempts: 0, sendRunId: originalId },
     ]);
     pending = true;
-    readiness.mockReturnValue(true);
     await retryReconnectableQueuedChatSends(host);
     expect(host.request).not.toHaveBeenCalledWith("chat.send", expect.anything());
     pending = false;
     await retryReconnectableQueuedChatSends(host);
+    await vi.waitFor(() =>
+      expect(host.request).toHaveBeenCalledWith("chat.send", expect.anything()),
+    );
     expect(host.chatRunError).toBeNull();
     expect(findChatSendPayload(host)).toMatchObject({
       message: "offline later turn",
@@ -993,7 +1012,7 @@ describe("handleSendChat session ownership", () => {
         pendingSettingsPatches: { "agent:main": settingsPatch.promise },
         hasPendingInitialTurn: () => pending,
       });
-      const send = handleSendChat(host);
+      const send = handleSendChat(host, undefined, undefined, new Event("submit"));
       await vi.waitFor(() => expect(host.chatQueue).toHaveLength(1));
       const original = host.chatQueue[0]!;
       const readiness = vi.spyOn(host.client!, "recoveryScopeReady", "get");
@@ -1006,29 +1025,27 @@ describe("handleSendChat session ownership", () => {
       settingsPatch.resolve(true);
       await send;
       expect(host.request).not.toHaveBeenCalledWith("chat.send", expect.anything());
-      // A connected unresolved owner cannot finish a Blob row's settings write.
-      // The stored interrupted-settings state remains paused until explicit retry.
-      const sendState = hold === "recovery-scope" ? "failed" : "waiting-idle";
-      const retained = Object.values(
-        readStoredOutboxStore(sessionStorage, storageTargetForGateway(host.settings?.gatewayUrl))
-          .sessions,
-      ).flatMap((session) => session.queue ?? []);
+      // A recovery-owner transition fences payload and settings work. The owner-scoped
+      // shutdown journal preserves the original picker barrier for retry after recovery.
+      const sendState = hold === "recovery-scope" ? "waiting-model" : "waiting-idle";
+      if (hold === "recovery-scope") {
+        readiness.mockReturnValue(true);
+        await hydrateChatOutboxMetadata(host);
+      }
+      const retained = Object.values(readChatOutboxMetadata(host)?.sessions ?? {}).flatMap(
+        (session) => session.queue ?? [],
+      );
       expect(retained).toMatchObject([
         {
           id: original.id,
           sendRunId: original.sendRunId,
-          attachmentPayload: original.attachmentPayload,
+          ...(hold === "initial-turn" ? { attachmentPayload: expect.any(Object) } : {}),
           text: "later turn",
           sendAttempts: 0,
           sendState,
         },
       ]);
       if (hold === "recovery-scope") {
-        expect(retained[0]?.sendError).toBe(
-          "Chat settings update was interrupted. Review and retry when ready.",
-        );
-        expect(host.chatQueue).toEqual([]);
-        readiness.mockReturnValue(true);
         syncVisibleChatQueueProjection(host);
       }
       expect(host.chatQueue).toMatchObject([

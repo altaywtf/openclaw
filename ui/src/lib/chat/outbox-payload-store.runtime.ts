@@ -175,6 +175,14 @@ export async function removeOutboxPayloads(references: readonly PayloadReference
 }
 
 const TAB_STORAGE_KEY = "openclaw.control.outboxTab.v1";
+let claimedTabId: string | null = null;
+export function outboxPayloadTabCandidate(storage: Storage): string | null {
+  if (claimedTabId) {
+    storage.setItem(TAB_STORAGE_KEY, claimedTabId);
+    return claimedTabId;
+  }
+  return null;
+}
 let tabPromise: Promise<string> | null = null;
 export function outboxPayloadTab(): Promise<string> {
   return (tabPromise ??= (async () => {
@@ -199,6 +207,7 @@ export function outboxPayloadTab(): Promise<string> {
       throw new Error("Outbox ownership unavailable");
     }
     storage.setItem(TAB_STORAGE_KEY, id);
+    claimedTabId = id;
     return id;
   })().catch((error: unknown) => {
     tabPromise = null;

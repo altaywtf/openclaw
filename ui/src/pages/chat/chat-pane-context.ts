@@ -331,7 +331,7 @@ export abstract class ChatPaneContext extends ChatPaneLifecycle {
       releaseChatMediaResourceSubscriber(state.requestUpdate);
       if (wasConnected) {
         if (snapshot.phase === "connected") {
-          markQueuedChatSendsWaitingForReconnect(state);
+          void markQueuedChatSendsWaitingForReconnect(state);
         }
         state.chatSending = false;
         state.chatSendingScopeKey = null;
@@ -494,7 +494,7 @@ export abstract class ChatPaneContext extends ChatPaneLifecycle {
         if (currentSessionId) {
           state.reconnectResumeSessionId = currentSessionId;
         }
-        markQueuedChatSendsWaitingForReconnect(state);
+        void markQueuedChatSendsWaitingForReconnect(state);
       }
       this.connectedClient = null;
       setQuestionPromptClient(this.questionPromptState, null);

@@ -10,7 +10,10 @@ import {
   resolveUiConversationIdentity,
 } from "../sessions/session-key.ts";
 import type { ChatQueueItem } from "./chat-types.ts";
-import { removeOutboxPayloads } from "./outbox-payload-store.runtime.ts";
+import {
+  observeOutboxRecoveryOwner,
+  removeOutboxPayloads,
+} from "./outbox-payload-store.runtime.ts";
 import {
   MAX_STORED_SESSIONS,
   normalizeStoredSession,
@@ -219,6 +222,8 @@ export function captureChatOutboxAdmission(
   return {
     scope: resolveUiConversationIdentity(state, sessionKey, agentId),
     awaitingDefaults: !hasUiSessionDefaults(state),
+    gatewayOwner: storageTargetForGateway(state.settings?.gatewayUrl).gatewayOwner,
+    recoveryOwner: observeOutboxRecoveryOwner(state),
   };
 }
 
@@ -498,6 +503,7 @@ export function writeStoredOutboxStore(
   storage: Storage,
   target: ComposerStorageTarget,
   store: StoredComposerState,
+  options: { retirePayloads?: boolean } = {},
 ): void {
   const previous = storage.getItem(target.key);
   projectedStoreByStorage.get(storage)?.delete(target.key);
@@ -552,7 +558,9 @@ export function writeStoredOutboxStore(
     if (storage.getItem(target.key) !== null) {
       throw new Error("Chat outbox removal verification failed");
     }
-    retireRemovedOutboxPayloads(storage, target, previous, null);
+    if (options.retirePayloads !== false) {
+      retireRemovedOutboxPayloads(storage, target, previous, null);
+    }
     return;
   }
   if (pendingLegacyTransfers.has(store) && retained.length < entries.length) {
@@ -581,7 +589,9 @@ export function writeStoredOutboxStore(
     }
   }
   pendingLegacyTransfers.delete(store);
-  retireRemovedOutboxPayloads(storage, target, previous, retainedStore);
+  if (options.retirePayloads !== false) {
+    retireRemovedOutboxPayloads(storage, target, previous, retainedStore);
+  }
 }
 
 // Cleanup follows a verified metadata commit, never a credential-filtered view.

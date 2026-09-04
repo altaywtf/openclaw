@@ -122,9 +122,9 @@ export function retireDeliveredQueuedUserTurn(
     host.connectionEpoch === connectionEpoch &&
     payloadOwnerIsCurrent();
   const currentItem = () => readDeliveredQueuedChatSendForRun(host, runId, scope)?.item;
-  const commit = (
+  const commit = async (
     message: NonNullable<ReturnType<typeof buildLocalUserMessage>>,
-  ): DeliveredTurnRetirement => {
+  ): Promise<DeliveredTurnRetirement> => {
     if (!isCurrent()) {
       return "stale";
     }
@@ -160,7 +160,7 @@ export function retireDeliveredQueuedUserTurn(
     if (!isCurrent() || !beforeRemoval || !sameQueuedDeliveryVersion(beforeRemoval, stored)) {
       return "stale";
     }
-    return removeDeliveredQueuedChatSendForRun(host, runId, scope) ? "retired" : "retained";
+    return (await removeDeliveredQueuedChatSendForRun(host, runId, scope)) ? "retired" : "retained";
   };
   const live = readQueuedMessageById(host, stored.id);
   const source =
@@ -186,7 +186,8 @@ export function retireDeliveredQueuedUserTurn(
   ) {
     return commit(message);
   }
-  return prepareOutboxPayload(host, stored, "handoff").then((result): DeliveredTurnRetirement => {
+  return (async () => {
+    const result = await prepareOutboxPayload(host, stored, "handoff");
     if (!isCurrent()) {
       return "stale";
     }
@@ -203,11 +204,11 @@ export function retireDeliveredQueuedUserTurn(
     const reason = result.status === "failed" ? result.reason : "missing";
     // Delivery proof must never become a fresh-send retry because local bytes
     // were unavailable. Keep the same run identity and its no-replay barrier.
-    updateQueuedMessage(host, stored.id, (item) =>
+    await updateQueuedMessage(host, stored.id, (item) =>
       failOutboxPayload({ ...item, sendState: "unconfirmed" }, reason),
     );
     return "retained";
-  });
+  })();
 }
 
 type ChatDeliveryFailureHost = Parameters<typeof visibleSessionMatches>[0] & {

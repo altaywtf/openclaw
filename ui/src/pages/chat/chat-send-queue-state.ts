@@ -1,6 +1,7 @@
 import type { ChatAttachment, ChatQueueItem, HumanMention } from "../../lib/chat/chat-types.ts";
 import { resolveCurrentUserIdentity } from "../../lib/chat/current-user-identity.ts";
 import { trimHumanMentions } from "../../lib/chat/human-mentions.ts";
+import { hasEarlierUnresolvedChatOutboxItem } from "../../lib/chat/outbox-metadata-store.runtime.ts";
 import {
   captureChatOutboxAdmission,
   storedChatOutboxScopeKey,
@@ -17,6 +18,7 @@ import type {
 import { chatOutboxOwner } from "./chat-outbox-owner.ts";
 import {
   readQueuedMessageById,
+  readChatQueueForScope,
   updateQueuedMessage,
   updateVolatileQueuedMessage,
 } from "./chat-queue.ts";
@@ -128,12 +130,12 @@ export function captureChatConnectionOwner(
     host.connectionEpoch === connectionEpoch;
 }
 
-export function updateQueuedSendItem(
+export async function updateQueuedSendItem(
   host: ChatHost,
   storageMode: QueuedChatStorageMode,
   id: string,
   update: (item: ChatQueueItem) => ChatQueueItem,
-): ChatQueueItem | null {
+): Promise<ChatQueueItem | null> {
   return storageMode === "memory"
     ? updateVolatileQueuedMessage(host, id, update, { retryable: true })
     : updateQueuedMessage(host, id, update);
@@ -152,13 +154,13 @@ export function deliveryStateWriter(
     }));
 }
 
-export function finishChatDeliveryAdmission(
+export async function finishChatDeliveryAdmission(
   host: ChatHost,
   item: ChatQueueItem,
   storageMode: QueuedChatStorageMode,
   queueSessionKey: string,
   options?: QueuedChatSendOptions,
-): ChatQueueItem | QueuedChatSendResult {
+): Promise<ChatQueueItem | QueuedChatSendResult> {
   const route = options?.routingSessionKey ?? queueSessionKey;
   const setState = deliveryStateWriter(host, storageMode, item.id);
   const routeVisible = (agentId = item.agentId) => visibleSessionMatches(host, route, agentId);
@@ -174,7 +176,9 @@ export function finishChatDeliveryAdmission(
       routeVisible(current.agentId) &&
       (isChatBusy(host) || hasDirectSessionRun(host)))
   ) {
-    const parked = setState(host.connected && host.client ? "waiting-idle" : "waiting-reconnect");
+    const parked = await setState(
+      host.connected && host.client ? "waiting-idle" : "waiting-reconnect",
+    );
     if (!parked) {
       setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
       return "failed";
@@ -189,13 +193,15 @@ export function canSendVolatileQueueItem(
   item: ChatQueueItem,
   routingSessionKey = item.sessionKey ?? host.sessionKey,
 ): boolean {
+  const scope = { sessionKey: routingSessionKey, agentId: item.agentId };
   return (
     host.connected &&
     Boolean(host.client) &&
     !isChatBusy(host) &&
     !getPendingChatPickerPatch(host, routingSessionKey, item.agentId) &&
     visibleSessionMatches(host, routingSessionKey, item.agentId) &&
-    host.chatQueue[0]?.id === item.id
+    !hasEarlierUnresolvedChatOutboxItem(host, scope, item) &&
+    readChatQueueForScope(host, routingSessionKey, item.agentId)[0]?.id === item.id
   );
 }
 
@@ -253,7 +259,7 @@ export async function prepareQueuedChatPayload(
   }
   if (payload.status === "failed") {
     const failed = failOutboxPayload(current, payload.reason);
-    updateQueuedMessage(host, id, () => failed);
+    await updateQueuedMessage(host, id, () => failed);
     surfaceChatDeliveryFailure(host, sessionKey, original.agentId, failed.sendError);
     return "failed";
   }
@@ -262,12 +268,12 @@ export async function prepareQueuedChatPayload(
     hydrated.attachmentPayload?.key !== original.attachmentPayload?.key &&
     hydrated.sendState === "unconfirmed"
   ) {
-    updateQueuedMessage(host, id, () => hydrated);
+    await updateQueuedMessage(host, id, () => hydrated);
     return "pending";
   }
   if (
     (!original.attachmentPayload || original.attachmentStorageError) &&
-    !updateQueuedMessage(host, id, () => hydrated)
+    !(await updateQueuedMessage(host, id, () => hydrated))
   ) {
     if (!original.attachmentPayload) {
       retireOutboxPayload(payload.update);

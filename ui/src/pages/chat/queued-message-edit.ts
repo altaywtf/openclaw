@@ -189,12 +189,12 @@ export function cancelQueuedMessageEdit(host: QueuedMessageEditHost): boolean {
  * must not fall back to a memory-only send that would strand it. A source with no
  * stored copy has nothing to lose to a reload, so it retires with the memory row.
  */
-export function retireEditedQueuedMessageSource(
+export async function retireEditedQueuedMessageSource(
   host: QueuedMessageEditHost,
   admittedDurably: boolean,
   nextAttachments: readonly ChatAttachment[] = [],
   editOverride?: QueuedMessageEdit,
-): void {
+): Promise<void> {
   const edit = editOverride ?? activeQueuedMessageEdit(host);
   if (editOverride && host.chatQueuedEdit !== edit) {
     return;
@@ -214,7 +214,7 @@ export function retireEditedQueuedMessageSource(
     }
   }
   host.chatQueuedEdit = null;
-  removeVisibleOrScopedQueuedMessageWithoutReleasing(host, edit.id, edit.sessionKey);
+  await removeVisibleOrScopedQueuedMessageWithoutReleasing(host, edit.id, edit.sessionKey);
   // Images the operator dropped during the edit lose their last owner here; the
   // ones the replacement still carries must survive, so release only the rest.
   // The payloads come from the token: a successful write already retired the row

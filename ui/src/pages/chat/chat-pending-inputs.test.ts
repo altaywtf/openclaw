@@ -71,7 +71,7 @@ async function retainDeliveredUserTurn(
     item.sessionKey ?? host.sessionKey,
     item.agentId,
   );
-  expect(admitQueuedMessageForSession(host, admission, item)).toBe(true);
+  expect(await admitQueuedMessageForSession(host, admission, item)).toBe(true);
   const outbox = expectDefined(
     listStoredChatOutboxes(host).find((entry) =>
       entry.queue.some((queued) => queued.id === item.id),
@@ -98,6 +98,7 @@ function makeChatPageHost({
 }
 
 beforeEach(() => {
+  installOutboxBrowserStorage();
   vi.stubGlobal("sessionStorage", createStorageMock());
 });
 afterEach(() => {
@@ -657,9 +658,6 @@ describe("server-owned pending input display", () => {
   it.each(["text", "blob"])(
     "retires browser retry custody while keeping accepted %s input separate from history",
     async (kind) => {
-      if (kind === "blob") {
-        installOutboxBrowserStorage();
-      }
       const history = [
         { role: "assistant", content: "Still working", __openclaw: { id: "reply-1", seq: 1 } },
       ];
@@ -730,7 +728,7 @@ describe("server-owned pending input display", () => {
         expect(Buffer.from(await stored.value[0]!.blob.arrayBuffer())).toEqual(imageBytes);
       }
       expect(
-        admitQueuedMessageForSession(
+        await admitQueuedMessageForSession(
           host,
           captureChatOutboxAdmission(host, sessionKey, queued.agentId),
           queued,
@@ -740,8 +738,10 @@ describe("server-owned pending input display", () => {
         loadChatComposerSnapshot(host, sessionKey)?.queue[0]?.attachments?.[0]?.dataUrl,
       ).toBeUndefined();
       await loadChatHistory(host);
-      expect(readChatQueueForScope(host, sessionKey)).toEqual([]);
-      expect(listStoredChatOutboxes(host)).toEqual([]);
+      await vi.waitFor(() => {
+        expect(readChatQueueForScope(host, sessionKey)).toEqual([]);
+        expect(listStoredChatOutboxes(host)).toEqual([]);
+      });
       expect(host.chatMessages).toEqual(history);
       expect(getChatPendingInputs(host)?.page).toEqual(acceptedPage);
       if (reference && payloadOwner) {
@@ -812,7 +812,7 @@ describe("server-owned pending input display", () => {
     expect(host.request).toHaveBeenCalledTimes(1);
   });
 
-  it("replaces a server pending bubble with canonical persistence exactly once", () => {
+  it("replaces a server pending bubble with canonical persistence exactly once", async () => {
     const promoted = {
       role: "user",
       content: "Keep my accepted input",
@@ -838,7 +838,7 @@ describe("server-owned pending input display", () => {
     });
   });
 
-  it("places accepted input at its acceptance time instead of after newer history", () => {
+  it("places accepted input at its acceptance time instead of after newer history", async () => {
     const earlier = { role: "assistant", content: "Earlier reply", timestamp: 50 };
     const later = { role: "assistant", content: "Later reply", timestamp: 150 };
     const items = buildChatItems({

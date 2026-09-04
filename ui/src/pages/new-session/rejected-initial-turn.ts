@@ -1,13 +1,14 @@
 import type { ApplicationContext } from "../../app/context.ts";
 import { loadSettings } from "../../app/settings.ts";
 import type { ChatAttachment, HumanMention } from "../../lib/chat/chat-types.ts";
+import { storageTargetForGateway } from "../../lib/chat/outbox-store.ts";
 import { normalizeAgentId } from "../../lib/sessions/session-key.ts";
 import { generateUUID } from "../../lib/uuid.ts";
 import { admitStoredChatComposerQueueItem } from "../chat/composer-persistence.ts";
 import { prepareInitialTurnHandoff } from "../chat/initial-turn-handoff.ts";
 
 /** Returns true when attachment payload ownership moved to the volatile handoff. */
-export function retainRejectedInitialTurn(options: {
+export async function retainRejectedInitialTurn(options: {
   agentId: string;
   attachments: ChatAttachment[];
   context: ApplicationContext;
@@ -15,8 +16,9 @@ export function retainRejectedInitialTurn(options: {
   message: string;
   mentions?: readonly HumanMention[];
   sessionKey: string;
-}): boolean {
+}): Promise<boolean> {
   const gateway = options.context.gateway.snapshot;
+  const settings = loadSettings();
   const rejectedItem = {
     id: generateUUID(),
     text: options.message,
@@ -36,12 +38,16 @@ export function retainRejectedInitialTurn(options: {
   const admission = {
     scope: { sessionKey: rejectedItem.sessionKey, agentId: rejectedItem.agentId },
     awaitingDefaults: false,
+    gatewayOwner: storageTargetForGateway(settings.gatewayUrl).gatewayOwner,
+    recoveryOwner: gateway.client?.recoveryScopeReady ? gateway.client.recoveryScope : undefined,
   };
-  const persisted = admitStoredChatComposerQueueItem(
+  const persisted = await admitStoredChatComposerQueueItem(
     {
-      settings: loadSettings(),
+      settings,
       assistantAgentId: gateway.assistantAgentId,
       agentsList: options.context.agents.state.agentsList,
+      client: gateway.client,
+      connected: Boolean(gateway.client),
       hello: gateway.hello,
     },
     admission,

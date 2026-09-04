@@ -326,19 +326,21 @@ export function createPageState(
     renderLifecycle.invalidate();
   };
   state.removeQueuedMessage = (id) => {
-    if (isQueuedMessageBeingEdited(state, id)) {
-      setChatError(state, QUEUED_MESSAGE_REMOVAL_CONFLICT_ERROR);
+    void (async () => {
+      if (isQueuedMessageBeingEdited(state, id)) {
+        setChatError(state, QUEUED_MESSAGE_REMOVAL_CONFLICT_ERROR);
+        renderLifecycle.invalidate();
+        return;
+      }
+      const outcome = await removeQueuedMessage(state, id);
+      if (outcome === "removed") {
+        setChatError(state, null);
+        void resumeStoredChatOutboxes(state);
+      } else if (outcome === "rejected") {
+        setChatError(state, OFFLINE_QUEUE_STORAGE_ERROR);
+      }
       renderLifecycle.invalidate();
-      return;
-    }
-    const outcome = removeQueuedMessage(state, id);
-    if (outcome === "removed") {
-      setChatError(state, null);
-      void resumeStoredChatOutboxes(state);
-    } else if (outcome === "rejected") {
-      setChatError(state, OFFLINE_QUEUE_STORAGE_ERROR);
-    }
-    renderLifecycle.invalidate();
+    })();
   };
   state.retryQueuedChatMessage = async (id) => {
     await retryQueuedChatMessage(state, id);
@@ -349,8 +351,7 @@ export function createPageState(
     renderLifecycle.invalidate();
   };
   state.moveQueuedChatMessage = (id, toIndex) => {
-    moveQueuedChatMessage(state, id, toIndex);
-    renderLifecycle.invalidate();
+    void moveQueuedChatMessage(state, id, toIndex).then(() => renderLifecycle.invalidate());
   };
   state.editQueuedChatMessage = (id) => {
     if (beginQueuedMessageEdit(state, id) === "unavailable") {

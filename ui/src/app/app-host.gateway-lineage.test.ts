@@ -25,6 +25,7 @@ import {
 import { handleSendChat } from "../pages/chat/chat-send-submit.ts";
 import { renderChatComposer } from "../pages/chat/components/chat-composer.ts";
 import { listStoredChatOutboxes } from "../pages/chat/composer-persistence.ts";
+import { installOutboxBrowserStorage } from "../pages/chat/outbox-browser.test-support.ts";
 import {
   activeQueuedMessageEdit,
   beginQueuedMessageEdit,
@@ -49,6 +50,7 @@ const HELLO: GatewayHelloOk = {
 };
 
 function createGatewayHarness() {
+  installOutboxBrowserStorage();
   vi.stubGlobal("localStorage", createStorageMock());
   vi.stubGlobal("sessionStorage", createStorageMock());
   const clients: Array<{
@@ -197,7 +199,7 @@ describe("Control UI Gateway target lineage", () => {
       const composer = document.createElement("div");
       try {
         expect(
-          admitQueuedMessageForSession(state, captureChatOutboxAdmission(state, sessionKey), {
+          await admitQueuedMessageForSession(state, captureChatOutboxAdmission(state, sessionKey), {
             id: "owner-row",
             text: "Original queued message",
             createdAt: 1000,
@@ -252,7 +254,7 @@ describe("Control UI Gateway target lineage", () => {
           });
           expect(clients[1]!.request).not.toHaveBeenCalledWith("chat.send", expect.anything());
         }
-        expect(listStoredChatOutboxes(state)).toEqual(outboxes);
+        expect(listStoredChatOutboxes(state)).toEqual(sameOwner ? outboxes : []);
         expect(shellContainer.querySelector("openclaw-app-shell")).toBe(originalShell);
         expect(pane.state).toBe(state);
         expect(state.client).not.toBe(initialClient);
@@ -288,7 +290,7 @@ describe("Control UI Gateway target lineage", () => {
     },
   );
 
-  it("returns to the login gate when a newly selected Gateway's first attempt fails", () => {
+  it("returns to the login gate when a newly selected Gateway's first attempt fails", async () => {
     const { gateway, clients } = createGatewayHarness();
     gateway.start();
     clients[0]?.opts.onHello?.(HELLO);
@@ -301,7 +303,7 @@ describe("Control UI Gateway target lineage", () => {
     expect(surface).not.toContain("<openclaw-app-shell");
   });
 
-  it("re-scopes credentials when the login draft changes Gateway", () => {
+  it("re-scopes credentials when the login draft changes Gateway", async () => {
     const { gateway, clients } = createGatewayHarness();
     gateway.connect({ token: "old-token", password: "old-password" });
     clients[0]?.opts.onClose?.({ code: 1006, reason: "login required", willRetry: true });
@@ -337,7 +339,7 @@ describe("Control UI Gateway target lineage", () => {
     expect(clients[1]?.opts.password).toBeUndefined();
   });
 
-  it("keeps retryable Gateway startup on the initial progress surface", () => {
+  it("keeps retryable Gateway startup on the initial progress surface", async () => {
     const { gateway, clients } = createGatewayHarness();
     gateway.start();
     clients[0]?.opts.onClose?.({
@@ -361,7 +363,7 @@ describe("Control UI Gateway target lineage", () => {
     expect(surface).not.toContain("<openclaw-login-gate");
   });
 
-  it("shows startup progress after a manual connection attempt", () => {
+  it("shows startup progress after a manual connection attempt", async () => {
     const { gateway, clients } = createGatewayHarness();
     gateway.start();
     clients[0]?.opts.onClose?.({
@@ -439,7 +441,7 @@ describe("Control UI Gateway target lineage", () => {
     },
   );
 
-  it("keeps an established Gateway's dashboard mounted during its own retry", () => {
+  it("keeps an established Gateway's dashboard mounted during its own retry", async () => {
     const { gateway, clients } = createGatewayHarness();
     gateway.start();
     clients[0]?.opts.onHello?.(HELLO);
@@ -451,7 +453,7 @@ describe("Control UI Gateway target lineage", () => {
     expect(surface).not.toContain("<openclaw-login-gate");
   });
 
-  it("retains a replacement Gateway's dashboard after its own successful hello", () => {
+  it("retains a replacement Gateway's dashboard after its own successful hello", async () => {
     const { gateway, clients } = createGatewayHarness();
     gateway.start();
     clients[0]?.opts.onHello?.(HELLO);

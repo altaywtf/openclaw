@@ -38,9 +38,9 @@ export function createResetSlashCommandSender(
     if (item) {
       publishPendingSendMessage(host, item);
     }
-    if (!pending || !admitQueuedMessageForSession(host, pending.admission, pending.item)) {
+    if (!pending || !(await admitQueuedMessageForSession(host, pending.admission, pending.item))) {
       if (item) {
-        cancelChatDelivery(host, item, { previousDraft: options.previousDraft });
+        await cancelChatDelivery(host, item, { previousDraft: options.previousDraft });
       }
       setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
       return;

@@ -129,7 +129,7 @@ export function applyChatPendingInputs(
         acceptedRunIds.has(item.sendRunId) &&
         (!item.sessionId || item.sessionId === state.currentSessionId)
       ) {
-        removeQueuedMessage(state, item.id);
+        void removeQueuedMessage(state, item.id);
       }
     }
   }

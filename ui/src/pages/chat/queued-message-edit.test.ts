@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { AgentsListResult } from "../../api/types.ts";
 import type { ChatAttachment, ChatQueueItem } from "../../lib/chat/chat-types.ts";
+import { openControlUiDatabase } from "../../lib/chat/control-ui-database.runtime.ts";
+import { hydrateChatOutboxMetadata } from "../../lib/chat/outbox-metadata-store.runtime.ts";
 import { captureChatOutboxAdmission } from "../../lib/chat/outbox-store.ts";
 import { createStorageMock } from "../../test-helpers/storage.ts";
 import {
@@ -66,7 +68,7 @@ function trackOutboxProjection(host: Parameters<typeof subscribeChatOutboxProjec
   return unsubscribe;
 }
 
-function queueHost(
+async function queueHost(
   items: readonly Partial<ChatQueueItem>[],
   overrides: Parameters<typeof makeChatHost>[0] = {},
 ) {
@@ -77,9 +79,9 @@ function queueHost(
     ...overrides,
   });
   const unsubscribe = trackOutboxProjection(host as never);
-  items.forEach((item, index) => {
+  for (const [index, item] of items.entries()) {
     expect(
-      admitQueuedMessageForSession(
+      await admitQueuedMessageForSession(
         host as never,
         captureChatOutboxAdmission(host, SESSION_KEY, item.agentId),
         {
@@ -92,7 +94,7 @@ function queueHost(
         },
       ),
     ).toBe(true);
-  });
+  }
   return { host, unsubscribe };
 }
 
@@ -124,15 +126,22 @@ function stageQueuedImage(id: string): ChatAttachment {
   return attachment;
 }
 
-/** A full store: any write that would grow it is rejected, exactly as quota does. */
-function rejectStoredGrowth(): void {
-  const storage = globalThis.sessionStorage;
-  const write = storage.setItem.bind(storage);
-  vi.spyOn(storage, "setItem").mockImplementation((key: string, value: string) => {
-    if (value.length > (storage.getItem(key)?.length ?? 0)) {
+/** Reject the next durable outbox write, exactly as browser quota would. */
+async function rejectStoredGrowth(): Promise<void> {
+  const database = await openControlUiDatabase();
+  const objectStore = database.transaction("chatOutboxes").objectStore("chatOutboxes");
+  const prototype = Object.getPrototypeOf(objectStore) as IDBObjectStore;
+  // oxlint-disable-next-line typescript/unbound-method -- the wrapper restores `this` via call.
+  const put = prototype.put;
+  vi.spyOn(prototype, "put").mockImplementation(function (
+    this: IDBObjectStore,
+    value: unknown,
+    key?: IDBValidKey,
+  ) {
+    if (this.name === "chatOutboxes") {
       throw new DOMException("exceeded the quota", "QuotaExceededError");
     }
-    write(key, value);
+    return key === undefined ? put.call(this, value) : put.call(this, value, key);
   });
 }
 
@@ -148,9 +157,9 @@ async function submitQueuedEdit(host: ReturnType<typeof makeChatHost>): Promise<
 }
 
 describe("queued message edit round-trip", () => {
-  it("keeps the row-local draft and attachments separate from the composer", () => {
+  it("keeps the row-local draft and attachments separate from the composer", async () => {
     const attachment = { id: "att-1", mimeType: "image/png", dataUrl: "data:image/png;base64,iVB" };
-    const { host } = queueHost([{}, { attachments: [attachment] }, {}]);
+    const { host } = await queueHost([{}, { attachments: [attachment] }, {}]);
     host.chatMessage = "separate composer draft";
 
     expect(beginQueuedMessageEdit(host as never, "queued-2")).toBe("started");
@@ -165,8 +174,8 @@ describe("queued message edit round-trip", () => {
     expect(isQueuedMessageBeingEdited(host as never, "queued-1")).toBe(false);
   });
 
-  it("leaves the queue untouched when the edit is cancelled", () => {
-    const { host } = queueHost([{}, {}, {}]);
+  it("leaves the queue untouched when the edit is cancelled", async () => {
+    const { host } = await queueHost([{}, {}, {}]);
     host.chatMessage = "separate composer draft";
     beginQueuedMessageEdit(host as never, "queued-2");
     updateQueuedMessageEdit(host as never, "half-typed replacement");
@@ -179,10 +188,10 @@ describe("queued message edit round-trip", () => {
     expect(isQueuedMessageBeingEdited(host as never, "queued-2")).toBe(false);
   });
 
-  it("leaves composer attachments untouched when an edit is cancelled", () => {
+  it("leaves composer attachments untouched when an edit is cancelled", async () => {
     const original = stageQueuedImage("att-original");
     const added = stageQueuedImage("att-added");
-    const { host } = queueHost([{ attachments: [original] }]);
+    const { host } = await queueHost([{ attachments: [original] }]);
     host.chatAttachments = [added];
     beginQueuedMessageEdit(host as never, "queued-1");
 
@@ -195,7 +204,7 @@ describe("queued message edit round-trip", () => {
   });
 
   it("replaces the row in the same slot when the edited message is sent", async () => {
-    const { host } = queueHost([{}, {}, {}]);
+    const { host } = await queueHost([{}, {}, {}]);
     beginQueuedMessageEdit(host as never, "queued-2");
     updateQueuedMessageEdit(host as never, "message 2, corrected");
 
@@ -209,7 +218,7 @@ describe("queued message edit round-trip", () => {
     "keeps the source row and rejects a command-like inline edit: %s",
     async (command) => {
       const sendRequest = vi.fn(() => ({ status: "started" as const }));
-      const { host } = queueHost([{}], {
+      const { host } = await queueHost([{}], {
         chatRunId: "run-active",
         connected: true,
         requestHandlers: { "chat.send": sendRequest },
@@ -227,7 +236,7 @@ describe("queued message edit round-trip", () => {
   );
 
   it("keeps a composer send separate from an open row edit", async () => {
-    const { host } = queueHost([{}, {}]);
+    const { host } = await queueHost([{}, {}]);
     beginQueuedMessageEdit(host as never, "queued-1");
     updateQueuedMessageEdit(host as never, "message 1, corrected");
     host.chatMessage = "separate composer send";
@@ -245,7 +254,7 @@ describe("queued message edit round-trip", () => {
   )(
     "retains a stale edit after peer $mutation (route round trip: $roundTrip)",
     async ({ roundTrip, mutation }) => {
-      const { host } = queueHost([{}, {}]);
+      const { host } = await queueHost([{}, {}]);
       beginQueuedMessageEdit(host as never, "queued-1");
       updateQueuedMessageEdit(host as never, "message 1, corrected");
       const captured = host.chatQueuedEdit?.source;
@@ -253,12 +262,18 @@ describe("queued message edit round-trip", () => {
         host.sessionKey = "agent:main:elsewhere";
         expect(isQueuedMessageBeingEdited(host as never, "queued-1")).toBe(false);
       }
-      const stalePane = makeChatHost({ connected: false, sessionKey: SESSION_KEY });
+      const stalePane = makeChatHost({
+        client: host.client,
+        connected: false,
+        sessionKey: SESSION_KEY,
+      });
+      await hydrateChatOutboxMetadata(stalePane);
+      syncVisibleChatQueueProjection(stalePane);
       if (mutation === "remove") {
-        removeQueuedMessageWithoutReleasing(stalePane as never, "queued-1");
+        await removeQueuedMessageWithoutReleasing(stalePane as never, "queued-1");
       } else {
         expect(
-          updateQueuedMessage(stalePane as never, "queued-1", (item) => ({
+          await updateQueuedMessage(stalePane as never, "queued-1", (item) => ({
             ...item,
             orderKey: (item.orderKey ?? item.createdAt) + 10,
           })),
@@ -282,7 +297,7 @@ describe("queued message edit round-trip", () => {
     const history = createDeferred<{ messages: unknown[] }>();
     const historyRequest = vi.fn(() => history.promise);
     const sendRequest = vi.fn(() => ({ status: "started" as const }));
-    const { host } = queueHost([{}], {
+    const { host } = await queueHost([{}], {
       chatLoading: true,
       connected: true,
       requestHandlers: {
@@ -307,7 +322,7 @@ describe("queued message edit round-trip", () => {
     const history = createDeferred<{ messages: unknown[] }>();
     const historyRequest = vi.fn(() => history.promise);
     const sendRequest = vi.fn(() => ({ status: "started" as const }));
-    const { host } = queueHost([{}], {
+    const { host } = await queueHost([{}], {
       chatLoading: true,
       connected: true,
       requestHandlers: {
@@ -331,7 +346,7 @@ describe("queued message edit round-trip", () => {
 
   it("preserves attachments and reply context on the replacement", async () => {
     const kept = stageQueuedImage("att-kept");
-    const { host } = queueHost([{}, { attachments: [kept], replyToId: "reply-source" }, {}]);
+    const { host } = await queueHost([{}, { attachments: [kept], replyToId: "reply-source" }, {}]);
     beginQueuedMessageEdit(host as never, "queued-2");
     updateQueuedMessageEdit(host as never, "message 2, corrected");
     await submitQueuedEdit(host);
@@ -344,10 +359,10 @@ describe("queued message edit round-trip", () => {
   });
 
   it("keeps the original queued when the replacement's stored write is rejected", async () => {
-    const { host } = queueHost([{}, {}, {}]);
+    const { host } = await queueHost([{}, {}, {}]);
     beginQueuedMessageEdit(host as never, "queued-2");
     updateQueuedMessageEdit(host as never, "message 2, corrected");
-    rejectStoredGrowth();
+    await rejectStoredGrowth();
 
     await submitQueuedEdit(host);
 
@@ -362,7 +377,7 @@ describe("queued message edit round-trip", () => {
 
   it("fences peer remove, reorder, retry, and steer actions while a row edit is open", async () => {
     const original = { id: "queued-1", text: "message 1", createdAt: 1_000 };
-    const { host, unsubscribe } = queueHost([original]);
+    const { host, unsubscribe } = await queueHost([original]);
     const sendRequest = vi.fn(() => ({ status: "started" as const }));
     const peer = makeChatHost({
       chatQueue: [original],
@@ -377,7 +392,7 @@ describe("queued message edit round-trip", () => {
       beginQueuedMessageEdit(host as never, original.id);
 
       expect(isQueuedMessageBeingEdited(peer as never, original.id)).toBe(true);
-      expect(moveQueuedChatMessage(peer as never, original.id, 0)).toBe("rejected");
+      expect(await moveQueuedChatMessage(peer as never, original.id, 0)).toBe("rejected");
       await retryQueuedChatMessage(peer as never, original.id);
       await steerQueuedChatMessage(peer as never, original.id);
       expect(sendRequest).not.toHaveBeenCalled();
@@ -388,8 +403,8 @@ describe("queued message edit round-trip", () => {
     }
   });
 
-  it("reports when a peer reorder crosses the row another pane is editing", () => {
-    const { host, unsubscribe } = queueHost([{}, {}, {}]);
+  it("reports when a peer reorder crosses the row another pane is editing", async () => {
+    const { host, unsubscribe } = await queueHost([{}, {}, {}]);
     const peer = makeChatHost({
       client: host.client,
       connected: false,
@@ -400,7 +415,7 @@ describe("queued message edit round-trip", () => {
     try {
       beginQueuedMessageEdit(host as never, "queued-2");
 
-      expect(moveQueuedChatMessage(peer as never, "queued-3", 0)).toBe("rejected");
+      expect(await moveQueuedChatMessage(peer as never, "queued-3", 0)).toBe("rejected");
       expect(peer.chatError).toBe(QUEUED_MESSAGE_REORDER_CONFLICT_ERROR);
       expect(storedOrder(peer)).toEqual(["message 1", "message 2", "message 3"]);
     } finally {
@@ -409,8 +424,8 @@ describe("queued message edit round-trip", () => {
     }
   });
 
-  it("translates peer reorder indices within one side of an edited-row barrier", () => {
-    const { host, unsubscribe } = queueHost([{}, {}, {}, {}]);
+  it("translates peer reorder indices within one side of an edited-row barrier", async () => {
+    const { host, unsubscribe } = await queueHost([{}, {}, {}, {}]);
     const peer = makeChatHost({
       client: host.client,
       connected: false,
@@ -421,7 +436,7 @@ describe("queued message edit round-trip", () => {
     try {
       beginQueuedMessageEdit(host as never, "queued-2");
 
-      expect(moveQueuedChatMessage(peer as never, "queued-4", 2)).toBe("moved");
+      expect(await moveQueuedChatMessage(peer as never, "queued-4", 2)).toBe("moved");
       expect(storedOrder(peer)).toEqual(["message 1", "message 2", "message 4", "message 3"]);
     } finally {
       stopPeer();
@@ -429,13 +444,13 @@ describe("queued message edit round-trip", () => {
     }
   });
 
-  it("keeps local reorder indices within one side of its own edited-row barrier", () => {
-    const { host, unsubscribe } = queueHost([{}, {}, {}, {}]);
+  it("keeps local reorder indices within one side of its own edited-row barrier", async () => {
+    const { host, unsubscribe } = await queueHost([{}, {}, {}, {}]);
 
     try {
       beginQueuedMessageEdit(host as never, "queued-2");
 
-      expect(moveQueuedChatMessage(host as never, "queued-4", 0)).toBe("moved");
+      expect(await moveQueuedChatMessage(host as never, "queued-4", 0)).toBe("moved");
       expect(storedOrder(host)).toEqual(["message 1", "message 2", "message 4", "message 3"]);
     } finally {
       unsubscribe();
@@ -445,7 +460,7 @@ describe("queued message edit round-trip", () => {
   it("does not collapse same-payload row and composer sends", async () => {
     const ack = createDeferred<{ status: "started" }>();
     const sendRequest = vi.fn(() => ack.promise);
-    const { host } = queueHost([{}], {
+    const { host } = await queueHost([{}], {
       connected: true,
       requestHandlers: { "chat.send": sendRequest },
     });
@@ -467,7 +482,7 @@ describe("queued message edit round-trip", () => {
     const host = makeChatHost({ assistantAgentId: "lily", connected: false, sessionKey: "global" });
     const unsubscribe = trackOutboxProjection(host as never);
     expect(
-      admitQueuedMessageForSession(
+      await admitQueuedMessageForSession(
         host as never,
         captureChatOutboxAdmission(host, "global", "lily"),
         {
@@ -498,7 +513,7 @@ describe("queued message edit round-trip", () => {
   });
 
   it("edits one row at a time and rejects a submit naming another row", async () => {
-    const { host } = queueHost([{}, {}]);
+    const { host } = await queueHost([{}, {}]);
     beginQueuedMessageEdit(host as never, "queued-1");
 
     expect(beginQueuedMessageEdit(host as never, "queued-2")).toBe("unavailable");
@@ -512,8 +527,8 @@ describe("queued message edit round-trip", () => {
   it.each([
     { label: "a local command", overrides: { localCommandName: "compact" } },
     { label: "a delivery-uncertain row", overrides: { sendState: "unconfirmed" as const } },
-  ])("refuses to edit $label", ({ overrides }) => {
-    const { host } = queueHost([overrides]);
+  ])("refuses to edit $label", async ({ overrides }) => {
+    const { host } = await queueHost([overrides]);
 
     expect(beginQueuedMessageEdit(host as never, "queued-1")).toBe("unavailable");
   });
@@ -528,7 +543,7 @@ describe("queued message edit round-trip", () => {
         agents: [{ id: "main" }],
       } satisfies AgentsListResult;
       const send = vi.fn(async () => ({ status: "started" }));
-      const { host, unsubscribe } = queueHost([{}], {
+      const { host, unsubscribe } = await queueHost([{}], {
         connected: true,
         agentsList,
         requestHandlers: { "chat.send": send },
@@ -584,8 +599,8 @@ describe("queued message edit round-trip", () => {
     },
   );
 
-  it("leaves the edit behind when the pane routes to another session", () => {
-    const { host } = queueHost([{}, {}]);
+  it("leaves the edit behind when the pane routes to another session", async () => {
+    const { host } = await queueHost([{}, {}]);
     beginQueuedMessageEdit(host as never, "queued-1");
 
     host.sessionKey = "agent:other";

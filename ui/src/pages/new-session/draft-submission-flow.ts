@@ -600,7 +600,7 @@ export class DraftSubmissionFlow {
       const { key: sessionKey, initialRun } = result;
       const handedOffAttachments =
         initialRun.status === "rejected" &&
-        retainRejectedInitialTurn({
+        (await retainRejectedInitialTurn({
           agentId: this.place.agentId,
           attachments,
           context,
@@ -608,7 +608,7 @@ export class DraftSubmissionFlow {
           message,
           mentions,
           sessionKey,
-        });
+        }));
       if (initialRun.status === "started") {
         context.chatSubmissions.retain(
           buildInitialChatSubmission(sessionKey, initialTurn, submissionClient, initialRun.runId),

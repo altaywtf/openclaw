@@ -16,6 +16,7 @@ import {
   readChatSessionProjectionScope,
   reduceChatSessionProjection,
 } from "./history-merge.ts";
+import { installOutboxBrowserStorage } from "./outbox-browser.test-support.ts";
 import { applySessionMessagePayload } from "./session-message-apply.ts";
 import {
   cacheChatSessionSnapshot,
@@ -84,6 +85,7 @@ describe("chat history cursor revalidation", () => {
   it.each(["live", "history-delta"] as const)(
     "retains an attributed pending steer across a leaf advance before %s persistence",
     async (delivery) => {
+      installOutboxBrowserStorage();
       vi.stubGlobal("sessionStorage", createStorageMock());
       const sessionKey = "agent:main:participant-steer";
       const sendRunId = "bob-send";
@@ -157,7 +159,7 @@ describe("chat history cursor revalidation", () => {
         sender: { id: "bob-profile", name: "Bob Proof" },
       };
       expect(
-        admitStoredChatComposerQueueItem(
+        await admitStoredChatComposerQueueItem(
           state,
           captureChatOutboxAdmission(state, sessionKey, queued.agentId),
           queued,

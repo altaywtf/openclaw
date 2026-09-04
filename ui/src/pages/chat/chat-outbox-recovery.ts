@@ -145,7 +145,7 @@ class ChatOutboxRecovery extends LitElement {
       }
       const result =
         "id" in entry
-          ? restoreChatOutboxRecovery(host, entry, destination, before.revision ?? 0)
+          ? await restoreChatOutboxRecovery(host, entry, destination, before.revision ?? 0)
           : (
               await store.restoreDurableComposerRecovery(
                 durableScope,

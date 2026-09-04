@@ -8,7 +8,8 @@ import {
 } from "../../lib/chat/chat-queue-order.ts";
 import type { ChatAttachment, ChatQueueItem, HumanMention } from "../../lib/chat/chat-types.ts";
 import { trimHumanMentions } from "../../lib/chat/human-mentions.ts";
-import { hasUiSessionDefaults } from "../../lib/sessions/session-key.ts";
+import { migrateLegacyChatOutboxMetadata } from "../../lib/chat/outbox-metadata-store.runtime.ts";
+import { captureChatOutboxAdmission } from "../../lib/chat/outbox-store.ts";
 import { generateUUID } from "../../lib/uuid.ts";
 import { loadChatBranches } from "./chat-history-branches.ts";
 import { loadChatHistory } from "./chat-history.ts";
@@ -39,6 +40,7 @@ import {
   resolveDisplayedLeafEntryId,
 } from "./chat-send-request.ts";
 import { OFFLINE_QUEUE_STORAGE_ERROR } from "./chat-send-support.ts";
+import { getPendingChatPickerPatch } from "./chat-session.ts";
 import type { ChatState } from "./chat-state-contract.ts";
 import { storedChatOutboxScopeKey } from "./composer-persistence.ts";
 import { formatConnectError } from "./connect-error.ts";
@@ -140,7 +142,7 @@ export async function steerQueuedChatMessage(host: ChatHost, id: string): Promis
     setChatError(host, QUEUED_MESSAGE_STEER_CONFLICT_ERROR);
     return;
   }
-  const item = updateQueuedMessage(host, id, (entry) => ({ ...entry, queueMode: "steer" }));
+  const item = await updateQueuedMessage(host, id, (entry) => ({ ...entry, queueMode: "steer" }));
   if (!item) {
     setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
     return;
@@ -148,8 +150,10 @@ export async function steerQueuedChatMessage(host: ChatHost, id: string): Promis
   await retryQueuedChatMessage(host, id);
 }
 
-export const resumeStoredChatOutboxes = (host: ChatHost) =>
-  resumeStoredChatOutboxesDrain(host, chatOutboxDrainDependencies);
+export const resumeStoredChatOutboxes = async (host: ChatHost) => {
+  await migrateLegacyChatOutboxMetadata(host);
+  return resumeStoredChatOutboxesDrain(host, chatOutboxDrainDependencies);
+};
 
 export const flushChatQueueForEvent = (host: ChatHost) =>
   flushStoredChatOutbox(host, chatOutboxDrainDependencies);
@@ -165,11 +169,11 @@ export const retryReconnectableQueuedChatSends = resumeStoredChatOutboxes;
  */
 type ChatQueueMoveResult = "moved" | "rejected" | "noop";
 
-export function moveQueuedChatMessage(
+export async function moveQueuedChatMessage(
   host: ChatHost,
   id: string,
   toIndex: number,
-): ChatQueueMoveResult {
+): Promise<ChatQueueMoveResult> {
   const owner = chatOutboxOwner(host);
   const located = owner.locate(host, id);
   if (!located || !isMovableChatQueueItem(located.item)) {
@@ -216,7 +220,7 @@ export function moveQueuedChatMessage(
   if (moves.length === 0) {
     return "noop";
   }
-  const applied = updateQueuedMessagesForSession(
+  const applied = await updateQueuedMessagesForSession(
     host,
     moves.map((moved) => ({
       id: moved.id,
@@ -232,6 +236,9 @@ export function moveQueuedChatMessage(
 
 export async function retryQueuedChatMessage(host: ChatHost, id: string) {
   const item = host.chatQueue.find((entry) => entry.id === id);
+  const pendingSettings = item
+    ? getPendingChatPickerPatch(host, item.sessionKey ?? host.sessionKey, item.agentId)
+    : undefined;
   const retriesFailedDelivery = item?.sendState === "failed" && !item.localCommandName;
   const retriesUnconfirmed =
     item?.sendState === "unconfirmed" && Boolean(item.sendRunId) && !item.localCommandName;
@@ -255,8 +262,12 @@ export async function retryQueuedChatMessage(host: ChatHost, id: string) {
   }
   if (!located.durable) {
     const wasVolatile = isVolatileQueuedMessage(host, item.id);
-    const admission = { scope: located.scope, awaitingDefaults: !hasUiSessionDefaults(host) };
-    if (!admitQueuedMessageForSession(host, admission, item)) {
+    const admission = captureChatOutboxAdmission(
+      host,
+      located.scope.sessionKey,
+      located.scope.agentId,
+    );
+    if (!(await admitQueuedMessageForSession(host, admission, item))) {
       if (
         wasVolatile &&
         !item.localCommandName &&
@@ -281,7 +292,7 @@ export async function retryQueuedChatMessage(host: ChatHost, id: string) {
       return;
     }
   }
-  const retry = updateQueuedMessage(host, id, (entry) =>
+  const retry = await updateQueuedMessage(host, id, (entry) =>
     resetRetryState(entry, reconnectSafeQueuedSendState(host)),
   );
   if (!retry) {
@@ -303,6 +314,7 @@ export async function retryQueuedChatMessage(host: ChatHost, id: string) {
     explicitAdmission
       ? {
           routingSessionKey: host.sessionKey,
+          ...(pendingSettings ? { pendingSettings } : {}),
           ...(retriesFailedDelivery ? { allowActiveRunSend: true } : {}),
         }
       : undefined,

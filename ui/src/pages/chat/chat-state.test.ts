@@ -101,7 +101,7 @@ describe("canonical session message recovery", () => {
     });
   }
 
-  it("reconciles live approval events for the selected session", () => {
+  it("reconciles live approval events for the selected session", async () => {
     const { state } = createSessionEventState();
     const approval = {
       id: "plugin:approval-live",
@@ -205,7 +205,7 @@ describe("canonical session message recovery", () => {
     }
   });
 
-  it("rejects envelope-only sequence for an incomplete imported user identity", () => {
+  it("rejects envelope-only sequence for an incomplete imported user identity", async () => {
     const { state } = createSessionEventState({ connected: false });
 
     handlePageGatewayEvent(state, {
@@ -226,7 +226,7 @@ describe("canonical session message recovery", () => {
     expect(state.chatMessages).toEqual([]);
   });
 
-  it("keeps the persisted sequence for an incomplete imported user identity", () => {
+  it("keeps the persisted sequence for an incomplete imported user identity", async () => {
     const { state } = createSessionEventState({ connected: false });
 
     handlePageGatewayEvent(state, {
@@ -296,7 +296,7 @@ describe("canonical session message recovery", () => {
     },
   );
 
-  it("retires the complete transient projection when the durable terminal arrives", () => {
+  it("retires the complete transient projection when the durable terminal arrives", async () => {
     const runId = "active-run";
     const siblingRunId = "sibling-run";
     const finalText = "The durable terminal reply.";
@@ -533,7 +533,7 @@ describe("canonical session message recovery", () => {
     },
   );
 
-  it("preserves repeated commentary and distinct answers within the same active run", () => {
+  it("preserves repeated commentary and distinct answers within the same active run", async () => {
     const runId = "repeated-run";
     const text = "Checking the workspace.";
     const { state } = createSessionEventState({
@@ -600,7 +600,7 @@ describe("canonical session message recovery", () => {
     expect(state.chatStreamSegments.filter((segment) => segment.itemId)).toHaveLength(1);
   });
 
-  it("keeps cumulative assistant output split across an authoritative steer", () => {
+  it("keeps cumulative assistant output split across an authoritative steer", async () => {
     const activeRunId = "active-run";
     const steerRunId = "steer-request";
     const originalPrompt = {
@@ -854,7 +854,7 @@ describe("canonical session message recovery", () => {
     ]);
   });
 
-  it("keeps the owned local prompt before an early durable reply after placement abandonment", () => {
+  it("keeps the owned local prompt before an early durable reply after placement abandonment", async () => {
     const runId = "local-placement-run-2";
     const promptText = "Resume locally 2.";
     const replyText = "Exactly one local Gateway response 2.";
@@ -963,7 +963,7 @@ describe("canonical session message recovery", () => {
       // in session-placement.move.e2e.test.ts; this boundary is before either.
       expect(renderedTranscript(state)).toEqual(expected);
     } finally {
-      removeQueuedMessage(state, "placement-local-send-2");
+      await removeQueuedMessage(state, "placement-local-send-2");
     }
   });
 
@@ -1612,7 +1612,7 @@ describe("canonical session message recovery", () => {
     ]);
   });
 
-  it("does not reload for a background run's message-less final", () => {
+  it("does not reload for a background run's message-less final", async () => {
     const request = vi.fn();
     const { state } = createSessionEventState({
       chatRunId: "foreground-run",
@@ -1637,7 +1637,7 @@ describe("canonical session message recovery", () => {
     expect(state.chatStreamStartedAt).toBe(123);
   });
 
-  it("does not reload for a yielded message-less final", () => {
+  it("does not reload for a yielded message-less final", async () => {
     const runId = "yielded-run";
     const request = vi.fn();
     const { state } = createSessionEventState({
@@ -1660,7 +1660,7 @@ describe("canonical session message recovery", () => {
     expect(request).not.toHaveBeenCalled();
   });
 
-  it("keeps the live final projection without an unnecessary history reload", () => {
+  it("keeps the live final projection without an unnecessary history reload", async () => {
     const runId = "run-with-live-terminal-message";
     const prompt = {
       role: "user",
@@ -1750,7 +1750,7 @@ describe("canonical session message recovery", () => {
     ]);
   });
 
-  it("keeps an ordinary queued user after the active run assistant", () => {
+  it("keeps an ordinary queued user after the active run assistant", async () => {
     const activeRunId = "active-run";
     const originalPrompt = {
       role: "user",
@@ -1830,7 +1830,7 @@ describe("canonical session message recovery", () => {
     expect(getChatSessionProjection(state).messages).toEqual(state.chatMessages);
   });
 
-  it("does not rebind an unrelated run from a persisted steer", () => {
+  it("does not rebind an unrelated run from a persisted steer", async () => {
     const { state } = createSessionEventState({
       connected: false,
       chatMessages: [],
@@ -1867,7 +1867,7 @@ describe("canonical session message recovery", () => {
     expect(state.chatStreamSegments).toEqual([]);
   });
 
-  it("keeps pre-steer output above an earlier ordinary queued user", () => {
+  it("keeps pre-steer output above an earlier ordinary queued user", async () => {
     const activeRunId = "active-run";
     const originalPrompt = {
       role: "user",
@@ -1968,7 +1968,7 @@ describe("canonical session message recovery", () => {
     ]);
   });
 
-  it("keeps a previous run final before a newer active user turn", () => {
+  it("keeps a previous run final before a newer active user turn", async () => {
     const previousUser = {
       role: "user",
       content: [{ type: "text", text: "What are groups?" }],
@@ -2036,7 +2036,7 @@ describe("canonical session message recovery", () => {
     expect(state.chatStream).toBe("Checking external sessions...");
   });
 
-  it("leaves the active run assistant message on the terminal stream path", () => {
+  it("leaves the active run assistant message on the terminal stream path", async () => {
     const currentUser = {
       role: "user",
       content: [{ type: "text", text: "Current prompt" }],
@@ -2132,7 +2132,7 @@ describe("canonical session message recovery", () => {
     ]);
   });
 
-  it("drops pre-reset live and pending messages before accepting a new session turn", () => {
+  it("drops pre-reset live and pending messages before accepting a new session turn", async () => {
     const retireSessionCompanion = vi.fn();
     const pendingUser = {
       role: "user",
@@ -2182,7 +2182,7 @@ describe("canonical session message recovery", () => {
     });
   });
 
-  it("does not clear the selected transcript when another agent resets", () => {
+  it("does not clear the selected transcript when another agent resets", async () => {
     const retireSessionCompanion = vi.fn();
     const selectedUser = {
       role: "user",
@@ -2211,7 +2211,7 @@ describe("canonical session message recovery", () => {
     expect(retireSessionCompanion).toHaveBeenCalledExactlyOnceWith("agent:other:main", "other");
   });
 
-  it("retires current checkout presentation for a structural event", () => {
+  it("retires current checkout presentation for a structural event", async () => {
     const listBranches = vi.fn(() => new Promise<never>(() => {}));
     const { state } = createSessionEventState({
       chatBranches: [
@@ -2265,7 +2265,7 @@ describe("canonical session message recovery", () => {
     expect(state.chatBranchesSessionKey).toBe("agent:main:main");
   });
 
-  it("keeps the routed row when a hidden pane observes its archive first", () => {
+  it("keeps the routed row when a hidden pane observes its archive first", async () => {
     const archivedKey = "agent:main:dashboard:archived";
     const sharedHost = makeChatHost({
       sessionKey: archivedKey,
@@ -2303,7 +2303,7 @@ describe("canonical session message recovery", () => {
     ]);
   });
 
-  it("does not mistake identity-only message invalidation for a session reset", () => {
+  it("does not mistake identity-only message invalidation for a session reset", async () => {
     const selectedUser = {
       role: "user",
       content: [{ type: "text", text: "Keep this pending transcript" }],
@@ -2556,7 +2556,7 @@ describe("ChatStateController render lifecycle", () => {
     } as unknown as ApplicationContext;
   }
 
-  it("owns attachment views in Files without replacing Detail content", () => {
+  it("owns attachment views in Files without replacing Detail content", async () => {
     const state = createPageState(
       createPageContext(),
       { invalidate: vi.fn(), afterCommit: () => () => {} },
@@ -2602,7 +2602,7 @@ describe("ChatStateController render lifecycle", () => {
     expect(state.sidebarContent).toBe(detailContent);
   });
 
-  it("keeps the active observer digest when another run streams in the same session", () => {
+  it("keeps the active observer digest when another run streams in the same session", async () => {
     const projectedDigest = {
       sessionKey: "agent:main:current",
       runId: "run-1",
@@ -2630,7 +2630,7 @@ describe("ChatStateController render lifecycle", () => {
     expect(state.observerDigest).toBe(projectedDigest);
   });
 
-  it("rejects a run-less observer digest during an identified active run", () => {
+  it("rejects a run-less observer digest during an identified active run", async () => {
     const projectedDigest = {
       sessionKey: "agent:main:current",
       runId: "run-1",
@@ -2663,7 +2663,7 @@ describe("ChatStateController render lifecycle", () => {
     expect(requestUpdate).not.toHaveBeenCalled();
   });
 
-  it("accepts only the row-active observer run when attaching mid-run", () => {
+  it("accepts only the row-active observer run when attaching mid-run", async () => {
     const projectedDigest = {
       sessionKey: "agent:main:current",
       runId: "r1",
@@ -2711,7 +2711,7 @@ describe("ChatStateController render lifecycle", () => {
     expect(requestUpdate).toHaveBeenCalledOnce();
   });
 
-  it("accepts global observer digests only from the selected agent", () => {
+  it("accepts global observer digests only from the selected agent", async () => {
     const requestUpdate = vi.fn();
     const state = createObserverState({
       sessionKey: "global",
@@ -2744,7 +2744,7 @@ describe("ChatStateController render lifecycle", () => {
     expect(requestUpdate).toHaveBeenCalledOnce();
   });
 
-  it("keeps a fresher selected-agent digest when reconnect replays stale global events", () => {
+  it("keeps a fresher selected-agent digest when reconnect replays stale global events", async () => {
     const requestUpdate = vi.fn();
     const state = createObserverState({
       sessionKey: "global",
@@ -2794,7 +2794,7 @@ describe("ChatStateController render lifecycle", () => {
     expect(requestUpdate).not.toHaveBeenCalled();
   });
 
-  it("reconciles a selected global alias with its scoped canonical row after reconnect", () => {
+  it("reconciles a selected global alias with its scoped canonical row after reconnect", async () => {
     const requestUpdate = vi.fn();
     const state = createObserverState({
       sessionKey: "agent:work:main",
@@ -2894,7 +2894,7 @@ describe("ChatStateController render lifecycle", () => {
     expect(selectedChatSessionRow(state)?.key).toBe(expectedKey);
   });
 
-  it("tracks waiting approval only for the selected session until resolution", () => {
+  it("tracks waiting approval only for the selected session until resolution", async () => {
     const requestUpdate = vi.fn();
     const state = {
       sessionKey: "agent:main:current",
@@ -2960,7 +2960,7 @@ describe("ChatStateController render lifecycle", () => {
     expect(state.waitingApprovalStatuses.size).toBe(0);
   });
 
-  it("skips no-op assistant invalidation while tool changes render on the next frame", () => {
+  it("skips no-op assistant invalidation while tool changes render on the next frame", async () => {
     const requestAnimationFrame = vi
       .spyOn(globalThis, "requestAnimationFrame")
       .mockImplementation(() => 1);
@@ -2990,7 +2990,7 @@ describe("ChatStateController render lifecycle", () => {
     expect(requestUpdate).not.toHaveBeenCalled();
   });
 
-  it("coalesces stream invalidations into one animation frame", () => {
+  it("coalesces stream invalidations into one animation frame", async () => {
     let nextFrame = 1;
     const frames = new Map<number, FrameRequestCallback>();
     vi.spyOn(globalThis, "requestAnimationFrame").mockImplementation((callback) => {
@@ -3042,7 +3042,7 @@ describe("ChatStateController render lifecycle", () => {
     expect(state.chatStreamRenderFrame).toBeNull();
   });
 
-  it("projects hidden Gateway state without scheduling animation frames", () => {
+  it("projects hidden Gateway state without scheduling animation frames", async () => {
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
     const requestAnimationFrame = vi
       .spyOn(globalThis, "requestAnimationFrame")
@@ -3084,7 +3084,7 @@ describe("ChatStateController render lifecycle", () => {
     expect(requestUpdate).toHaveBeenCalledTimes(5);
   });
 
-  it("keeps every chat delta while batching their render", () => {
+  it("keeps every chat delta while batching their render", async () => {
     let scheduledFrame: FrameRequestCallback | undefined;
     vi.spyOn(globalThis, "requestAnimationFrame").mockImplementation((callback) => {
       scheduledFrame = callback;
@@ -3109,7 +3109,7 @@ describe("ChatStateController render lifecycle", () => {
     expect(requestUpdate).toHaveBeenCalledOnce();
   });
 
-  it("forces one PR-chips refresh per PR link seen in the live stream", () => {
+  it("forces one PR-chips refresh per PR link seen in the live stream", async () => {
     vi.spyOn(globalThis, "requestAnimationFrame").mockImplementation(() => 1);
     const refreshSessionPullRequests = vi.fn(() => Promise.resolve());
     const state = createStreamEventState({
@@ -3204,7 +3204,7 @@ describe("ChatStateController render lifecycle", () => {
     expect(effect).not.toHaveBeenCalled();
   });
 
-  it("fully tears down realtime Talk when its state owner disconnects", () => {
+  it("fully tears down realtime Talk when its state owner disconnects", async () => {
     const host = createControllerHost();
     const controller = new ChatStateController<ChatPageHost>(host);
     controller.hostConnected();
@@ -3245,7 +3245,7 @@ describe("ChatStateController render lifecycle", () => {
     expect(state.realtimeTalkCameraError).toBe(false);
   });
 
-  it("aborts attachment reads when a chat pane disconnects", () => {
+  it("aborts attachment reads when a chat pane disconnects", async () => {
     const host = createControllerHost();
     const controller = new ChatStateController<ChatPageHost>(host);
     const previousSignal = controller.attachmentReads.readSignal;
@@ -3333,7 +3333,7 @@ describe("ChatStateController render lifecycle", () => {
     expect(painted).not.toHaveBeenCalled();
   });
 
-  it("invalidates the render lifecycle when input history recall mutates the draft", () => {
+  it("invalidates the render lifecycle when input history recall mutates the draft", async () => {
     const requestUpdate = vi.fn();
     const host = createControllerHost({ requestUpdate });
     const controller = new ChatStateController<ChatPageHost>(host);
@@ -3364,7 +3364,7 @@ describe("ChatStateController render lifecycle", () => {
     expect(requestUpdate).toHaveBeenCalled();
   });
 
-  it("does not invalidate the render lifecycle when input history key is not handled", () => {
+  it("does not invalidate the render lifecycle when input history key is not handled", async () => {
     const requestUpdate = vi.fn();
     const host = createControllerHost({ requestUpdate });
     const controller = new ChatStateController<ChatPageHost>(host);
@@ -3448,7 +3448,7 @@ describe("session pull request refresh", () => {
       sessionKey: "agent:main:other",
       refresh: false,
     },
-  ])("$name", ({ text, activeRunId, runId, stream, sessionKey, refresh }) => {
+  ])("$name", async ({ text, activeRunId, runId, stream, sessionKey, refresh }) => {
     vi.useFakeTimers();
     const refreshSessionPullRequests = vi.fn(async () => undefined);
     const state = createFinalReplyState(refreshSessionPullRequests);
@@ -3471,15 +3471,18 @@ describe("session pull request refresh", () => {
     });
 
     if (refresh) {
-      expect(refreshSessionPullRequests).toHaveBeenCalledWith({ refresh: true });
+      await vi.waitFor(() =>
+        expect(refreshSessionPullRequests).toHaveBeenCalledWith({ refresh: true }),
+      );
     } else {
+      await Promise.resolve();
       expect(refreshSessionPullRequests).not.toHaveBeenCalled();
     }
   });
 });
 
 describe("image lightbox lifecycle", () => {
-  it("accepts only matching base64 video at the page boundary", () => {
+  it("accepts only matching base64 video at the page boundary", async () => {
     const context = {
       agents: { state: { agentsList: null }, ensureList: vi.fn(async () => null) },
       agentSelection: { state: { selectedId: "main" } },
@@ -3526,7 +3529,7 @@ describe("image lightbox lifecycle", () => {
     container.remove();
   });
 
-  it("invalidates immediately when beginning a deferred image open", () => {
+  it("invalidates immediately when beginning a deferred image open", async () => {
     const invalidate = vi.fn();
     const context = {
       agents: {
@@ -3571,7 +3574,7 @@ describe("image lightbox lifecycle", () => {
 });
 
 describe("resolveChatAvatarUrl", () => {
-  it("prefers the authenticated avatar blob over persisted and protected URLs", () => {
+  it("prefers the authenticated avatar blob over persisted and protected URLs", async () => {
     const state = {
       sessionKey: "agent:main:main",
       chatAvatarUrl: "blob:authenticated-avatar",

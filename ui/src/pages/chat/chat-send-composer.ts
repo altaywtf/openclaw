@@ -55,18 +55,7 @@ export function clearSubmittedComposerState(
   submittedMentions: readonly HumanMention[] | undefined,
   preserveBrowserAnnotations = false,
 ) {
-  const attachmentsUnchanged =
-    host.chatAttachments.length === submittedAttachments.length &&
-    host.chatAttachments.every(
-      (attachment, index) =>
-        attachmentSubmitSignature(attachment) ===
-        attachmentSubmitSignature(submittedAttachments[index]!),
-    );
-  if (
-    host.chatMessage !== submittedDraft ||
-    JSON.stringify(host.chatMentions ?? []) !== JSON.stringify(submittedMentions ?? []) ||
-    !attachmentsUnchanged
-  ) {
+  if (!ownsSubmittedComposerState(host, submittedDraft, submittedAttachments, submittedMentions)) {
     return {};
   }
   host.chatMessage = "";
@@ -80,6 +69,26 @@ export function clearSubmittedComposerState(
     previousDraft: submittedDraft,
     previousMentions: submittedMentions,
   };
+}
+
+export function ownsSubmittedComposerState(
+  host: ChatHost,
+  submittedDraft: string,
+  submittedAttachments: ChatAttachment[],
+  submittedMentions?: readonly HumanMention[],
+): boolean {
+  const attachmentsUnchanged =
+    host.chatAttachments.length === submittedAttachments.length &&
+    host.chatAttachments.every(
+      (attachment, index) =>
+        attachmentSubmitSignature(attachment) ===
+        attachmentSubmitSignature(submittedAttachments[index]!),
+    );
+  return (
+    (host.chatMessage !== submittedDraft ||
+      JSON.stringify(host.chatMentions ?? []) !== JSON.stringify(submittedMentions ?? []) ||
+      !attachmentsUnchanged) === false
+  );
 }
 
 export function snapshotChatAttachments(attachments: readonly ChatAttachment[]): ChatAttachment[] {
@@ -264,12 +273,12 @@ function strictComposerRestore(host: ChatHost, snapshot: PendingComposerSnapshot
   return { attachments, draft: snapshot.previousDraft != null && composerBlank };
 }
 
-export function cancelChatDelivery(
+export async function cancelChatDelivery(
   host: ChatHost,
   item: ChatQueueItem,
   snapshot: PendingComposerSnapshot,
-): void {
-  const removed = removeVisibleOrScopedQueuedMessageWithoutReleasing(
+): Promise<void> {
+  const removed = await removeVisibleOrScopedQueuedMessageWithoutReleasing(
     host,
     item.id,
     item.sessionKey,

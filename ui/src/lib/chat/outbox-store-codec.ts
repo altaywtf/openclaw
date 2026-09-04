@@ -76,7 +76,10 @@ function normalizeChatAttachment(value: unknown): ChatAttachment | null {
   return restored;
 }
 
-export function normalizeStoredQueueItem(value: unknown): ChatQueueItem | null {
+export function normalizeStoredQueueItem(
+  value: unknown,
+  recoverInterruptedSettings = true,
+): ChatQueueItem | null {
   if (!isRecord(value)) {
     return null;
   }
@@ -200,11 +203,13 @@ export function normalizeStoredQueueItem(value: unknown): ChatQueueItem | null {
   ) {
     item.sendState = entry.sendState;
   } else if (entry.sendState === "waiting-model") {
-    item.sendState = "failed";
-    item.sendError = INTERRUPTED_SETTINGS_WAIT_ERROR;
+    item.sendState = recoverInterruptedSettings ? "failed" : "waiting-model";
+    if (recoverInterruptedSettings) {
+      item.sendError = INTERRUPTED_SETTINGS_WAIT_ERROR;
+    }
   }
   const sendError = normalizeOptionalString(entry.sendError);
-  if (sendError) {
+  if (sendError && !(entry.sendState === "waiting-model" && recoverInterruptedSettings)) {
     item.sendError = sendError;
   }
   const sendRunId = normalizeOptionalString(entry.sendRunId);
@@ -258,7 +263,7 @@ export function normalizeStoredSession(value: unknown): StoredComposerSession | 
   }
   const normalizedQueue = Array.isArray(entry.queue)
     ? entry.queue
-        .map(normalizeStoredQueueItem)
+        .map((item) => normalizeStoredQueueItem(item))
         .filter((item): item is ChatQueueItem => item !== null)
     : undefined;
   // v1 writers used bounded tombstones. Consume them while reading legacy

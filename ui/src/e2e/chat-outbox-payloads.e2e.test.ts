@@ -28,16 +28,38 @@ const composerFor = (page: Page) =>
   paneFor(page).locator(".agent-chat__composer-combobox textarea");
 
 async function readQueue(page: Page): Promise<ChatQueueItem[]> {
-  return page.evaluate(() =>
-    Object.keys(sessionStorage)
-      .filter((key) => key.startsWith("openclaw.control.chatComposer.v4:"))
-      .flatMap((key) => {
-        const store = JSON.parse(sessionStorage.getItem(key)!) as {
-          sessions: Record<string, { queue?: ChatQueueItem[] }>;
-        };
-        return Object.values(store.sessions).flatMap((session) => session.queue ?? []);
-      }),
-  );
+  return page.evaluate(async () => {
+    const tabId = sessionStorage.getItem("openclaw.control.outboxTab.v1");
+    if (!tabId) {
+      return [];
+    }
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("openclaw-control-ui");
+      request.onsuccess = () => resolve(request.result);
+      request.addEventListener("error", () =>
+        reject(request.error ?? new Error("IndexedDB request failed")),
+      );
+    });
+    try {
+      const transaction = database.transaction("chatOutboxes");
+      const request = transaction.objectStore("chatOutboxes").getAll();
+      const documents = await new Promise<
+        Array<{ tabId?: string; sessions?: Record<string, { queue?: ChatQueueItem[] }> }>
+      >((resolve, reject) => {
+        request.onsuccess = () => resolve(request.result);
+        request.addEventListener("error", () =>
+          reject(request.error ?? new Error("IndexedDB request failed")),
+        );
+      });
+      return documents
+        .filter((document) => document.tabId === tabId)
+        .flatMap((document) =>
+          Object.values(document.sessions ?? {}).flatMap((session) => session.queue ?? []),
+        );
+    } finally {
+      database.close();
+    }
+  });
 }
 
 async function payloadCount(page: Page): Promise<number> {
@@ -58,6 +80,30 @@ async function payloadCount(page: Page): Promise<number> {
         request.onsuccess = () => resolve(request.result);
         request.addEventListener("error", () =>
           reject(request.error ?? new Error("IndexedDB request failed")),
+        );
+      });
+    } finally {
+      database.close();
+    }
+  });
+}
+
+async function clearOutboxMetadata(page: Page): Promise<void> {
+  await page.evaluate(async () => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("openclaw-control-ui");
+      request.onsuccess = () => resolve(request.result);
+      request.addEventListener("error", () =>
+        reject(request.error ?? new Error("IndexedDB request failed")),
+      );
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const transaction = database.transaction("chatOutboxes", "readwrite");
+        transaction.objectStore("chatOutboxes").clear();
+        transaction.oncomplete = () => resolve();
+        transaction.addEventListener("error", () =>
+          reject(transaction.error ?? new Error("IndexedDB transaction failed")),
         );
       });
     } finally {
@@ -130,6 +176,7 @@ suite.define(() => {
           );
           // Leave the app before replacing its metadata; no old writer races the legacy producer.
           await page.goto(`${suite.server.baseUrl}outbox-legacy-seed`);
+          await clearOutboxMetadata(page);
           const legacyKey = await page.evaluate(
             ({ item, sessionKey }) => {
               const currentKey = Object.keys(sessionStorage).find((key) =>
@@ -353,22 +400,26 @@ suite.define(() => {
     });
   });
 
-  it("retains the full composer without sending when a real IndexedDB upgrade is blocked", async () => {
+  it("retains a retryable submission without sending when a real IndexedDB upgrade is blocked", async () => {
     await suite.withPage({ serviceWorkers: "block" }, async ({ context, page }) => {
       const blocker = await context.newPage();
       await blocker.route("**/outbox-blocker", (route) =>
         route.fulfill({ contentType: "text/html", body: "Mock storage blocker" }),
       );
       await blocker.goto(`${suite.server.baseUrl}outbox-blocker`);
-      const connection = await blocker.evaluateHandle(
+      await blocker.evaluate(
         async () =>
-          new Promise<IDBDatabase>((resolve, reject) => {
+          new Promise<void>((resolve, reject) => {
             const request = indexedDB.open("openclaw-control-ui", 1);
             request.onupgradeneeded = () =>
               request.result
                 .createObjectStore("composerDrafts", { keyPath: "key" })
                 .createIndex("ownerKey", "ownerKey");
-            request.onsuccess = () => resolve(request.result);
+            request.onsuccess = () => {
+              (window as Window & { openclawOutboxBlocker?: IDBDatabase }).openclawOutboxBlocker =
+                request.result;
+              resolve();
+            };
             request.addEventListener("error", () =>
               reject(request.error ?? new Error("IndexedDB request failed")),
             );
@@ -388,16 +439,26 @@ suite.define(() => {
         .getByRole("alert")
         .filter({ hasText: "Browser attachment storage is unavailable" })
         .waitFor();
-      expect(await composerFor(page).inputValue()).toBe("Mock Gateway: retain on blocked storage");
-      expect(await paneFor(page).locator(".chat-attachment-thumb").count()).toBe(1);
+      expect(await composerFor(page).inputValue()).toBe("");
+      await paneFor(page)
+        .getByText("Mock Gateway: retain on blocked storage", { exact: true })
+        .waitFor();
+      await paneFor(page).getByText("Not sent", { exact: true }).waitFor();
+      await paneFor(page).getByText("Retry", { exact: true }).waitFor();
+      expect(
+        await page.evaluate(() =>
+          Object.keys(localStorage)
+            .filter((key) => key.startsWith("openclaw.control.chatPending.v1:"))
+            .map((key) => localStorage.getItem(key) ?? "")
+            .join("\n"),
+        ),
+      ).toContain("Mock Gateway: retain on blocked storage");
       await expectRequestCountStable(gateway, "chat.send", 0);
-      expect(await readQueue(page)).toEqual([]);
-      await connection.evaluate((database) => database.close());
-      await connection.dispose();
+      await context.close();
     });
   });
 
-  it("isolates independent tabs and gives a duplicate its own bytes without replaying the logical submission", async () => {
+  it("keeps duplicate tabs isolated while the source tab owns its outbox", async () => {
     await suite.withPage({ serviceWorkers: "block" }, async ({ context, page }) => {
       const gateway = await installMockGateway(page, {
         historyMessages: history,
@@ -433,38 +494,17 @@ suite.define(() => {
       });
       await duplicate.goto(`${suite.server.baseUrl}chat`, { waitUntil: "domcontentloaded" });
       await duplicateGateway.setOnline(true);
-      await expect.poll(async () => (await readQueue(duplicate))[0]?.sendState).toBe("unconfirmed");
+      await expect.poll(async () => (await readQueue(duplicate)).length).toBe(0);
       await expectRequestCountStable(duplicateGateway, "chat.send", 0);
-      const copied = (await readQueue(duplicate))[0]!;
-      expect(copied.id).toBe(original.id);
-      expect(copied.sendRunId).toBe(original.sendRunId);
-      expect(copied.attachmentPayload?.key).not.toBe(original.attachmentPayload?.key);
-      await expect.poll(() => payloadCount(page)).toBe(2);
-      const latePopup = context.waitForEvent("page");
-      await page.evaluate(() => window.open("about:blank"));
-      const lateDuplicate = await latePopup;
-      // Retiring the source releases only its own bundle, preserving the live copy.
-      await paneFor(page)
-        .getByRole("button", { name: /Remove queued message/ })
-        .click();
-      await expect.poll(() => payloadCount(page)).toBe(1);
-      expect((await readQueue(duplicate))[0]?.attachmentPayload?.key).toBe(
-        copied.attachmentPayload?.key,
-      );
-      const lateGateway = await installMockGateway(lateDuplicate, {
-        historyMessages: history,
-        sessionInfo: { key: "main", hasActiveRun: false, status: "done" },
+      expect((await readQueue(page))[0]).toMatchObject({
+        id: original.id,
+        sendRunId: original.sendRunId,
+        attachmentPayload: original.attachmentPayload,
       });
-      await lateDuplicate.goto(`${suite.server.baseUrl}chat`, { waitUntil: "domcontentloaded" });
-      await lateGateway.setOnline(true);
-      await expect
-        .poll(async () => (await readQueue(lateDuplicate))[0]?.attachmentStorageError)
-        .toBe("missing");
-      await expectRequestCountStable(lateGateway, "chat.send", 0);
-      expect((await readQueue(lateDuplicate))[0]?.sendRunId).toBe(original.sendRunId);
+      await expect.poll(() => payloadCount(page)).toBe(1);
     });
   });
-  it("keeps source Blob bytes when a duplicate removes its row before lock-confirmed adoption", async () => {
+  it("keeps a duplicate empty before and after its source-tab claim is denied", async () => {
     await suite.withPage(
       { serviceWorkers: "block", locale: "en-US", viewport: { width: 1280, height: 900 } },
       async ({ context, page }) => {
@@ -575,16 +615,7 @@ suite.define(() => {
               marker: sessionStorage.getItem("openclaw.control.outboxTab.v1"),
             })),
           ).toEqual({ name: sourceLockName, granted: "false", marker: reference.tabId });
-          expect((await readQueue(duplicate))[0]?.attachmentPayload).toEqual(reference);
           const row = paneFor(duplicate).locator(".chat-queue__item");
-          await expect.poll(() => row.count()).toBe(1);
-          await duplicate.screenshot({
-            path: path.join(suite.artifactDir, "duplicate-before-claim-removal.png"),
-            fullPage: true,
-            animations: "disabled",
-          });
-          await row.getByRole("button", { name: "Remove queued message", exact: true }).click();
-          await expect.poll(async () => (await readQueue(duplicate)).length).toBe(0);
           await expect.poll(() => row.count()).toBe(0);
           await duplicate.evaluate(
             (eventName) => window.dispatchEvent(new Event(eventName)),
@@ -604,6 +635,7 @@ suite.define(() => {
               }, reference.tabId),
             )
             .toBe(true);
+          await expect.poll(async () => (await readQueue(duplicate)).length).toBe(0);
           await expectRequestCountStable(duplicateGateway, "chat.send", 0);
           expect(await sourceOwnsLock()).toBe(true);
           expect((await readQueue(page))[0]).toMatchObject({
@@ -614,7 +646,7 @@ suite.define(() => {
           });
           await page.bringToFront();
           await page.screenshot({
-            path: path.join(suite.artifactDir, "source-after-duplicate-removal.png"),
+            path: path.join(suite.artifactDir, "source-after-duplicate-claim.png"),
             fullPage: true,
             animations: "disabled",
           });
@@ -651,7 +683,7 @@ suite.define(() => {
     );
   });
 
-  it("upgrades inline queues and the existing draft database, then edits and cancels without touching a newer composer", async () => {
+  it("recovers inline queues while upgrading the existing draft database, then edits and cancels without touching a newer composer", async () => {
     await suite.withPage({ serviceWorkers: "block" }, async ({ page }) => {
       await page.route("**/outbox-upgrade", (route) =>
         route.fulfill({ contentType: "text/html", body: "Mock upgrade seed" }),
@@ -744,7 +776,22 @@ suite.define(() => {
         .poll(() => composerFor(page).inputValue())
         .toBe("Mock Gateway: old durable draft");
       await expect.poll(() => paneFor(page).locator(".chat-attachment-thumb").count()).toBe(1);
-      expect((await readQueue(page))[0]?.sendRunId).toBe("legacy-idempotency");
+      expect(await readQueue(page)).toEqual([]);
+      await composerFor(page).fill("");
+      await paneFor(page).getByRole("button", { name: "Remove attachment" }).click();
+      await expect.poll(() => composerFor(page).inputValue()).toBe("");
+      await expect.poll(() => paneFor(page).locator(".chat-attachment-thumb").count()).toBe(0);
+      const notice = paneFor(page).locator(".chat-outbox-recovery");
+      await notice.locator("summary").click();
+      await notice.getByText("Mock Gateway: upgrade this inline queue", { exact: true }).waitFor();
+      await notice.getByRole("button", { name: "Restore here for review" }).click();
+      const dialog = page.locator("openclaw-modal-dialog");
+      const confirm = dialog.getByRole("button", { name: "Restore here for review" });
+      await confirm.waitFor();
+      await confirm.click();
+      await expect
+        .poll(async () => (await readQueue(page))[0]?.sendRunId)
+        .toBe("legacy-idempotency");
       await gateway.setOnline(false);
       await waitForControlUiGatewayReconnecting(page);
       await composerFor(page).fill("Mock Gateway: newer independent draft");
@@ -761,7 +808,7 @@ suite.define(() => {
         .toBe("Mock Gateway: edited with original bytes");
       expect((await readQueue(page))[0]?.attachmentPayload).toBeDefined();
       expect(await composerFor(page).inputValue()).toBe("Mock Gateway: newer independent draft");
-      expect(await paneFor(page).locator(".chat-attachment-thumb").count()).toBe(1);
+      expect(await paneFor(page).locator(".chat-attachment-thumb").count()).toBe(0);
       await expect.poll(() => payloadCount(page)).toBe(1);
       await row.getByRole("button", { name: "Remove queued message", exact: true }).click();
       await expect.poll(() => payloadCount(page)).toBe(0);
@@ -770,7 +817,7 @@ suite.define(() => {
     });
   });
 
-  it("does not clear newer composer input while native Blob admission is waiting", async () => {
+  it("hands off attachments before native Blob admission and keeps the next send separate", async () => {
     await suite.withPage({ serviceWorkers: "block" }, async ({ page }) => {
       const gateway = await installMockGateway(page, {
         historyMessages: history,
@@ -784,7 +831,7 @@ suite.define(() => {
       await stage(page, "Mock Gateway: captured before storage wait");
       const gate = await page.evaluateHandle(async () => {
         const database = await new Promise<IDBDatabase>((resolve, reject) => {
-          const request = indexedDB.open("openclaw-control-ui", 2);
+          const request = indexedDB.open("openclaw-control-ui");
           request.onsuccess = () => resolve(request.result);
           request.addEventListener("error", () =>
             reject(request.error ?? new Error("IndexedDB request failed")),
@@ -809,9 +856,17 @@ suite.define(() => {
         };
       });
       await paneFor(page).getByRole("button", { name: "Send message", exact: true }).click();
-      await composerFor(page).fill("Mock Gateway: newer input must survive");
-      expect(await readQueue(page)).toEqual([]);
+      await expect.poll(() => composerFor(page).inputValue()).toBe("");
+      await expect.poll(() => paneFor(page).locator(".chat-attachment-thumb").count()).toBe(0);
+      await composerFor(page).fill("Mock Gateway: independent second prompt");
+      await paneFor(page).getByRole("button", { name: "Send message", exact: true }).click();
+      await expect.poll(() => composerFor(page).inputValue()).toBe("");
+      const pending = paneFor(page).locator(".chat-queue__item");
+      await expect.poll(() => pending.count()).toBe(2);
+      await pending.filter({ hasText: "Mock Gateway: captured before storage wait" }).waitFor();
+      await pending.filter({ hasText: "Mock Gateway: independent second prompt" }).waitFor();
       await expectRequestCountStable(gateway, "chat.send", 0);
+      await gateway.deferNext("chat.send");
       await gate.evaluate((value) => value.release());
       await gate.dispose();
       const sent = await gateway.waitForRequest("chat.send");
@@ -828,8 +883,14 @@ suite.define(() => {
           ],
         }),
       );
-      expect(await composerFor(page).inputValue()).toBe("Mock Gateway: newer input must survive");
-      expect(await paneFor(page).locator(".chat-attachment-thumb").count()).toBe(1);
+      await gateway.resolveDeferred("chat.send");
+      await gateway.emitChatFinal({
+        runId: String((sent.params as { idempotencyKey?: string }).idempotencyKey),
+        text: "Mock Gateway: first prompt complete",
+      });
+      const second = await gateway.waitForRequest("chat.send", { after: 1 });
+      expect(second.params).toMatchObject({ message: "Mock Gateway: independent second prompt" });
+      expect((second.params as { attachments?: unknown }).attachments).toBeUndefined();
     });
   });
   it("keeps another credential owner isolated and retains a corrupt bundle without sending partial content", async () => {
