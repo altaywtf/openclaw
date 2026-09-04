@@ -186,7 +186,7 @@ describe("renderProviderProfiles", () => {
     expect(onProfileOrderChange).not.toHaveBeenCalled();
   });
 
-  it("shows automatic priority when a shared order spans provider routes", () => {
+  it("identifies managed priority when a shared order spans provider routes", () => {
     const onProfileOrderChange = vi.fn();
     const container = mount(
       renderProviderProfiles(
@@ -211,7 +211,7 @@ describe("renderProviderProfiles", () => {
     expect(container.querySelectorAll(".model-providers__profile-grip")).toHaveLength(0);
     expect(container.querySelectorAll(".model-providers__profile-grip-spacer")).toHaveLength(2);
     expect(container.textContent).toContain(
-      "Priority rotates automatically across provider routes",
+      "Priority is inherited or managed across provider routes",
     );
     expect(onProfileOrderChange).not.toHaveBeenCalled();
   });

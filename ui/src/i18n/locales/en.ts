@@ -4561,7 +4561,7 @@ export const en: TranslationMap & {
       reorderHint: "drag to set priority",
       priorityManagedByProvider: "Priority is managed by provider configuration.",
       priorityManagedByAuth: "Priority is managed by auth.order.",
-      partialOrder: "Priority rotates automatically across provider routes.",
+      partialOrder: "Priority is inherited or managed across provider routes.",
       partialStoredOrder: "Reset the saved order before changing priority.",
       resetOrder: "Reset",
       addAccount: "Add account",

@@ -9,6 +9,7 @@ import type { AuthHealthSummary } from "../../agents/auth-health.js";
 import {
   replaceRuntimeAuthProfileStoreSnapshots,
   type AuthProfileStore,
+  type RuntimeAuthProfileStore,
 } from "../../agents/auth-profiles.js";
 import { NON_ENV_SECRETREF_MARKER } from "../../agents/model-auth-markers.js";
 import type { OpenClawConfig } from "../../config/config.js";
@@ -247,7 +248,7 @@ const requireRecord = createRequireRecord("record", "expected-non-array-record")
 let preparedAuthStore: AuthProfileStore = { version: 1, profiles: {} };
 let preparedMetadataSnapshot: unknown;
 
-function setPreparedAuthStore(store: AuthProfileStore): void {
+function setPreparedAuthStore(store: RuntimeAuthProfileStore): void {
   preparedAuthStore = store;
   replaceRuntimeAuthProfileStoreSnapshots([{ agentDir: "/tmp/agent", store }]);
 }
@@ -640,36 +641,40 @@ describe("models.authStatus", () => {
     expect(result.providers[0]?.profiles[0]?.logoutSupported).toBe(true);
   });
 
-  it("projects profile labels, last use, and explicit priority", async () => {
-    setPreparedAuthStore({
-      version: 1,
-      profiles: {
-        "openai:default": {
-          type: "oauth",
-          provider: "openai",
-          access: "access",
-          refresh: "refresh",
-          expires: 1_000_000,
-          email: "owner@example.com",
-          displayName: "Work account",
+  it.each([false, true])(
+    "projects explicit priority with local reset ownership %s",
+    async (localOrderStored) => {
+      setPreparedAuthStore({
+        version: 1,
+        profiles: {
+          "openai:default": {
+            type: "oauth",
+            provider: "openai",
+            access: "access",
+            refresh: "refresh",
+            expires: 1_000_000,
+            email: "owner@example.com",
+            displayName: "Work account",
+          },
         },
-      },
-      order: { openai: ["openai:default"] },
-      usageStats: { "openai:default": { lastUsed: 42 } },
-    });
-    mocks.buildAuthHealthSummary.mockReturnValue(createOpenAiCodexOauthHealthSummary());
+        order: { openai: ["openai:default"] },
+        runtimeLocalOrderProviderIds: localOrderStored ? ["openai"] : [],
+        usageStats: { "openai:default": { lastUsed: 42 } },
+      });
+      mocks.buildAuthHealthSummary.mockReturnValue(createOpenAiCodexOauthHealthSummary());
 
-    const provider = await firstAuthStatusProvider();
+      const provider = await firstAuthStatusProvider();
 
-    expect(provider?.profileOrder).toEqual(["openai:default"]);
-    expect(provider?.profileOrderStored).toBe(true);
-    expect(provider?.profiles[0]).toMatchObject({
-      displayName: "Work account",
-      email: "owner@example.com",
-      lastUsedAt: 42,
-      source: "saved",
-    });
-  });
+      expect(provider?.profileOrder).toEqual(["openai:default"]);
+      expect(provider?.profileOrderStored === true).toBe(localOrderStored);
+      expect(provider?.profiles[0]).toMatchObject({
+        displayName: "Work account",
+        email: "owner@example.com",
+        lastUsedAt: 42,
+        source: "saved",
+      });
+    },
+  );
 
   it("omits profile identity for read-only clients", async () => {
     setPreparedAuthStore({

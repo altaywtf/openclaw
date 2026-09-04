@@ -1,6 +1,9 @@
 // Model auth status methods report provider credential health, profile expiry,
 // usage windows, cleanup actions, and auth-state refreshes.
-import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
+import {
+  findNormalizedProviderKey,
+  normalizeProviderId,
+} from "@openclaw/model-catalog-core/provider-id";
 import { asDateTimestampMs } from "@openclaw/normalization-core/number-coercion";
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
 import { tryResolveAmbientOwnerAgentId } from "../../agents/agent-scope-config.js";
@@ -303,6 +306,12 @@ function mapProvider(
     providerAuthKey: authProviderKey,
   });
   const runtimeStore: RuntimeAuthProfileStore = store;
+  const storedOrderKey =
+    findNormalizedProviderKey(store.order, authProviderKey) ??
+    findNormalizedProviderKey(store.order, providerKey);
+  const localOrderStored =
+    storedOrderKey !== undefined &&
+    runtimeStore.runtimeLocalOrderProviderIds?.includes(storedOrderKey);
   const localProfileIds = new Set(
     runtimeStore.runtimeLocalProfileIds ??
       Object.keys(store.profiles).filter((profileId) => !externalProfileIds.has(profileId)),
@@ -380,7 +389,7 @@ function mapProvider(
       };
     }),
     ...(profileOrder.order !== undefined ? { profileOrder: profileOrder.order } : {}),
-    ...(profileOrder.fromStore ? { profileOrderStored: true } : {}),
+    ...(profileOrder.fromStore && localOrderStored ? { profileOrderStored: true } : {}),
     ...(providerOrderLocked
       ? { profileOrderLocked: "provider-config" as const }
       : configuredOrderLocked
