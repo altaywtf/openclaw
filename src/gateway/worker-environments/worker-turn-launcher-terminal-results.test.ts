@@ -1,3 +1,5 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -8,13 +10,20 @@ import {
   buildAgentRunTerminalReplySnapshot,
   type AgentRunTerminalReplySnapshot,
 } from "../../agents/agent-run-terminal-reply.js";
+import { runEmbeddedAgentEntry } from "../../agents/embedded-agent-runner/run-entry.js";
+import { runEmbeddedAgent } from "../../agents/embedded-agent-runner/run.js";
 import { resolveModelFallbackError } from "../../agents/failover-error.js";
 import { runWithModelFallback } from "../../agents/model-fallback-runner.js";
+import { installSessionPlacementAdmissionProvider } from "../../agents/session-placement-admission.js";
 import { makeAgentAssistantMessage } from "../../agents/test-helpers/agent-message-fixtures.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { claimAgentRunContext, releaseAgentRunContext } from "../../infra/agent-run-registry.js";
 import type { SpawnResult } from "../../process/exec.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
+import {
+  getGeneratedMediaTaskIdsForSessionKey,
+  hasNewGeneratedMediaTaskForSessionKey,
+} from "../../tasks/task-status-access.js";
 import { NodeWorkerWorkspaceTransferError } from "../../worker/node-workspace-transfer-protocol.js";
 import type { WorkerConnectionIdentity } from "./connection-identity.js";
 import { hashWorkerCredential } from "./credential.js";
@@ -25,6 +34,7 @@ import { createWorkerEnvironmentService } from "./service.js";
 import * as support from "./service.test-support.js";
 import { createWorkerEnvironmentStore } from "./store.js";
 import type { WorkerTunnelHandle } from "./tunnel-contract.js";
+import { WorkerTurnExecutionError } from "./worker-turn-failure.js";
 import {
   ENVIRONMENT_ID,
   MANIFEST_REF,
@@ -81,14 +91,30 @@ describe("worker turn launcher terminal results", () => {
   beforeEach(setupWorkerTurnLauncherTest);
   afterEach(cleanupWorkerTurnLauncherTest);
 
-  it.each([
+  it.each<{
+    stopReason: "stop" | "error";
+    reconciliationFails: boolean;
+    cleanupFailure?: string;
+    providerFailure?: true;
+  }>([
     { stopReason: "stop", reconciliationFails: false },
     { stopReason: "error", reconciliationFails: false },
     { stopReason: "stop", reconciliationFails: true },
     { stopReason: "error", reconciliationFails: true },
-  ] as const)(
-    "retains the ACKed finishing error after assistant $stopReason (reconciliation fails: $reconciliationFails)",
-    async ({ stopReason, reconciliationFails }) => {
+    { stopReason: "error", reconciliationFails: false, providerFailure: true },
+    ...[
+      "Browser cleanup timed out",
+      "Browser cleanup failed: rate limit exceeded",
+      "Browser disposal failed",
+    ].map((cleanupFailure) => ({
+      stopReason: "stop" as const,
+      reconciliationFails: false,
+      cleanupFailure,
+    })),
+  ])(
+    "retains the ACKed finishing outcome after assistant $stopReason (reconciliation fails: $reconciliationFails; cleanup: $cleanupFailure; provider fallback: $providerFailure)",
+    async ({ stopReason, reconciliationFails, cleanupFailure, providerFailure }) => {
+      const outerFallback = cleanupFailure !== undefined || providerFailure === true;
       seedActivePlacement();
       const grant = credential();
       const environment = attachedEnvironment();
@@ -127,7 +153,12 @@ describe("worker turn launcher terminal results", () => {
         liveEvents,
       });
       const failure =
-        "turn failed | provider failed | computer cleanup failed | native close failed";
+        cleanupFailure ??
+        (providerFailure
+          ? "provider rate limit exceeded"
+          : "turn failed | provider failed | computer cleanup failed | native close failed");
+      const effectFile = path.join(root, "worker-effects.txt");
+      const launchedModels: string[] = [];
       const reconciliationError = new NodeWorkerWorkspaceTransferError("workspace transfer failed");
       const runId = "run-finishing-cleanup";
       // Real dispatch supplies the session-bound outer context before worker admission.
@@ -157,9 +188,17 @@ describe("worker turn launcher terminal results", () => {
         measureLaunchTurn,
         launchTurn: vi.fn(async (request): Promise<SpawnResult> => {
           request.onDispatchReady?.();
+          launchedModels.push(request.plan.assignment.modelRef.model);
+          if (!providerFailure) {
+            await fs.appendFile(effectFile, "effect\n");
+          }
+          if (launchedModels.length > 1) {
+            // The second launch is the assertion boundary; do not replay its live-event stream.
+            throw new WorkerTurnExecutionError("Unexpected second worker execution");
+          }
           const leafId = openSessionManager().appendMessage(
             makeAgentAssistantMessage({
-              content: [{ type: "text", text: "Remote answer" }],
+              content: providerFailure ? [] : [{ type: "text", text: "Remote answer" }],
               stopReason,
               ...(stopReason === "error" ? { errorMessage: "provider failed" } : {}),
               timestamp: 21,
@@ -190,6 +229,7 @@ describe("worker turn launcher terminal results", () => {
                 endedAt: 2,
                 stopReason: "error" as const,
                 error: failure,
+                ...(cleanupFailure ? { replayInvalid: true as const } : {}),
               },
             },
           } satisfies WorkerLiveEventParams;
@@ -207,6 +247,7 @@ describe("worker turn launcher terminal results", () => {
                 payload: {
                   ...finishing.event.payload,
                   error: "duplicate must not replace original",
+                  replayInvalid: undefined,
                 },
               },
             }),
@@ -273,6 +314,7 @@ describe("worker turn launcher terminal results", () => {
         placements,
         reconcileActivePlacement,
       });
+      const uninstall = installSessionPlacementAdmissionProvider(provider);
       try {
         const runLocal = vi.fn(async () => ({ meta: { durationMs: 1 } }));
         const execute = vi.fn(() =>
@@ -282,18 +324,101 @@ describe("worker turn launcher terminal results", () => {
             runLocal,
           ),
         );
+        const config = {
+          ...workerTurn.config,
+          agents: {
+            defaults: {
+              models: {
+                "openai/gpt-test": { agentRuntime: { id: "openclaw" } },
+                "openai/gpt-test-next": { agentRuntime: { id: "openclaw" } },
+              },
+            },
+          },
+        };
+        let mediaTasks = getGeneratedMediaTaskIdsForSessionKey(SESSION_KEY);
+        const candidateFailures: unknown[] = [];
+        const runCandidate = vi.fn((candidateProvider: string, model: string) => {
+          mediaTasks = getGeneratedMediaTaskIdsForSessionKey(SESSION_KEY);
+          return runEmbeddedAgent({
+            ...workerTurn,
+            config,
+            provider: candidateProvider,
+            model,
+            suppressNextUserMessagePersistence: launchedModels.length > 0,
+          }).catch((error: unknown) => {
+            candidateFailures.push(error);
+            throw error;
+          });
+        });
+        const runOuterEntry = () =>
+          runEmbeddedAgentEntry({
+            selection: {
+              cfg: config,
+              provider: "openai",
+              model: "gpt-test",
+              manifestPlugins: [],
+              fallbacksOverride: ["openai/gpt-test-next"],
+            },
+            identity: { sessionId: SESSION_ID, sessionKey: SESSION_KEY, agentId: "main", runId },
+            harness: {
+              workspaceDir: root,
+              sessionKey: SESSION_KEY,
+              preparation: { kind: "direct" },
+              resolveRuntimeOverride: () => "openclaw",
+            },
+            // Use the command/RPC producer, not a test veto derived from the answer.
+            behavior: {
+              kind: "command-rpc",
+              hasCommittedSideEffect: () =>
+                hasNewGeneratedMediaTaskForSessionKey(SESSION_KEY, mediaTasks),
+            },
+            sessionOverride: { kind: "preserve" },
+            runCandidate,
+          });
         const observed = await (
-          reconciliationFails
-            ? runWithModelFallback({
-                cfg: undefined,
-                provider: "fixture-provider",
-                model: "fixture-model",
-                manifestPlugins: [],
-                fallbacksOverride: ["fixture-next/fixture-model"],
-                run: execute,
-              })
-            : execute()
+          outerFallback
+            ? runOuterEntry()
+            : reconciliationFails
+              ? runWithModelFallback({
+                  cfg: undefined,
+                  provider: "fixture-provider",
+                  model: "fixture-model",
+                  manifestPlugins: [],
+                  fallbacksOverride: ["fixture-next/fixture-model"],
+                  run: execute,
+                })
+              : execute()
         ).catch((error: unknown) => error);
+        if (outerFallback) {
+          expect(candidateFailures[0]).toBeInstanceOf(WorkerTurnExecutionError);
+          expect(candidateFailures[0]).toMatchObject({ message: failure });
+          expect(tunnel.reconcileWorkspace).toHaveBeenCalledOnce();
+          expect(openSessionManager().getLeafEntry()).toMatchObject({
+            type: "message",
+            message: {
+              role: "assistant",
+              stopReason,
+              content: providerFailure ? [] : [{ type: "text", text: "Remote answer" }],
+            },
+          });
+          expect(placements.get(SESSION_ID)).toMatchObject({ state: "active", turnClaim: null });
+          expect(placements.listPendingWorkspaceResults()).toHaveLength(0);
+          expect(environments.destroy).not.toHaveBeenCalled();
+          if (providerFailure) {
+            expect(launchedModels).toEqual(["gpt-test", "gpt-test-next"]);
+            expect(runCandidate).toHaveBeenCalledTimes(2);
+            expect(observed).toMatchObject({ message: "Unexpected second worker execution" });
+            await expect(fs.stat(effectFile)).rejects.toMatchObject({ code: "ENOENT" });
+            return;
+          }
+          expect
+            .soft(launchedModels, "cleanup must not replay the committed worker effect")
+            .toEqual(["gpt-test"]);
+          expect.soft(await fs.readFile(effectFile, "utf8")).toBe("effect\n");
+          expect.soft(runCandidate).toHaveBeenCalledOnce();
+          expect.soft(observed).toBe(candidateFailures[0]);
+          return;
+        }
         expect(observed).toMatchObject({ message: expect.stringContaining(failure) });
         if (reconciliationFails) {
           expect(observed).toMatchObject({ cause: expect.any(WorkerWorkspaceReconciliationError) });
@@ -329,6 +454,7 @@ describe("worker turn launcher terminal results", () => {
           }),
         ).resolves.toEqual({ ok: false, closeReason: "placement-mismatch" });
       } finally {
+        uninstall();
         await service.stop();
         workerTurn.preparedRunAdmission.close();
         releaseAgentRunContext(runId, dispatchClaim);

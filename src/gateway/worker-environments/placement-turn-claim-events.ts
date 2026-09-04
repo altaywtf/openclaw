@@ -56,6 +56,8 @@ export type WorkerTurnExecutionIdentityCapability = Readonly<{
   run<T>(callback: (identity: WorkerTurnExecutionIdentity) => Promise<T> | T): Promise<T>;
 }>;
 
+type WorkerTurnFinishingOutcome = { error?: string; replayInvalid?: true };
+
 type BoundWorkerTurnOwner = {
   capability: WorkerTurnExecutionIdentityCapability;
   claim: WorkerSessionTurnClaim;
@@ -66,7 +68,7 @@ type BoundWorkerTurnOwner = {
     finishing?: {
       credentialHash: string;
       seq: number;
-      error?: string;
+      outcome: WorkerTurnFinishingOutcome;
       isAckCurrent?: () => boolean;
     };
     prepareAssistantTranscriptMessage?: PrepareAssistantTranscriptMessage;
@@ -114,7 +116,7 @@ export function bindWorkerTurnOwner(
   source: { agentId: string; sessionKey: string },
   assertRunActive: () => void,
   prepareAssistantTranscriptMessage?: PrepareAssistantTranscriptMessage,
-): (credentialHash: string) => string | undefined {
+): (credentialHash: string) => WorkerTurnFinishingOutcome | undefined {
   const scope = captureGatewayRootWorkAdmissionContinuationScope();
   const path = store[WORKER_TURN_EXECUTION_IDENTITY_PATH];
   const delegatedAuthority = getActiveAgentRunDelegatedAuthority(operationalRunInstance);
@@ -183,7 +185,7 @@ export function bindWorkerTurnOwner(
       return undefined;
     }
     owner.runtime.finishing = undefined;
-    return finishing.error;
+    return finishing.outcome;
   };
 }
 
@@ -256,7 +258,10 @@ export function captureWorkerTurnFinishing(
   const finishing = {
     credentialHash: identity.credentialHash,
     seq: request.seq,
-    error: request.event.payload.error,
+    outcome: {
+      error: request.event.payload.error,
+      replayInvalid: request.event.payload.replayInvalid,
+    },
   };
   return () => {
     if (resolveWorkerTurnRuntime(identity) !== runtime) {

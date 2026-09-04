@@ -3,6 +3,7 @@ import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { SKILL_RESOURCE_PROTOCOL_FEATURE } from "../../../packages/gateway-protocol/src/schema/skill-resources.js";
 import { WORKER_SKILL_WORKSHOP_FEATURE } from "../../../packages/gateway-protocol/src/schema/worker-skill-workshop.js";
 import { mapThinkingLevelForProvider } from "../../agents/embedded-agent-runner/utils.js";
+import { recordModelFallbackStop } from "../../agents/failover-error.js";
 import { convertToLlm } from "../../agents/sessions/messages.js";
 import { SessionManager } from "../../agents/sessions/session-manager.js";
 import { withGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-context.js";
@@ -150,7 +151,7 @@ export async function executeWorkerTurn(
       portalAvailable,
     });
   params.placements.authorizeWorkerTurnTools(params.turnClaim, toolAuthority.allowedToolNames);
-  const { operationalRunInstance, runtimeIdentity, assertActive, takeFinishingError } =
+  const { operationalRunInstance, runtimeIdentity, assertActive, takeFinishingOutcome } =
     await prepareWorkerAgentRuntimeIdentity({
       agentId: placement.agentId,
       runtimeInstanceId: placement.environmentId,
@@ -452,8 +453,14 @@ export async function executeWorkerTurn(
       .getBranch()
       .slice(baseIndex + 1)
       .flatMap((entry) => (entry.type === "message" ? [entry.message] : []));
-    // Reconciliation releases the exact claim owner that retained the finishing ACK.
-    const workerFailure = workerTurnFailed ? takeFinishingError(credential.deliveryId) : undefined;
+    // Consume and mark before reconciliation releases the exact finishing-ACK owner.
+    const finishing = workerTurnFailed ? takeFinishingOutcome(credential.deliveryId) : undefined;
+    const workerFailure = workerTurnFailed
+      ? new WorkerTurnExecutionError(finishing?.error ?? "Cloud worker turn failed")
+      : undefined;
+    if (workerFailure && finishing?.replayInvalid) {
+      recordModelFallbackStop(workerFailure);
+    }
     const workspaceConflict = await reconcileWorkspaceAfterTurn({
       placement,
       placements: params.placements,
@@ -490,8 +497,8 @@ export async function executeWorkerTurn(
         )
         .catch(() => undefined);
     }
-    if (workerTurnFailed) {
-      throw new WorkerTurnExecutionError(workerFailure ?? "Cloud worker turn failed");
+    if (workerFailure) {
+      throw workerFailure;
     }
     return buildWorkerTurnResult({
       messages: workerMessages,

@@ -57,6 +57,7 @@ import {
   markBackgrounded,
 } from "../agents/bash-process-registry.js";
 import { runExecProcess } from "../agents/bash-tools.exec-runtime.js";
+import { hasModelFallbackStop } from "../agents/failover-error.js";
 import * as agentSessionSdk from "../agents/sessions/sdk.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { saveExecApprovals, type ExecApprovalsFile } from "../infra/exec-approvals.js";
@@ -1191,6 +1192,7 @@ describe("worker runtime", () => {
           const error = await runWorkerDescriptor(launch).catch((cause: unknown) => cause);
           expect(formatErrorMessage(error)).toContain("fixture setup failed");
           expect(formatErrorMessage(error)).toContain("fixture browser cleanup failed");
+          expect(hasModelFallbackStop(error)).toBe(true);
           expect(gateway.liveEventRequests).toHaveLength(0);
         } else {
           await expect(runWorkerDescriptor(launch)).resolves.toMatchObject({ status: "failed" });
@@ -1198,6 +1200,7 @@ describe("worker runtime", () => {
             phase: "finishing",
             stopReason: "error",
             error: expect.stringContaining("fixture browser cleanup failed"),
+            replayInvalid: true,
           });
           if (outcome === "error") {
             expect(gateway.liveEventRequests.at(-1)?.event.payload).toMatchObject({
@@ -1214,6 +1217,8 @@ describe("worker runtime", () => {
 
   it.each([
     { computerCleanupFailure: false, terminal: "text" },
+    { computerCleanupFailure: false, terminal: "error" },
+    { computerCleanupFailure: false, terminal: "cancelled" },
     { computerCleanupFailure: true, terminal: "text" },
     { computerCleanupFailure: true, terminal: "error" },
     { computerCleanupFailure: true, terminal: "cancelled" },
@@ -1242,7 +1247,7 @@ describe("worker runtime", () => {
       };
 
       await expect(runWorkerDescriptor(launch)).resolves.toMatchObject({
-        status: computerCleanupFailure ? "failed" : "completed",
+        status: computerCleanupFailure || terminal !== "text" ? "failed" : "completed",
       });
 
       expect(gateway.computerRequests.map((request) => request.command)).toEqual([
@@ -1270,6 +1275,14 @@ describe("worker runtime", () => {
       expect(gateway.applicationOrder.indexOf("computer:close")).toBeLessThan(
         gateway.applicationOrder.indexOf("live:lifecycle:finishing"),
       );
+      if (computerCleanupFailure) {
+        expect(gateway.liveEventRequests.at(-1)?.event.payload).toHaveProperty(
+          "replayInvalid",
+          true,
+        );
+      } else {
+        expect(gateway.liveEventRequests.at(-1)?.event.payload).not.toHaveProperty("replayInvalid");
+      }
       if (terminal === "cancelled") {
         expect(gateway.liveEventRequests.at(-1)?.event).toMatchObject({
           kind: "lifecycle",
@@ -1648,6 +1661,7 @@ describe("worker runtime", () => {
       expect(lifecycle).toMatchObject({
         payload: { phase: lifecyclePhase, stopReason },
       });
+      expect(lifecycle?.payload).not.toHaveProperty("replayInvalid");
     },
   );
 

@@ -17,6 +17,7 @@ import { buildBootstrapContextForFiles } from "../agents/bootstrap-files.js";
 import { createCoreCodingTools } from "../agents/core-coding-tools.js";
 import { createEmbeddedAgentResourceLoader } from "../agents/embedded-agent-runner/resource-loader.js";
 import { createNativeModelOwnedRuntimeModel } from "../agents/embedded-agent-runner/run/setup.js";
+import { recordModelFallbackStop } from "../agents/failover-error.js";
 import type { PreparedGitHubToolEnvironment } from "../agents/github-tool-identity.js";
 import { resolveSessionPermissionCoreToolPolicy } from "../agents/session-permission-exec-mode.js";
 import { guardSessionManager } from "../agents/session-tool-result-guard-wrapper.js";
@@ -275,7 +276,9 @@ async function runWorkerEmbeddedTurnWithResources(
       try {
         await dispose();
       } catch (error) {
-        failures.push(toWorkerAgentError(error, "Worker tool cleanup failed."));
+        const cleanupFailure = toWorkerAgentError(error, "Worker tool cleanup failed.");
+        recordModelFallbackStop(cleanupFailure);
+        failures.push(cleanupFailure);
       }
     }
     return failures.length > 1 ? new AggregateError(failures, "Worker turn failed") : failures[0];

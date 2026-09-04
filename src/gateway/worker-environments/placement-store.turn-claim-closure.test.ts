@@ -139,6 +139,7 @@ function bindFinishingOwner() {
         endedAt: 2,
         stopReason: "error",
         error: "native close failed",
+        replayInvalid: true as const,
       },
     },
   };
@@ -172,7 +173,9 @@ it.each([false, true])(
       acknowledgeWorkerTurnFinishing(h.identity, 2, () => credentialCurrent);
       expect(h.take("other-process")).toBeUndefined();
       credentialCurrent = !replaced;
-      expect(h.take(h.identity.credentialHash)).toBe(replaced ? undefined : "native close failed");
+      expect(h.take(h.identity.credentialHash)).toEqual(
+        replaced ? undefined : { error: "native close failed", replayInvalid: true },
+      );
       expect(h.take(h.identity.credentialHash)).toBeUndefined();
     } finally {
       h.close();
@@ -208,7 +211,10 @@ it.each(["claim", "run", "abort", "lifecycle", "same-claim replacement"] as cons
         expect(replacement(h.identity.credentialHash)).toBeUndefined();
         captureWorkerTurnFinishing(h.identity, h.request)?.();
         acknowledgeWorkerTurnFinishing(h.identity, 2, () => true);
-        expect(replacement(h.identity.credentialHash)).toBe("native close failed");
+        expect(replacement(h.identity.credentialHash)).toEqual({
+          error: "native close failed",
+          replayInvalid: true,
+        });
       }
     } finally {
       h.close();

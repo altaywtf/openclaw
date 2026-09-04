@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { WorkerLiveEvent } from "../../packages/gateway-protocol/src/schema/worker-admission.js";
+import { recordModelFallbackStop } from "../agents/failover-error.js";
 import type { AgentSessionEvent } from "../agents/sessions/agent-session.js";
+import { makeAgentAssistantMessage } from "../agents/test-helpers/agent-message-fixtures.js";
 import { createWorkerLiveRuntime } from "./embedded-agent-live.runtime.js";
 
 describe("createWorkerLiveRuntime", () => {
@@ -70,6 +72,53 @@ describe("createWorkerLiveRuntime", () => {
 
     expect(previewCalls).toBe(1);
   });
+
+  it.each([
+    { recordedStop: false, aborted: false },
+    { recordedStop: true, aborted: false },
+    { recordedStop: false, aborted: true },
+    { recordedStop: true, aborted: true },
+  ])(
+    "retains only recorded replay stops across terminal merges ($recordedStop, $aborted)",
+    async ({ recordedStop, aborted }) => {
+      const emitted: WorkerLiveEvent[] = [];
+      const runtime = createWorkerLiveRuntime({
+        enqueuePreview: () => false,
+        emitTerminal: async (event) => void emitted.push(event),
+      });
+      const failure = Object.freeze(new Error("request timed out"));
+      if (recordedStop) {
+        recordModelFallbackStop(failure);
+      }
+      runtime.enqueueRunFailure({
+        aborted: false,
+        error: new AggregateError([failure], "wrapper"),
+      });
+      runtime.handleSessionEvent({
+        type: "agent_end",
+        messages: [
+          makeAgentAssistantMessage({ content: [], stopReason: aborted ? "aborted" : "stop" }),
+        ],
+        willRetry: false,
+      });
+      runtime.enqueueRunFailure({ aborted: false, error: new Error("later provider failure") });
+      await runtime.emitTerminal();
+
+      expect(emitted).toHaveLength(1);
+      expect(emitted[0]?.payload).toMatchObject({
+        phase: "finishing",
+        stopReason: aborted ? "aborted" : "error",
+      });
+      if (recordedStop) {
+        expect(emitted[0]?.payload).toHaveProperty("replayInvalid", true);
+      } else {
+        expect(emitted[0]?.payload).not.toHaveProperty("replayInvalid");
+      }
+      if (aborted) {
+        expect(emitted[0]?.payload).not.toHaveProperty("error");
+      }
+    },
+  );
 
   it("redacts lifecycle errors before terminal cloud egress", async () => {
     const emitted: WorkerLiveEvent[] = [];
