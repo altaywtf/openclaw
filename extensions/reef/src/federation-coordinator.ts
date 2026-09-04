@@ -302,6 +302,7 @@ export class ReefFederationCoordinator {
       {
         timeoutMs: REEF_FEDERATION_APPROVAL_TIMEOUT_MS,
         signal: this.authoritySignal,
+        scopes: ["operator.approvals"],
       },
     );
   }

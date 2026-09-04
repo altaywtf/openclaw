@@ -214,6 +214,7 @@ describe("Reef federation coordinator", () => {
       {
         timeoutMs: 10 * 60_000,
         signal: authority.signal,
+        scopes: ["operator.approvals"],
       },
     );
     expect(request).toHaveBeenNthCalledWith(
