@@ -168,21 +168,35 @@ function prepareFullTranscriptSuffixMutation(
 }
 
 // Preserve the raw suffix mutation when an exact incremental projection update is unsafe.
+function verifyIncrementalPlanningFence(
+  database: OpenClawAgentDatabase,
+  resolved: ResolvedTranscriptScope,
+  expectedMutationAt: number | null,
+): void {
+  if (
+    readTranscriptMutationStateInTransaction(database, resolved.sessionId).updatedAt !==
+    expectedMutationAt
+  ) {
+    throw new Error(
+      `SQLite transcript changed while planning suffix removal for ${resolved.sessionId}`,
+    );
+  }
+}
+
 function prepareReconciledIncrementalSuffixMutation(params: {
   database: OpenClawAgentDatabase;
+  expectedMutationAt: number | null;
   expectedRows: readonly SqliteTranscriptStorageRow[];
   next: readonly TranscriptEvent[];
   nextCreatedAt: readonly number[];
   resolved: ResolvedTranscriptScope;
   startSeq: number;
 }): SqliteTranscriptSuffixMutationPlan {
+  verifyIncrementalPlanningFence(params.database, params.resolved, params.expectedMutationAt);
   return {
     expectedRows: params.expectedRows,
     incremental: {
-      expectedMutationAt: readTranscriptMutationStateInTransaction(
-        params.database,
-        params.resolved.sessionId,
-      ).updatedAt,
+      expectedMutationAt: params.expectedMutationAt,
       projectionWasHealthy: false,
       removedMessageIds: [],
       retainedActiveCount: 0,
@@ -241,6 +255,10 @@ function prepareIncrementalTranscriptSuffixMutation(
     );
   }
 
+  const expectedMutationAt = readTranscriptMutationStateInTransaction(
+    database,
+    resolved.sessionId,
+  ).updatedAt;
   const db = getSessionKysely(database.db);
   const storedTail = executeSqliteQuerySync(
     database.db,
@@ -287,6 +305,7 @@ function prepareIncrementalTranscriptSuffixMutation(
   if (!projectionWasHealthy) {
     return prepareReconciledIncrementalSuffixMutation({
       database,
+      expectedMutationAt,
       expectedRows,
       next,
       nextCreatedAt,
@@ -326,6 +345,7 @@ function prepareIncrementalTranscriptSuffixMutation(
     // fenced raw mutation instead of treating later active descendants as part of the mutation.
     return prepareReconciledIncrementalSuffixMutation({
       database,
+      expectedMutationAt,
       expectedRows,
       next,
       nextCreatedAt,
@@ -398,11 +418,11 @@ function prepareIncrementalTranscriptSuffixMutation(
     });
   }
   const addedMessages = activeRows.filter((row) => row.messagePosition !== null).length;
+  verifyIncrementalPlanningFence(database, resolved, expectedMutationAt);
   return {
     expectedRows,
     incremental: {
-      expectedMutationAt: readTranscriptMutationStateInTransaction(database, resolved.sessionId)
-        .updatedAt,
+      expectedMutationAt,
       projectionWasHealthy,
       removedMessageIds,
       retainedActiveCount,

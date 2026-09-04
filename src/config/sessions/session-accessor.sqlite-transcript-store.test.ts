@@ -1,7 +1,8 @@
 import type { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { cleanupTempDirs, makeTempDir } from "../../../test/helpers/temp-dir.js";
+import { clearNodeSqliteKyselyCacheForDatabase } from "../../infra/kysely-sync.js";
 import {
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
@@ -422,6 +423,43 @@ function replaceTranscriptSuffixForTest(
 }
 
 describe("SQLite exact transcript suffix replacement", () => {
+  it("rejects a changed mutation fence while planning an incremental suffix", async () => {
+    await withRewriteFixture(({ db, scope }) => {
+      clearNodeSqliteKyselyCacheForDatabase(db);
+      const originalPrepare = db.prepare.bind(db);
+      let changedFence = false;
+      const prepareSpy = vi.spyOn(db, "prepare").mockImplementation((sqlText: string) => {
+        if (
+          !changedFence &&
+          sqlText.toLowerCase().includes("session_transcript_active_events") &&
+          sqlText.toLowerCase().includes("event_seq")
+        ) {
+          originalPrepare(
+            `UPDATE session_windows
+             SET transcript_updated_at = transcript_updated_at + 1
+             WHERE session_id = ?`,
+          ).run(scope.sessionId);
+          changedFence = true;
+        }
+        return originalPrepare(sqlText);
+      });
+      try {
+        expect(() =>
+          prepareSqliteTranscriptSuffixMutation(
+            openOpenClawAgentDatabase(scope),
+            scope,
+            rewriteEvents,
+            rewriteEvents.slice(0, -1),
+            rewriteEvents.length - 1,
+          ),
+        ).toThrow(`SQLite transcript changed while planning suffix removal for ${scope.sessionId}`);
+      } finally {
+        prepareSpy.mockRestore();
+      }
+      expect(changedFence).toBe(true);
+    });
+  });
+
   it("reconciles after removing a suffix anchored on an inactive branch", async () => {
     const events = [
       rewriteEvents[0],
