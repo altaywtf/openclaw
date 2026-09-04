@@ -1,23 +1,15 @@
-export function resolveGatewayClientPlatform(platform: string): string {
+export function resolveGatewayClientPlatformIdentity(platform: string): {
+  platform: string;
+  deviceFamily?: string;
+} {
   switch (platform) {
     case "darwin":
-      return "macos";
+      return { platform: "macos", deviceFamily: "Mac" };
     case "win32":
-      return "windows";
-    default:
-      return platform;
-  }
-}
-
-export function resolveGatewayClientDeviceFamily(platform: string): string | undefined {
-  switch (platform) {
-    case "darwin":
-      return "Mac";
-    case "win32":
-      return "Windows";
+      return { platform: "windows", deviceFamily: "Windows" };
     case "linux":
-      return "Linux";
+      return { platform, deviceFamily: "Linux" };
     default:
-      return undefined;
+      return { platform };
   }
 }

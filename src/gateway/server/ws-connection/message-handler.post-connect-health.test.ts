@@ -2375,19 +2375,43 @@ describe("resolvePinnedClientMetadata", () => {
     });
   });
 
-  it("keeps non-equivalent platform changes approval-bound", () => {
+  it.each([
+    { pairedPlatform: "linux", claimedDeviceFamily: "Windows" },
+    { pairedPlatform: "win32", claimedDeviceFamily: "Linux" },
+    { pairedPlatform: "darwin", claimedDeviceFamily: "Windows" },
+  ])(
+    "keeps non-equivalent runtime tuples approval-bound: %j",
+    ({ pairedPlatform, claimedDeviceFamily }) => {
+      expect(
+        resolvePinnedClientMetadata({
+          clientId: "test",
+          clientMode: "test",
+          claimedPlatform: "windows",
+          claimedDeviceFamily,
+          pairedPlatform,
+          pairedDeviceFamily: undefined,
+        }),
+      ).toMatchObject({
+        platformMismatch: true,
+        deviceFamilyMismatch: false,
+      });
+    },
+  );
+
+  it("does not replace a conflicting family pin during a runtime-alias upgrade", () => {
     expect(
       resolvePinnedClientMetadata({
-        clientId: "test",
-        clientMode: "test",
+        clientId: "openclaw-tui",
+        clientMode: "ui",
         claimedPlatform: "windows",
         claimedDeviceFamily: "Windows",
-        pairedPlatform: "linux",
-        pairedDeviceFamily: undefined,
+        pairedPlatform: "win32",
+        pairedDeviceFamily: "Linux",
       }),
     ).toMatchObject({
       platformMismatch: true,
-      deviceFamilyMismatch: false,
+      deviceFamilyMismatch: true,
+      pinnedDeviceFamily: "Linux",
     });
   });
 
