@@ -421,7 +421,7 @@ describe("projects vitest config", () => {
     ).toContain(configPath);
     const { createUiBrowserVitestConfig } = await import("./vitest/vitest.ui-browser.config.ts");
     const browser = createUiBrowserVitestConfig();
-    expect(normalizeConfigPath(browser.root)).toBe("ui");
+    expect(normalizeConfigPath(requireTestConfig(browser).root)).toBe("ui");
     expect(requireTestConfig(browser).browser?.enabled).toBe(true);
     expect(requireTestConfig(browser).runner).toBeUndefined();
   });

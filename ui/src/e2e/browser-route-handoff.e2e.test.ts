@@ -4,7 +4,7 @@ import {
   defaultControlUiFeatureMethods,
   installMockGateway,
 } from "../test-helpers/control-ui-e2e.ts";
-import { expectRequestCountStable } from "./chat-flow.test-support.ts";
+import { captureUiProof, expectRequestCountStable } from "./chat-flow.test-support.ts";
 import { openChatSidePanelType } from "./chat-side-panel.test-support.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
@@ -115,7 +115,7 @@ suite.define(() => {
               },
             },
           });
-          const expandTools = async () => {
+          const expandHistoryTools = async () => {
             for (const summary of await page.locator(".chat-activity-group__summary").all()) {
               if ((await summary.getAttribute("aria-expanded")) !== "true") {
                 await summary.click();
@@ -131,7 +131,7 @@ suite.define(() => {
           await page.getByText("History is ready.", { exact: true }).waitFor();
           await expectRequestCountStable(gateway, "browser.request", 0);
           expect(await page.locator("openclaw-browser-tab-card").count()).toBe(0);
-          await expandTools();
+          await expandHistoryTools();
           if (includeHistory) {
             for (const output of [
               "Standalone ordinary output 0",
@@ -147,7 +147,7 @@ suite.define(() => {
           await page.getByRole("button", { name: "Send message" }).click();
           const send = await gateway.waitForRequest("chat.send");
           const runId = asNullableRecord(send.params)?.idempotencyKey;
-          expect(typeof runId).toBe("string");
+          expect.assert(typeof runId === "string");
           await page.getByRole("button", { name: "Stop generating" }).waitFor();
           let seq = 0;
           const emitTool = (data: Record<string, unknown>) =>
@@ -171,20 +171,31 @@ suite.define(() => {
               },
             });
           }
-          // History disclosures can collapse when a new turn starts. Wait for
-          // the consumed live output, not a count of currently mounted rows.
-          const expectToolOutput = async (text: string) => {
-            await expect
-              .poll(async () => {
-                await expandTools();
-                return page.getByText(text, { exact: true }).isVisible();
-              })
-              .toBe(true);
+          const liveTurn = page.locator(`.chat-group[data-chat-row-key*="${runId}"]`);
+          // Wait for this run's disclosure before acting. A page-wide positional
+          // scan can change targets as history and live rows mount or collapse.
+          const expectToolOutput = async (toolCallId: string, text: string) => {
+            const activity = liveTurn.locator(".chat-activity-group__summary");
+            await activity.waitFor();
+            if ((await activity.getAttribute("aria-expanded")) !== "true") {
+              await activity.click();
+            }
+            const tool = liveTurn.locator(`[data-message-id^="tool:assistant:${toolCallId}:"]`);
+            await tool.locator(".chat-tool-msg-summary").click();
+            const output = tool.getByText(text, { exact: true });
+            await output.waitFor();
+            await output.scrollIntoViewIfNeeded();
           };
-          await expectToolOutput("Live ordinary output 0");
-          await expectToolOutput("Live ordinary output 1");
+          await expectToolOutput("live-0", "Live ordinary output 0");
+          await expectToolOutput("live-1", "Live ordinary output 1");
           await expectRequestCountStable(gateway, "browser.request", 0);
           expect(await page.locator("openclaw-browser-tab-card").count()).toBe(0);
+          await captureUiProof(
+            suite,
+            page,
+            "browser-route-handoff",
+            `history-${includeHistory}-live.png`,
+          );
 
           await openChatSidePanelType(page, "Browser");
           const panel = page.locator("section.bp");
@@ -199,7 +210,7 @@ suite.define(() => {
               details,
             },
           });
-          await expectToolOutput("Live output after opening Browser");
+          await expectToolOutput("live-after-open", "Live output after opening Browser");
           expect(await page.locator("openclaw-browser-tab-card").count()).toBe(0);
           expect(await panel.locator('.bp-shot[alt="Configured default"]').isVisible()).toBe(true);
           const requests = await gateway.getRequests("browser.request");
@@ -212,6 +223,12 @@ suite.define(() => {
             expect(request.params).not.toHaveProperty("query.profile");
             expect(asNullableRecord(request.params)?.path).not.toBe("/tabs/focus");
           }
+          await captureUiProof(
+            suite,
+            page,
+            "browser-route-handoff",
+            `history-${includeHistory}-panel.png`,
+          );
 
           // The same live transport must still carry actionable browser results.
           await emitTool({
