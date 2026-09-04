@@ -29,6 +29,7 @@ import {
   renderSessionWorkspaceRail,
   type SessionWorkspaceProps,
 } from "./components/chat-session-workspace.ts";
+import { appendChatDraftText } from "./input-history.ts";
 import {
   SIDEBAR_NARROW_BREAKPOINT_PX,
   isSidebarSlotVisible,
@@ -232,13 +233,15 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
         layout: sidebarLayout,
         closePanelSlot,
         openPanelSlot,
-        prefillComposer: (draft) => {
-          state.handleChatDraftChange(draft, []);
+        appendComposerText: (text) => {
+          const nextDraft = appendChatDraftText(state, text);
           state.requestUpdate?.();
           queueMicrotask(() => {
-            this.querySelector<HTMLTextAreaElement>(CHAT_COMPOSER_TEXTAREA_SELECTOR)?.focus({
-              preventScroll: true,
-            });
+            const textarea = this.querySelector<HTMLTextAreaElement>(
+              CHAT_COMPOSER_TEXTAREA_SELECTOR,
+            );
+            textarea?.focus({ preventScroll: true });
+            textarea?.setSelectionRange(nextDraft.length, nextDraft.length);
           });
         },
         forgetDiscussionUrl: () => this.sessionDiscussionOpenUrls.delete(state.sessionKey.trim()),

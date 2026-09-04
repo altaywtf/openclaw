@@ -278,7 +278,7 @@ class ChatSidebarRegion extends OpenClawLightDomElement {
             role="listitem"
             @click=${() =>
               type.slot === "dashboard"
-                ? this.callbacks?.prefillComposer(DASHBOARD_COMMAND)
+                ? this.callbacks?.appendComposerText(DASHBOARD_COMMAND)
                 : this.callbacks?.openSlot(type.slot)}
           >
             ${renderPanelTypeOption(type)}

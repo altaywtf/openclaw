@@ -284,6 +284,11 @@ plugins.
     | `/usage off\|tokens\|full\|reset\|cost` | Control the per-response usage footer (`reset`/`inherit`/`clear`/`default` clears the session override to re-inherit the configured default) or print a local cost summary |
   </Accordion>
 
+`/dashboard` is reserved as a built-in command. If an existing user skill is
+named `dashboard`, skill discovery exposes its generated slash alias as
+`/dashboard_2`; `$dashboard` and `/skill dashboard` continue to select that
+user skill directly.
+
   <Accordion title="Skills, allowlists, approvals">
     | Command | Description |
     | --- | --- |

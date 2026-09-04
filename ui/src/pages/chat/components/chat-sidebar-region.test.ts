@@ -33,7 +33,7 @@ async function createRegion(layout: SidebarLayout = openSlot({ columns: [] }, "d
     activatePanel: vi.fn(),
     closeSlot: vi.fn(),
     openSlot: vi.fn(),
-    prefillComposer: vi.fn(),
+    appendComposerText: vi.fn(),
     reorderPanel: vi.fn(),
     resizePanel: vi.fn(),
     setDock: vi.fn(),
@@ -230,7 +230,7 @@ describe("chat sidebar region", () => {
       root(region).querySelectorAll<HTMLButtonElement>(".side-panel-empty__type"),
     ).find((button) => button.textContent?.trim() === "Dashboard");
     dashboard?.click();
-    expect(region.callbacks?.prefillComposer).toHaveBeenCalledWith("/dashboard ");
+    expect(region.callbacks?.appendComposerText).toHaveBeenCalledWith("/dashboard ");
     expect(region.callbacks?.openSlot).not.toHaveBeenCalledWith("dashboard");
   });
 
