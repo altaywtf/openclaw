@@ -126,16 +126,16 @@ describe("MCP stderr diagnostics", () => {
   it("keeps diagnostics attached through forced disposal", async () => {
     vi.useFakeTimers();
     const probe = createStderrProbe();
-    const close = vi
-      .spyOn(probe.transport, "close")
-      .mockImplementation(() => new Promise(() => {}));
+    const closed = Promise.withResolvers<void>();
+    const close = vi.spyOn(probe.transport, "close").mockReturnValue(closed.promise);
     const forceClose = vi.spyOn(probe.transport, "forceClose").mockImplementation(async () => {
       probe.stderr.write("forced shutdown tail");
+      closed.resolve();
     });
     try {
       const disposing = disposeMcpClient({ ...probe, client: { close: async () => {} } }, 50);
       await vi.advanceTimersByTimeAsync(50);
-      await disposing;
+      await expect(disposing).resolves.toBe("closed");
       expect(forceClose).toHaveBeenCalledOnce();
       expect(logDebug.mock.calls).toEqual([["bundle-mcp:probe: forced shutdown tail"]]);
       expect(vi.getTimerCount()).toBe(0);
