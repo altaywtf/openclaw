@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { HealthFinding } from "../flows/health-checks.js";
-import { renderTriagePrompt } from "./triage-prompt.js";
+import { renderTriagePrompt, type TriageBundle } from "./triage-prompt.js";
 
 describe("renderTriagePrompt", () => {
   const homeDir = "/home/triage-test";
@@ -170,12 +170,37 @@ describe("renderTriagePrompt", () => {
     expect(prompt).not.toContain(homeDir);
   });
 
-  it("fits whole failure records without losing the latest cause or restart safety", () => {
+  it.each<{ label: string; bundle: TriageBundle; currentFailure: boolean }>([
+    { label: "record alone", bundle: { kind: "skipped" }, currentFailure: false },
+    { label: "current startup", bundle: { kind: "skipped" }, currentFailure: true },
+    {
+      label: "current startup and diagnostics archive",
+      bundle: { kind: "available", path: `${homeDir}/${"修".repeat(2_000)}/diagnostics.zip` },
+      currentFailure: true,
+    },
+    {
+      label: "current startup and diagnostics failure",
+      bundle: { kind: "unavailable", reason: `Export failed: ${"🦞".repeat(2_000)}` },
+      currentFailure: true,
+    },
+  ])("fits complete failure evidence and handoff details: $label", ({ bundle, currentFailure }) => {
     const noisy = '\\"'.repeat(1_000);
     const prompt = renderTriagePrompt({
       findings: [],
-      bundle: { kind: "skipped" },
+      bundle,
       redaction,
+      ...(currentFailure
+        ? {
+            failure: {
+              kind: "gateway-startup" as const,
+              phase: "startup",
+              error: `Current startup failure: ${"🦞".repeat(4_000)}`,
+              installationRoot: `${homeDir}/installation/${"修".repeat(2_000)}`,
+              expectedVersion: "2026.8.31",
+              gateway: "verify-running" as const,
+            },
+          }
+        : {}),
       updateFailure: {
         error: `Original update failure ${noisy}`,
         result: {
@@ -230,7 +255,20 @@ describe("renderTriagePrompt", () => {
     expect(recorded.omittedDetails).toBeGreaterThan(0);
     expect(Buffer.byteLength(details)).toBeLessThanOrEqual(4 * 1024);
     expect(Buffer.byteLength(prompt)).toBeLessThanOrEqual(8 * 1024);
+    if (currentFailure) {
+      expect(prompt.indexOf("## Triggering failure")).toBeLessThan(
+        prompt.indexOf("## Failed update"),
+      );
+      expect(prompt).toContain("- Kind: gateway-startup");
+      expect(prompt).toContain("- Phase: startup");
+      expect(prompt).toContain("Current startup failure:");
+      expect(prompt).toContain("- Installation: ~/installation/");
+      expect(prompt).toContain("- Expected version: 2026.8.31");
+    }
+    expect(prompt).toContain("## Diagnostics bundle");
     expect(prompt).toContain("## Privacy");
+    expect(prompt).toContain("local paths are relative to `~` or `$OPENCLAW_STATE_DIR`.");
+    expect(prompt).not.toContain("Prompt truncated");
     expect(prompt).not.toContain("\uFFFD");
   });
 

@@ -13,7 +13,7 @@ function isValidPid(pid: number): boolean {
 }
 
 /**
- * Check if a process is a zombie on Linux by reading /proc/<pid>/status.
+ * Check if every thread has exited by reading Linux /proc/<pid>/status.
  * Returns false on non-Linux platforms or if the proc file can't be read.
  */
 function isZombieProcess(pid: number): boolean {
@@ -23,7 +23,9 @@ function isZombieProcess(pid: number): boolean {
   try {
     const status = fsSync.readFileSync(`/proc/${pid}/status`, "utf8");
     const stateMatch = status.match(/^State:\s+(\S)/m);
-    return stateMatch?.[1] === "Z";
+    // pthread_exit can leave a zombie leader with live workers; missing thread
+    // evidence must not revoke a live process's locks or cleanup obligations.
+    return stateMatch?.[1] === "Z" && /^Threads:[ \t]+1[ \t]*$/m.test(status);
   } catch {
     return false;
   }

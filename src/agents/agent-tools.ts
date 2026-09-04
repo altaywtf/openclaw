@@ -533,17 +533,13 @@ function createOpenClawCodingToolsInternal(options?: OpenClawCodingToolsOptions)
     sessionId: options?.sessionId,
     agentId,
   });
-  if (options?.oneShotCliRun && scopeKey) {
+  if (options?.oneShotCliRun && scopeKey && options.registerRunCleanup) {
     const supervisor = getProcessSupervisor();
-    options.registerRunCleanup?.(async () => {
-      // Tool-generation retirement closes admission first; include yielded and
-      // still-starting commands in this exact scope without touching chat peers.
-      supervisor.cancelScope(scopeKey);
-      if (!supervisor.waitForScope) {
-        throw new Error("one-shot process cleanup cannot confirm scope settlement");
-      }
-      await supervisor.waitForScope(scopeKey);
-    });
+    // Register before launch: root completion can precede final cleanup,
+    // which must retain the tree and any earlier extinction failure.
+    options.registerRunCleanup(
+      supervisor.acquireScopeCleanup(scopeKey, { requireProcessTree: true }),
+    );
   }
   options?.recordToolPrepStage?.("tool-policy");
   const execConfig = resolveExecToolConfig({ cfg: options?.config, agentId });

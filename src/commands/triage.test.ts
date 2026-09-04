@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import JSZip from "jszip";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { withAgentCleanupOutcome } from "../agents/run-cleanup-timeout.js";
 import type { HealthFinding } from "../flows/health-checks.js";
 import {
   getInstallationTarget,
@@ -213,9 +214,14 @@ describe("triageCommand", () => {
     expect(runtime.error.mock.calls.flat().join("\n")).toContain("manual");
   });
 
-  it.each(["claude", "codex"])(
-    "shows a headless %s auth failure and retains a manual handoff",
-    async (agent) => {
+  it.each([
+    { agent: "claude", exitCode: 0 },
+    { agent: "claude", exitCode: 17 },
+    { agent: "codex", exitCode: 0 },
+    { agent: "codex", exitCode: 17 },
+  ])(
+    "preserves external $agent exit $exitCode without certifying descendant cleanup",
+    async ({ agent, exitCode }) => {
       if (process.platform === "win32") {
         return;
       }
@@ -223,7 +229,7 @@ describe("triageCommand", () => {
       const targetPath = path.join(stateDir, "headless-target.json");
       await fs.writeFile(
         executablePath,
-        `#!/usr/bin/env node\nrequire('node:fs').writeFileSync(${JSON.stringify(targetPath)}, JSON.stringify([process.env.OPENCLAW_STATE_DIR, process.env.OPENCLAW_CONFIG_PATH, process.env.OPENCLAW_WORKSPACE_DIR])); let input = ''; process.stdin.on('data', chunk => input += chunk); process.stdin.on('end', () => { console.log(JSON.stringify({ args: process.argv.slice(2), shell: process.env.OPENCLAW_SHELL, hasPrompt: input.includes('original symptom') })); console.error('Diagnostic detail '.repeat(200) + '\\nAuthentication required'); process.exitCode = 17; });\n`,
+        `#!/usr/bin/env node\nrequire('node:fs').writeFileSync(${JSON.stringify(targetPath)}, JSON.stringify([process.env.OPENCLAW_STATE_DIR, process.env.OPENCLAW_CONFIG_PATH, process.env.OPENCLAW_WORKSPACE_DIR])); let input = ''; process.stdin.on('data', chunk => input += chunk); process.stdin.on('end', () => { console.log(JSON.stringify({ args: process.argv.slice(2), shell: process.env.OPENCLAW_SHELL, hasPrompt: input.includes('original symptom') })); console.error('Diagnostic detail '.repeat(200) + '\\n${exitCode ? "Authentication required" : "Repair completed"}'); process.exitCode = ${exitCode}; });\n`,
         { mode: 0o700 },
       );
       const actual =
@@ -233,22 +239,31 @@ describe("triageCommand", () => {
         binary === agent ? executablePath : undefined,
       );
       const runtime = createTriageRuntime();
-      await expect(
-        triageCommand(
-          runtime,
-          {},
-          {
-            signal: new AbortController().signal,
-            assertCurrent: vi.fn(),
-            failure: {
-              kind: "gateway-startup",
-              phase: "startup",
-              error: "failed",
-              gateway: "verify-running",
+      const finish = vi.fn();
+      const result = withAgentCleanupOutcome(
+        () =>
+          triageCommand(
+            runtime,
+            {},
+            {
+              signal: new AbortController().signal,
+              assertCurrent: vi.fn(),
+              failure: {
+                kind: "gateway-startup",
+                phase: "startup",
+                error: "failed",
+                gateway: "verify-running",
+              },
             },
-          },
-        ),
-      ).rejects.toMatchObject({ code: 17 });
+          ),
+        finish,
+      );
+      if (exitCode) {
+        await expect(result).rejects.toMatchObject({ code: exitCode });
+      } else {
+        await result;
+      }
+      expect(finish).toHaveBeenCalledExactlyOnceWith("uncertain");
       const output = [...runtime.error.mock.calls, ...runtime.log.mock.calls].flat().join("\n");
       expect(JSON.parse(await fs.readFile(targetPath, "utf8"))).toEqual([
         stateDir,
@@ -262,11 +277,16 @@ describe("triageCommand", () => {
           ? '"args":["--safe-mode","-p"]'
           : '"args":["exec","--skip-git-repo-check","-"]',
       );
-      expect(output).toContain("Authentication required");
-      expect(output).toContain("17");
-      expect(output).toContain("Run manually:");
+      if (exitCode) {
+        expect(output).toContain("Authentication required");
+        expect(output).toContain("17");
+        expect(output).toContain("Run manually:");
+        expect(runtime.exit).toHaveBeenCalledWith(exitCode);
+      } else {
+        expect(output).toContain("Repair completed");
+        expect(runtime.exit).not.toHaveBeenCalled();
+      }
       expect(runtime.writeJson).not.toHaveBeenCalled();
-      expect(runtime.exit).toHaveBeenCalledWith(17);
       expect(mocks.verifySetupInference).not.toHaveBeenCalled();
     },
   );

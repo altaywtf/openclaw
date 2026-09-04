@@ -71,7 +71,8 @@ describe("isPidAlive", () => {
       throw error;
     });
     mockProcReads({
-      "/proc/42/status": "Name:\tnode\nUmask:\t0022\nState:\tZ (zombie)\nTgid:\t42\nPid:\t42\n",
+      "/proc/42/status":
+        "Name:\tnode\nUmask:\t0022\nState:\tZ (zombie)\nTgid:\t42\nPid:\t42\nThreads:\t1\n",
     });
 
     await withMockedPlatform("linux", async () => {
@@ -95,7 +96,7 @@ describe("isPidAlive", () => {
     const zombiePid = process.pid;
 
     mockProcReads({
-      [`/proc/${zombiePid}/status`]: `Name:\tnode\nUmask:\t0022\nState:\tZ (zombie)\nTgid:\t${zombiePid}\nPid:\t${zombiePid}\n`,
+      [`/proc/${zombiePid}/status`]: `Name:\tnode\nUmask:\t0022\nState:\tZ (zombie)\nTgid:\t${zombiePid}\nPid:\t${zombiePid}\nThreads:\t1\n`,
     });
     await withMockedPlatform("linux", async () => {
       expect(isPidAlive(zombiePid)).toBe(false);
@@ -115,6 +116,21 @@ describe("isPidAlive", () => {
     expect(readFileSyncSpy).toHaveBeenCalledWith("/proc/42/status", "utf8");
     expect(killSpy).toHaveBeenCalledWith(42, 0);
   });
+
+  it.each(["2", "", "0", "-1", "1.5", "unknown"])(
+    "keeps a zombie leader possibly alive without proof its other threads exited: %s",
+    async (threads) => {
+      vi.spyOn(process, "kill").mockReturnValue(true);
+      mockProcReads({
+        "/proc/42/status": `Name:\tworker\nState:\tZ (zombie)\n${threads ? `Threads:\t${threads}\n` : ""}`,
+      });
+
+      await withMockedPlatform("linux", async () => {
+        expect(isPidAlive(42)).toBe(true);
+        expect(isPidDefinitelyDead(42)).toBe(false);
+      });
+    },
+  );
 });
 
 describe("isPidDefinitelyDead", () => {
@@ -150,7 +166,7 @@ describe("isPidDefinitelyDead", () => {
     const zombiePid = process.pid;
     vi.spyOn(process, "kill").mockImplementation(() => true);
     mockProcReads({
-      [`/proc/${zombiePid}/status`]: `Name:\tnode\nUmask:\t0022\nState:\tZ (zombie)\nTgid:\t${zombiePid}\nPid:\t${zombiePid}\n`,
+      [`/proc/${zombiePid}/status`]: `Name:\tnode\nUmask:\t0022\nState:\tZ (zombie)\nTgid:\t${zombiePid}\nPid:\t${zombiePid}\nThreads:\t1\n`,
     });
 
     await withMockedPlatform("linux", async () => {

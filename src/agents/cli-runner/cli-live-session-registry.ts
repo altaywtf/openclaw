@@ -101,13 +101,26 @@ export async function restartCliLiveSession(
   assertActive();
   const key = buildCliLiveSessionKey(context);
   const record = liveSessions.get(key);
-  await closeCliLiveSession(context, "restart");
-  if (record && liveSessions.get(key) === record) {
-    await runCliCleanup(context.params, "cli-live-session-restart", () => {
-      // One-shot cleanup schedules this callback; fence the actual close.
+  await runCliCleanup(
+    context.params,
+    "cli-live-session-close",
+    async () => {
       assertActive();
-      return closeRecord(record, "restart");
-    });
+      await context.preparedBackend.closeLiveSession?.("restart");
+    },
+    "required",
+  );
+  if (record && liveSessions.get(key) === record) {
+    await runCliCleanup(
+      context.params,
+      "cli-live-session-restart",
+      () => {
+        // One-shot cleanup schedules this callback; fence the actual close.
+        assertActive();
+        return closeRecord(record, "restart");
+      },
+      "required",
+    );
   }
   assertActive();
 }

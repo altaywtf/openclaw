@@ -275,6 +275,14 @@ describe("managed service update handoff command", () => {
     });
     expect(store.stopNative(lease)).toBe(false);
     expect(spawnSyncMock.mock.calls.filter(([, args]) => args.includes("stop"))).toEqual([]);
+    for (const state of ["inactive", "failed"]) {
+      spawnSyncMock.mockReset().mockReturnValue({
+        status: 0,
+        stdout: `Id=synthetic.scope\nLoadState=loaded\nActiveState=${state}\nControlGroup=\nInvocationID=${"b".repeat(32)}`,
+      });
+      expect(store.stopNative(lease)).toBe(false);
+      expect(spawnSyncMock.mock.calls.filter(([, args]) => args.includes("stop"))).toEqual([]);
+    }
   });
 
   it("serializes extended-stable into the detached CLI command", async () => {

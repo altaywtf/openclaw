@@ -108,6 +108,7 @@ export async function runOwnedAgentCleanup(params: {
   runId: string;
   sessionId: string;
   oneShotCliRun?: boolean;
+  settlement?: "required";
   step: string;
   cleanup: () => Promise<void>;
   log: AgentCleanupLogger;
@@ -125,7 +126,7 @@ export async function runOwnedAgentCleanup(params: {
   if (!params.oneShotCliRun) {
     return await settle();
   }
-  await runAgentCleanupStep({
+  const outcome = await settleAgentCleanupStep({
     runId: params.runId,
     sessionId: params.sessionId,
     step: params.step,
@@ -135,10 +136,14 @@ export async function runOwnedAgentCleanup(params: {
   if (failed) {
     throw failed.error;
   }
+  if (outcome === "timeout" && params.settlement === "required") {
+    throw new Error(
+      `Agent cleanup timed out before ${params.step} settled; resource replacement refused.`,
+    );
+  }
 }
 
-/** Run one cleanup step with timeout logging and late-rejection handling. */
-export async function runAgentCleanupStep(params: {
+type AgentCleanupStepParams = {
   runId: string;
   sessionId: string;
   step: string;
@@ -147,7 +152,14 @@ export async function runAgentCleanupStep(params: {
   log: AgentCleanupLogger;
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
-}): Promise<void> {
+};
+
+/** Run one cleanup step with timeout logging and late-rejection handling. */
+export async function runAgentCleanupStep(params: AgentCleanupStepParams): Promise<void> {
+  await settleAgentCleanupStep(params);
+}
+
+async function settleAgentCleanupStep(params: AgentCleanupStepParams): Promise<"done" | "timeout"> {
   const timeoutMs = resolveAgentCleanupStepTimeoutMs({
     step: params.step,
     timeoutMs: params.timeoutMs,
@@ -192,4 +204,5 @@ export async function runAgentCleanupStep(params: {
       );
     });
   }
+  return result;
 }

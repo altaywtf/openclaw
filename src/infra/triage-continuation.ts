@@ -59,12 +59,18 @@ function ownsChildLease(root: string, action: "update" | "triage"): ManagedHando
     : null;
 }
 
-async function exchangeWithParent(message: object): Promise<unknown> {
+async function exchangeWithParent(message: object, signal?: AbortSignal): Promise<unknown> {
   return await new Promise((resolve, reject) => {
+    let settled = false;
     const finish = (error: Error | null, value?: unknown) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
       clearTimeout(timer);
       process.removeListener("message", received);
       process.removeListener("disconnect", disconnected);
+      signal?.removeEventListener("abort", aborted);
       if (error) {
         reject(error);
       } else {
@@ -73,11 +79,17 @@ async function exchangeWithParent(message: object): Promise<unknown> {
     };
     const received = (value: unknown) => finish(null, value);
     const disconnected = () => finish(new Error("automatic triage owner disconnected"));
+    const aborted = () => finish(new Error("automatic triage admission cancelled"));
     const timer = setTimeout(
       () => finish(new Error("automatic triage admission timed out")),
       TRIAGE_HANDOFF_GRACE_MS,
     );
     process.once("message", received).once("disconnect", disconnected);
+    signal?.addEventListener("abort", aborted, { once: true });
+    if (signal?.aborted) {
+      aborted();
+      return;
+    }
     if (!process.connected || !process.send) {
       disconnected();
       return;
@@ -103,30 +115,59 @@ export async function resolveTriageEntrypoint(root: string): Promise<[string, st
 export async function queueManagedUpdateTriage(
   failure: TriageFailureContext,
   commandArgv: string[],
+  signal?: AbortSignal,
 ): Promise<boolean> {
   if (process.env.OPENCLAW_UPDATE_RUN_HANDOFF !== "1") {
     return false;
   }
   const root = (await readControlPlaneUpdateSentinelMeta())?.root;
+  signal?.throwIfAborted();
   const claim = root ? ownsChildLease(root, "update") : null;
   if (!root || !claim || !process.connected) {
     throw new Error("managed update triage lost its live owner; run openclaw triage manually");
   }
-  const response = await exchangeWithParent({
+  const request = {
     type: "triage-request",
     version: 2,
     failure: failureSchema.parse(failure),
     commandArgv,
-  });
-  const current = ownsChildLease(root, "update");
-  if (
-    !z.strictObject({ type: z.literal("triage-queued"), version: z.literal(2) }).safeParse(response)
-      .success ||
-    !process.connected ||
-    JSON.stringify(current) !== JSON.stringify(claim)
-  ) {
-    throw new Error("managed update triage continuation was refused or revoked");
+  };
+  try {
+    const response = await exchangeWithParent(request, signal);
+    const current = ownsChildLease(root, "update");
+    if (
+      !z
+        .strictObject({ type: z.literal("triage-queued"), version: z.literal(2) })
+        .safeParse(response).success ||
+      !process.connected ||
+      JSON.stringify(current) !== JSON.stringify(claim)
+    ) {
+      throw new Error("managed update triage continuation was refused or revoked");
+    }
+    signal?.throwIfAborted();
+  } catch (error) {
+    // The helper cannot execute a staged request, even if this cancellation
+    // cannot cross a disconnected IPC channel.
+    try {
+      process.send?.({ type: "triage-request-cancel", version: 2 }, () => {});
+    } catch {}
+    throw error;
   }
+  // This dispatch transfers ownership. Cancellation after it belongs to the
+  // helper; an uncertain send must never cause another automatic attempt.
+  await new Promise<void>((resolve, reject) => {
+    process.send!({ type: "triage-commit", version: 2 }, (error) => {
+      if (error) {
+        reject(
+          new Error("automatic triage handoff confirmation lost; inspect the handoff log", {
+            cause: error,
+          }),
+        );
+      } else {
+        resolve();
+      }
+    });
+  });
   return true;
 }
 

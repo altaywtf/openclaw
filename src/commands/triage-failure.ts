@@ -100,7 +100,7 @@ export async function triageAfterFailure(
         cancellation.throwIfAborted();
         if (
           failure.kind === "update" &&
-          (await queueManagedUpdateTriage(boundedFailure, commandArgv))
+          (await queueManagedUpdateTriage(boundedFailure, commandArgv, cancellation))
         ) {
           runtime.error(
             "Automatic triage queued after managed update settlement; inspect the handoff log for its result.",

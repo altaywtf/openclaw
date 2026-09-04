@@ -72,7 +72,10 @@ function fixture() {
     });
     return createStore(options);
   };
-  const closedDestination = () => {
+  const closedDestination = (
+    lifetime?: Extract<ManagedHandoffLease["action"], { kind: "triage" }>["lifetime"],
+    uncertain = false,
+  ) => {
     // Both independent processes finish through bind/activate/complete, then exit
     // without deleting the closed row. No fabricated lease grants reclamation.
     const common = `const fs=require('node:fs'),path=require('node:path'),{spawn,spawnSync}=require('node:child_process');
@@ -80,14 +83,14 @@ const {createManagedHandoffLeaseRuntime}=require(${JSON.stringify(runtimeEntry)}
 const store=createManagedHandoffLeaseRuntime(${JSON.stringify(options)});`;
     const executor =
       common +
-      `process.once('message',lease=>{const closed=store.complete(lease);if(!closed)throw new Error('complete failed');process.send(closed,()=>process.disconnect());});`;
+      `process.once('message',lease=>{const closed=${uncertain ? "store.revoke(lease,true)" : "store.complete(lease)"};if(!closed)throw new Error('complete failed');process.send(closed,()=>process.disconnect());});`;
     const result = spawnSync(
       process.execPath,
       [
         "-e",
         common +
           `
-const acquired=store.acquire(${JSON.stringify(to)},'finished-owner',{kind:'triage',phase:'reserved',lifetime:{kind:'foreground',boot:store.bootIdentity()}});
+const acquired=store.acquire(${JSON.stringify(to)},'finished-owner',{kind:'triage',phase:'reserved',lifetime:${lifetime ? JSON.stringify(lifetime) : "{kind:'foreground',boot:store.bootIdentity()}"}});
 if(acquired.kind!=='acquired')throw new Error('destination busy');
 const child=spawn(process.execPath,['-e',${JSON.stringify(executor)}],{stdio:['ignore','ignore','inherit','ipc']});
 child.once('message',lease=>process.stdout.write(JSON.stringify(lease)));
@@ -99,11 +102,55 @@ if(!running)throw new Error('activation failed');child.send(running);
     );
     expect(result.status, result.stderr).toBe(0);
     const closed = JSON.parse(result.stdout) as ManagedHandoffLease;
-    expect(closed.action).toMatchObject({ phase: "closed" });
+    expect(closed.action).toMatchObject({ phase: uncertain ? "uncertain" : "closed" });
     return closed;
   };
   return { from, to, store, source: acquired.lease, racing, closedDestination, options };
 }
+
+unix.each(["failed", "inactive"])(
+  "retains an uncertain %s scope until systemd releases its cgroup",
+  (activeState) => {
+    const { to, store, source, options, closedDestination } = fixture();
+    const lifetime = {
+      ...action.lifetime,
+      placement: { kind: "attached" as const, invocation: "a".repeat(32) },
+    };
+    const lease = closedDestination(lifetime, true);
+    const bin = path.join(path.dirname(to), "bin");
+    fs.mkdirSync(bin);
+    options.serviceManagerEnv.PATH = bin + path.delimiter + options.serviceManagerEnv.PATH;
+    const publishScope = (controlGroup?: string) => {
+      const fields = [
+        `Id=${lifetime.scope}`,
+        "LoadState=loaded",
+        `ActiveState=${activeState}`,
+        `InvocationID=${lifetime.placement.invocation}`,
+        ...(controlGroup === undefined ? [] : [`ControlGroup=${controlGroup}`]),
+      ];
+      fs.writeFileSync(
+        path.join(bin, "systemctl"),
+        `#!/bin/sh\nprintf '%s\\n' ${fields.map((field) => `'${field}'`).join(" ")}\n`,
+        { mode: 0o700 },
+      );
+    };
+    for (const controlGroup of [`/user.slice/${lifetime.scope}`, undefined]) {
+      publishScope(controlGroup);
+      expect(store.stopNative(lease)).toBe(false);
+      expect(store.release(lease)).toBe(false);
+      expect(store.acquire(to, "contender", { kind: "update" })).toEqual({
+        kind: "busy",
+        owner: lease.owner,
+      });
+      expect(store.retarget(source, to, action)).toEqual({ kind: "busy", owner: lease.owner });
+      expect(store.read(to)).toEqual({ kind: "current", lease });
+    }
+    publishScope("");
+    expect(store.stopNative(lease)).toBe(true);
+    expect(store.release(lease)).toBe(true);
+    expect(store.retarget(source, to, action)?.kind).toBe("acquired");
+  },
+);
 
 unix("moves the captured source key after its realpath changes and preserves the helper", () => {
   const { from, to, store, source } = fixture();

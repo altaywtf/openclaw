@@ -120,10 +120,17 @@ const scope = JSON.parse(fs.readFileSync(scopeFile,'utf8'));
 let primary = JSON.parse(fs.readFileSync(primaryFile,'utf8'));
 event(action, {name});
 if (action === 'show') {
+  // A stopped scope retains its cgroup until its registered processes have exited.
+  const populated = !scope.active && name.endsWith('.scope') && fs.readdirSync(root+'/members').some(member => {
+    try { process.kill(Number(member), 0); }
+    catch (error) { return error.code !== 'ESRCH'; }
+    const state = require('node:child_process').spawnSync('ps', ['-o', 'stat=', '-p', member], {encoding:'utf8',timeout:1000});
+    return state.error || !/^Z/.test(state.stdout.trim());
+  });
   const properties = name.endsWith('.scope') ? {
     Id:scope.name, LoadState:'loaded', ActiveState:scope.active?'active':'inactive',
     PartOf:${JSON.stringify(fault)} === 'scope' ? '' : ${JSON.stringify(unit)},
-    CanStart:'no', KillMode:'control-group', ControlGroup:'/synthetic/'+scope.name, InvocationID:'a'.repeat(32),
+    CanStart:'no', KillMode:'control-group', ControlGroup:scope.active || populated ? '/synthetic/'+scope.name : '', InvocationID:'a'.repeat(32),
   } : { Id:${JSON.stringify(unit)}, LoadState:'loaded', ActiveState:primary.active?'active':'inactive',
     MainPID:primary.active?primary.pid:0, ExecMainStartTimestampMonotonic:primary.active?'111':'0',
     InvocationID:primary.active?'b'.repeat(32):'', FragmentPath:root+(${JSON.stringify(fault)} === 'unit' && !primary.active ? '/foreign.service' : '/gateway.service') };

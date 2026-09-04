@@ -9,6 +9,7 @@ import {
   resolveAdmittedRunActiveAssertion,
 } from "../admitted-run-context.js";
 import { buildPreparedCliRunContext } from "../cli-runner.test-helpers.js";
+import { hasModelFallbackStop } from "../failover-error.js";
 import { withAgentCleanupOutcome } from "../run-cleanup-timeout.js";
 import {
   acceptsCliLiveSession,
@@ -348,6 +349,44 @@ describe("generic plugin-owned live session registry", () => {
     expect(successor.close).not.toHaveBeenCalled();
     expect(successor.capability.current()).toBe(successor.session);
   });
+
+  it.each(["retained", "registered"] as const)(
+    "refuses replacement when the %s process has not exited by the cleanup deadline",
+    async (ownerKind) => {
+      const owner = await createOwner({ deferExit: true });
+      owner.register();
+      const restarting =
+        ownerKind === "retained" ? owner : await createOwner({ sessionId: owner.sessionId });
+      restarting.context.params.oneShotCliRun = true;
+      const replacement = vi.fn();
+      const finish = vi.fn(async (_outcome: "closed" | "uncertain") => {});
+      vi.useFakeTimers();
+      const observed = withAgentCleanupOutcome(async () => {
+        await restartCliLiveSession(restarting.context);
+        replacement();
+      }, finish).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      try {
+        await vi.advanceTimersByTimeAsync(10_000);
+        const failure = await observed;
+        expect(failure).toBeInstanceOf(Error);
+        expect(failure).toMatchObject({
+          message: expect.stringContaining("resource replacement refused"),
+        });
+        expect(hasModelFallbackStop(failure)).toBe(true);
+        expect(replacement).not.toHaveBeenCalled();
+        expect(owner.close).toHaveBeenCalledOnce();
+        expect(owner.capability.current()).toBeUndefined();
+        expect(finish).toHaveBeenCalledExactlyOnceWith("uncertain");
+      } finally {
+        owner.exited.resolve();
+        await observed;
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it("rejects the same process handle under a different owner despite a matching fingerprint", async () => {
     const original = await createOwner({ sessionId: "original-owner" });

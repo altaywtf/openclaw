@@ -54,6 +54,53 @@ async function closed(boundary: Awaited<ReturnType<typeof start>>) {
 }
 
 describe("managed triage attachment cutover (synthetic native boundary)", () => {
+  itUnix.each(["metadata", "ack", "disconnect", "refused"] as const)(
+    "does not start a staged repair after admission fails during %s",
+    async (window) => {
+      const boundary = await start("update", undefined, undefined, async (root) => {
+        const updater = path.join(root, "updater.cjs");
+        let source = await fs.readFile(updater, "utf8");
+        const interrupt =
+          window === "metadata"
+            ? `const fsp=require('node:fs/promises'), read=fsp.readFile;
+fsp.readFile=async function(...args) {
+  const result=await read.apply(this,args);
+  if(args[0]===process.env.OPENCLAW_CONTROL_PLANE_UPDATE_SENTINEL_META) {
+    event('admission-interrupted'); controller.abort(new Error('fixture cancellation'));
+  }
+  return result;
+};`
+            : `process.prependListener('message',message=>{
+  if(message.type!=='triage-queued') return;
+  event('admission-interrupted');
+  ${window === "ack" ? "controller.abort(new Error('fixture cancellation'));" : window === "disconnect" ? "process.disconnect();" : "message.type='triage-refused';"}
+});`;
+        source = source.replace(
+          "event('updater');",
+          `event('updater'); const controller=new AbortController();\n${interrupt}`,
+        );
+        source = source.replace("'triage']))", "'triage'],controller.signal))");
+        source = source.replaceAll(
+          "process.disconnect();process.exitCode",
+          "if(process.connected)process.disconnect();process.exitCode",
+        );
+        await fs.writeFile(updater, source);
+      });
+      await ready(boundary);
+      expect(await boundary.control("park")).toBe("parked");
+      expect(await boundary.control("commit")).toBe("committed");
+      boundary.parent.kill();
+      expect(await boundary.exit, await boundary.log()).toEqual({ code: 9, signal: null });
+      const events = await boundary.readEvents();
+      expect(events.filter((event) => event.kind === "admission-interrupted")).toHaveLength(1);
+      expect(
+        events.filter((event) => ["fixer", "attached", "triage-queued"].includes(event.kind)),
+      ).toEqual([]);
+      expect(boundary.readLease()).toBeUndefined();
+      expect(await boundary.log()).toContain("exited code=9 signal=null");
+    },
+  );
+
   itUnix("releases a partial native fixture when setup rejects", async () => {
     const failure = new Error("fixture setup rejected");
     let root: string | undefined;

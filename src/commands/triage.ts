@@ -414,9 +414,9 @@ export async function triageCommand(
             maxOutputBytes: 32 * 1024,
           },
         );
-        if (result.cleanup === "uncertain" || result.cleanup === "forced") {
-          recordAgentCleanupFailure();
-        }
+        // External runtimes own native commands in independent process groups.
+        // Their root/group exit is not a descendant-cleanup receipt.
+        recordAgentCleanupFailure();
         for (const output of [result.stdout, result.stderr]) {
           if (output.trim()) {
             runtime.log(redactSupportString(output, redaction, { maxLength: 32 * 1024 }));

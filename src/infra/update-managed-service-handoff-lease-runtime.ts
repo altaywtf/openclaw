@@ -68,7 +68,12 @@ export function createManagedHandoffLeaseRuntime(
   function nativeScope(life: HandoffNativeLifetime) {
     const result = spawnSync(
       "systemctl",
-      ["--user", "show", life.scope, "--property=Id,LoadState,ActiveState,InvocationID"],
+      [
+        "--user",
+        "show",
+        life.scope,
+        "--property=Id,LoadState,ActiveState,InvocationID,ControlGroup",
+      ],
       {
         env: serviceManagerEnv,
         encoding: "utf8",
@@ -81,11 +86,16 @@ export function createManagedHandoffLeaseRuntime(
     return !result.error && (result.status === 0 || scope.LoadState === "not-found") ? scope : null;
   }
   function nativeClosed(life: HandoffNativeLifetime, scope = nativeScope(life)) {
+    // systemd retains populated cgroups even after failed/reset-failed. Its
+    // cgroup retirement and unit GC require recursive emptiness, unlike ActiveState.
     return Boolean(
       scope &&
+      scope.Id === life.scope &&
       (scope.LoadState === "not-found" ||
-        (scope.Id === life.scope &&
-          ["inactive", "failed"].some((state) => state === scope.ActiveState))),
+        (scope.LoadState === "loaded" &&
+          ["inactive", "failed"].some((state) => state === scope.ActiveState) &&
+          scope.ControlGroup === "" &&
+          (life.placement.kind === "pending" || scope.InvocationID === life.placement.invocation))),
     );
   }
   function assertPath(stat: Stats, kind: "directory" | "file") {

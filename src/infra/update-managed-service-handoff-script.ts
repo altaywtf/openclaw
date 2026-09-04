@@ -131,6 +131,8 @@ async function runOwnedUpdateCommand(phase, commandArgv, timeoutMs, cwd = params
   let outputFd;
   let timeout;
   let continuation;
+  let stagedContinuation;
+  let continuationCancelled = false;
   let triageAdmitted = false;
   let leaseWatch;
   let admissionDeadline;
@@ -165,104 +167,128 @@ async function runOwnedUpdateCommand(phase, commandArgv, timeoutMs, cwd = params
         updaterChunks.length = 0;
       } else updaterChunks.push(chunk);
     });
+    let childError;
     const exited = new Promise((resolve) => {
-      child.once("error", (err) => resolve({ error: err }));
-      child.once("close", (code, signal) => resolve({ code, signal }));
+      child.once("error", (error) => { childError = error; });
+      child.once("close", (code, signal) => resolve({ code, signal, error: childError }));
     });
     child.stdin.on("error", () => {});
-    // A failed spawn can retain a native handle without a PID until its error
-    // event. Establish the actual child before binding or signalling that handle.
-    await new Promise((resolve, reject) => child.once("spawn", resolve).once("error", reject));
-    if (!bindManagedUpdateLeaseToProcess(child.pid)) {
-      killOwnedCommand(child);
-      await exited;
-      throw new Error("managed update runner lease binding failed");
-    }
-    let runnerIdentity = managedUpdateLease.payload;
-    child.on("message", async (message) => {
-      try {
-        if (
-          !message ||
-          message.version !== 2 ||
-          !hasManagedUpdateLease() ||
-          managedUpdateLease.payload !== runnerIdentity ||
-          child.exitCode !== null ||
-          child.signalCode !== null
-        ) {
-          throw new Error("managed handoff child lost its current claim");
+    let runnerIdentity = managedUpdateLease?.payload;
+    try {
+      // Errors before the gate still own this runner and its pipe/IPC handles.
+      await new Promise((resolve, reject) => child.once("spawn", resolve).once("error", reject));
+      if (!bindManagedUpdateLeaseToProcess(child.pid)) {
+        throw new Error("managed update runner lease binding failed");
+      }
+      runnerIdentity = managedUpdateLease.payload;
+      child.once("disconnect", () => {
+        if (stagedContinuation) {
+          appendLog("automatic triage skipped: updater disconnected before committing its request");
+          stagedContinuation = undefined;
         }
-        if (
-          params.action === "triage" &&
-          message.type === "triage-ready" &&
-          !triageAdmitted &&
-          Object.keys(message).length === 2
-        ) {
-          // Claim the one admission before awaiting native inspection; duplicate
-          // messages cannot both pass the same current runner lease.
-          triageAdmitted = true;
-          const scope = await inspectTriageScope();
+      });
+      child.on("message", async (message) => {
+        try {
+          if (phase === "update" && message?.version === 2 &&
+            message.type === "triage-request-cancel" && Object.keys(message).length === 2 &&
+            !continuation) {
+            stagedContinuation = undefined;
+            continuationCancelled = true;
+            appendLog("automatic triage request cancelled before handoff");
+            return;
+          }
           if (
+            !message ||
+            message.version !== 2 ||
             !hasManagedUpdateLease() ||
             managedUpdateLease.payload !== runnerIdentity ||
-            fs.readFileSync("/proc/" + child.pid + "/cgroup", "utf8").trim() !==
-              "0::" + scope.ControlGroup
+            child.exitCode !== null ||
+            child.signalCode !== null
           ) {
-            throw new Error("automatic triage executor lost its native placement");
+            throw new Error("managed handoff child lost its current claim");
           }
-          if (!child.connected || child.exitCode !== null || child.signalCode !== null) throw new Error("automatic triage child disconnected");
-          const admitted = leaseStore.activate(managedUpdateLease);
-          if (!admitted) throw new Error("automatic triage activation lost its claim");
-          managedUpdateLease = admitted;
-          runnerIdentity = admitted.payload;
-          clearTimeout(admissionDeadline);
-          child.send(
-            {
-              type: "triage",
-              version: 2,
-              failure: params.failure,
-              installRoot: params.updateLeaseKey,
-              owner: managedUpdateLease.owner,
-            },
-            () => {},
-          );
-        } else if (
-          phase === "update" &&
-          message.type === "triage-request" &&
-          !continuation &&
-          Object.keys(message).length === 4 &&
-          Array.isArray(message.commandArgv) &&
-          (message.commandArgv.length === 3 ||
-            (message.commandArgv.length === 5 && message.commandArgv[3] === "--update-result")) &&
-          message.commandArgv.every((arg) => typeof arg === "string" && arg.length < 4096) &&
-          message.commandArgv[2] === "triage" &&
-          validTriageFailure(message.failure) &&
-          message.failure.kind === "update" &&
-          params.serviceRecovery?.kind === "systemd" &&
-          Buffer.byteLength(JSON.stringify(message)) <= 16384
-        ) {
-          continuation = message;
-          child.send({ type: "triage-queued", version: 2 }, () => {});
-        } else throw new Error("invalid or repeated managed handoff continuation");
-      } catch (error) {
-        appendLog("automatic triage admission failed: " + String(error));
-        if (params.action === "triage") stopTriageScope();
-        else if (child.connected) child.send({ type: "triage-refused", version: 2 }, () => {});
-      }
-    });
-    if (params.action === "triage") {
-      admissionDeadline = setTimeout(() => {
-        appendLog("installed candidate did not admit triage; run openclaw triage manually");
-        stopTriageScope();
-      }, 30000);
-      leaseWatch = setInterval(() => {
-        if (!hasManagedUpdateLease()) {
-          clearInterval(leaseWatch);
-          appendLog("automatic triage cancelled: lease lost or replaced");
-          stopTriageScope();
+          if (
+            params.action === "triage" &&
+            message.type === "triage-ready" &&
+            !triageAdmitted &&
+            Object.keys(message).length === 2
+          ) {
+            // Claim the one admission before awaiting native inspection; duplicate
+            // messages cannot both pass the same current runner lease.
+            triageAdmitted = true;
+            const scope = await inspectTriageScope();
+            if (
+              !hasManagedUpdateLease() ||
+              managedUpdateLease.payload !== runnerIdentity ||
+              fs.readFileSync("/proc/" + child.pid + "/cgroup", "utf8").trim() !==
+                "0::" + scope.ControlGroup
+            ) {
+              throw new Error("automatic triage executor lost its native placement");
+            }
+            if (!child.connected || child.exitCode !== null || child.signalCode !== null) throw new Error("automatic triage child disconnected");
+            const admitted = leaseStore.activate(managedUpdateLease);
+            if (!admitted) throw new Error("automatic triage activation lost its claim");
+            managedUpdateLease = admitted;
+            runnerIdentity = admitted.payload;
+            clearTimeout(admissionDeadline);
+            child.send(
+              {
+                type: "triage",
+                version: 2,
+                failure: params.failure,
+                installRoot: params.updateLeaseKey,
+                owner: managedUpdateLease.owner,
+              },
+              () => {},
+            );
+          } else if (
+            phase === "update" &&
+            message.type === "triage-request" &&
+            !stagedContinuation && !continuation && !continuationCancelled &&
+            Object.keys(message).length === 4 &&
+            Array.isArray(message.commandArgv) &&
+            (message.commandArgv.length === 3 ||
+              (message.commandArgv.length === 5 && message.commandArgv[3] === "--update-result")) &&
+            message.commandArgv.every((arg) => typeof arg === "string" && arg.length < 4096) &&
+            message.commandArgv[2] === "triage" &&
+            validTriageFailure(message.failure) &&
+            message.failure.kind === "update" &&
+            params.serviceRecovery?.kind === "systemd" &&
+            Buffer.byteLength(JSON.stringify(message)) <= 16384
+          ) {
+            stagedContinuation = message;
+            child.send({ type: "triage-queued", version: 2 }, () => {});
+          } else if (phase === "update" && message.type === "triage-commit" &&
+            Object.keys(message).length === 2 && stagedContinuation &&
+            !continuation && !continuationCancelled) {
+            // The same live updater transfers its request only after the queue ACK.
+            // Never infer this decision from its exit code or disconnected IPC.
+            continuation = stagedContinuation;
+            stagedContinuation = undefined;
+          } else throw new Error("invalid or repeated managed handoff continuation");
+        } catch (error) {
+          if (!continuation) {
+            stagedContinuation = undefined;
+            continuationCancelled = true;
+          }
+          appendLog("automatic triage admission failed: " + String(error));
+          if (params.action === "triage") stopTriageScope();
+          else if (child.connected) child.send({ type: "triage-refused", version: 2 }, () => {});
         }
-      }, 250);
-    }
-    try {
+      });
+      if (params.action === "triage") {
+        admissionDeadline = setTimeout(() => {
+          appendLog("installed candidate did not admit triage; run openclaw triage manually");
+          stopTriageScope();
+        }, 30000);
+        leaseWatch = setInterval(() => {
+          if (!hasManagedUpdateLease()) {
+            clearInterval(leaseWatch);
+            appendLog("automatic triage cancelled: lease lost or replaced");
+            stopTriageScope();
+          }
+        }, 250);
+      }
       // Sending the gate can start mutation even if its write callback fails.
       // From here, only the updater can authorize recovery of this installation.
       if (phase === "update") updaterStarted = true;
@@ -282,9 +308,14 @@ async function runOwnedUpdateCommand(phase, commandArgv, timeoutMs, cwd = params
       });
       child.stdin.end();
     } catch (error) {
-      killOwnedCommand(child);
+      // A rejected spawn has no signalable process, but still needs its close join.
+      if (child.pid) killOwnedCommand(child);
       await exited;
-      bindManagedUpdateLeaseToProcess(process.pid, runnerIdentity);
+      try {
+        if (runnerIdentity) bindManagedUpdateLeaseToProcess(process.pid, runnerIdentity);
+      } catch (rebindError) {
+        appendLog("managed update runner cleanup could not rebind helper: " + String(rebindError));
+      }
       throw error;
     }
     appendLog("managed update " + phase + " command pid=" + (child.pid || "unknown"));
