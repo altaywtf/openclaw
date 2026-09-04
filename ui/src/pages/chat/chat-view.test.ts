@@ -3931,8 +3931,12 @@ describe("chat voice controls", () => {
       ".agent-chat__composer-footer",
       "composer footer",
     );
-    const textarea = getComposerTextarea(container);
-    const focusSpy = vi.spyOn(textarea, "focus");
+    const editor = requireElement(
+      container,
+      ".agent-chat__composer-editor .cm-content",
+      "composer editor",
+    ) as HTMLElement;
+    const focusSpy = vi.spyOn(editor, "focus");
 
     composerFooter.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 
@@ -3946,8 +3950,12 @@ describe("chat voice controls", () => {
       `[aria-label="${t("chat.composer.addAttachment")}"]`,
       "attach button",
     );
-    const textarea = getComposerTextarea(container);
-    const focusSpy = vi.spyOn(textarea, "focus");
+    const editor = requireElement(
+      container,
+      ".agent-chat__composer-editor .cm-content",
+      "composer editor",
+    ) as HTMLElement;
+    const focusSpy = vi.spyOn(editor, "focus");
 
     attachButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 
@@ -4014,10 +4022,14 @@ describe("chat composer render invalidation", () => {
 
     expect(onRequestUpdate).not.toHaveBeenCalled();
     expect(chatThread.buildCachedChatItems).not.toHaveBeenCalled();
-    expect(textarea.dir).toBe("rtl");
+    expect(
+      requireElement(container, ".agent-chat__composer-editor .cm-content", "composer editor").dir,
+    ).toBe("rtl");
 
     render(renderChat(props), container);
-    expect(getComposerTextarea(container).dir).toBe("rtl");
+    expect(
+      requireElement(container, ".agent-chat__composer-editor .cm-content", "composer editor").dir,
+    ).toBe("rtl");
   });
 
   it("invalidates when offline slash eligibility changes", () => {
@@ -4225,145 +4237,46 @@ describe("chat composer IME composition", () => {
     textarea.value = "市场";
     textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
 
-    // After composition ends, adjustTextareaHeight runs via syncComposerValue
-    expect(textarea.style.height).not.toBe("42px");
+    expect(textarea.style.height).toBe("42px");
+    expect(container.querySelector(".agent-chat__composer-editor .cm-content")?.textContent).toBe(
+      "市场",
+    );
   });
 });
 
 describe("chat composer sizing", () => {
-  it("keeps a bottom-anchored transcript pinned when the rich preview appears", () => {
+  it("keeps a bottom-anchored transcript pinned when rich formatting changes layout", () => {
     const container = renderChatView({});
     const textarea = getComposerTextarea(container);
     const thread = requireElement(container, ".chat-thread", "chat thread") as HTMLElement;
-    const preview = requireElement(
-      container,
-      ".agent-chat__composer-markdown-preview",
-      "composer preview",
-    ) as HTMLElement;
     Object.defineProperties(thread, {
       clientHeight: { configurable: true, value: 500 },
-      scrollHeight: { configurable: true, get: () => (preview.hidden ? 1_000 : 1_120) },
+      scrollHeight: {
+        configurable: true,
+        get: () => (container.querySelector(".chat-composer-rich-strong") === null ? 1_000 : 1_120),
+      },
       scrollTop: { configurable: true, writable: true, value: 500 },
     });
 
     textarea.value = "**Bold direction**";
     textarea.dispatchEvent(new InputEvent("input", { bubbles: true }));
 
-    expect(preview.hidden).toBe(false);
+    expect(container.querySelector(".chat-composer-rich-strong")?.textContent).toBe(
+      "Bold direction",
+    );
     expect(thread.scrollTop).toBe(1_120);
   });
 
-  it("sizes restored drafts after the rendered value is committed", async () => {
+  it("renders restored drafts in the rich editor", async () => {
     const container = renderChatView({ draft: "A restored long draft" });
-    const textarea = getComposerTextarea(container);
-    Object.defineProperties(textarea, {
-      scrollHeight: { configurable: true, value: 180 },
-      clientHeight: { configurable: true, value: 150 },
-    });
     document.body.append(container);
 
     await Promise.resolve();
 
-    expect(textarea.style.height).toBe("150px");
-    expect(textarea.style.overflowY).toBe("auto");
+    expect(container.querySelector(".agent-chat__composer-editor .cm-content")?.textContent).toBe(
+      "A restored long draft",
+    );
     container.remove();
-  });
-
-  it("shows the textarea scrollbar only when the draft overflows", () => {
-    const container = renderChatView({});
-    const textarea = getComposerTextarea(container);
-    let scrollHeight = 42;
-    let clientHeight = 42;
-    Object.defineProperties(textarea, {
-      scrollHeight: { configurable: true, get: () => scrollHeight },
-      clientHeight: { configurable: true, get: () => clientHeight },
-    });
-
-    textarea.dispatchEvent(new InputEvent("input", { bubbles: true }));
-
-    expect(textarea.style.height).toBe("42px");
-    expect(textarea.style.overflowY).toBe("hidden");
-
-    scrollHeight = 180;
-    clientHeight = 150;
-    textarea.value = "A long draft";
-    textarea.dispatchEvent(new InputEvent("input", { bubbles: true }));
-
-    expect(textarea.style.height).toBe("150px");
-    expect(textarea.style.overflowY).toBe("auto");
-  });
-
-  it("resizes the draft when responsive layout changes the textarea width", () => {
-    let resizeCallback: ResizeObserverCallback | undefined;
-    let animationFrameCallback: FrameRequestCallback | undefined;
-    let nextAnimationFrameId = 0;
-    const requestAnimationFrameMock = vi.fn((callback: FrameRequestCallback) => {
-      animationFrameCallback = callback;
-      nextAnimationFrameId += 1;
-      return nextAnimationFrameId;
-    });
-    const cancelAnimationFrameMock = vi.fn();
-    class TestResizeObserver {
-      constructor(callback: ResizeObserverCallback) {
-        resizeCallback = callback;
-      }
-      observe() {}
-      unobserve() {}
-      disconnect() {}
-      takeRecords(): ResizeObserverEntry[] {
-        return [];
-      }
-    }
-    vi.stubGlobal("ResizeObserver", TestResizeObserver);
-    vi.stubGlobal("requestAnimationFrame", requestAnimationFrameMock);
-    vi.stubGlobal("cancelAnimationFrame", cancelAnimationFrameMock);
-
-    let width = 320;
-    let scrollHeight = 42;
-    let clientHeight = 42;
-    vi.spyOn(HTMLTextAreaElement.prototype, "getBoundingClientRect").mockImplementation(() => ({
-      bottom: clientHeight,
-      height: clientHeight,
-      left: 0,
-      right: width,
-      top: 0,
-      width,
-      x: 0,
-      y: 0,
-      toJSON: () => ({}),
-    }));
-
-    const container = renderChatView({});
-    const textarea = getComposerTextarea(container);
-    Object.defineProperties(textarea, {
-      scrollHeight: { configurable: true, get: () => scrollHeight },
-      clientHeight: { configurable: true, get: () => clientHeight },
-    });
-    textarea.dispatchEvent(new InputEvent("input", { bubbles: true }));
-    expect(textarea.style.height).toBe("42px");
-    expect(textarea.style.overflowY).toBe("hidden");
-
-    scrollHeight = 180;
-    clientHeight = 150;
-    resizeCallback?.([], {} as ResizeObserver);
-    expect(textarea.style.overflowY).toBe("auto");
-    expect(requestAnimationFrameMock).not.toHaveBeenCalled();
-
-    width = 180;
-    scrollHeight = 120;
-    clientHeight = 120;
-    resizeCallback?.([], {} as ResizeObserver);
-    expect(requestAnimationFrameMock).toHaveBeenCalledOnce();
-    expect(textarea.style.height).toBe("42px");
-
-    animationFrameCallback?.(0);
-    expect(textarea.style.height).toBe("120px");
-    expect(textarea.style.overflowY).toBe("hidden");
-
-    width = 160;
-    resizeCallback?.([], {} as ResizeObserver);
-    render(html``, container);
-    expect(cancelAnimationFrameMock).toHaveBeenCalledWith(2);
   });
 });
 
@@ -5045,7 +4958,7 @@ describe("chat slash menu accessibility", () => {
     container.remove();
   });
 
-  it("keeps confirmed skill references as raw textarea text with native selection", () => {
+  it("keeps confirmed skill references as raw Markdown with native selection", () => {
     replaceSkillCommands({
       key: "prose_writer",
       skillDisplayName: "Prose Writer",
@@ -5059,10 +4972,10 @@ describe("chat slash menu accessibility", () => {
     expect(container.querySelector(".agent-chat__skill-token")).toBeNull();
     expect(container.querySelector(".agent-chat__composer-draft-overlay")).toBeNull();
     expect(textarea.classList.contains("agent-chat__composer-textarea--rich")).toBe(false);
-    expect(
-      container.querySelector<HTMLElement>(".agent-chat__composer-markdown-preview")?.hidden,
-    ).toBe(true);
-    expect(container.querySelector(".agent-chat__composer-markdown-preview.chat-text")).toBeNull();
+    expect(container.querySelector(".agent-chat__composer-markdown-preview")).toBeNull();
+    expect(container.querySelector(".agent-chat__composer-editor .cm-content")?.textContent).toBe(
+      "Use $prose_writer: next",
+    );
 
     textarea.setSelectionRange(8, 8);
     textarea.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
@@ -5078,20 +4991,20 @@ describe("chat slash menu accessibility", () => {
     expect(textarea.value).toBe("Use $prose_writer: next");
   });
 
-  it("previews Markdown formatting without replacing the native draft input", () => {
+  it("formats Markdown inside the editor while preserving the source draft", () => {
     const draft =
       "> A quoted note\n\n**Bold direction** with `inline code`\n\n- First task\n- Second task";
     const { container } = createReactiveDraftHarness();
     inputDraftAtEnd(container, draft);
 
-    const preview = container.querySelector(".agent-chat__composer-markdown-preview");
-    expect(preview?.querySelector("blockquote")?.textContent).toContain("A quoted note");
-    expect(preview?.querySelector("strong")?.textContent).toBe("Bold direction");
-    expect(preview?.querySelector("code")?.textContent).toBe("inline code");
-    expect(Array.from(preview?.querySelectorAll("li") ?? [], (item) => item.textContent)).toEqual([
-      "First task",
-      "Second task",
-    ]);
+    const editor = container.querySelector(".agent-chat__composer-editor");
+    expect(editor?.querySelector(".chat-composer-rich-quote")?.textContent).toContain(
+      "A quoted note",
+    );
+    expect(editor?.querySelector(".chat-composer-rich-strong")?.textContent).toBe("Bold direction");
+    expect(editor?.querySelector(".chat-composer-rich-code")?.textContent).toBe("inline code");
+    expect(editor?.querySelectorAll(".chat-composer-rich-list-item")).toHaveLength(2);
+    expect(editor?.textContent).not.toContain("**");
     expect(getComposerTextarea(container).value).toBe(draft);
   });
 

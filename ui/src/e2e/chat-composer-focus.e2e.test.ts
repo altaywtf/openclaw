@@ -216,7 +216,7 @@ suite.define(() => {
       await gateway.waitForRequest("chat.startup");
 
       const composer = page.locator(".agent-chat__input");
-      const textarea = composer.locator("textarea");
+      const editor = composer.locator(".agent-chat__composer-editor .cm-content");
       await composer.waitFor({ state: "visible" });
 
       for (const theme of ["dark", "light"] as const) {
@@ -224,7 +224,15 @@ suite.define(() => {
         await expect
           .poll(() => page.evaluate(() => document.documentElement.dataset.themeMode))
           .toBe(theme);
-        await textarea.evaluate((element) => element.blur());
+        await editor.evaluate((element) => {
+          element.blur();
+          const focusSink = document.createElement("button");
+          focusSink.tabIndex = -1;
+          document.body.append(focusSink);
+          focusSink.focus();
+          focusSink.remove();
+        });
+        await expect.poll(() => composer.locator(".cm-editor.cm-focused").count()).toBe(0);
         const unfocused = await composer.evaluate(async (element) => {
           await Promise.all(element.getAnimations().map((animation) => animation.finished));
           const style = getComputedStyle(element);
@@ -232,7 +240,8 @@ suite.define(() => {
           return { borderColor: style.borderColor, boxShadow: style.boxShadow, width, height };
         });
 
-        await textarea.focus();
+        await editor.focus();
+        await expect.poll(() => composer.locator(".cm-editor.cm-focused").count()).toBe(1);
         const focused = await composer.evaluate(async (element) => {
           await Promise.all(element.getAnimations().map((animation) => animation.finished));
           const style = getComputedStyle(element);
