@@ -7,6 +7,7 @@ import {
   parseWorkerSkillResourceLocator,
   WORKER_SKILL_RESOURCE_CHUNK_BYTES,
   WORKER_SKILL_RESOURCE_COMMAND,
+  type WorkerSkillResourceLocator,
   type WorkerSkillResourceOperation,
 } from "../../worker/skill-resource-protocol.js";
 import type { WorkerWorkspaceTunnelHandle } from "./tunnel-contract.js";
@@ -30,9 +31,6 @@ export async function transferSkillResources(params: {
     check,
     params.explicitSelections,
   );
-  if (!delivery || !params.snapshot) {
-    return undefined;
-  }
   const execute = async (operation: WorkerSkillResourceOperation, input?: string) => {
     const cleanup = operation.operation === "cleanup";
     const assertDispatchCurrent = cleanup ? params.assertCurrent : check;
@@ -59,11 +57,39 @@ export async function transferSkillResources(params: {
     }
     if (result.termination !== "exit" || result.code !== 0) {
       throw new Error(
-        "Skill resource transfer failed. Retry this turn after reconnecting the execution environment.",
+        `Skill resource ${cleanup ? "cleanup" : "transfer"} failed. Retry this turn after reconnecting the execution environment.`,
       );
     }
     return result.stdout;
   };
+  const validateLocation = (location: WorkerSkillResourceLocator) => {
+    const parent = path.posix.dirname(params.workspaceDir.replaceAll("\\", "/"));
+    if (
+      location.root.replaceAll("\\", "/") !==
+      `${parent}/.${params.generation}.skill-resources-${location.resourceId}`
+    ) {
+      throw new Error("Skill resource location does not match its workspace owner");
+    }
+  };
+  // Discovery is read-only: a delayed old request cannot delete a replacement turn's inputs.
+  // Revalidate this turn before deleting only the captured directory identity.
+  for (;;) {
+    const candidate = await execute({ operation: "discover" });
+    if (!candidate) {
+      break;
+    }
+    const location = parseWorkerSkillResourceLocator(JSON.parse(candidate));
+    validateLocation(location);
+    check();
+    await execute({
+      operation: "cleanup",
+      resourceId: location.resourceId,
+      identity: location.identity,
+    });
+  }
+  if (!delivery || !params.snapshot) {
+    return undefined;
+  }
   const initialized = parseWorkerSkillResourceLocator(
     JSON.parse(await execute({ operation: "init" })),
   );
@@ -72,15 +98,31 @@ export async function transferSkillResources(params: {
     await execute({ operation: "cleanup", ...locator });
   };
   try {
-    const parent = path.posix.dirname(params.workspaceDir.replaceAll("\\", "/"));
-    if (
-      initialized.root.replaceAll("\\", "/") !==
-      `${parent}/.${params.generation}.skill-resources-${initialized.resourceId}`
-    ) {
-      throw new Error("Skill resource location does not match its workspace owner");
-    }
+    validateLocation(initialized);
     check();
-    const resolvedSkills = structuredClone(params.snapshot.resolvedSkills ?? []);
+    const deliveredSourcePaths = new Set(
+      delivery.skills
+        .map((skill) => skill.sourcePath)
+        .filter((sourcePath): sourcePath is string => sourcePath !== undefined),
+    );
+    const resolvedSkills = structuredClone(params.snapshot.resolvedSkills ?? []).filter(
+      (skill) => skill.filePath.startsWith("node://") || deliveredSourcePaths.has(skill.filePath),
+    );
+    const skippedSkillNames = new Set(
+      (params.snapshot.resolvedSkills ?? [])
+        .filter(
+          (skill) =>
+            !skill.filePath.startsWith("node://") && !deliveredSourcePaths.has(skill.filePath),
+        )
+        .map((skill) => skill.name),
+    );
+    const retainedSkillNames = new Set([
+      ...resolvedSkills.map((skill) => skill.name),
+      ...delivery.skills.map((skill) => skill.name),
+    ]);
+    const skills = structuredClone(params.snapshot.skills).filter(
+      (skill) => !skippedSkillNames.has(skill.name) || retainedSkillNames.has(skill.name),
+    );
     const mounts: Array<{ hostPath: string; containerPath: string }> = [];
     for (const [index, skill] of delivery.skills.entries()) {
       const bundle = prepareSkillBundle(skill.files);
@@ -106,7 +148,7 @@ export async function transferSkillResources(params: {
           );
         }
       }
-      const selected = resolvedSkills.find((candidate) => candidate.name === skill.name);
+      const selected = resolvedSkills.find((candidate) => candidate.filePath === skill.sourcePath);
       const sourceBase =
         selected?.baseDir ?? (skill.sourcePath ? path.dirname(skill.sourcePath) : undefined);
       if (!sourceBase) {
@@ -115,7 +157,13 @@ export async function transferSkillResources(params: {
       const remoteBase = `${initialized.root.replaceAll("\\", "/")}/${index}`;
       mounts.push({ hostPath: sourceBase, containerPath: remoteBase });
       if (selected) {
-        selected.locationNote = `Read instructions at the location above. For remote execution, this exact bundle's scripts and resources are at ${remoteBase}; resolve relative execution paths against that directory.`;
+        selected.filePath = `${remoteBase}/SKILL.md`;
+        selected.baseDir = remoteBase;
+        // Code Mode reads the same verified instructions even when the node has no filesystem bridge.
+        selected.readContent = bundle.files
+          .find((file) => file.path === "SKILL.md")!
+          .bytes.toString("utf8");
+        delete selected.locationNote;
       }
     }
     check();
@@ -123,6 +171,7 @@ export async function transferSkillResources(params: {
       source: params.snapshot,
       snapshot: {
         ...params.snapshot,
+        skills,
         resolvedSkills,
         prompt: formatSkillsForPromptBounded({ skills: resolvedSkills, preserveOrder: true }),
       },

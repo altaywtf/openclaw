@@ -13,6 +13,7 @@ export const WORKER_SKILL_RESOURCE_PATH_MAX_DEPTH = 17;
 
 type WorkerSkillResourceIdentity = { resourceId: string; identity: string };
 export type WorkerSkillResourceOperation =
+  | { operation: "discover" }
   | { operation: "init" }
   | (WorkerSkillResourceIdentity & { operation: "cleanup" })
   | (WorkerSkillResourceIdentity & {
@@ -31,17 +32,21 @@ function isResourceIdentity(
 ): value is Record<string, unknown> & WorkerSkillResourceIdentity {
   return (
     typeof value.resourceId === "string" &&
+    value.resourceId.length === 32 &&
     /^[a-f0-9]{32}$/u.test(value.resourceId) &&
     typeof value.identity === "string" &&
     value.identity.length <= 128 &&
-    /^\d+:\d+$/u.test(value.identity)
+    /^\d+:\d+$/u.exec(value.identity)?.[0] === value.identity
   );
 }
 
 export function parseWorkerSkillResourceOperation(value: unknown): WorkerSkillResourceOperation {
   if (isRecord(value)) {
-    if (value.operation === "init" && hasExactOwnKeys(value, ["operation"])) {
-      return { operation: "init" };
+    if (
+      (value.operation === "init" || value.operation === "discover") &&
+      hasExactOwnKeys(value, ["operation"])
+    ) {
+      return { operation: value.operation };
     }
     if (isResourceIdentity(value)) {
       if (
@@ -67,7 +72,16 @@ export function parseWorkerSkillResourceOperation(value: unknown): WorkerSkillRe
         value.path.split("/").length <= WORKER_SKILL_RESOURCE_PATH_MAX_DEPTH &&
         value.path
           .split("/")
-          .every((part) => part && part !== "." && part !== ".." && !/[\\:\0]/u.test(part)) &&
+          .every(
+            (part) =>
+              part &&
+              part !== "." &&
+              part !== ".." &&
+              !/[\\:\0]/u.test(part) &&
+              !/[ .]$/u.test(part) &&
+              !/^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/iu.test(part) &&
+              !/^(conin|conout)\$$/iu.test(part),
+          ) &&
         typeof value.offset === "number" &&
         Number.isSafeInteger(value.offset) &&
         value.offset >= 0 &&
@@ -76,6 +90,7 @@ export function parseWorkerSkillResourceOperation(value: unknown): WorkerSkillRe
         value.sizeBytes >= value.offset &&
         value.sizeBytes <= WORKER_SKILL_RESOURCE_FILE_MAX_BYTES &&
         typeof value.sha256 === "string" &&
+        value.sha256.length === 64 &&
         /^[a-f0-9]{64}$/u.test(value.sha256) &&
         typeof value.executable === "boolean"
       ) {
@@ -133,7 +148,7 @@ export function parseWorkerSkillResourceLocator(value: unknown): WorkerSkillReso
 /** Resource artifacts live beside the project and retire with their exact generation. */
 export function parseWorkerSkillResourceGeneration(name: string): number | undefined {
   const match = /^\.(0|[1-9]\d*)\.skill-resources-[a-f0-9]{32}$/u.exec(name);
-  if (!match) {
+  if (!match || match[0] !== name) {
     return undefined;
   }
   const generation = Number(match[1]);

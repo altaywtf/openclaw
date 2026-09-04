@@ -1,193 +1,421 @@
-import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { NodeWorkerWorkspaceRuntime } from "../../node-host/node-worker-workspace.js";
-import type { SpawnResult } from "../../process/exec.js";
-import { loadWorkspaceSkills } from "../../skills/loading/workspace-skill-loader.js";
-import { buildSkillSnapshot } from "../../skills/loading/workspace-skill-prompt.js";
-import { buildSkillResourceCommand } from "../../worker/skill-resource-receiver.js";
 import { transferSkillResources } from "./skill-resource-transfer.js";
-import type { WorkerWorkspaceCommand, WorkerWorkspaceTunnelHandle } from "./tunnel-contract.js";
+import {
+  createNodeCarrier,
+  createResourceCarrier,
+  createResourceSource,
+  prependResourceReceiver,
+  NODE_WORKER_WORKSPACE_STDIN_MAX_BYTES,
+} from "./skill-resource-transfer.test-support.js";
+import type { WorkerWorkspaceTunnelHandle } from "./tunnel-contract.js";
+import { WORKER_ATTACHMENT_DIRECTORY_PREFIX } from "./workspace-path-exclusions.js";
+import { readActualWorkspaceManifest } from "./workspace-reconcile.js";
 
 const temps = useAutoCleanupTempDirTracker(afterEach);
-const runCommand = async (command: WorkerWorkspaceCommand): Promise<SpawnResult> => {
-  command.assertCurrent?.();
-  return new Promise((resolve, reject) => {
-    const child = spawn(command.argv[0]!, command.argv.slice(1), {
-      stdio: "pipe",
-      signal: command.signal,
-    });
-    let stdout = "",
-      stderr = "";
-    child.stdout.on("data", (bytes) => {
-      stdout += bytes;
-    });
-    child.stderr.on("data", (bytes) => {
-      stderr += bytes;
-    });
-    child.on("error", reject);
-    child.on("close", (code) =>
-      resolve({ stdout, stderr, code, termination: "exit", signal: null, killed: false }),
-    );
-    child.stdin.end(command.input);
-  });
-};
-const tunnel: Pick<WorkerWorkspaceTunnelHandle, "runWorkspaceCommand"> = {
-  runWorkspaceCommand: async (command) => {
-    const context = command.skillResources;
-    if (!context) {
-      throw new Error("Missing skill resource operation");
-    }
-    return runCommand({
-      ...command,
-      argv: buildSkillResourceCommand({
-        parentDir: path.dirname(context.workspaceDir),
-        generation: context.generation,
-        operation: context.operation,
-      }),
-    });
-  },
-};
+afterEach(() => vi.restoreAllMocks());
 
-async function createSource() {
-  const workspace = await fs.realpath(temps.make("remote-skill-source-"));
-  const baseDir = path.join(workspace, "skills", "source");
-  await fs.mkdir(path.join(baseDir, "scripts"), { recursive: true });
-  const filePath = path.join(baseDir, "SKILL.md");
-  await fs.writeFile(
-    filePath,
-    "---\ndescription: Resource transfer test\n---\n# Resource\nRead data.bin and run scripts/check.sh.\n",
-  );
-  const binary = Buffer.alloc(150000, 129);
-  await fs.writeFile(path.join(baseDir, "data.bin"), binary);
-  await fs.writeFile(path.join(baseDir, "scripts/check.sh"), "#!/bin/sh\nprintf ready\n", {
-    mode: 0o700,
-  });
-  const remoteRoot = await fs.realpath(temps.make("remote-skill-worker-"));
-  const workspaceDir = path.join(remoteRoot, "workspace");
-  await fs.mkdir(workspaceDir);
-  return {
-    workspace,
-    workspaceDir,
-    generation: 1,
-    filePath,
-    binary,
-    snapshot: buildSkillSnapshot(workspace, {
-      entries: loadWorkspaceSkills(workspace, { workspaceOnly: true }),
-    }),
-  };
+async function createCarrier(kind = "ssh") {
+  return await createResourceCarrier(temps.make(`skill-resource-${kind}-`), kind);
 }
 
+const createSource = () => createResourceSource(temps.make("remote-skill-source-"));
+
 describe("remote-exec skill resources", () => {
-  it("transfers resources through the real node workspace guard and cleans only its owned bundle", async () => {
-    const { filePath, binary, snapshot } = await createSource();
-    const nodeRoot = await fs.realpath(temps.make("remote-skill-node-"));
-    const tempDir = path.join(nodeRoot, "tmp");
-    await fs.mkdir(tempDir);
-    const runtime = new NodeWorkerWorkspaceRuntime({
-      root: path.join(nodeRoot, "state", "node-host"),
-      env: {
-        ...process.env,
-        HOME: nodeRoot,
-        TMPDIR: tempDir,
-        TMP: tempDir,
-        TEMP: tempDir,
-      },
-    });
-    const identity = {
-      gatewayNamespace: "skill-resource-test",
-      environmentId: "skill-environment",
-      sessionId: "skill-session",
-      generation: 1,
-    };
-    const { workspaceDir } = await runtime.exec({ ...identity, argv: ["node", "-e", ""] });
-    await fs.writeFile(path.join(workspaceDir, "project.txt"), "project remains unchanged\n");
-    const sibling = path.join(path.dirname(workspaceDir), ".1.skill-resources-" + "a".repeat(32));
-    await fs.mkdir(sibling);
-    await fs.writeFile(path.join(sibling, "keep.txt"), "another owner");
+  it("rejects a valid-shaped init reply advertising a different allocation", async () => {
+    const { snapshot } = await createSource();
+    const carrier = await createNodeCarrier(temps.make("skill-resource-node-"));
+    const outside = await fs.realpath(temps.make("skill-resource-wrong-mount-"));
+    let allocated: string | undefined;
+    let writes = 0;
+    try {
+      const request = {
+        snapshot,
+        workspaceDir: carrier.workspace,
+        generation: carrier.generation,
+        assertCurrent: () => {},
+        tunnel: {
+          runWorkspaceCommand: async (
+            command: Parameters<WorkerWorkspaceTunnelHandle["runWorkspaceCommand"]>[0],
+          ) => {
+            const operation = command.skillResources!.operation;
+            writes += Number(operation.operation === "write");
+            const result = await carrier.runWorkspaceCommand(command);
+            if (operation.operation === "init") {
+              allocated = JSON.parse(result.stdout).root;
+              return {
+                ...result,
+                stdout: JSON.stringify({
+                  ...JSON.parse(result.stdout),
+                  root: outside,
+                }),
+              };
+            }
+            return result;
+          },
+        },
+      };
+      await expect(transferSkillResources(request)).rejects.toThrow(
+        "Skill resource location does not match",
+      );
+      expect(writes).toBe(0);
+      expect(await fs.readdir(outside)).toEqual([]);
+    } finally {
+      if (allocated) {
+        await fs.rm(allocated, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it.each(["malformed", "transport lost", "retired", "crashed"])(
+    "reclaims uncertain init on the next turn or generation retirement (%s)",
+    async (failure) => {
+      const { snapshot } = await createSource();
+      const carrier = await createNodeCarrier(temps.make("skill-resource-node-"));
+      if (failure === "crashed") {
+        prependResourceReceiver(
+          "if (JSON.parse(process.argv[3]).operation === 'init') process.stdout.write=()=>process.exit(9);",
+        );
+      }
+      let allocated: string | undefined;
+      let current = true;
+      try {
+        const request = {
+          snapshot,
+          workspaceDir: carrier.workspace,
+          generation: carrier.generation,
+          assertCurrent: () => {
+            if (!current) {
+              throw new Error("placement retired");
+            }
+          },
+          tunnel: {
+            runWorkspaceCommand: async (
+              command: Parameters<WorkerWorkspaceTunnelHandle["runWorkspaceCommand"]>[0],
+            ) => {
+              const operation = command.skillResources!.operation;
+              const result = await carrier.runWorkspaceCommand(command);
+              if (operation.operation === "init") {
+                const directories = await fs.readdir(path.dirname(carrier.workspace));
+                allocated = path.join(
+                  path.dirname(carrier.workspace),
+                  directories.find((name) =>
+                    name.startsWith(`.${carrier.generation}.skill-resources-`),
+                  )!,
+                );
+                if (failure === "transport lost") {
+                  throw new Error("init response lost");
+                }
+                if (failure === "retired") {
+                  current = false;
+                }
+                if (failure === "malformed") {
+                  return { ...result, stdout: "invalid" };
+                }
+              }
+              return result;
+            },
+          },
+        };
+        await expect(transferSkillResources(request)).rejects.toThrow();
+        expect(allocated).toBeDefined();
+        vi.restoreAllMocks();
+        const restarted = new NodeWorkerWorkspaceRuntime({ root: carrier.home });
+        const retention = {
+          version: 1 as const,
+          gatewayNamespace: carrier.binding.gatewayNamespace,
+          controllerId: "restarted-gateway",
+          sequence: 1,
+          retain: [{ ...carrier.binding, manifestRefs: null }],
+        };
+        await restarted.applyRetainSnapshot(retention, () => []);
+        expect((await fs.stat(allocated!)).isDirectory()).toBe(true);
+        if (failure === "retired") {
+          await restarted.applyRetainSnapshot({ ...retention, sequence: 2, retain: [] }, () => []);
+          await expect(fs.stat(allocated!)).rejects.toMatchObject({ code: "ENOENT" });
+        } else {
+          const next = await transferSkillResources({
+            snapshot: failure === "malformed" ? snapshot : undefined,
+            workspaceDir: carrier.workspace,
+            generation: carrier.generation,
+            assertCurrent: () => {},
+            tunnel: carrier,
+          });
+          try {
+            await expect(fs.stat(allocated!)).rejects.toMatchObject({ code: "ENOENT" });
+            expect((await fs.stat(carrier.workspace)).isDirectory()).toBe(true);
+          } finally {
+            await next?.cleanup();
+          }
+        }
+      } finally {
+        if (allocated) {
+          await fs.rm(allocated, { recursive: true, force: true });
+        }
+      }
+    },
+  );
+
+  it("recovers lost cleanup without deleting attachments, project files, or linked markers", async () => {
+    const { snapshot, binary } = await createSource();
+    const carrier = await createCarrier();
+    let disconnected = false;
     const resources = await transferSkillResources({
       snapshot,
-      workspaceDir,
-      generation: identity.generation,
+      workspaceDir: carrier.workspace,
+      generation: carrier.generation,
       assertCurrent: () => {},
       tunnel: {
-        runWorkspaceCommand: async (command) => {
-          command.assertCurrent?.();
-          const execution = runtime.exec(
-            {
-              ...identity,
-              argv: [...command.argv],
-              input: command.input,
-              timeoutMs: command.timeoutMs,
-              skillResources: command.skillResources?.operation,
-            },
-            command.signal,
-          );
-          await expect(
-            execution,
-            `node resource operation=${command.skillResources?.operation.operation}`,
-          ).resolves.toMatchObject({ code: 0 });
-          command.assertCurrent?.();
-          return await execution;
+        runWorkspaceCommand: (command) => {
+          if (disconnected) {
+            throw new Error("connection lost");
+          }
+          return carrier.runWorkspaceCommand(command);
         },
       },
     });
-    expect(resources).toBeDefined();
     const remote = resources!.mounts[0]!.containerPath;
-    expect(path.relative(workspaceDir, remote)).toMatch(/^\.\.[/\\]/);
-    expect(await fs.readFile(path.join(remote, "SKILL.md"))).toEqual(await fs.readFile(filePath));
+    disconnected = true;
+    await expect(resources!.cleanup()).rejects.toThrow("connection lost");
+    const candidate = (generation = carrier.generation) =>
+      path.join(
+        path.dirname(carrier.workspace),
+        `.${generation}.skill-resources-${randomUUID().replaceAll("-", "")}`,
+      );
+    const preserved = [
+      candidate(),
+      path.join(carrier.workspace, "project-inputs"),
+      candidate(),
+      path.join(carrier.workspace, WORKER_ATTACHMENT_DIRECTORY_PREFIX + "project-inputs"),
+      candidate(carrier.generation + 1),
+      path.join(carrier.workspace, WORKER_ATTACHMENT_DIRECTORY_PREFIX + randomUUID()),
+    ];
+    for (const directory of preserved) {
+      await fs.mkdir(directory);
+      await fs.writeFile(path.join(directory, "keep.txt"), "keep");
+    }
+    await fs.writeFile(path.join(preserved[1]!, ".gitignore"), "*\n");
+    await fs.writeFile(path.join(preserved[2]!, ".gitignore"), "*\n# project-owned\n");
+    await fs.writeFile(path.join(preserved[3]!, ".gitignore"), "*\n");
+    await fs.writeFile(path.join(preserved[4]!, ".gitignore"), "*\n");
+    const outside = await fs.realpath(temps.make("skill-resource-preserved-"));
+    const externalMarker = path.join(outside, ".gitignore");
+    await fs.writeFile(externalMarker, "*\n");
+    await fs.writeFile(path.join(outside, "keep.txt"), "keep");
+    const linkedRoot = candidate();
+    await fs.symlink(outside, linkedRoot, process.platform === "win32" ? "junction" : "dir");
+    preserved.push(linkedRoot);
+    for (const link of process.platform === "win32" ? ["hard"] : ["hard", "symbolic"]) {
+      const directory = candidate();
+      await fs.mkdir(directory);
+      await fs.writeFile(path.join(directory, "keep.txt"), "keep");
+      const marker = path.join(directory, ".gitignore");
+      if (link === "hard") {
+        await fs.link(externalMarker, marker);
+      } else {
+        await fs.symlink(externalMarker, marker, "file");
+      }
+      preserved.push(directory);
+    }
+    const nextTurn = {
+      workspaceDir: carrier.workspace,
+      generation: carrier.generation,
+      tunnel: carrier,
+      assertCurrent: () => {},
+    };
+    await expect(
+      transferSkillResources({
+        ...nextTurn,
+        assertCurrent: () => {
+          throw new Error("placement retired");
+        },
+      }),
+    ).rejects.toThrow("placement retired");
     expect(await fs.readFile(path.join(remote, "data.bin"))).toEqual(binary);
-    expect((await fs.stat(path.join(remote, "scripts/check.sh"))).mode & 0o777).toBe(0o500);
-    expect((await fs.stat(path.join(remote, "data.bin"))).mode & 0o777).toBe(0o400);
-    await expect(runtime.exec({ ...identity, argv: ["node", "-e", "", nodeRoot] })).rejects.toThrow(
-      "workspace command argv resolves outside its workspace",
+    await transferSkillResources(nextTurn);
+    await expect(fs.stat(path.dirname(remote))).rejects.toMatchObject({ code: "ENOENT" });
+    for (const directory of preserved) {
+      expect(await fs.readFile(path.join(directory, "keep.txt"), "utf8")).toBe("keep");
+    }
+    expect((await fs.lstat(linkedRoot)).isSymbolicLink()).toBe(true);
+    expect(await fs.readFile(externalMarker, "utf8")).toBe("*\n");
+  });
+
+  it("preserves a replacement turn's resources when an old SSH command arrives late", async () => {
+    const { snapshot, binary } = await createSource();
+    const carrier = await createCarrier();
+    const dispatched = createDeferred();
+    const executeReceiver = createDeferred();
+    let current = true;
+    let firstCommand = true;
+    const oldAttempt = transferSkillResources({
+      workspaceDir: carrier.workspace,
+      generation: carrier.generation,
+      assertCurrent: () => {
+        if (!current) {
+          throw new Error("placement retired");
+        }
+      },
+      tunnel: {
+        runWorkspaceCommand: async (command) => {
+          command.assertCurrent?.();
+          if (firstCommand) {
+            firstCommand = false;
+            dispatched.resolve();
+            await executeReceiver.promise;
+          }
+          // SSH already accepted this request; its receiver cannot call back into the Gateway.
+          const { assertCurrent: _assertCurrent, ...received } = command;
+          return carrier.runWorkspaceCommand(received);
+        },
+      },
+    });
+    const oldSettled = oldAttempt.catch(() => {});
+    try {
+      await dispatched.promise;
+      current = false;
+      const replacement = await transferSkillResources({
+        snapshot,
+        workspaceDir: carrier.workspace,
+        generation: carrier.generation,
+        assertCurrent: () => {},
+        tunnel: carrier,
+      });
+      const remote = replacement!.mounts[0]!.containerPath;
+      expect(await fs.readFile(path.join(remote, "data.bin"))).toEqual(binary);
+      executeReceiver.resolve();
+      await expect(oldAttempt).rejects.toThrow("placement retired");
+      expect(await fs.readFile(path.join(remote, "data.bin"))).toEqual(binary);
+      await replacement!.cleanup();
+    } finally {
+      executeReceiver.resolve();
+      await oldSettled;
+    }
+  });
+
+  it("keeps node resources private across a project path collision and partial cleanup", async () => {
+    const { snapshot, binary } = await createSource();
+    const carrier = await createNodeCarrier(temps.make("skill-resource-node-"));
+    const outside = await fs.realpath(temps.make("skill-resource-project-link-"));
+    await fs.writeFile(path.join(outside, "SKILL.md"), "project marker");
+    await fs.symlink(
+      outside,
+      path.join(carrier.workspace, "0"),
+      process.platform === "win32" ? "junction" : "dir",
     );
-    await resources!.cleanup();
-    await expect(fs.stat(remote)).rejects.toMatchObject({ code: "ENOENT" });
-    expect(await fs.readFile(path.join(sibling, "keep.txt"), "utf8")).toBe("another owner");
-    expect(await fs.readdir(workspaceDir)).toEqual(["project.txt"]);
-    expect(await fs.readFile(path.join(workspaceDir, "project.txt"), "utf8")).toBe(
-      "project remains unchanged\n",
-    );
+    const git = (argv: string[]) =>
+      carrier.runWorkspaceCommand({ argv: ["git", ...argv], transportRetry: "never" });
+    expect((await git(["init"])).code).toBe(0);
+    await fs.writeFile(path.join(carrier.workspace, "project.txt"), "project");
+    expect((await git(["add", "--all"])).code).toBe(0);
+    const trackedBefore = await git(["ls-files"]);
+    expect(trackedBefore.code).toBe(0);
+    const before = await git(["status", "--porcelain", "--untracked-files=all"]);
+    expect(before.code).toBe(0);
+    const expectProjectUnchanged = async () => {
+      const after = await git(["status", "--porcelain", "--untracked-files=all"]);
+      const added = await git(["add", "--all"]);
+      const tracked = await git(["ls-files"]);
+      expect.soft(after).toMatchObject({ code: 0, stdout: before.stdout });
+      expect(added.code).toBe(0);
+      expect.soft(tracked).toMatchObject({ code: 0, stdout: trackedBefore.stdout });
+    };
+    let initializedRoot: string | undefined;
+    const requestSizes: number[] = [];
+    try {
+      const resources = await transferSkillResources({
+        snapshot,
+        workspaceDir: carrier.workspace,
+        generation: carrier.generation,
+        assertCurrent: () => {},
+        tunnel: {
+          runWorkspaceCommand: async (command) => {
+            requestSizes.push(Buffer.byteLength(command.input ?? ""));
+            const result = await carrier.runWorkspaceCommand(command);
+            const operation = command.skillResources!.operation;
+            if (operation.operation === "init") {
+              initializedRoot = JSON.parse(result.stdout).root;
+            }
+            return result;
+          },
+        },
+      });
+      const remote = resources!.mounts[0]!.containerPath;
+      expect(path.relative(carrier.workspace, remote)).toMatch(/^\.\.[/\\]/);
+      expect(await fs.readFile(path.join(remote, "data.bin"))).toEqual(binary);
+      expect(await fs.readFile(path.join(outside, "SKILL.md"), "utf8")).toBe("project marker");
+      const manifest = await readActualWorkspaceManifest({
+        root: carrier.workspace,
+        baseCommit: null,
+      });
+      expect(manifest.manifest.entries.map((entry) => entry.path)).toEqual(["project.txt"]);
+      await expectProjectUnchanged();
+      const largestRequest = Math.max(...requestSizes);
+      expect(largestRequest).toBeLessThanOrEqual(NODE_WORKER_WORKSPACE_STDIN_MAX_BYTES);
+      expect(NODE_WORKER_WORKSPACE_STDIN_MAX_BYTES - largestRequest).toBeLessThan(4);
+      prependResourceReceiver(`{
+        if (JSON.parse(process.argv[3]).operation === 'cleanup') {
+          const fs = require('node:fs'), remove = fs.rmSync;
+          fs.rmSync = (entry, options) => {
+            if (entry === '0') {
+              remove('0/data.bin');
+              throw Error('resource still open');
+            }
+            return remove(entry, options);
+          };
+        }
+      }`);
+      await expect(resources!.cleanup()).rejects.toThrow("Skill resource cleanup failed");
+      vi.restoreAllMocks();
+      await expect(fs.stat(path.join(remote, "data.bin"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      expect(await fs.readFile(path.join(remote, "scripts/check.sh"), "utf8")).toBe(
+        "#!/bin/sh\nprintf ready\n",
+      );
+      await expectProjectUnchanged();
+      await resources!.cleanup();
+      await expect(fs.stat(initializedRoot!)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      if (initializedRoot) {
+        await fs.rm(initializedRoot, { recursive: true, force: true });
+      }
+    }
   });
 
   it("rejects remote directory identities that collide when rounded to numbers", async () => {
-    const { snapshot, workspaceDir, generation } = await createSource();
+    const { snapshot } = await createSource();
+    const carrier = await createCarrier();
+    prependResourceReceiver(`{
+      const fs = require('node:fs');
+      for (const method of ['lstatSync', 'statSync']) {
+        const original = fs[method];
+        fs[method] = (...args) => {
+          const stat = original(...args);
+          const ino = 9007199254740992n + (JSON.parse(process.argv[3]).operation === 'init' ? 0n : 1n);
+          stat.ino = typeof stat.ino === 'bigint' ? ino : Number(ino);
+          return stat;
+        };
+      }
+    }`);
     let initializedRoot: string | undefined;
     try {
       await expect(
         transferSkillResources({
           snapshot,
-          workspaceDir,
-          generation,
+          workspaceDir: carrier.workspace,
+          generation: carrier.generation,
           assertCurrent: () => {},
           tunnel: {
             runWorkspaceCommand: async (command) => {
-              // Model adjacent Windows file indexes while retaining the real filesystem flow.
-              const identityShim = `{
-                const fs = require('node:fs');
-                for (const method of ['lstatSync', 'statSync']) {
-                  const original = fs[method];
-                  fs[method] = (...args) => {
-                    const stat = original(...args);
-                    const ino = 9007199254740992n + (JSON.parse(process.argv[3]).operation === 'init' ? 0n : 1n);
-                    stat.ino = typeof stat.ino === 'bigint' ? ino : Number(ino);
-                    return stat;
-                  };
-                }
-              }`;
-              const argv = buildSkillResourceCommand({
-                parentDir: path.dirname(workspaceDir),
-                generation,
-                operation: command.skillResources!.operation,
-              });
-              const result = await runCommand({
-                ...command,
-                argv: [...argv.slice(0, 2), identityShim + argv[2], ...argv.slice(3)],
-              });
-              if (command.skillResources?.operation.operation === "init") {
+              const initializing = command.skillResources!.operation.operation === "init";
+              const result = await carrier.runWorkspaceCommand(command);
+              if (initializing) {
                 initializedRoot = JSON.parse(result.stdout).root;
               }
               return result;
@@ -196,91 +424,7 @@ describe("remote-exec skill resources", () => {
         }),
       ).rejects.toThrow("Skill resource transfer failed");
       expect(initializedRoot).toBeDefined();
-      await expect(fs.readdir(initializedRoot!)).resolves.toEqual([]);
-    } finally {
-      if (initializedRoot) {
-        await fs.rm(initializedRoot, { recursive: true, force: true });
-      }
-    }
-  });
-
-  it.each(["complete", "cancelled", "retired"] as const)(
-    "preserves complete resources outside the project and cleans up only its current owner (%s)",
-    async (outcome) => {
-      const { workspace, workspaceDir, generation, filePath, binary, snapshot } =
-        await createSource();
-      const controller = new AbortController();
-      let current = true;
-      const resources = await transferSkillResources({
-        tunnel,
-        workspaceDir,
-        generation,
-        signal: controller.signal,
-        assertCurrent: () => {
-          if (!current) {
-            throw new Error("placement retired");
-          }
-        },
-        snapshot,
-      });
-      expect(resources).toBeDefined();
-      const remote = resources!.mounts[0]!.containerPath;
-      try {
-        expect(remote.startsWith(workspace)).toBe(false);
-        expect(await fs.readFile(path.join(remote, "SKILL.md"))).toEqual(
-          await fs.readFile(filePath),
-        );
-        expect(resources!.snapshot.resolvedSkills![0]!.name).toBe("source");
-        expect(await fs.readFile(path.join(remote, "data.bin"))).toEqual(binary);
-        expect((await fs.stat(path.join(remote, "scripts/check.sh"))).mode & 0o777).toBe(0o500);
-        expect((await fs.stat(path.join(remote, "data.bin"))).mode & 0o777).toBe(0o400);
-        expect(resources!.snapshot.prompt).toContain(remote);
-        expect(resources!.snapshot.resolvedSkills![0]!.filePath).toBe(filePath);
-        if (outcome === "cancelled") {
-          controller.abort();
-        } else if (outcome === "retired") {
-          current = false;
-        }
-        if (outcome === "retired") {
-          await expect(resources!.cleanup()).rejects.toThrow("placement retired");
-          expect(await fs.readFile(path.join(remote, "data.bin"))).toEqual(binary);
-        } else {
-          await expect(resources!.cleanup()).resolves.toBeUndefined();
-          await expect(fs.stat(remote)).rejects.toMatchObject({ code: "ENOENT" });
-        }
-      } finally {
-        await fs.rm(path.dirname(remote), { recursive: true, force: true });
-      }
-    },
-  );
-
-  it("cleans the accepted remote directory when cancellation arrives with initialization", async () => {
-    const { snapshot, workspaceDir, generation } = await createSource();
-    const controller = new AbortController();
-    let initializedRoot: string | undefined;
-    try {
-      await expect(
-        transferSkillResources({
-          snapshot,
-          workspaceDir,
-          generation,
-          signal: controller.signal,
-          assertCurrent: () => {},
-          tunnel: {
-            runWorkspaceCommand: async (command) => {
-              const result = await tunnel.runWorkspaceCommand(command);
-              if (!initializedRoot) {
-                const initialized: { root: string } = JSON.parse(result.stdout);
-                initializedRoot = initialized.root;
-                controller.abort();
-              }
-              return result;
-            },
-          },
-        }),
-      ).rejects.toMatchObject({ name: "AbortError" });
-      expect(initializedRoot).toBeDefined();
-      await expect(fs.stat(initializedRoot!)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(fs.readdir(initializedRoot!)).resolves.toEqual([".gitignore"]);
     } finally {
       if (initializedRoot) {
         await fs.rm(initializedRoot, { recursive: true, force: true });

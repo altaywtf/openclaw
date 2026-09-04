@@ -118,6 +118,16 @@ describe("worker provider node teardown", () => {
         { nodeTunnelManager: nodeTunnels },
       );
       try {
+        const credential = support.testState.store.getCredential(environmentId);
+        await expect(
+          service.destroy(environmentId, {
+            sessionId: "session-destroyed",
+            ownerEpoch: attached.ownerEpoch,
+          }),
+        ).rejects.toThrow("owner changed before retirement");
+        expect(support.testState.store.get(environmentId)).toEqual(attached);
+        expect(support.testState.store.getCredential(environmentId)).toEqual(credential);
+        expect(destroy).not.toHaveBeenCalled();
         await start();
         listNodes.mockClear();
         await expect(service.destroy(environmentId)).rejects.toMatchObject({

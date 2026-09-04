@@ -120,6 +120,7 @@ function updateTransition(
         }))
         .where("environment_id", "=", updated.environmentId)
         .where("state", "=", "attached")
+        .where("destroy_requested_at_ms", "is", null)
         .where("owner_epoch", "=", updated.activeOwnerEpoch)
         .where("attached_session_ids_json", "=", JSON.stringify([updated.sessionId])),
     );

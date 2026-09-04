@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import path from "node:path";
 import { promisify } from "node:util";
-import { GatewayClient } from "openclaw/plugin-sdk/gateway-runtime";
+import type { GatewayClient } from "openclaw/plugin-sdk/gateway-runtime";
 import type { createQaGatewayChild, QaGatewayChild } from "../../../../extensions/qa-lab/api.js";
 import {
   GATEWAY_CLIENT_CAPS,
@@ -13,7 +13,6 @@ import {
 import { GATEWAY_SERVER_CAPS } from "../../../../packages/gateway-protocol/src/schema/frames.js";
 import { WORKER_BUNDLE_PREWARM_VERSION } from "../../../../packages/gateway-protocol/src/schema/worker-admission.js";
 import type { DeviceIdentity } from "../../../../src/infra/device-identity.js";
-import { loadOrCreateDeviceIdentity } from "../../../../src/infra/device-identity.js";
 import {
   NODE_WORKER_BUNDLE_INSTALL_COMMAND,
   NODE_WORKER_SUPERVISOR_LAUNCH_COMMAND,
@@ -27,12 +26,11 @@ import {
   NODE_WORKER_WORKSPACE_SKILL_RESOURCES_VERSION,
   NODE_WORKER_SUPERVISOR_PROTOCOL_FEATURE,
 } from "../../../../src/infra/node-runner-inventory.js";
-import { handleInvoke, type NodeInvokeRequestPayload } from "../../../../src/node-host/invoke.js";
-import { NodeWorkerBundleInstaller } from "../../../../src/node-host/node-worker-bundle-installer.js";
+import type { NodeInvokeRequestPayload } from "../../../../src/node-host/invoke.js";
+import type { NodeWorkerBundleInstaller } from "../../../../src/node-host/node-worker-bundle-installer.js";
 import type { NodeWorkerContainerEngine } from "../../../../src/node-host/node-worker-container-engine.js";
-import { parseNodeWorkerLaunchInput } from "../../../../src/node-host/node-worker-supervisor-contract.js";
-import { createNodeWorkerSupervisor } from "../../../../src/node-host/node-worker-supervisor.js";
-import { NodeWorkerWorkspaceRuntime } from "../../../../src/node-host/node-worker-workspace.js";
+import type { createNodeWorkerSupervisor } from "../../../../src/node-host/node-worker-supervisor.js";
+import type { NodeWorkerWorkspaceRuntime } from "../../../../src/node-host/node-worker-workspace.js";
 import { decodePairingSetupCode } from "../../../../src/pairing/setup-code.js";
 import { VERSION } from "../../../../src/version.js";
 import { MODEL_REF, PROOF_TIMEOUT_MS } from "./cloud-worker-midturn-loss-fixture.js";
@@ -155,6 +153,7 @@ export async function connectWireClient(params: {
   onHello?: NonNullable<ConstructorParameters<typeof GatewayClient>[0]["onHelloOk"]>;
   onCreate?: (client: GatewayClient) => void;
 }): Promise<GatewayClient> {
+  const { GatewayClient } = await import("openclaw/plugin-sdk/gateway-runtime");
   return await new Promise<GatewayClient>((resolve, reject) => {
     let settled = false;
     const finish = (error?: Error) => {
@@ -322,6 +321,23 @@ export type PairedNodeWorkerHost = {
 export async function createPairedNodeWorkerHost(
   options: WireWorkerHostOptions,
 ): Promise<PairedNodeWorkerHost> {
+  // Publishing a Git workspace needs no node runtime. Load host dependencies
+  // only when this fixture actually owns a paired worker.
+  const [
+    { loadOrCreateDeviceIdentity },
+    { handleInvoke },
+    { NodeWorkerBundleInstaller },
+    { parseNodeWorkerLaunchInput },
+    { createNodeWorkerSupervisor },
+    { NodeWorkerWorkspaceRuntime },
+  ] = await Promise.all([
+    import("../../../../src/infra/device-identity.js"),
+    import("../../../../src/node-host/invoke.js"),
+    import("../../../../src/node-host/node-worker-bundle-installer.js"),
+    import("../../../../src/node-host/node-worker-supervisor-contract.js"),
+    import("../../../../src/node-host/node-worker-supervisor.js"),
+    import("../../../../src/node-host/node-worker-workspace.js"),
+  ]);
   const label = options.label ?? "node";
   const nodeStateDir = path.join(options.root, `${label}-state`);
   const nodeHostRoot = path.join(nodeStateDir, "node-host");

@@ -112,6 +112,7 @@ export type NodeWorkerSupervisorTransport = {
 
 type NodeRegistryPrivateContext = {
   getNode: (nodeId: string) => PairingBoundNodeSession | undefined;
+  isCommandAllowed: (nodeId: string, command: string) => boolean;
   listCurrentConnected: () => Promise<NodeRegistryPrivateSession[]>;
   hasCurrentPairingStateResolver: boolean;
   resolvePairingLease: (node: PairingBoundNodeSession) => Promise<PairingLeaseResolution>;
@@ -347,6 +348,12 @@ async function invokeNodeRegistryCore(
         code: "APPROVAL_AUTHORITY_CLOSED",
         message: "runtime authority closed before node dispatch",
       },
+    };
+  }
+  if (!state.context.isCommandAllowed(params.nodeId, params.command)) {
+    return {
+      ok: false,
+      error: { code: "POLICY_CHANGED", message: "node command is no longer allowed" },
     };
   }
   if (deadlineAtMs !== undefined) {

@@ -7,6 +7,7 @@ import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { describe, expect, it, vi } from "vitest";
 import { markInboundContextLabel } from "../../../../src/auto-reply/reply/inbound-context-marker.js";
 import type { MessageGroup } from "../../lib/chat/chat-types.ts";
+import { normalizeMessage } from "../../lib/chat/message-normalizer.ts";
 import { summarizeToolGroup } from "../../lib/chat/tool-call-grouping.ts";
 import * as toolCards from "../../lib/chat/tool-cards.ts";
 import { coalesceAgentRunFrames } from "./chat-agent-run-grouping.ts";
@@ -39,6 +40,7 @@ describe("assistantGroupCanOwnActiveRunStatus", () => {
     timestamp: 1,
     isStreaming: false,
     messages: [{ key: "message:1", message }],
+    visibleContent: "text",
   });
 
   it("accepts visible replies and rejects forwarded assistant input", () => {
@@ -945,7 +947,7 @@ describe("collapseCompletedTurnWork", () => {
     },
   );
 
-  it("keeps durable context compaction inside completed work instead of treating it as the reply", () => {
+  it("renders durable context compaction as a marker, not an assistant reply", () => {
     const items = collapsedItems({
       messages: [
         userMessage("do it", 1_000),
@@ -963,16 +965,8 @@ describe("collapseCompletedTurnWork", () => {
       ],
     });
 
-    expect(items.map((item) => item.kind)).toEqual(["group", "work-group", "group"]);
-    const work = requireWorkGroup(items[1]);
-    expect(work.groups).toHaveLength(1);
-    expect(work.groups[0]?.messages[0]?.message).toMatchObject({
-      role: "assistant",
-      content: [{ type: "text", text: "Context compacted" }],
-      runId: "run-1",
-      __openclaw: { runtimeActivityKind: "context_compaction" },
-    });
-    expect(work.groups[0]?.messages[0]?.message).not.toHaveProperty("idempotencyKey");
+    expect(items.map((item) => item.kind)).toEqual(["group", "divider", "group"]);
+    expect(items[1]).toMatchObject({ compaction: "complete", label: "Context compacted" });
     expect(requireGroup(items[2]).messages[0]?.message).toMatchObject({
       content: "All done.",
     });
@@ -1369,6 +1363,7 @@ describe("coalesceActivityRuns", () => {
       key: "group:assistant:reply",
       role: "assistant",
       messages: [{ key: "assistant:reply", message: assistantMessage("Done.", 3_500) }],
+      visibleContent: "text",
       timestamp: 3_500,
       isStreaming: false,
       runId: "run-2",
@@ -1423,6 +1418,7 @@ describe("coalesceActivityRuns", () => {
           ),
         },
       ],
+      visibleContent: "none",
       timestamp: 1_000 * index,
       isStreaming: false,
       runId: `hb-run-${index}`,
@@ -1456,6 +1452,7 @@ describe("coalesceActivityRuns", () => {
       key: "group:user:boundary",
       role: "user",
       messages: [{ key: "user:boundary", message: userMessage("stop", 4_000) }],
+      visibleContent: "text",
       timestamp: 4_000,
       isStreaming: false,
     };
@@ -4502,6 +4499,133 @@ describe("buildCachedChatItems", () => {
     expect(canvasBlocksIn(assistant as MessageGroup)).toHaveLength(1);
   });
 
+  it("renders Gateway-embedded App previews once without removing assistant-only views", () => {
+    const first = mcpAppResult("mcp-app-first", "call-first", 1_001);
+    const second = mcpAppResult("mcp-app-second", "call-second", 1_002);
+    const groups = messageGroups({
+      messages: [
+        userMessage("Show both Apps", 1_000),
+        first,
+        second,
+        assistantMessage(
+          [
+            { type: "text", text: "Both Apps are ready." },
+            mcpAppCanvasBlock("mcp-app-first", "call-first"),
+            mcpAppCanvasBlock("mcp-app-second", "call-second"),
+            mcpAppCanvasBlock("mcp-app-assistant-only", "call-assistant-only"),
+          ],
+          1_003,
+        ),
+      ],
+      showToolCalls: false,
+    });
+
+    expect(groups.flatMap(canvasBlocksAcross)).toHaveLength(3);
+    expect(
+      groups.flatMap((group) =>
+        group.messages.flatMap(({ message }) => normalizeMessage(message).content),
+      ),
+    ).toContainEqual({ type: "text", text: "Both Apps are ready." });
+  });
+
+  it.each([false, true])(
+    "renders the real widget history representations once (showToolCalls=%s)",
+    (showToolCalls) => {
+      const viewId = "cv_widget_history";
+      const groups = messageGroups({
+        messages: [
+          userMessage("Show a widget", 1_000),
+          toolResultMessage(
+            "call-widget",
+            "show_widget",
+            [{ type: "text", text: canvasToolOutput(viewId, "Widget", 320) }],
+            1_001,
+          ),
+          assistantMessage(
+            [
+              { type: "text", text: `[embed ref="${viewId}" title="Widget" /]\n\nReady.` },
+              {
+                type: "canvas",
+                preview: {
+                  kind: "canvas",
+                  surface: "assistant_message",
+                  render: "url",
+                  viewId,
+                  url: `/__openclaw__/canvas/documents/${viewId}/index.html`,
+                  sandbox: "scripts",
+                },
+              },
+            ],
+            1_002,
+          ),
+        ],
+        showToolCalls,
+      });
+
+      expect(groups.flatMap(canvasBlocksAcross)).toHaveLength(1);
+    },
+  );
+
+  it("deduplicates a Gateway Canvas copy that matches only by URL", () => {
+    const viewId = "cv_url_match";
+    const result = toolResultMessage(
+      "call-url-match",
+      "show_widget",
+      canvasToolOutput(viewId, "URL match", 320),
+      1_001,
+    );
+    const gatewayCopy = {
+      type: "canvas",
+      preview: {
+        kind: "canvas",
+        surface: "assistant_message",
+        render: "url",
+        url: `/__openclaw__/canvas/documents/${viewId}/index.html`,
+      },
+    };
+    const groups = messageGroups({
+      messages: [
+        userMessage("Show the App", 1_000),
+        result,
+        assistantMessage([{ type: "text", text: "The App is ready." }, gatewayCopy], 1_002),
+      ],
+      showToolCalls: false,
+    });
+
+    expect(groups.flatMap((group) => canvasBlocksAcross(group))).toHaveLength(1);
+    expect(
+      groups.flatMap((group) =>
+        group.messages.flatMap(({ message }) => normalizeMessage(message).content),
+      ),
+    ).toContainEqual({ type: "text", text: "The App is ready." });
+  });
+
+  it("keeps an App preview row stable when live state becomes persisted history", () => {
+    const paneId = "canvas-live-to-history";
+    const liveGroups = messageGroups({
+      paneId,
+      messages: [userMessage("Show the App", 1_000)],
+      toolMessages: [mcpAppLiveResult("mcp-app-stable", "call-stable", 1_001)],
+      showToolCalls: false,
+    });
+    const liveCanvas = liveGroups.find((group) => canvasBlocksAcross(group).length > 0);
+
+    const persistedGroups = messageGroups({
+      paneId,
+      messages: [
+        userMessage("Show the App", 1_000),
+        mcpAppResult("mcp-app-stable", "call-stable", 1_001),
+      ],
+      toolMessages: [],
+      showToolCalls: false,
+    });
+    const persistedCanvas = persistedGroups.find((group) => canvasBlocksAcross(group).length > 0);
+
+    expect(liveCanvas).toBeDefined();
+    expect(persistedCanvas).toBeDefined();
+    expect(persistedCanvas?.key).toBe(liveCanvas?.key);
+  });
+
   it("deduplicates timestamp-less persisted and live copies in the same turn", () => {
     const persisted = {
       ...mcpAppResult("mcp-app-untimestamped", "call-untimestamped", 1_001),
@@ -4619,8 +4743,8 @@ describe("buildCachedChatItems", () => {
     expect(items).toHaveLength(1);
     const divider = requireRecord(items[0]);
     expect(divider.kind).toBe("divider");
-    expect(divider.label).toBe("Compacted history");
-    expect(divider.icon).toBe("foldVertical");
+    expect(divider.label).toBe("Context compacted");
+    expect(divider.compaction).toBe("complete");
     expect(divider.description).toBe("The compacted transcript is preserved as a checkpoint.");
     const action = requireRecord(divider.action);
     expect(action.kind).toBe("session-checkpoints");
@@ -4641,7 +4765,7 @@ describe("buildCachedChatItems", () => {
 
     expect(items[0]).toMatchObject({
       kind: "divider",
-      label: "Compacted history",
+      label: "Context compacted",
       metric: "saved 875.3k tokens",
     });
   });
@@ -4707,6 +4831,7 @@ describe("tool expansion state", () => {
           message: { role: "assistant", content: "No tools in this row" },
         },
       ],
+      visibleContent: "text",
       timestamp: 1,
       isStreaming: false,
     };
@@ -4747,6 +4872,7 @@ describe("tool expansion state", () => {
           },
         },
       ],
+      visibleContent: "none",
       timestamp: 1,
       isStreaming: false,
     };
@@ -4774,6 +4900,7 @@ describe("tool expansion state", () => {
           },
         },
       ],
+      visibleContent: "text",
       timestamp: 1,
       isStreaming: false,
     };
@@ -4899,6 +5026,7 @@ describe("expansion-state render dependencies", () => {
           },
         },
       ],
+      visibleContent: "none",
       timestamp: 1,
       isStreaming: false,
     });
@@ -4983,6 +5111,7 @@ describe("expansion-state render dependencies", () => {
           },
         },
       ],
+      visibleContent: "none",
       timestamp: 1,
       isStreaming: false,
     };
@@ -4999,14 +5128,23 @@ describe("expansion-state render dependencies", () => {
 
   it("drops render versions with evicted and reset session maps", () => {
     resetChatThreadState();
+    const items = buildCachedChatItems(
+      createProps({
+        sessionKey: "evicted-session",
+        messages: [toolUseMessage("evicted-call", "read", {}, 1)],
+      }),
+    );
+    syncToolCardExpansionState("evicted-session", items, true);
     const evicted = getExpandedToolCards("evicted-session");
-    setExpansionState(evicted, "card", true);
+    expect([...evicted.values()]).toEqual([true]);
     for (let index = 0; index < 20; index += 1) {
       getExpandedToolCards(`other-session-${index}`);
     }
 
     expect(getExpandedToolCards("evicted-session")).not.toBe(evicted);
     expect(getExpansionStateVersion(getExpandedToolCards("evicted-session"))).toBe(0);
+    syncToolCardExpansionState("evicted-session", items, true);
+    expect([...getExpandedToolCards("evicted-session").values()]).toEqual([true]);
 
     setExpansionState(getExpandedUserMessages("reset-session"), "message", true);
     resetChatThreadState();
@@ -5263,6 +5401,12 @@ function canvasBlocksIn(group: MessageGroup): unknown[] {
   return firstMessageContent(group).filter((block) => isCanvasBlock(block));
 }
 
+function canvasBlocksAcross(group: MessageGroup): unknown[] {
+  return group.messages.flatMap(({ message }) =>
+    normalizeMessage(message).content.filter(isCanvasBlock),
+  );
+}
+
 function isCanvasBlock(block: unknown): boolean {
   return (
     Boolean(block) &&
@@ -5284,6 +5428,28 @@ function createAssistantCanvasBlock(params: { suffix: string }) {
       title: "Inline demo",
       url: `/__openclaw__/canvas/documents/${viewId}/index.html`,
       preferredHeight: 360,
+    },
+  };
+}
+
+function mcpAppCanvasBlock(viewId: string, toolCallId: string) {
+  return {
+    type: "canvas",
+    preview: {
+      kind: "canvas",
+      surface: "assistant_message",
+      render: "url",
+      viewId,
+      title: "Demo App",
+      url: `/__openclaw__/canvas/documents/${viewId}/index.html`,
+      sandbox: "scripts",
+      mcpApp: {
+        viewId,
+        serverName: "demo",
+        toolName: "show",
+        uiResourceUri: "ui://demo/app.html",
+        toolCallId,
+      },
     },
   };
 }

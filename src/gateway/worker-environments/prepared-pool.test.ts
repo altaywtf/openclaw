@@ -831,6 +831,9 @@ describe("prepared worker reserve lifecycle", () => {
         await release.promise;
         return await run();
       };
+      const unexpectedLifecycleOperation = (): never => {
+        throw new Error("unexpected worker bootstrap or teardown past the allocation boundary");
+      };
       const move: Parameters<typeof createWorkerProviderProvisioner>[0]["move"] = (
         record,
         to,
@@ -847,11 +850,29 @@ describe("prepared worker reserve lifecycle", () => {
         store,
         callProvider,
         move,
+        saveError: (record, error) =>
+          store.recordError({
+            environmentId: record.environmentId,
+            state: record.state,
+            error: String(error),
+          }),
+        // This fixture borrows only requireCurrentOwner; unexpected teardown must fail visibly.
+        withLock: unexpectedLifecycleOperation,
+        providerFor: (providerId) => {
+          if (providerId !== provider.id) {
+            throw createWorkerEnvironmentServiceError(
+              "provider_not_found",
+              `Worker provider is unavailable: ${providerId}`,
+            );
+          }
+          return provider;
+        },
+        requireWorkerProfile: () => ({}),
         serviceError: createWorkerEnvironmentServiceError,
         isStopping: () => false,
         inState: (record: WorkerEnvironmentRecord, ...states: WorkerEnvironmentState[]) =>
           states.includes(record.state),
-      };
+      } satisfies Parameters<typeof createWorkerProviderOwnerLifecycle>[0];
       const { requireCurrentOwner } = createWorkerProviderOwnerLifecycle(lifecycleOptions);
       const prepareInstallation = async () => ({
         install: "bundle" as const,
@@ -860,9 +881,6 @@ describe("prepared worker reserve lifecycle", () => {
         tarballSha256: "f".repeat(64),
         tarballPath: path.join(root, "unused.tgz"),
       });
-      const failBootstrap = async () => {
-        throw new Error("unexpected bootstrap");
-      };
       const provision = createWorkerProviderProvisioner({
         ...lifecycleOptions,
         now: () => nowMs,
@@ -871,24 +889,15 @@ describe("prepared worker reserve lifecycle", () => {
         nodeProvisioning: createWorkerNodeProvisioning({
           ...lifecycleOptions,
           prepareInstallation,
-          commitReady: () => {
-            throw new Error("unexpected ready transition");
-          },
-          failBootstrap,
+          commitReady: unexpectedLifecycleOperation,
+          failBootstrap: unexpectedLifecycleOperation,
         }),
-        requireWorkerProfile: () => ({}),
         requireCurrentOwner,
         installFor: () => "bundle",
-        finishBootstrap: failBootstrap,
-        failBootstrap,
+        finishBootstrap: unexpectedLifecycleOperation,
+        failBootstrap: unexpectedLifecycleOperation,
         isServiceError: (error, code) =>
           error instanceof WorkerEnvironmentServiceError && error.code === code,
-        saveError: (record, error) =>
-          store.recordError({
-            environmentId: record.environmentId,
-            state: record.state,
-            error: String(error),
-          }),
       });
       provider.supportedExecutionModes = ["worker-turn"];
       provider.supportsProjectPreparation = () => true;

@@ -26,34 +26,28 @@ const CONTROL_UI_COMPRESSIBLE_EXTENSIONS = new Set([
 ]);
 const CONTROL_UI_PRECOMPRESSED_ASSET_EXTENSIONS = new Set([".br", ".gz"]);
 
-/**
- * Missing files with these extensions return 404 instead of the SPA index.
- * `.html` stays excluded because client-side routes may use that suffix.
- */
-const CONTROL_UI_STATIC_ASSET_EXTENSIONS = new Set([
-  ".js",
-  ".css",
-  ".json",
-  ".map",
-  ".svg",
-  ".png",
-  ".jpg",
-  ".jpeg",
-  ".gif",
-  ".webp",
-  ".ico",
-  ".txt",
-  ".wasm",
-  ".webmanifest",
-  ".woff2",
-]);
+const CONTROL_UI_CONTENT_TYPES: Readonly<Record<string, string>> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "application/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".map": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".ico": "image/x-icon",
+  ".txt": "text/plain; charset=utf-8",
+  ".wasm": "application/wasm",
+  ".webmanifest": "application/manifest+json; charset=utf-8",
+  ".woff2": "font/woff2",
+};
 
 export function isControlUiStaticAssetExtension(extension: string): boolean {
-  return CONTROL_UI_STATIC_ASSET_EXTENSIONS.has(extension);
-}
-
-function isControlUiCompressibleExtension(extension: string): boolean {
-  return CONTROL_UI_COMPRESSIBLE_EXTENSIONS.has(extension);
+  // Missing .html paths can be client-side routes; the other known types stay 404.
+  return extension !== ".html" && Object.hasOwn(CONTROL_UI_CONTENT_TYPES, extension);
 }
 
 export function isControlUiPrecompressedAssetExtension(extension: string): boolean {
@@ -64,43 +58,6 @@ type ControlUiEncodingSelection = ControlUiRepresentationEncoding | "not-accepta
 
 const CONTROL_UI_DYNAMIC_ENCODINGS = new Set<ControlUiContentEncoding>(["br", "gzip"]);
 const controlUiHtmlCompressionCache = new Map<string, Promise<Buffer>>();
-
-function contentTypeForExtension(ext: string): string {
-  switch (ext) {
-    case ".html":
-      return "text/html; charset=utf-8";
-    case ".js":
-      return "application/javascript; charset=utf-8";
-    case ".css":
-      return "text/css; charset=utf-8";
-    case ".json":
-    case ".map":
-      return "application/json; charset=utf-8";
-    case ".svg":
-      return "image/svg+xml";
-    case ".png":
-      return "image/png";
-    case ".jpg":
-    case ".jpeg":
-      return "image/jpeg";
-    case ".gif":
-      return "image/gif";
-    case ".webp":
-      return "image/webp";
-    case ".ico":
-      return "image/x-icon";
-    case ".txt":
-      return "text/plain; charset=utf-8";
-    case ".wasm":
-      return "application/wasm";
-    case ".webmanifest":
-      return "application/manifest+json; charset=utf-8";
-    case ".woff2":
-      return "font/woff2";
-    default:
-      return "application/octet-stream";
-  }
-}
 
 export function resolveControlUiHtmlEncoding(req: IncomingMessage): ControlUiEncodingSelection {
   return (
@@ -113,28 +70,28 @@ export function resolveControlUiHtmlEncoding(req: IncomingMessage): ControlUiEnc
 
 type OpenedControlUiRepresentation = {
   bodyFile: { path: string; fd: number; size: number };
-  contentPath: string;
   encoding?: ControlUiContentEncoding;
 };
 
 export function resolveOpenedControlUiRepresentation(params: {
   req: IncomingMessage;
   sourceFile: { path: string; fd: number; size: number };
+  contentPath: string;
   precompressed: boolean;
   openPrecompressedFile: (filePath: string) => { path: string; fd: number; size: number } | null;
 }): OpenedControlUiRepresentation | null {
   const { req, sourceFile, precompressed, openPrecompressedFile } = params;
-  const extension = path.extname(sourceFile.path).toLowerCase();
+  const extension = path.extname(params.contentPath).toLowerCase();
   const encodings = resolveHttpContentEncodings(
     req.headers?.["accept-encoding"],
-    precompressed && isControlUiCompressibleExtension(extension)
+    precompressed && CONTROL_UI_COMPRESSIBLE_EXTENSIONS.has(extension)
       ? CONTROL_UI_DYNAMIC_ENCODINGS
       : new Set<ControlUiContentEncoding>(),
   );
   // A missing sidecar changes availability, not this request's encoding preferences.
   for (const selected of encodings) {
     if (selected === "identity") {
-      return { bodyFile: sourceFile, contentPath: sourceFile.path };
+      return { bodyFile: sourceFile };
     }
 
     const suffix = selected === "br" ? ".br" : ".gz";
@@ -147,7 +104,7 @@ export function resolveOpenedControlUiRepresentation(params: {
     }
     if (compressedFile) {
       fs.closeSync(sourceFile.fd);
-      return { bodyFile: compressedFile, contentPath: sourceFile.path, encoding: selected };
+      return { bodyFile: compressedFile, encoding: selected };
     }
   }
   fs.closeSync(sourceFile.fd);
@@ -174,7 +131,7 @@ function setControlUiFileHeaders(
   options?: { immutable?: boolean; encoding?: ControlUiContentEncoding; lastModifiedMs?: number },
 ) {
   const extension = path.extname(filePath).toLowerCase();
-  res.setHeader("Content-Type", contentTypeForExtension(extension));
+  res.setHeader("Content-Type", CONTROL_UI_CONTENT_TYPES[extension] ?? "application/octet-stream");
   res.setHeader(
     "Cache-Control",
     options?.immutable ? CONTROL_UI_IMMUTABLE_CACHE_CONTROL : "no-cache",

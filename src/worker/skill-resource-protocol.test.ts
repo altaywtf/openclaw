@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   parseWorkerSkillResourceGeneration,
   parseWorkerSkillResourceLocator,
+  parseWorkerSkillResourceOperation,
+  validateWorkerSkillResourceInput,
 } from "./skill-resource-protocol.js";
 
 const resourceId = "abcdef0123456789".repeat(2);
@@ -21,7 +23,9 @@ describe("worker skill resource locators", () => {
 
   it.each([
     { resourceId: "../outside" },
+    { resourceId: `${resourceId}\n` },
     { identity: "1:NaN" },
+    { identity: "1:2\n" },
     { root: "relative/root" },
     { root: "/tmp/\0outside" },
     { root: "/" + "a".repeat(1_024) },
@@ -38,6 +42,27 @@ describe("worker skill resource locators", () => {
   });
 });
 
+describe("worker skill resource discovery", () => {
+  it("accepts only read-only discovery without caller-selected scope or input", () => {
+    const operation = parseWorkerSkillResourceOperation({ operation: "discover" });
+    expect(operation).toEqual({ operation: "discover" });
+    expect(() => validateWorkerSkillResourceInput(operation, undefined)).not.toThrow();
+    expect(() => validateWorkerSkillResourceInput(operation, "")).toThrow(
+      "invalid worker skill resource chunk",
+    );
+    for (const extra of [
+      { root: "/tmp" },
+      { generation: 2 },
+      { resourceId },
+      { identity: "1:2" },
+    ]) {
+      expect(() => parseWorkerSkillResourceOperation({ operation: "discover", ...extra })).toThrow(
+        "invalid worker skill resource operation",
+      );
+    }
+  });
+});
+
 describe("worker skill resource retention identity", () => {
   it.each([0, 3, Number.MAX_SAFE_INTEGER])("recognizes exact generation %s", (generation) => {
     expect(parseWorkerSkillResourceGeneration(`.${generation}.skill-resources-${resourceId}`)).toBe(
@@ -51,6 +76,7 @@ describe("worker skill resource retention identity", () => {
     `.9007199254740992.skill-resources-${resourceId}`,
     `.3.skill-resources-${resourceId.toUpperCase()}`,
     `.3.skill-resources-short`,
+    `.3.skill-resources-${resourceId}\n`,
     `.3.skill-resources-${resourceId}/child`,
     `.3.workspace-transfer-${resourceId}`,
     `3`,

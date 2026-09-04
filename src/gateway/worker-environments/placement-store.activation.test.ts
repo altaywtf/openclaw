@@ -152,7 +152,7 @@ describe("worker session placement activation", () => {
     return activate(advanceToStarting(identity, executionMode), environment.ownerEpoch);
   }
 
-  it.each(["environment", "epoch", "state", "session", "multiple sessions"])(
+  it.each(["environment", "epoch", "state", "session", "multiple sessions", "closing", "revoked"])(
     "rolls back activation when the attached environment %s does not match",
     (mismatch) => {
       const environment = createAttachedEnvironment();
@@ -174,6 +174,14 @@ describe("worker session placement activation", () => {
             "another-session",
             "idle",
           ).ownerEpoch;
+        }
+      } else if (mismatch === "closing" || mismatch === "revoked") {
+        environments.requestDestroy({
+          environmentId: environment.environmentId,
+          state: "attached",
+        });
+        if (mismatch === "revoked") {
+          environments.revokeEnvironmentCredential(environment.environmentId);
         }
       } else if (mismatch === "multiple sessions") {
         database.db

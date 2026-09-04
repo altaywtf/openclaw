@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { convertMessages } from "../../../packages/ai/src/openai-completions-messages.js";
 import { resolveOpenAICompletionsCompat } from "../../../packages/ai/src/transports/openai-completions-compat.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import {
   appendTranscriptMessage,
   listSessionPendingInputReceipts,
@@ -38,7 +39,10 @@ import type {
   CreateUserTurnTranscriptRecorderParams,
   UserTurnTranscriptAnnotation,
 } from "../../sessions/user-turn-transcript.types.js";
-import { runOpenClawAgentWriteTransaction } from "../../state/openclaw-agent-db.js";
+import {
+  openOpenClawAgentDatabase,
+  runOpenClawAgentWriteTransaction,
+} from "../../state/openclaw-agent-db.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { normalizeMessagesForLlmBoundary } from "../embedded-agent-runner/run/attempt-llm-boundary.js";
@@ -364,7 +368,26 @@ describe("host-owned current admission annotation", () => {
       const updates = vi.fn();
       const unsubscribe = onInternalSessionTranscriptUpdate(updates);
       try {
-        await f.annotate();
+        const { db } = openOpenClawAgentDatabase({ agentId: "main" });
+        const searchRows = () =>
+          db
+            .prepare("SELECT * FROM session_transcript_fts WHERE session_id = ?")
+            .all(f.target.sessionId);
+        const searchBefore = searchRows();
+        const projectionWork = trackSqliteStatementExecutions(db, ["fts", "size"], (sql) =>
+          sql.includes("session_transcript_fts")
+            ? "fts"
+            : sql.includes("octet_length")
+              ? "size"
+              : null,
+        );
+        try {
+          await f.annotate();
+        } finally {
+          projectionWork.restore();
+        }
+        expect(projectionWork.counts).toEqual({ fts: 0, size: 0 });
+        expect(searchRows()).toEqual(searchBefore);
         const refreshed = f.receipt();
         expect(refreshed).toEqual({ ...original, generation: expect.any(String) });
         expect(refreshed.generation).not.toBe(original.generation);

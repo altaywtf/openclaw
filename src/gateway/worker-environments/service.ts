@@ -1,5 +1,4 @@
 import type {
-  WorkerGitHubPublishParams,
   WorkerPortalParams,
   WorkerSessionsSendParams,
   WorkerSessionsSpawnParams,
@@ -39,9 +38,12 @@ import type { WorkerNodePortalCarrier } from "./portal-node-carrier.js";
 import type { WorkerProviderPreparedIntent } from "./preparation-identity.js";
 import { createPreparedWorkerPool } from "./prepared-pool.js";
 import { createWorkerProviderLifecycle } from "./provider-lifecycle.js";
-import type { WorkerProviderLifecycleInputOptions } from "./provider-lifecycle.types.js";
+import type {
+  WorkerEnvironmentAbandonment,
+  WorkerProviderLifecycleInputOptions,
+} from "./provider-lifecycle.types.js";
 import type { WorkerEnvironmentState } from "./state.js";
-import type { WorkerTunnelStopReason } from "./tunnel-contract.js";
+import { joinWorkerTunnelStops, type WorkerTunnelStopReason } from "./tunnel-contract.js";
 import type { WorkerTunnelManager } from "./tunnel.js";
 import {
   boundedWorkerError as boundedError,
@@ -107,12 +109,6 @@ type WorkerEnvironmentServiceOptions = WorkerProviderLifecycleInputOptions & {
         }
       | {
           identity: WorkerConnectionIdentity;
-          toolName: "github_publish";
-          request: WorkerGitHubPublishParams;
-          signal?: AbortSignal;
-        }
-      | {
-          identity: WorkerConnectionIdentity;
           toolName: "portal";
           request: WorkerPortalParams;
           signal?: AbortSignal;
@@ -146,7 +142,7 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
             ownerEpoch?: number,
             reason?: WorkerTunnelStopReason,
           ) => {
-            await Promise.all([
+            await joinWorkerTunnelStops([
               options.tunnelManager?.stop(environmentId, ownerEpoch),
               options.nodeTunnelManager?.stop(environmentId, ownerEpoch, reason),
               options.nodeDesktopCarrier?.stop(environmentId, ownerEpoch),
@@ -672,8 +668,8 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
         }),
       );
     },
-    destroy: async (environmentId: string) =>
-      environmentAccess.project(await providerLifecycle.destroy(environmentId)),
+    destroy: async (environmentId: string, abandonment?: WorkerEnvironmentAbandonment) =>
+      environmentAccess.project(await providerLifecycle.destroy(environmentId, { abandonment })),
     destroyUnattached: async (environmentId: string) =>
       environmentAccess.project(
         await providerLifecycle.destroy(environmentId, { requireUnattached: true }),

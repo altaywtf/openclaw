@@ -107,23 +107,28 @@ export function createFixture(
 ) {
   fs.mkdirSync(root, { recursive: true });
   fs.mkdirSync(path.join(root, ".artifacts"));
-  // Keep real compiler packages, launchers and the shared Node type root, without
-  // traversing unrelated repository dependencies on every input snapshot.
-  for (const dependency of [
+  // Link the selected graph's real toolchain and runtime packages: each writer
+  // validates the fixture's entire dependency topology before and after emit.
+  for (const name of [
     ".bin",
+    "@anthropic-ai/claude-agent-sdk",
     "@openclaw/fs-safe",
-    "@types/node",
     "@typescript/native-preview",
-    "apache-arrow",
     "playwright-core",
-    "pretty-ms",
     "tsdown",
     "tsx",
     "typescript",
+    ...(groups === TSDOWN_NON_SDK_DTS_CONFIG_GROUPS
+      ? ["@types/node", "apache-arrow", "pretty-ms"]
+      : []),
   ]) {
-    const target = path.join(root, "node_modules", dependency);
+    const target = path.join(root, "node_modules", name);
     fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.symlinkSync(path.resolve("node_modules", dependency), target, "junction");
+    fs.symlinkSync(
+      fs.realpathSync(path.join(sourceRoot, "node_modules", name)),
+      target,
+      "junction",
+    );
   }
   const write = (source: string, contents: string) => {
     const relative = path.relative(root, path.resolve(root, source));
@@ -189,7 +194,10 @@ export function createFixture(
     // Exercise every real extension partition, even in the small compiler fixture.
     for (const id of ["fixture-a", "fixture-b", "fixture-c", "fixture-d", "fixture-e"]) {
       write(`extensions/${id}/openclaw.plugin.json`, JSON.stringify({ id }));
-      write(`extensions/${id}/package.json`, JSON.stringify({ name: `@openclaw/${id}` }));
+      write(
+        `extensions/${id}/package.json`,
+        JSON.stringify({ name: `@openclaw/${id}`, exports: { ".": "./dist/index.js" } }),
+      );
       write(`extensions/${id}/index.ts`, "export {};\n");
     }
   }
