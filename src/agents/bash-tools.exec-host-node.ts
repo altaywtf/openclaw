@@ -415,7 +415,7 @@ export async function executeNodeHostCommand(
       const {
         approvalId,
         approvalSlug,
-        deliveryRoute,
+        approvalClientConnected,
         originNativeRouteActive,
         warningText,
         expiresAtMs,
@@ -446,7 +446,11 @@ export async function executeNodeHostCommand(
         inlineApprovalId = approvalId;
       } else if (
         unavailableReason === null &&
-        shouldAwaitExecApprovalInline({ ...params, deliveryRoute, originNativeRouteActive })
+        shouldAwaitExecApprovalInline({
+          ...params,
+          approvalClientConnected,
+          originNativeRouteActive,
+        })
       ) {
         // Keep the admitted turn alive while its approval is pending. Returning
         // approval-pending here closes the authority before the operator can act.
@@ -661,6 +665,7 @@ export async function executeNodeHostCommand(
           unavailableReason,
           allowedDecisions,
           nodeId: target.nodeId,
+          nativeRouteActive: originNativeRouteActive,
           processContinuationAvailable: params.processContinuationAvailable,
         });
       }

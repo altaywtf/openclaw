@@ -90,7 +90,7 @@ type MockAllowlistResult = {
 type MockRegisteredExecApprovalRequest = {
   approvalId: string;
   approvalSlug: string;
-  deliveryRoute?: "approval-client" | "forwarder" | "turn-source" | "none";
+  approvalClientConnected?: boolean;
   originNativeRouteActive?: boolean;
   warningText: string;
   expiresAtMs: number;
@@ -608,7 +608,7 @@ describe("processGatewayAllowlist", () => {
     createAndRegisterDefaultExecApprovalRequestMock.mockResolvedValue({
       approvalId: "req-1",
       approvalSlug: "slug-1",
-      deliveryRoute: "approval-client",
+      approvalClientConnected: true,
       originNativeRouteActive: false,
       warningText: "",
       expiresAtMs: Date.now() + 60_000,
@@ -2869,7 +2869,7 @@ EOF`,
     createAndRegisterDefaultExecApprovalRequestMock.mockResolvedValueOnce({
       approvalId: "req-1",
       approvalSlug: "slug-1",
-      deliveryRoute: "approval-client",
+      approvalClientConnected: true,
       originNativeRouteActive: false,
       warningText: "",
       expiresAtMs: Date.now() + 60_000,
@@ -2929,7 +2929,7 @@ EOF`,
     createAndRegisterDefaultExecApprovalRequestMock.mockResolvedValueOnce({
       approvalId: "req-1",
       approvalSlug: "slug-1",
-      deliveryRoute: "turn-source",
+      approvalClientConnected: false,
       warningText: "",
       expiresAtMs: Date.now() + 60_000,
       preResolvedDecision: undefined,

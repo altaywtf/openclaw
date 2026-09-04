@@ -205,11 +205,16 @@ async function writeExecApprovalsConfig(config: Record<string, unknown>) {
   saveExecApprovals(config as ExecApprovalsFile);
 }
 
-function acceptedApprovalResponse(params: unknown, deliveryRoute?: "approval-client") {
+function acceptedApprovalResponse(
+  params: unknown,
+  deliveryRoute?: "approval-client" | "forwarder",
+  approvalClientConnected = deliveryRoute === "approval-client",
+) {
   return {
     status: "accepted",
     id: (params as { id?: string })?.id,
     deliveryRoute,
+    approvalClientConnected,
     originNativeRouteActive: deliveryRoute === "approval-client",
   };
 }
@@ -343,11 +348,16 @@ async function expectGatewayAskAlwaysPrompt(options: {
 function mockAcceptedApprovalFlow(options: {
   onAgent?: (params: Record<string, unknown>) => void;
   onNodeInvoke?: (params: unknown) => unknown;
-  deliveryRoute?: "approval-client";
+  deliveryRoute?: "approval-client" | "forwarder";
+  approvalClientConnected?: boolean;
 }) {
   vi.mocked(callGatewayTool).mockImplementation(async (method, _opts, params) => {
     if (method === "exec.approval.request") {
-      return acceptedApprovalResponse(params, options.deliveryRoute);
+      return acceptedApprovalResponse(
+        params,
+        options.deliveryRoute,
+        options.approvalClientConnected,
+      );
     }
     if (method === "exec.approval.waitDecision") {
       return { decision: "allow-once" };
@@ -1223,6 +1233,30 @@ describe("exec approvals", () => {
     expect(result.details.status).toBe("completed");
     expect(getResultText(result)).toContain("webchat-ok");
     expect(agentCalls).toHaveLength(0);
+  });
+
+  it("keeps webchat inline when forwarding wins route precedence", async () => {
+    mockAcceptedApprovalFlow({
+      deliveryRoute: "forwarder",
+      approvalClientConnected: true,
+    });
+
+    const tool = createExecTool({
+      host: "gateway",
+      ask: "always",
+      approvalRunningNoticeMs: 0,
+      sessionKey: "agent:main:main",
+      elevated: { enabled: true, allowed: true, defaultLevel: "ask" },
+      messageProvider: "webchat",
+    });
+
+    const result = await tool.execute("call-gw-forwarded-webchat", {
+      command: "printf webchat-ok",
+      workdir: process.cwd(),
+    });
+
+    expect(result.details.status).toBe("completed");
+    expect(getResultText(result)).toContain("webchat-ok");
   });
 
   it("keeps approved internal commands asynchronous without a webchat turn source", async () => {

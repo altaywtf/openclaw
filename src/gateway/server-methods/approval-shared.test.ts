@@ -315,11 +315,51 @@ describe("handlePendingApprovalRequest", () => {
         id: "approval-with-client",
         status: "accepted",
         deliveryRoute: "approval-client",
+        approvalClientConnected: true,
         originNativeRouteActive: false,
       }),
       undefined,
     );
 
+    expect(manager.resolve(record.id, "allow-once")).toBe(true);
+    await requestPromise;
+  });
+
+  it("reports a connected approval client independently from forwarding", async () => {
+    const manager = new ExecApprovalManager();
+    const record = manager.create({ command: "echo ok" }, 60_000, "forwarded-with-client");
+    const decisionPromise = manager.register(record, 60_000);
+    const respond = vi.fn();
+    const requestPromise = handlePendingApprovalRequest({
+      manager,
+      record,
+      decisionPromise,
+      respond,
+      context: {
+        broadcast: vi.fn(),
+        hasExecApprovalClients: () => true,
+      } as unknown as GatewayRequestContext,
+      requestEventName: "exec.approval.requested",
+      requestEvent: {
+        id: record.id,
+        request: record.request,
+        createdAtMs: record.createdAtMs,
+        expiresAtMs: record.expiresAtMs,
+      },
+      twoPhase: true,
+      deliverRequest: () => true,
+    });
+
+    await Promise.resolve();
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({
+        status: "accepted",
+        deliveryRoute: "forwarder",
+        approvalClientConnected: true,
+      }),
+      undefined,
+    );
     expect(manager.resolve(record.id, "allow-once")).toBe(true);
     await requestPromise;
   });

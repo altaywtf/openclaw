@@ -112,8 +112,6 @@ function buildExecApprovalRequestToolParams(
 }
 
 type ParsedDecision = { present: boolean; value: string | null };
-type ExecApprovalDeliveryRoute = "approval-client" | "forwarder" | "turn-source" | "none";
-
 function parseDecision(value: unknown): ParsedDecision {
   if (!value || typeof value !== "object") {
     return { present: false, value: null };
@@ -131,14 +129,6 @@ function parseExpiresAtMs(value: unknown): number | undefined {
   return asDateTimestampMs(value);
 }
 
-function parseDeliveryRoute(value: unknown): ExecApprovalDeliveryRoute | undefined {
-  return value === "approval-client" ||
-    value === "forwarder" ||
-    value === "turn-source" ||
-    value === "none"
-    ? value
-    : undefined;
-}
 function parseOptionalBoolean(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
 }
@@ -152,7 +142,7 @@ export type ExecApprovalRegistration = {
   id: string;
   expiresAtMs: number;
   finalDecision?: string | null;
-  deliveryRoute?: ExecApprovalDeliveryRoute;
+  approvalClientConnected?: boolean;
   originNativeRouteActive?: boolean;
 };
 
@@ -184,12 +174,16 @@ async function registerExecApprovalRequest(
   const id = parseString(registrationResult?.id) ?? params.id;
   const expiresAtMs =
     parseExpiresAtMs(registrationResult?.expiresAtMs) ?? resolveDefaultExecApprovalExpiresAtMs();
-  const deliveryRoute = parseDeliveryRoute(registrationResult?.deliveryRoute);
+  // Remote Gateways can lag the local agent during an upgrade. Their shipped
+  // winner-only route is safe only when the independent availability fact is absent.
+  const approvalClientConnected =
+    parseOptionalBoolean(registrationResult?.approvalClientConnected) ??
+    (registrationResult?.deliveryRoute === "approval-client" ? true : undefined);
   const originNativeRouteActive = parseOptionalBoolean(registrationResult?.originNativeRouteActive);
   const registration = {
     id,
     expiresAtMs,
-    ...(deliveryRoute ? { deliveryRoute } : {}),
+    ...(approvalClientConnected === undefined ? {} : { approvalClientConnected }),
     ...(originNativeRouteActive === undefined ? {} : { originNativeRouteActive }),
   };
   return decision.present ? { ...registration, finalDecision: decision.value } : registration;

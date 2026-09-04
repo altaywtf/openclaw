@@ -417,15 +417,12 @@ function resolveApprovalRouteNotice(params: {
   };
 }
 
-/** Returns whether a native approval runtime is active for the requested channel/account scope. */
-export function hasActiveApprovalNativeRouteRuntime(params: {
+type ApprovalNativeRouteLookup = (params: {
   approvalKind: ChannelApprovalKind;
   channel?: string | null;
   accountId?: string | null;
   request?: ApprovalRequest;
-}): boolean {
-  return hasActiveApprovalNativeRouteRuntimeForState(defaultCoordinatorState, params);
-}
+}) => boolean;
 
 function hasActiveApprovalNativeRouteRuntimeForState(
   state: ApprovalNativeRouteCoordinatorState,
@@ -678,7 +675,7 @@ function createApprovalNativeRouteReporterForState(
 
 export type ApprovalNativeRouteCoordinator = {
   createReporter: typeof createApprovalNativeRouteReporter;
-  hasActiveRuntime: typeof hasActiveApprovalNativeRouteRuntime;
+  hasActiveRuntime: ApprovalNativeRouteLookup;
   close: () => void;
 };
 

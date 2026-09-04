@@ -126,7 +126,7 @@ describe("exec approval requests", () => {
   it("preserves the gateway-selected approval routing facts", async () => {
     vi.mocked(callGatewayTool).mockResolvedValue({
       id: "approval-id",
-      deliveryRoute: "turn-source",
+      approvalClientConnected: true,
       originNativeRouteActive: false,
     });
 
@@ -139,15 +139,44 @@ describe("exec approval requests", () => {
         security: "allowlist",
         ask: "on-miss",
       }),
-    ).resolves.toMatchObject({ deliveryRoute: "turn-source", originNativeRouteActive: false });
+    ).resolves.toMatchObject({ approvalClientConnected: true, originNativeRouteActive: false });
+  });
+
+  it("accepts a shipped approval-client route from an older remote gateway", async () => {
+    vi.mocked(callGatewayTool).mockResolvedValue({
+      id: "approval-id",
+      deliveryRoute: "approval-client",
+    });
+
+    await expect(
+      registerExecApprovalRequestForHostOrThrow({
+        approvalId: "approval-id",
+        command: "echo hi",
+        workdir: "/tmp",
+        host: "gateway",
+        security: "allowlist",
+        ask: "on-miss",
+      }),
+    ).resolves.toMatchObject({ approvalClientConnected: true });
   });
 
   it("ignores malformed origin-native route state", async () => {
     vi.mocked(callGatewayTool).mockResolvedValue({
       id: "approval-id",
+      approvalClientConnected: "true",
       originNativeRouteActive: "false",
     });
 
+    await expect(
+      registerExecApprovalRequestForHostOrThrow({
+        approvalId: "approval-id",
+        command: "echo hi",
+        workdir: "/tmp",
+        host: "gateway",
+        security: "allowlist",
+        ask: "on-miss",
+      }),
+    ).resolves.not.toHaveProperty("approvalClientConnected");
     await expect(
       registerExecApprovalRequestForHostOrThrow({
         approvalId: "approval-id",

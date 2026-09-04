@@ -1,9 +1,7 @@
 import { INTERNAL_MESSAGE_CHANNEL, normalizeMessageChannel } from "../utils/message-channel.js";
-import type { ExecApprovalRegistration } from "./bash-tools.exec-approval-request.js";
-
 export function shouldAwaitExecApprovalInline(params: {
   turnSourceChannel?: string;
-  deliveryRoute?: ExecApprovalRegistration["deliveryRoute"];
+  approvalClientConnected?: boolean;
   originNativeRouteActive?: boolean;
   approvalFollowupMode?: "agent" | "direct";
   trigger?: string;
@@ -28,6 +26,6 @@ export function shouldAwaitExecApprovalInline(params: {
   // when the Gateway selected that exact originating channel/account runtime;
   // a generic connected Control UI is not evidence that the origin can surface it.
   return turnSourceChannel === INTERNAL_MESSAGE_CHANNEL
-    ? params.deliveryRoute === "approval-client"
+    ? params.approvalClientConnected === true
     : params.originNativeRouteActive === true;
 }

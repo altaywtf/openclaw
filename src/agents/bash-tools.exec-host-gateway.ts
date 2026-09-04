@@ -1128,7 +1128,7 @@ export async function processGatewayAllowlist(
     const {
       approvalId,
       approvalSlug,
-      deliveryRoute,
+      approvalClientConnected,
       originNativeRouteActive,
       warningText,
       expiresAtMs,
@@ -1334,7 +1334,11 @@ export async function processGatewayAllowlist(
 
     if (
       unavailableReason === null &&
-      shouldAwaitExecApprovalInline({ ...params, deliveryRoute, originNativeRouteActive })
+      shouldAwaitExecApprovalInline({
+        ...params,
+        approvalClientConnected,
+        originNativeRouteActive,
+      })
     ) {
       if (params.runId) {
         emitAgentEvent({
@@ -1629,6 +1633,7 @@ export async function processGatewayAllowlist(
         sentApproverDms,
         unavailableReason,
         allowedDecisions: approvalAllowedDecisions,
+        nativeRouteActive: originNativeRouteActive,
         processContinuationAvailable: params.processContinuationAvailable,
       }),
     };
