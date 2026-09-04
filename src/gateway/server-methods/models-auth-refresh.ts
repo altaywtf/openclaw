@@ -3,12 +3,13 @@ import {
   errorShape,
   validateModelsAuthRefreshParams,
 } from "../../../packages/gateway-protocol/src/index.js";
-import { tryResolveAmbientOwnerAgentId } from "../../agents/agent-scope-config.js";
+import { resolveAgentDir, tryResolveAmbientOwnerAgentId } from "../../agents/agent-scope-config.js";
+import { noteRuntimeAuthProfileStorePersistedMutation } from "../../agents/auth-profiles/runtime-snapshots.js";
 import {
   clearCurrentProviderAuthState,
   warmCurrentProviderAuthStateOffMainThread,
 } from "../../agents/model-provider-auth.js";
-import { refreshPreparedModelRuntimeSnapshots } from "../../agents/prepared-model-runtime.js";
+import { prepareModelRuntimeSnapshot } from "../../agents/prepared-model-runtime.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { refreshActiveProviderAuthRuntimeSnapshot } from "../../secrets/runtime.js";
 import { formatForLog } from "../ws-log.js";
@@ -42,15 +43,22 @@ export async function refreshModelAuthStateAfterMutation(
 ): Promise<void> {
   invalidateModelAuthStatusCache();
   const cfg = context.getRuntimeConfig();
-  // Prepared owners pair auth facts with their catalog, and ordinary Models reads never wait
-  // on discovery, so the mutated agent's owner republishes before the caller sees success.
-  await Promise.all([
-    refreshActiveProviderAuthRuntimeSnapshot(),
-    refreshPreparedModelRuntimeSnapshots(cfg, {
-      allowGatewaySubagentBinding: true,
-      agentIds: new Set([agentId]),
-    }),
-  ]);
+  const agentDir = resolveAgentDir(cfg, agentId);
+  await refreshActiveProviderAuthRuntimeSnapshot();
+  // A durable store write already raised this mutation; a native sign-in (Codex) changes no store
+  // row, so raise it here as well. The auth publication owner coalesces both into one static rebuild
+  // that reuses the plugin generation and births discovery only when the profile set changed. A
+  // config-wide republish here would rebuild every generation and re-run discovery per login.
+  noteRuntimeAuthProfileStorePersistedMutation(agentDir, {
+    credentialsChanged: true,
+    profileSetChanged: operation !== "update",
+    stateChanged: false,
+    profileIds: [],
+  });
+  // Ordinary Models reads never wait on discovery, so the mutated agent's configured owner
+  // republishes before the caller sees success. A missing owner is a lifecycle bug, not a reason
+  // to activate a standalone runtime here.
+  await prepareModelRuntimeSnapshot({ config: cfg, agentId, agentDir });
   void warmCurrentProviderAuthStateOffMainThread(cfg).catch((err: unknown) => {
     log.warn(`provider auth state rewarm after ${operation} failed: ${formatForLog(err)}`);
   });

@@ -59,7 +59,8 @@ const mocks = vi.hoisted(() => ({
   refreshActiveProviderAuthRuntimeSnapshot: vi.fn(async () => false),
   clearCurrentProviderAuthState: vi.fn(),
   warmCurrentProviderAuthStateOffMainThread: vi.fn(async (_cfg: unknown) => {}),
-  refreshPreparedModelRuntimeSnapshots: vi.fn(async () => {}),
+  prepareModelRuntimeSnapshot: vi.fn(async () => ({})),
+  noteRuntimeAuthProfileStorePersistedMutation: vi.fn(),
   loadDeferredCatalog: vi.fn(),
   readPreparedCatalog: vi.fn(),
   buildAuthHealthSummary: vi.fn<BuildAuthHealthSummary>(
@@ -128,7 +129,12 @@ vi.mock("../../agents/model-provider-auth.js", () => ({
 
 vi.mock("../../agents/prepared-model-runtime.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../agents/prepared-model-runtime.js")>()),
-  refreshPreparedModelRuntimeSnapshots: mocks.refreshPreparedModelRuntimeSnapshots,
+  prepareModelRuntimeSnapshot: mocks.prepareModelRuntimeSnapshot,
+}));
+
+vi.mock("../../agents/auth-profiles/runtime-snapshots.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../agents/auth-profiles/runtime-snapshots.js")>()),
+  noteRuntimeAuthProfileStorePersistedMutation: mocks.noteRuntimeAuthProfileStorePersistedMutation,
 }));
 
 vi.mock("../server-model-catalog-auth.js", () => ({
@@ -450,7 +456,8 @@ describe("models.authRefresh", () => {
   beforeEach(() => {
     resetAuthStatusMocks();
     mocks.clearCurrentProviderAuthState.mockClear();
-    mocks.refreshPreparedModelRuntimeSnapshots.mockClear();
+    mocks.prepareModelRuntimeSnapshot.mockClear();
+    mocks.noteRuntimeAuthProfileStorePersistedMutation.mockClear();
   });
 
   it.each([{ operation: "login" }, { operation: "logout" }, { operation: "update" }] as const)(
@@ -466,10 +473,19 @@ describe("models.authRefresh", () => {
       expect(firstRespondCall(options)).toEqual([true, { refreshed: true }, undefined]);
       expect(mocks.refreshActiveProviderAuthRuntimeSnapshot).toHaveBeenCalledOnce();
       expect(mocks.clearCurrentProviderAuthState).toHaveBeenCalledOnce();
-      // Ordinary reads never wait on discovery, so the agent owner republishes before success.
-      expect(mocks.refreshPreparedModelRuntimeSnapshots).toHaveBeenCalledExactlyOnceWith(
-        expect.anything(),
-        { allowGatewaySubagentBinding: true, agentIds: new Set(["main"]) },
+      // The auth publication owner rebuilds the agent's static generation; a native sign-in has no
+      // store write of its own, so the refresh raises the mutation and waits for the republish.
+      expect(mocks.noteRuntimeAuthProfileStorePersistedMutation).toHaveBeenCalledExactlyOnceWith(
+        expect.any(String),
+        {
+          credentialsChanged: true,
+          profileSetChanged: testCase.operation !== "update",
+          stateChanged: false,
+          profileIds: [],
+        },
+      );
+      expect(mocks.prepareModelRuntimeSnapshot).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ agentId: "main" }),
       );
       expect(loadGatewayModelCatalogSnapshot).not.toHaveBeenCalled();
     },
