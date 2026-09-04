@@ -9,11 +9,13 @@ import { setTimeout as delay } from "node:timers/promises";
 import { stripVTControlCharacters } from "node:util";
 import { spawn as spawnPty } from "@lydell/node-pty";
 import WebSocket from "ws";
+import { profileProcess } from "./gateway-device-metadata-profile.mjs";
 
 // Product proof uses only the built CLI and native terminal. No runtime imports.
 assert.equal(process.platform, "win32", "This proof must execute on native Windows");
 const entry = path.resolve(process.argv[2] ?? "openclaw.mjs");
-const legacyEntry = process.argv[3];
+const diagnoseStartup = process.argv[3] === "--diagnose-startup";
+const legacyEntry = diagnoseStartup ? undefined : process.argv[3];
 const requireGreen = legacyEntry !== undefined;
 const root = await fs.mkdtemp(path.join(os.tmpdir(), "gateway-metadata-proof-"));
 const token = randomBytes(32).toString("hex");
@@ -23,11 +25,25 @@ const captures = [];
 const childExits = new WeakMap();
 let tui;
 let phase = "setup";
+const profiles = [];
+function observeProfile(label, readOutput) {
+  profiles.push({
+    label,
+    profile: profileProcess(readOutput, until).then(
+      (observer) => ({ observer }),
+      (error) => ({ error: String(error) }),
+    ),
+  });
+}
 
 const listener = net.createServer();
-await new Promise((resolve) => listener.listen(0, "127.0.0.1", resolve));
+await new Promise((resolve) => {
+  listener.listen(0, "127.0.0.1", resolve);
+});
 const port = listener.address().port;
-await new Promise((resolve) => listener.close(resolve));
+await new Promise((resolve) => {
+  listener.close(resolve);
+});
 const url = `ws://127.0.0.1:${port}`;
 const baseEnv = {};
 for (const [key, value] of Object.entries(process.env)) {
@@ -78,11 +94,16 @@ async function makeState(name) {
 }
 
 function start(env, args, application = entry) {
-  const child = spawn(process.execPath, [application, ...args], {
-    env,
-    stdio: ["pipe", "pipe", "pipe"],
-    windowsHide: true,
-  });
+  const inspect = diagnoseStartup && args[0] === "gateway";
+  const child = spawn(
+    process.execPath,
+    [...(inspect ? ["--inspect=127.0.0.1:0"] : []), application, ...args],
+    {
+      env,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    },
+  );
   const capture = { child, text: "", stdout: "" };
   captures.push(capture);
   children.add(child);
@@ -94,12 +115,22 @@ function start(env, args, application = entry) {
     capture.text += chunk;
   });
   child.once("close", () => children.delete(child));
-  childExits.set(child, new Promise((resolve) => child.once("close", resolve)));
+  childExits.set(
+    child,
+    new Promise((resolve) => {
+      child.once("close", resolve);
+    }),
+  );
+  if (inspect) {
+    observeProfile("Gateway", () => capture.text);
+  }
   return capture;
 }
 
 async function stop(child) {
-  if (!children.has(child)) return;
+  if (!children.has(child)) {
+    return;
+  }
   await new Promise((resolve) => {
     const killer = spawn("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], {
       env: baseEnv,
@@ -126,7 +157,9 @@ async function until(read, predicate, label) {
   const end = Date.now() + 90_000;
   while (Date.now() < end) {
     const value = await read();
-    if (predicate(value)) return value;
+    if (predicate(value)) {
+      return value;
+    }
     await delay(300);
   }
   throw new Error(`Timed out: ${label}`);
@@ -141,7 +174,13 @@ function sanitize(text) {
   return stripVTControlCharacters(text)
     .replaceAll(token, "<synthetic-token>")
     .replaceAll(root, "<isolated-state>")
-    .replaceAll(process.cwd(), "<product-checkout>");
+    .replaceAll(path.dirname(entry), "<product-checkout>")
+    .replaceAll(process.cwd(), "<harness-checkout>")
+    .replaceAll(path.dirname(entry).replaceAll("\\", "/"), "<product-checkout>")
+    .replaceAll(process.cwd().replaceAll("\\", "/"), "<harness-checkout>")
+    .replaceAll(os.tmpdir(), "<temporary-directory>")
+    .replaceAll(os.tmpdir().replaceAll("\\", "/"), "<temporary-directory>")
+    .replace(/(\[gateway\] agent model:).*/g, "$1 <unused in this proof>");
 }
 
 const admin = await makeState("approver");
@@ -164,20 +203,36 @@ const projected = (row) => ({
   isRepair: row.isRepair,
 });
 
-function startTui(env) {
+function startTui(env, inspect = false) {
   let screen = "";
-  const terminal = spawnPty(process.execPath, [entry, "tui", "--url", url, "--token", token], {
-    name: "xterm-256color",
-    cols: 140,
-    rows: 40,
-    cwd: process.cwd(),
-    env,
-  });
+  const startedAt = Date.now();
+  const milestones = [];
+  const terminal = spawnPty(
+    process.execPath,
+    [...(inspect ? ["--inspect=127.0.0.1:0"] : []), entry, "tui", "--url", url, "--token", token],
+    {
+      name: "xterm-256color",
+      cols: 140,
+      rows: 40,
+      cwd: process.cwd(),
+      env,
+    },
+  );
   terminal.onData((text) => {
     screen += stripVTControlCharacters(text);
+    for (const label of ["OpenClaw", "connecting", "gateway connected", "pairing required"]) {
+      if (screen.includes(label) && !milestones.some((event) => event.label === label)) {
+        milestones.push({ label, elapsedMs: Date.now() - startedAt });
+      }
+    }
   });
-  const exited = new Promise((resolve) => terminal.onExit(resolve));
-  const session = { terminal, screen: () => screen, exited };
+  const exited = new Promise((resolve) => {
+    terminal.onExit(resolve);
+  });
+  const session = { terminal, screen: () => screen, exited, milestones };
+  if (inspect) {
+    observeProfile("approved device TUI", session.screen);
+  }
   tui = session;
   return session;
 }
@@ -185,7 +240,9 @@ function startTui(env) {
 async function stopTui(session) {
   session.terminal.kill();
   await session.exited;
-  if (tui === session) tui = undefined;
+  if (tui === session) {
+    tui = undefined;
+  }
 }
 
 async function completeTui(session) {
@@ -227,7 +284,9 @@ function wireIdentity() {
 
 async function wireConnect(identity, platform, deviceFamily, { corruptSignature = false } = {}) {
   const socket = new WebSocket(url);
-  const closed = new Promise((resolve) => socket.once("close", resolve));
+  const closed = new Promise((resolve) => {
+    socket.once("close", resolve);
+  });
   const pending = new Map();
   let sequence = 0;
   let resolveChallenge;
@@ -246,7 +305,9 @@ async function wireConnect(identity, platform, deviceFamily, { corruptSignature 
     if (frame.type === "event" && frame.event === "connect.challenge") {
       resolveChallenge(frame.payload);
     }
-    if (frame.type === "res") pending.get(frame.id)?.(frame);
+    if (frame.type === "res") {
+      pending.get(frame.id)?.(frame);
+    }
   });
   function request(method, params = {}) {
     const id = `metadata-proof-${++sequence}`;
@@ -369,7 +430,7 @@ async function wireControls() {
   }
 }
 
-try {
+async function runScenario() {
   phase = "gateway startup";
   const gateway = start(admin, ["gateway", "run", "--allow-unconfigured"]);
   await ready(gateway);
@@ -383,7 +444,9 @@ try {
     "administrator pairing",
   );
   let rows = await adminList();
-  for (const request of rows.pending) await approve(request.requestId);
+  for (const request of rows.pending) {
+    await approve(request.requestId);
+  }
   await stopTui(adminTui);
   await completeTui(startTui(admin));
   json(await list(admin));
@@ -398,7 +461,22 @@ try {
   assert.notEqual(deviceId, adminIdentity.deviceId);
   await approve(rows.pending[0].requestId);
   await stopTui(deviceTui);
-  await completeTui(startTui(device));
+  const approvedTui = startTui(device, diagnoseStartup);
+  if (diagnoseStartup) {
+    // Observe only the stalled boundary. Do not rerun the product acceptance
+    // matrix until these measurements establish a cause or fixture correction.
+    await until(approvedTui.screen, (text) => text.includes("gateway connected"), "TUI connected");
+    approvedTui.terminal.write("/gateway-status\r");
+    await until(
+      approvedTui.screen,
+      (text) => text.includes("Gateway status"),
+      "TUI status response",
+    );
+    report.outcome = "startup-diagnostic-completed";
+    report.startupMilestones = approvedTui.milestones;
+    return;
+  }
+  await completeTui(approvedTui);
   json(await list(device));
   report.stages.push({ phase, completedAuthenticatedCommand: true });
 
@@ -699,17 +777,45 @@ try {
     report.legacy.gateway = sanitize(upgradedGateway.text);
     await stop(upgradedGateway.child);
   }
+}
+
+try {
+  await runScenario();
 } catch (error) {
   report.failure = { phase, message: sanitize(String(error)) };
   report.diagnostics = captures.map((capture) => ({
     exitCode: capture.child.exitCode,
     output: sanitize(capture.text),
   }));
-  if (tui) report.terminal = sanitize(tui.screen());
+  if (tui) {
+    report.terminal = sanitize(tui.screen());
+  }
+  if (tui) {
+    report.startupMilestones = tui.milestones;
+  }
   process.exitCode = 1;
 } finally {
-  if (tui) await stopTui(tui);
-  for (const child of [...children]) await stop(child);
+  if (profiles.length > 0) {
+    report.profiles = [];
+    for (const { label, profile } of profiles) {
+      try {
+        const result = await profile;
+        if (result.error) {
+          report.profiles.push({ label, error: sanitize(result.error) });
+        } else {
+          report.profiles.push({ label, samples: await result.observer.stop(sanitize) });
+        }
+      } catch (error) {
+        report.profiles.push({ label, error: sanitize(String(error)) });
+      }
+    }
+  }
+  if (tui) {
+    await stopTui(tui);
+  }
+  for (const child of children) {
+    await stop(child);
+  }
   report.cleanup = { trackedChildrenRemaining: children.size };
   await fs.mkdir(".artifacts/gateway-device-metadata", { recursive: true });
   await fs.writeFile(

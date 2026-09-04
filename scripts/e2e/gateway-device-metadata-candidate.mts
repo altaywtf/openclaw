@@ -11,6 +11,7 @@ assert.equal(process.platform, "win32");
 const candidateSha = "e081101d616dd7d13b7dac37e167a268c161067d";
 const baselineSha = "a33604ea1ecab8212865cd225e17511cc0b69cb3";
 const harnessRoot = process.cwd();
+const diagnoseStartup = process.argv.includes("--diagnose-startup");
 const root = await fs.mkdtemp(path.join(os.tmpdir(), "metadata-candidate-"));
 const candidate = path.join(root, "candidate");
 const baseline = path.join(root, "baseline");
@@ -67,32 +68,38 @@ async function checkout(sha: string, destination: string) {
   );
 }
 
-console.log(`[metadata-proof] prepare baseline ${baselineSha}`);
-await checkout(baselineSha, baseline);
-const regression = "src/gateway/server/ws-connection/connect-device-metadata.test.ts";
-await fs.copyFile(path.join(harnessRoot, regression), path.join(baseline, regression));
-const redCode = await run(
-  process.execPath,
-  ["scripts/run-vitest.mjs", regression, "-t", "resolvePinnedClientMetadata"],
-  baseline,
-);
-console.log(
-  `[metadata-proof] pre-fix regression exit=${redCode}; inspect failures for intended alias assertions`,
-);
-assert.notEqual(redCode, 0, "The new alias regression must fail on baseline production");
+if (!diagnoseStartup) {
+  console.log(`[metadata-proof] prepare baseline ${baselineSha}`);
+  await checkout(baselineSha, baseline);
+  const regression = "src/gateway/server/ws-connection/connect-device-metadata.test.ts";
+  await fs.copyFile(path.join(harnessRoot, regression), path.join(baseline, regression));
+  const redCode = await run(
+    process.execPath,
+    ["scripts/run-vitest.mjs", regression, "-t", "resolvePinnedClientMetadata"],
+    baseline,
+  );
+  console.log(
+    `[metadata-proof] pre-fix regression exit=${redCode}; inspect failures for intended alias assertions`,
+  );
+  assert.notEqual(redCode, 0, "The new alias regression must fail on baseline production");
+}
 
 console.log(`[metadata-proof] prepare exact candidate ${candidateSha}`);
 await checkout(candidateSha, candidate);
 assert.equal(await pnpm(["build:docker"], candidate), 0);
-assert.equal(await run(process.execPath, ["scripts/run-vitest.mjs", ...tests], candidate), 0);
+if (!diagnoseStartup) {
+  assert.equal(await run(process.execPath, ["scripts/run-vitest.mjs", ...tests], candidate), 0);
+}
 assert.equal(await run("git", ["diff", "--exit-code", candidateSha], candidate), 0);
 
-await fs.mkdir(legacy);
-await fs.writeFile(path.join(legacy, "package.json"), JSON.stringify({ private: true }));
-const npm = resolveNpmRunner({
-  npmArgs: ["install", "--no-audit", "--no-fund", "openclaw@2026.8.1-beta.2"],
-});
-assert.equal(await run(npm.command, npm.args, legacy, npm), 0);
+if (!diagnoseStartup) {
+  await fs.mkdir(legacy);
+  await fs.writeFile(path.join(legacy, "package.json"), JSON.stringify({ private: true }));
+  const npm = resolveNpmRunner({
+    npmArgs: ["install", "--no-audit", "--no-fund", "openclaw@2026.8.1-beta.2"],
+  });
+  assert.equal(await run(npm.command, npm.args, legacy, npm), 0);
+}
 
 console.log(`[metadata-proof] product under test ${candidateSha}; baseline ${baselineSha}`);
 assert.equal(
@@ -101,7 +108,9 @@ assert.equal(
     [
       path.join(harnessRoot, "scripts/e2e/gateway-device-metadata-proof.mjs"),
       path.join(candidate, "openclaw.mjs"),
-      path.join(legacy, "node_modules/openclaw/openclaw.mjs"),
+      diagnoseStartup
+        ? "--diagnose-startup"
+        : path.join(legacy, "node_modules/openclaw/openclaw.mjs"),
     ],
     harnessRoot,
   ),
