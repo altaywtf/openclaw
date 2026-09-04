@@ -1,6 +1,4 @@
 // Preloaded adapter for the same typed owner sealed into the native helper.
-import { spawnSync } from "node:child_process";
-import fs from "node:fs";
 import path from "node:path";
 import { resolveServiceManagerEnv } from "../daemon/service-process-env.js";
 import { resolvePreferredOpenClawTmpDir } from "./tmp-openclaw-dir.js";
@@ -8,21 +6,15 @@ import { createManagedHandoffLeaseRuntime } from "./update-managed-service-hando
 import type { ManagedHandoffLease } from "./update-managed-service-handoff-lease-state.js";
 export type { ManagedHandoffLease } from "./update-managed-service-handoff-lease-state.js";
 
-const builtins = { fs, path, spawnSync, process };
-
 export function resolveManagedUpdateLeaseDatabasePath(): string {
   return path.join(resolvePreferredOpenClawTmpDir(), "managed-update-handoffs.sqlite");
 }
 
 export function createManagedHandoffLeaseStore() {
-  return createManagedHandoffLeaseRuntime(builtins, {
+  return createManagedHandoffLeaseRuntime({
     databasePath: resolveManagedUpdateLeaseDatabasePath(),
     serviceManagerEnv: resolveServiceManagerEnv(),
   });
-}
-
-export function stopManagedTriageScope(lease: ManagedHandoffLease): boolean {
-  return createManagedHandoffLeaseStore().stopNative(lease);
 }
 
 export function readManagedServiceUpdateHandoffLease(

@@ -59,6 +59,18 @@ export async function triageAfterFailure(
       throw new ExitError(code);
     },
   };
+  const collectDiagnostics = async () => {
+    const { triageCommand } = await import("./triage.js");
+    await triageCommand(
+      diagnosticRuntime,
+      {},
+      {
+        failure: boundedFailure,
+        signal: cancellation,
+        diagnosticOnly: true,
+      },
+    );
+  };
   let managedStartup = false;
   try {
     await withConsoleLogsRoutedToStderr(async () => {
@@ -69,21 +81,31 @@ export async function triageAfterFailure(
       }
       const root = realpathSync(resolvedRoot);
       boundedFailure.installationRoot = root;
-      if (failure.kind === "update") {
-        // All imports above are loaded before mutation. Only the installed child
-        // may load triage's lazy graph after the updater replaces the package.
+      const supervisor =
+        failure.kind === "gateway-startup"
+          ? detectRespawnSupervisor(process.env, process.platform, {
+              includeLinuxOpenClawGatewayServiceMarker: true,
+            })
+          : null;
+      managedStartup = Boolean(supervisor);
+      if (!supervisor) {
+        // Imports above survive mutation; only the installed child loads triage's
+        // lazy graph. Service selector hints do not grant a foreground updater a lease.
         const commandArgv = [
           ...(await resolveTriageEntrypoint(root)),
-          ...(updateResultPath ? ["--update-result", updateResultPath] : []),
+          ...(failure.kind === "update" && updateResultPath
+            ? ["--update-result", updateResultPath]
+            : []),
         ];
         cancellation.throwIfAborted();
-        if (await queueManagedUpdateTriage(boundedFailure, commandArgv)) {
+        if (
+          failure.kind === "update" &&
+          (await queueManagedUpdateTriage(boundedFailure, commandArgv))
+        ) {
           runtime.error(
             "Automatic triage queued after managed update settlement; inspect the handoff log for its result.",
           );
         } else {
-          // Service selector hints describe the target, not this foreground
-          // updater's lifetime. A managed handoff requires its live IPC/lease.
           await continueTriageInFreshProcess({
             root,
             commandArgv,
@@ -95,10 +117,6 @@ export async function triageAfterFailure(
         }
         return;
       }
-      const supervisor = detectRespawnSupervisor(process.env, process.platform, {
-        includeLinuxOpenClawGatewayServiceMarker: true,
-      });
-      managedStartup = Boolean(supervisor);
       if (supervisor === "systemd") {
         const [nodeRunner, entrypoint] = await resolveTriageEntrypoint(root);
         cancellation.throwIfAborted();
@@ -129,33 +147,10 @@ export async function triageAfterFailure(
         );
         return;
       }
-      if (!supervisor) {
-        const commandArgv = await resolveTriageEntrypoint(root);
-        await continueTriageInFreshProcess({
-          root,
-          commandArgv,
-          failure: boundedFailure,
-          signal: cancellation,
-          output: (output) =>
-            runtime.error(redactSupportString(output, redaction, { maxLength: 32 * 1024 })),
-        });
-        return;
-      }
-      const { triageCommand } = await import("./triage.js");
-      if (supervisor) {
-        runtime.error(
-          "Automatic managed recovery is unavailable on this supervisor; saved diagnostics and manual triage remain available.",
-        );
-      }
-      await triageCommand(
-        diagnosticRuntime,
-        {},
-        {
-          failure: boundedFailure,
-          signal: cancellation,
-          diagnosticOnly: true,
-        },
+      runtime.error(
+        "Automatic managed recovery is unavailable on this supervisor; saved diagnostics and manual triage remain available.",
       );
+      await collectDiagnostics();
     });
   } catch (error) {
     const reason = scrubDoctorErrorMessage(
@@ -166,12 +161,7 @@ export async function triageAfterFailure(
     );
     if (managedStartup && !cancellation.aborted) {
       try {
-        const { triageCommand } = await import("./triage.js");
-        await triageCommand(
-          diagnosticRuntime,
-          {},
-          { failure: boundedFailure, signal: cancellation, diagnosticOnly: true },
-        );
+        await collectDiagnostics();
       } catch {
         runtime.error(
           "Managed triage diagnostics could not complete; retain the original failure and run openclaw triage manually.",

@@ -140,9 +140,7 @@ describe("tsdown config", () => {
           const result = spawnSync(process.execPath, ["--input-type=module", "-e",
             ${JSON.stringify(`
               import assert from "node:assert/strict";
-              import fs from "node:fs";
               import path from "node:path";
-              import {spawnSync} from "node:child_process";
               import {DatabaseSync} from "node:sqlite";
               import {createRequire, registerHooks, isBuiltin} from "node:module";
               import {pathToFileURL} from "node:url";
@@ -155,7 +153,7 @@ describe("tsdown config", () => {
               const {createManagedHandoffLeaseRuntime}=createRequire(import.meta.url)(process.argv[1]);
               const databasePath=path.join(process.cwd(),"lease","state.sqlite"), root=process.cwd();
               const warnings=[];
-              const store=createManagedHandoffLeaseRuntime({fs,path,spawnSync,process},{databasePath,serviceManagerEnv:{PATH:process.env.PATH}}, {warn:(message, metadata)=>warnings.push({message, metadata})});
+              const store=createManagedHandoffLeaseRuntime({databasePath,serviceManagerEnv:{PATH:process.env.PATH}}, {warn:(message, metadata)=>warnings.push({message, metadata})});
               const first=store.acquire(root,"initial",{kind:"update"}); assert.equal(first.kind,"acquired");
               const db=new DatabaseSync(databasePath);
               const clock=Date.now;

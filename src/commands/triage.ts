@@ -314,26 +314,12 @@ export async function triageCommand(
   const promptPath = promptArtifact.ok ? promptArtifact.value : null;
   const stdin = promptPath ? { stdinPath: promptPath, env: targetEnv } : { env: targetEnv };
   const suggestedCommands = [
-    formatInstallationTargetCommand(
-      ["claude", "-p", ...(promptPath ? [] : [prompt])],
-      target,
-      stdin,
-    ),
-    formatInstallationTargetCommand(
-      ["codex", "exec", "--skip-git-repo-check", promptPath ? "-" : prompt],
-      target,
-      stdin,
-    ),
-    formatInstallationTargetCommand(
-      ["opencode", "run", ...(promptPath ? [] : [prompt])],
-      target,
-      stdin,
-    ),
-    formatInstallationTargetCommand(
-      ["pi", "--print", ...(promptPath ? [] : [prompt])],
-      target,
-      stdin,
-    ),
+    ["claude", "-p", ...(promptPath ? [] : [prompt])],
+    ["codex", "exec", "--skip-git-repo-check", promptPath ? "-" : prompt],
+    ["opencode", "run", ...(promptPath ? [] : [prompt])],
+    ["pi", "--print", ...(promptPath ? [] : [prompt])],
+  ].map((command) => formatInstallationTargetCommand(command, target, stdin));
+  suggestedCommands.push(
     formatInstallationTargetCommand(
       [
         "openclaw",
@@ -344,7 +330,7 @@ export async function triageCommand(
       target,
       { env: targetEnv },
     ),
-  ];
+  );
   const findingCounts: Record<HealthFindingSeverity, number> = { error: 0, warning: 0, info: 0 };
   for (const finding of findings) {
     findingCounts[finding.severity] += 1;

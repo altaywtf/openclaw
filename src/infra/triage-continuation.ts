@@ -16,6 +16,7 @@ import {
   forceKillChildProcessTree,
   shouldDetachChildForProcessTree,
 } from "../process/child-process-tree.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import { installationTargetEnv, resolveInstallationTarget } from "./installation-target-context.js";
 import {
   CONTROL_PLANE_UPDATE_SENTINEL_META_ENV,
@@ -163,12 +164,7 @@ export async function continueTriageInFreshProcess(params: {
   let timeout: ReturnType<typeof setTimeout> | undefined;
   let shutdown: ReturnType<typeof setTimeout> | undefined;
   let forced = false;
-  let settleShutdown!: (exit: { code: number | null; signal: NodeJS.Signals | null }) => void;
-  const shutdownExpired = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
-    (resolve) => {
-      settleShutdown = resolve;
-    },
-  );
+  const completion = createDeferredCore<{ code: number | null; signal: NodeJS.Signals | null }>();
   const armShutdown = () => {
     shutdown ??= setTimeout(() => {
       if (closed || !child) {
@@ -189,7 +185,7 @@ export async function continueTriageInFreshProcess(params: {
         /* Unknown process identity cannot authorize signalling. */
       }
       child.unref();
-      settleShutdown({ code: null, signal: "SIGKILL" });
+      completion.resolve({ code: null, signal: "SIGKILL" });
     }, TRIAGE_HANDOFF_GRACE_MS);
   };
   const cancel = () => {
@@ -242,22 +238,18 @@ export async function continueTriageInFreshProcess(params: {
         stdio: ["ignore", "pipe", "pipe", "ipc"],
       },
     );
-    const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
-      (resolve) => {
-        child!.once("error", () => {
-          if (child?.pid) {
-            cancel();
-            return;
-          }
-          closed = true;
-          resolve({ code: 1, signal: null });
-        });
-        child!.once("exit", (code, signal) => {
-          closed = true;
-          resolve({ code, signal });
-        });
-      },
-    );
+    child.once("error", () => {
+      if (child?.pid) {
+        cancel();
+        return;
+      }
+      closed = true;
+      completion.resolve({ code: 1, signal: null });
+    });
+    child.once("exit", (code, signal) => {
+      closed = true;
+      completion.resolve({ code, signal });
+    });
     for (const stream of [child.stdout, child.stderr]) {
       stream?.on("data", (chunk) => {
         output = (output + chunk.toString()).slice(-32 * 1024);
@@ -265,20 +257,17 @@ export async function continueTriageInFreshProcess(params: {
     }
     // A failed spawn has no signalable process until Node closes its native handle.
     await once(child, "spawn");
-    let bound: ManagedHandoffLease | null;
     try {
-      bound = child.pid ? store.bind(lease, child.pid) : null;
+      const bound = child.pid ? store.bind(lease, child.pid) : null;
+      if (!bound) {
+        throw new Error("automatic triage child identity could not be bound");
+      }
+      lease = bound;
     } catch (error) {
       cancel();
-      await Promise.race([exited, shutdownExpired]);
+      await completion.promise;
       throw error;
     }
-    if (!bound) {
-      cancel();
-      await Promise.race([exited, shutdownExpired]);
-      throw new Error("automatic triage child identity could not be bound");
-    }
-    lease = bound;
     child.on("message", (message: unknown) => {
       if (
         closed ||
@@ -292,21 +281,15 @@ export async function continueTriageInFreshProcess(params: {
         cancel();
         return;
       }
-      let running: ManagedHandoffLease | null;
       try {
-        running = store.activate(lease);
-      } catch {
-        cancel();
-        return;
-      }
-      if (!running) {
-        cancel();
-        return;
-      }
-      lease = running;
-      admitted = true;
-      clearTimeout(timeout);
-      try {
+        const running = store.activate(lease);
+        if (!running) {
+          cancel();
+          return;
+        }
+        lease = running;
+        admitted = true;
+        clearTimeout(timeout);
         child.send(
           { type: "triage", version: 2, installRoot: root, owner: lease.owner, failure },
           (error) => {
@@ -328,23 +311,13 @@ export async function continueTriageInFreshProcess(params: {
     if (params.signal.aborted) {
       cancel();
     }
-    const exit = await Promise.race([exited, shutdownExpired]);
+    const exit = await completion.promise;
     if (output) {
       params.output(output);
     }
-    const completed = store.read(root);
-    if (
-      admitted &&
-      completed.kind === "current" &&
-      completed.lease.owner === lease.owner &&
-      completed.lease.action.kind === "triage" &&
-      completed.lease.action.phase === "closed" &&
-      JSON.stringify(completed.lease.executor) === JSON.stringify(lease.executor) &&
-      JSON.stringify(completed.lease.helper) === JSON.stringify(lease.helper) &&
-      lease.action.kind === "triage" &&
-      JSON.stringify(completed.lease.action.lifetime) === JSON.stringify(lease.action.lifetime)
-    ) {
-      lease = completed.lease;
+    const completed = store.readGeneration(lease);
+    if (admitted && completed?.action.phase === "closed") {
+      lease = completed;
     }
     if (forced || (!store.release(lease) && admitted)) {
       store.revoke(lease, true);
@@ -441,7 +414,7 @@ export async function acceptTriageContinuation(): Promise<
       cancel();
     }
   };
-  const assertCurrent = () => {
+  const checkCurrent = () => {
     if (
       disposed ||
       !lease ||
@@ -451,6 +424,9 @@ export async function acceptTriageContinuation(): Promise<
     ) {
       cancel();
     }
+  };
+  const assertCurrent = () => {
+    checkCurrent();
     if (disposed) {
       throw new Error("automatic triage continuation is closed");
     }
@@ -509,15 +485,8 @@ export async function acceptTriageContinuation(): Promise<
       }
     }
     process.on("message", onMessage);
-    watch = setInterval(() => {
-      if (!process.connected || process.ppid !== parent.pid || !store.owns(admitted, "executor")) {
-        cancel();
-      }
-    }, 250);
-    if (!process.connected || !store.owns(admitted, "executor")) {
-      cancel();
-    }
-    controller.signal.throwIfAborted();
+    watch = setInterval(checkCurrent, 250);
+    assertCurrent();
     delete process.env.OPENCLAW_UPDATE_RUN_HANDOFF;
     delete process.env[CONTROL_PLANE_UPDATE_SENTINEL_META_ENV];
     delete process.env.OPENCLAW_UPDATE_IN_PROGRESS;
