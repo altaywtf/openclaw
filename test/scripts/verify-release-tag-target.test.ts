@@ -79,6 +79,10 @@ const drift = (event) => { if (state.driftOn === event) state.tagSha = 'b'.repea
 if (args[0] === 'api') {
   state.events.push('verify');
   save();
+  // Require cache revalidation at the actual CLI/API boundary, not in a source grep.
+  if (args[args.indexOf('-H') + 1] !== 'Cache-Control: max-age=0') {
+    console.error('Tag lookup must request cache revalidation'); process.exit(2);
+  }
   // A same-named branch must never substitute for the exact tag namespace.
   if (decodeURIComponent(args[1]) !== 'repos/example/repository/commits/refs/tags/v2026.8.1') {
     console.error('Wrong tag namespace'); process.exit(2);

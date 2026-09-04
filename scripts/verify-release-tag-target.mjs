@@ -26,6 +26,8 @@ try {
       `repos/${repository}/commits/${ref}`,
       "--method",
       "GET",
+      "-H",
+      "Cache-Control: max-age=0",
       "--jq",
       ".sha",
     ]).trim();

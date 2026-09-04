@@ -190,3 +190,5 @@ unreadable tag stops further writes; already completed writes are not rolled
 back. Inspect partial publication before manual recovery. This check is not an
 atomic tag lock or identical-byte replay guarantee: existing asset replacement,
 same-tag desktop expansion, and the mutable desktop-test channel remain unchanged.
+Per-asset checks serialize uploads that previously ran as a batch, so publication
+can take longer; this is an identity check, not a throughput improvement.
