@@ -183,3 +183,10 @@ the validated release tag SHA and attaches the bundles to that tag's GitHub
 release with a `SHA256SUMS.linux-app.txt` checksum file. The tag commit must be
 reachable from `main` or its matching `release/YYYY.M.PATCH` branch; numeric
 correction tags use the base version's release branch.
+
+Publication rechecks that tag's commit immediately before each asset upload and
+before creating or updating the desktop-test channel. A moved, missing, or
+unreadable tag stops further writes; already completed writes are not rolled
+back. Inspect partial publication before manual recovery. This check is not an
+atomic tag lock or identical-byte replay guarantee: existing asset replacement,
+same-tag desktop expansion, and the mutable desktop-test channel remain unchanged.

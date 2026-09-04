@@ -789,6 +789,19 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout trusted release tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .release-tooling
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/lib/record-shared.mjs
+            scripts/release-tooling-identity.mjs
+            scripts/verify-release-tag-target.mjs
+          sparse-checkout-cone-mode: false
+
       - name: Download Debian bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -873,12 +886,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.validate_release.outputs.release_tag }}
+          TAG_SHA: ${{ needs.validate_release.outputs.tag_sha }}
         run: |
           set -euo pipefail
-          gh release upload "${RELEASE_TAG}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --clobber \
-            dist/release/*
+          # A long upload must not authorize later writes after the tag moves.
+          # This is a boundary recheck, not an atomic GitHub API precondition.
+          for asset in dist/release/*; do
+            node .release-tooling/scripts/verify-release-tag-target.mjs \
+              "${GITHUB_REPOSITORY}" "${RELEASE_TAG}" "${TAG_SHA}"
+            gh release upload "${RELEASE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --clobber \
+              "${asset}"
+          done
 
       - name: Publish desktop test update channel
         if: ${{ needs.validate_release.outputs.desktop_test_bundles == 'true' }}
@@ -911,6 +931,8 @@ jobs:
               fi
             fi
           else
+            node .release-tooling/scripts/verify-release-tag-target.mjs \
+              "${GITHUB_REPOSITORY}" "${RELEASE_TAG}" "${TAG_SHA}"
             gh release create "${DESKTOP_TEST_CHANNEL_TAG}" \
               --repo "${GITHUB_REPOSITORY}" \
               --target "${TAG_SHA}" \
@@ -918,6 +940,8 @@ jobs:
               --title "OpenClaw desktop test update channel" \
               --notes "Opt-in updater manifest for unsigned macOS and Windows Tauri test builds."
           fi
+          node .release-tooling/scripts/verify-release-tag-target.mjs \
+            "${GITHUB_REPOSITORY}" "${RELEASE_TAG}" "${TAG_SHA}"
           gh release upload "${DESKTOP_TEST_CHANNEL_TAG}" \
             --repo "${GITHUB_REPOSITORY}" \
             --clobber \
