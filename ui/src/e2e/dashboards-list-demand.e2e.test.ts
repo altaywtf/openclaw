@@ -228,7 +228,8 @@ suite.define(() => {
 
       await Promise.all(
         tabs.map(async ({ gateway, page }) => {
-          await page.goto(suite.server.baseUrl);
+          // Hold the canonical roster without starting chat's independent Swarm hydration.
+          await page.goto(`${suite.server.baseUrl}new`);
           const canonical = await gateway.waitForRequest("sessions.list");
           expect(isDashboardRequest(canonical)).toBe(false);
           await page.waitForFunction(() => {
