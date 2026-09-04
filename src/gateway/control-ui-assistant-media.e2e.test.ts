@@ -2,9 +2,13 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, describe, expect, test } from "vitest";
+import * as mediaMime from "@openclaw/media-core/mime";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { appendTranscriptMessage } from "../config/sessions/session-accessor.js";
+import * as safeFiles from "../infra/fs-safe.js";
+import { resolveRequiredHomeDir } from "../infra/home-dir.js";
+import * as playbackTranscode from "../media/playback-transcode.js";
 import { connectGatewayClient, disconnectGatewayClient } from "./test-helpers.e2e.js";
 import {
   installGatewayTestHooks,
@@ -19,6 +23,148 @@ const CONTROL_UI_E2E_TOKEN = "test-gateway-token-1234567890";
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 describe("Control UI assistant media e2e", () => {
+  test("revokes media authority after awaited work before rendition opens and byte streams", async () => {
+    const stateDir = process.env.OPENCLAW_STATE_DIR;
+    if (!stateDir) {
+      throw new Error("OPENCLAW_STATE_DIR is required for gateway e2e media fixtures");
+    }
+    const mediaDir = path.join(stateDir, "media", "late-revocation");
+    await fs.mkdir(mediaDir, { recursive: true });
+    const source = path.join(mediaDir, "source.wav");
+    const rendition = path.join(mediaDir, "rendition.m4a");
+    await fs.writeFile(source, "source audio bytes");
+    await fs.writeFile(rendition, "cached rendition bytes");
+    testState.gatewayAuth = { mode: "token", token: CONTROL_UI_E2E_TOKEN };
+    testState.sessionStorePath = path.join(stateDir, "sessions.sqlite");
+    const sessionKey = "agent:main:main";
+    const sessionId = "late-media-revocation";
+
+    await withGatewayServer(
+      async ({ port }) => {
+        for (const boundary of ["mime", "transcode", "rendition-close", "head-close"] as const) {
+          await writeSessionStore({
+            entries: { [sessionKey]: { sessionId, updatedAt: Date.now() } },
+          });
+          await appendTranscriptMessage(
+            { agentId: "main", sessionId, sessionKey, storePath: testState.sessionStorePath },
+            {
+              message: {
+                role: "assistant",
+                content: [{ type: "audio", url: source }],
+                timestamp: Date.now(),
+              },
+            },
+          );
+          const client = await connectGatewayClient({
+            url: `ws://127.0.0.1:${port}`,
+            token: CONTROL_UI_E2E_TOKEN,
+            scopes: ["operator.read"],
+          });
+          try {
+            const minted = await client.request<{ mediaTicket: string }>("assistant.media.get", {
+              source,
+              sessionKey,
+            });
+            const url = new URL("/__openclaw__/assistant-media", `http://127.0.0.1:${port}`);
+            url.searchParams.set("source", source);
+            url.searchParams.set("mediaTicket", minted.mediaTicket);
+            const method = boundary === "head-close" ? "HEAD" : "GET";
+            if (boundary === "transcode" || boundary === "rendition-close") {
+              url.searchParams.set("playback", "1");
+            }
+            let revoke = false;
+            const revokeSession = async () => {
+              if (revoke) {
+                await writeSessionStore({ entries: {} });
+              }
+            };
+            const detectMime = mediaMime.detectMime;
+            vi.spyOn(mediaMime, "detectMime").mockImplementation(async (params) => {
+              const mime = await detectMime(params);
+              if (boundary === "mime") {
+                await revokeSession();
+              }
+              return mime;
+            });
+            // Keep the real HTTP/auth/file/stream boundaries; substitute only
+            // the asynchronous codec service with an already-produced rendition.
+            vi.spyOn(playbackTranscode, "resolvePlaybackTranscode").mockImplementation(async () => {
+              if (boundary === "transcode") {
+                await revokeSession();
+              }
+              return {
+                kind: "transcoded",
+                path: rendition,
+                contentType: "audio/mp4",
+                extension: ".m4a",
+              };
+            });
+            const streams = vi.fn();
+            const closes = vi.fn();
+            const openLocalFileSafely = safeFiles.openLocalFileSafely;
+            const opens = vi
+              .spyOn(safeFiles, "openLocalFileSafely")
+              .mockImplementation(async (params) => {
+                const opened = await openLocalFileSafely(params);
+                const createReadStream = opened.handle.createReadStream.bind(opened.handle);
+                vi.spyOn(opened.handle, "createReadStream").mockImplementation((options) => {
+                  streams(params.filePath);
+                  return createReadStream(options);
+                });
+                const close = opened.handle.close.bind(opened.handle);
+                vi.spyOn(opened.handle, "close").mockImplementation(async () => {
+                  await close();
+                  closes(params.filePath);
+                  if (
+                    (boundary === "rendition-close" || boundary === "head-close") &&
+                    params.filePath === source
+                  ) {
+                    await revokeSession();
+                  }
+                });
+                return opened;
+              });
+            const intact = await fetch(url, { method });
+            expect(intact.status, boundary).toBe(200);
+            expect(await intact.text()).toBe(
+              boundary === "head-close"
+                ? ""
+                : boundary === "mime"
+                  ? "source audio bytes"
+                  : "cached rendition bytes",
+            );
+            expect(streams).toHaveBeenCalledTimes(boundary === "head-close" ? 0 : 1);
+            opens.mockClear();
+            streams.mockClear();
+            closes.mockClear();
+            revoke = true;
+            const revoked = await fetch(url, { method });
+            expect(revoked.status, boundary).toBe(401);
+            expect(await revoked.text()).toBe(boundary === "head-close" ? "" : "Unauthorized");
+            expect(revoked.headers.get("etag")).toBeNull();
+            expect(streams, boundary).not.toHaveBeenCalled();
+            if (boundary === "transcode") {
+              expect(opens.mock.calls.map(([params]) => params.filePath)).toEqual([source]);
+            }
+            expect(closes).toHaveBeenCalledWith(source);
+            if (boundary === "rendition-close") {
+              expect(closes).toHaveBeenCalledWith(rendition);
+            }
+          } finally {
+            vi.restoreAllMocks();
+            await disconnectGatewayClient(client);
+          }
+        }
+      },
+      {
+        serverOptions: {
+          auth: { mode: "token", token: CONTROL_UI_E2E_TOKEN },
+          controlUiEnabled: true,
+        },
+      },
+    );
+  });
+
   test("serves local assistant media through scoped tickets over the gateway HTTP route", async () => {
     const stateDir = process.env.OPENCLAW_STATE_DIR;
     if (!stateDir) {
@@ -29,6 +175,7 @@ describe("Control UI assistant media e2e", () => {
     const mediaDir = path.join(stateDir, "media", "control-ui-assistant-media-e2e");
     await fs.mkdir(mediaDir, { recursive: true });
     const filePath = path.join(mediaDir, "测试 ticketed (final).txt");
+    const homeRelativeSource = `~/${path.relative(resolveRequiredHomeDir(), filePath).split(path.sep).join("/")}`;
     await fs.writeFile(filePath, "ticketed control ui media\n", "utf8");
     const agentWorkspace = tempDirs.make("assistant-media-agent-");
     const researchWorkspace = tempDirs.make("assistant-media-research-");
@@ -72,7 +219,7 @@ describe("Control UI assistant media e2e", () => {
         message: {
           role: "assistant",
           content: [
-            { type: "image", url: filePath },
+            { type: "image", url: homeRelativeSource },
             { type: "image", url: workspaceFile },
           ],
           timestamp: Date.now(),
@@ -90,7 +237,7 @@ describe("Control UI assistant media e2e", () => {
         message: {
           role: "assistant",
           content: [
-            { type: "image", url: filePath },
+            { type: "image", url: homeRelativeSource },
             { type: "image", url: researchFile },
           ],
           timestamp: Date.now(),
@@ -101,7 +248,7 @@ describe("Control UI assistant media e2e", () => {
     await withGatewayServer(
       async ({ port }) => {
         const route = `http://127.0.0.1:${port}/__openclaw__/assistant-media`;
-        const sourceParam = encodeURIComponent(filePath);
+        const sourceParam = encodeURIComponent(homeRelativeSource);
         const client = await connectGatewayClient({
           url: `ws://127.0.0.1:${port}`,
           token: CONTROL_UI_E2E_TOKEN,
@@ -112,7 +259,7 @@ describe("Control UI assistant media e2e", () => {
           mediaTicket?: string;
           mediaTicketExpiresAt?: string;
         }>("assistant.media.get", {
-          source: filePath,
+          source: homeRelativeSource,
           sessionKey: "agent:research:main",
         });
         expect(payload.available).toBe(true);

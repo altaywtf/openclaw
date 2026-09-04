@@ -532,6 +532,9 @@ function resolveAssistantMediaTicketAuthority(
   source: string,
   opts?: { config?: OpenClawConfig; agentId?: string; clients?: ReadonlySet<GatewayWsClient> },
 ): { agentId?: string } | null {
+  if (ticket && ticket.exp < Date.now()) {
+    return null;
+  }
   if (!ticket?.connId) {
     return { agentId: ticket?.agentId ?? opts?.agentId };
   }
@@ -618,19 +621,23 @@ export async function handleControlUiAssistantMediaRequest(
     return true;
   }
 
+  const unauthorized = new Error("Assistant media authority ended");
+  // Awaited path, MIME, and rendition work can outlive the ticket. Keep one
+  // live-authority guard at each subsequent file/stream effect boundary.
+  const assertMediaAuthority = () => {
+    if (!resolveAssistantMediaTicketAuthority(verifiedMediaTicket, source, opts)) {
+      throw unauthorized;
+    }
+  };
   let byteStream: ReturnType<typeof createGatewayByteStream> | undefined;
   try {
     const resolvedReference = await resolveMediaReferenceLocalPathInfo(source);
     const localPath = resolvedReference.path;
     await assertLocalMediaAllowed(localPath, localRoots);
-    // Path and root resolution were awaited above; the ticket's connection or
-    // session may have been revoked meanwhile. Recheck before touching the file.
-    if (!resolveAssistantMediaTicketAuthority(verifiedMediaTicket, source, opts)) {
-      respondPlainText(res, 401, "Unauthorized");
-      return true;
-    }
+    assertMediaAuthority();
     let opened = await openLocalFileSafely({ filePath: localPath });
     byteStream = createGatewayByteStream(res, opened.handle, () => respondControlUiNotFound(res));
+    assertMediaAuthority();
     const sniffLength = Math.min(opened.stat.size, 8192);
     const sniffBuffer = sniffLength > 0 ? Buffer.allocUnsafe(sniffLength) : undefined;
     const bytesRead =
@@ -649,25 +656,24 @@ export async function handleControlUiAssistantMediaRequest(
       url.searchParams.get("playback") === "1" &&
       (mediaKind === "audio" || mediaKind === "video")
     ) {
-      const playback = await resolvePlaybackTranscode({
-        sourcePath: opened.realPath,
-        sourceStat: opened.stat,
-        mimeType: contentType,
-        kind: mediaKind,
-      });
+      assertMediaAuthority();
+      const playback = await resolvePlaybackTranscode(
+        {
+          sourcePath: opened.realPath,
+          sourceStat: opened.stat,
+          mimeType: contentType,
+          kind: mediaKind,
+        },
+        assertMediaAuthority,
+      );
+      assertMediaAuthority();
       if (playback.kind === "preparing") {
         await byteStream.close();
+        assertMediaAuthority();
         sendJson(res, 202, { status: "preparing" });
         return true;
       }
       if (playback.kind === "transcoded") {
-        // Transcoding was awaited above, so live ticket authority may have
-        // changed before the rendition file is opened.
-        if (!resolveAssistantMediaTicketAuthority(verifiedMediaTicket, source, opts)) {
-          await byteStream.close();
-          respondPlainText(res, 401, "Unauthorized");
-          return true;
-        }
         const transcoded = await openLocalFileSafely({ filePath: playback.path }).catch(() => null);
         if (transcoded) {
           await byteStream.close();
@@ -680,30 +686,29 @@ export async function handleControlUiAssistantMediaRequest(
         }
       }
     }
-    // MIME detection and playback preparation can await after the last check.
-    // Revalidate immediately before the descriptor starts emitting bytes.
-    if (!resolveAssistantMediaTicketAuthority(verifiedMediaTicket, source, opts)) {
-      await byteStream.close();
-      respondPlainText(res, 401, "Unauthorized");
-      return true;
-    }
-    res.setHeader("Content-Type", contentType);
-    res.setHeader(
-      "Content-Disposition",
-      buildAssistantMediaContentDisposition(filename, contentType),
-    );
-    res.setHeader("Cache-Control", "no-cache");
     const byteResponse = resolveByteResponse({
       file: opened.stat,
       method: req.method,
       request: req,
     });
-    writeByteHeaders(res, byteResponse);
-    await byteStream.pipe(byteResponse, req.method);
+    await byteStream.pipe(byteResponse, req.method, () => {
+      assertMediaAuthority();
+      res.setHeader("Content-Type", contentType);
+      res.setHeader(
+        "Content-Disposition",
+        buildAssistantMediaContentDisposition(filename, contentType),
+      );
+      res.setHeader("Cache-Control", "no-cache");
+      writeByteHeaders(res, byteResponse);
+    });
     return true;
-  } catch {
+  } catch (error) {
     await byteStream?.close();
-    respondControlUiNotFound(res);
+    if (error === unauthorized) {
+      respondPlainText(res, 401, "Unauthorized");
+    } else {
+      respondControlUiNotFound(res);
+    }
     return true;
   }
 }

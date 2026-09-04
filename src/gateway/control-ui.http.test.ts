@@ -925,6 +925,7 @@ describe("handleControlUiHttpRequest", () => {
         expect(setHeader).toHaveBeenCalledWith("Content-Type", "audio/x-caf");
         expect(resolvePlaybackTranscodeMock).toHaveBeenCalledWith(
           expect.objectContaining({ mimeType: "audio/x-caf", kind: "audio" }),
+          expect.any(Function),
         );
       },
     });
@@ -1108,6 +1109,13 @@ describe("handleControlUiHttpRequest", () => {
       sessionKey: "agent:main:main",
       revoke: () => {
         resolveControlUiSessionAccessMock.mockReturnValue(null);
+      },
+    },
+    {
+      revocation: "the ticket expires",
+      sessionKey: undefined,
+      revoke: () => {
+        vi.spyOn(Date, "now").mockReturnValue(Date.now() + 6 * 60 * 1000);
       },
     },
   ])(
