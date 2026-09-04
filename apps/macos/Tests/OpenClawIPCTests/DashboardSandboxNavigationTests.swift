@@ -151,7 +151,7 @@ struct DashboardSandboxNavigationTests {
         controller.dispatchNativeCommand(.commandPalette)
         #expect(controller._testPendingNativeCommands == [.newSession, .commandPalette])
 
-        _ = try await controller.webView.evaluateJavaScript("window.mountShell()")
+        _ = try await controller.webView.evaluateJavaScript("window.mountShell(); null")
         try await self.waitForDocument(controller, url: url, ready: "window.commands.join(',') === 'new,search'")
         controller.webView.reload()
         try await self.waitForDocument(
@@ -160,10 +160,10 @@ struct DashboardSandboxNavigationTests {
         // A queued notification from the previous same-URL shell is only a wakeup;
         // the new sign-in document still has no listener-owned readiness fact.
         _ = try await controller.webView.evaluateJavaScript(
-            "window.webkit.messageHandlers.openclawCommands.postMessage({type: 'commands-state'})")
+            "window.webkit.messageHandlers.openclawCommands.postMessage({type: 'commands-state'}); null")
         #expect(controller._testPendingNativeCommands == [.newSession])
         #expect(try await controller.webView.evaluateJavaScript("window.commands.length") as? Int == 0)
-        _ = try await controller.webView.evaluateJavaScript("window.mountShell()")
+        _ = try await controller.webView.evaluateJavaScript("window.mountShell(); null")
         try await self.waitForDocument(controller, url: url, ready: "window.commands.join(',') === 'new'")
     }
 

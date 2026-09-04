@@ -340,8 +340,8 @@ final class DashboardManager {
             endpoint: endpoint,
             target: .primary,
             source: previousController)
-        // A newly configured document supersedes older authentication lookups;
-        // merely reopening the unchanged document does not change its endpoint.
+        // Synchronous presentation fences pending endpoint work before a newer
+        // notification can be admitted; async recovery retires only its captured intent.
         if self.controller !== previousController {
             self.endpointGeneration &+= 1
         }
@@ -628,6 +628,7 @@ final class DashboardManager {
         let needsReplacement = forceReload || currentTarget != target || !source.canDeliverNativeCommands
         source.pendingGatewaySwitch = needsReplacement ? intent : nil
         guard source.pendingGatewaySwitch != nil else { return nil }
+        let retiringNavigationIntent = self.navigationIntents[target]?.id
         return Task { @MainActor in
             guard self.controller(in: window, for: currentTarget)?.pendingGatewaySwitch === intent else { return }
             do {
@@ -635,14 +636,14 @@ final class DashboardManager {
                 guard !Task.isCancelled, let current = self.controller(in: window, for: currentTarget),
                       current.pendingGatewaySwitch === intent else { return }
                 current.pendingGatewaySwitch = nil
-                if let replacement = self.replaceWindowController(
-                    current,
+                self.presentDashboard(
                     configuration: configuration,
+                    endpoint: endpoint,
                     target: target,
-                    present: present), target == .primary
-                {
-                    self.rememberPresentedEndpoint(endpoint, controller: replacement)
-                }
+                    source: current,
+                    forceReload: true,
+                    present: present,
+                    retiringNavigationIntent: retiringNavigationIntent)
                 await self.refreshGatewaySnapshots()
                 self.updateFrontmostDashboardTarget()
             } catch {
@@ -756,7 +757,9 @@ final class DashboardManager {
         controller.show(url: configuration.url, auth: configuration.auth)
         return controller
     }
+}
 
+extension DashboardManager {
     private func makePrimaryController(
         url: URL,
         auth: DashboardWindowAuth,
@@ -814,18 +817,21 @@ final class DashboardManager {
         configuration: WindowConfiguration,
         endpoint: GatewayConnection.EndpointSnapshot,
         target: DashboardGatewayTarget,
-        source: DashboardWindowController?) -> DashboardWindowController?
+        source: DashboardWindowController?,
+        forceReload: Bool = false,
+        present: Bool? = true,
+        retiringNavigationIntent: UUID? = nil) -> DashboardWindowController?
     {
+        let requiresIsolation = source.map {
+            self.requiresIsolatedDashboardDocument(
+                $0, configuration: configuration, endpoint: endpoint, comparePrimaryRoute: target == .primary)
+        } ?? false
+        let documentChanged = source.flatMap { self.target(for: $0) } != target || requiresIsolation
         let presented: DashboardWindowController?
         if let source {
-            if self.requiresIsolatedDashboardDocument(
-                source,
-                configuration: configuration,
-                endpoint: endpoint,
-                comparePrimaryRoute: target == .primary)
-            {
+            if forceReload || requiresIsolation {
                 presented = self.replaceWindowController(
-                    source, configuration: configuration, target: target, present: true)
+                    source, configuration: configuration, target: target, present: present)
             } else {
                 // The URL can be unchanged while the document is a failure page.
                 source.show(
@@ -846,6 +852,13 @@ final class DashboardManager {
             presented = controller
         } else {
             presented = self.openWindow(for: target, configuration: configuration)
+        }
+        // A changed document retires only navigation older than this recovery.
+        // Same-route reloads and notifications admitted during lookup keep their intent.
+        if presented != nil, documentChanged, let retiringNavigationIntent,
+           self.navigationIntents[target]?.id == retiringNavigationIntent
+        {
+            self.navigationIntents[target] = nil
         }
         if target == .primary, let presented {
             self.rememberPresentedEndpoint(endpoint, controller: presented)

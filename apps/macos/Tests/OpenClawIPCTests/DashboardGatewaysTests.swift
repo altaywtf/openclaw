@@ -946,6 +946,7 @@ extension DashboardManagerGatewayTargetTests {
         try Data("{}".utf8).write(to: URL(fileURLWithPath: configPath))
         try await TestIsolation.withEnvValues([
             "OPENCLAW_CONFIG_PATH": configPath,
+            "OPENCLAW_GATEWAY_PORT": nil,
             "OPENCLAW_GATEWAY_TOKEN": nil,
             "OPENCLAW_GATEWAY_PASSWORD": nil,
         ]) {
@@ -977,9 +978,11 @@ extension DashboardManagerGatewayTargetTests {
             let presentation = Task { try await manager.show() }
             if entry == "initial-command" {
                 let config = """
-                {"gateway":{"remote":{"transport":"direct","url":"\(server.websocketURL())","token":"primary"}}}
+                {"gateway":{"port":\(server.port),"auth":{"token":"primary"}}}
                 """
                 try Data(config.utf8).write(to: URL(fileURLWithPath: configPath))
+                // Only a local endpoint may open synchronously while the older remote lookup is suspended.
+                state.connectionMode = .local
                 #expect(manager.showConfiguredWindowIfPossible())
             }
             let source = try #require(manager._testController())

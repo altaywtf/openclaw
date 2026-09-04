@@ -605,23 +605,26 @@ struct DashboardWindowOwnershipTests {
         #expect(recovered._testLinkBrowserDataStore === dataStore)
     }
 
-    @Test func `configured presentation uses its owned health probe`() async throws {
+    @Test(arguments: [AppState.ConnectionMode.local, .remote])
+    func `configured presentation uses its owned health probe`(_ mode: AppState.ConnectionMode) async throws {
         let server = try await DashboardHTTPFixture.start()
         defer { server.stop() }
         let configPath = TestIsolation.tempConfigPath()
         defer { try? FileManager.default.removeItem(atPath: configPath) }
         let config = """
-        {"gateway":{"remote":{"transport":"direct","url":"\(server.websocketURL())","token":"configured"}}}
+        {"gateway":{"port":\(server.port),"auth":{"token":"configured"},
+        "remote":{"transport":"direct","url":"\(server.websocketURL())","token":"configured"}}}
         """
         try Data(config.utf8).write(to: URL(fileURLWithPath: configPath))
         try await TestIsolation.withEnvValues([
             "OPENCLAW_CONFIG_PATH": configPath,
+            "OPENCLAW_GATEWAY_PORT": nil,
             "OPENCLAW_GATEWAY_TOKEN": nil,
             "OPENCLAW_GATEWAY_PASSWORD": nil,
         ]) {
             let state = AppStateStore.shared
             let originalMode = state.connectionMode
-            state.connectionMode = .remote
+            state.connectionMode = mode
             defer { state.connectionMode = originalMode }
             let probes = AsyncStream<DashboardRouteProbePurpose>.makeStream()
             defer { probes.continuation.finish() }
@@ -630,7 +633,12 @@ struct DashboardWindowOwnershipTests {
                 gatewayEntriesProvider: { [Self.primaryGateway] })
             defer { manager.close() }
 
-            #expect(manager.showConfiguredWindowIfPossible())
+            if mode == .local {
+                #expect(manager.showConfiguredWindowIfPossible())
+            } else {
+                #expect(!manager.showConfiguredWindowIfPossible())
+                try await manager.show()
+            }
             let controller = try #require(manager._testController())
             #expect(controller.isWindowOpen)
             #expect(controller.currentURL.absoluteString ==
