@@ -422,6 +422,42 @@ function replaceTranscriptSuffixForTest(
 }
 
 describe("SQLite exact transcript suffix replacement", () => {
+  it("reconciles after removing a suffix anchored on an inactive branch", async () => {
+    const events = [
+      rewriteEvents[0],
+      rewriteEvents[1],
+      {
+        type: "message",
+        id: "inactive-parent",
+        parentId: "root",
+        appendMode: "side",
+        message: { role: "assistant", content: "inactive parent" },
+      },
+      {
+        type: "message",
+        id: "inactive-tail",
+        parentId: "inactive-parent",
+        appendMode: "side",
+        message: { role: "assistant", content: "inactive tail" },
+      },
+    ] as const;
+    await withRewriteFixture(async ({ db, snapshot, scope }) => {
+      await waitForSessionTranscriptIndexReconcile(scope);
+      replaceTranscriptSuffixForTest(scope, events, events.slice(0, -1), events.length - 1);
+
+      expect(snapshot().raw).toHaveLength(events.length - 1);
+      await waitForSessionTranscriptIndexReconcile(scope);
+      expect(snapshot()).toMatchObject({
+        active: [
+          expect.objectContaining({ event_seq: 0 }),
+          expect.objectContaining({ event_seq: 1 }),
+        ],
+        search: [expect.objectContaining({ message_id: "user", text: "question" })],
+      });
+      expect(sessionTranscriptIndexNeedsReconcile(db, scope.sessionId)).toBe(false);
+    }, events);
+  });
+
   it.each([
     {
       name: "row",

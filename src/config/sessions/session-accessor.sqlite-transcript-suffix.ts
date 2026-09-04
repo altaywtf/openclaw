@@ -167,6 +167,39 @@ function prepareFullTranscriptSuffixMutation(
   };
 }
 
+// Preserve the raw suffix mutation when an exact incremental projection update is unsafe.
+function prepareReconciledIncrementalSuffixMutation(params: {
+  database: OpenClawAgentDatabase;
+  expectedRows: readonly SqliteTranscriptStorageRow[];
+  next: readonly TranscriptEvent[];
+  nextCreatedAt: readonly number[];
+  resolved: ResolvedTranscriptScope;
+  startSeq: number;
+}): SqliteTranscriptSuffixMutationPlan {
+  return {
+    expectedRows: params.expectedRows,
+    incremental: {
+      expectedMutationAt: readTranscriptMutationStateInTransaction(
+        params.database,
+        params.resolved.sessionId,
+      ).updatedAt,
+      projectionWasHealthy: false,
+      removedMessageIds: [],
+      retainedActiveCount: 0,
+    },
+    next: params.next,
+    nextCreatedAt: params.nextCreatedAt,
+    nextProjection: {
+      activeMessageCount: 0,
+      activeRows: [],
+      indexedSeq: params.startSeq - 1,
+      leafEventId: null,
+    },
+    prefixLength: 0,
+    startSeq: params.startSeq,
+  };
+}
+
 function prepareIncrementalTranscriptSuffixMutation(
   database: OpenClawAgentDatabase,
   resolved: ResolvedTranscriptScope,
@@ -252,26 +285,14 @@ function prepareIncrementalTranscriptSuffixMutation(
     resolved.sessionId,
   );
   if (!projectionWasHealthy) {
-    return {
+    return prepareReconciledIncrementalSuffixMutation({
+      database,
       expectedRows,
-      incremental: {
-        expectedMutationAt: readTranscriptMutationStateInTransaction(database, resolved.sessionId)
-          .updatedAt,
-        projectionWasHealthy,
-        removedMessageIds: [],
-        retainedActiveCount: 0,
-      },
       next,
       nextCreatedAt,
-      nextProjection: {
-        activeMessageCount: 0,
-        activeRows: [],
-        indexedSeq: startSeq - 1,
-        leafEventId: null,
-      },
-      prefixLength: 0,
+      resolved,
       startSeq,
-    };
+    });
   }
   const anchorId =
     parseSessionTranscriptTreeEntry(next[0])?.parentId ??
@@ -293,7 +314,16 @@ function prepareIncrementalTranscriptSuffixMutation(
       )
     : undefined;
   if (anchorId && !anchor) {
-    throw new Error(`Transcript suffix anchor is not active for ${resolved.sessionId}`);
+    // Inactive branches have no active-position anchor. Rebuild their derived rows after the
+    // fenced raw mutation instead of rejecting a valid suffix cleanup.
+    return prepareReconciledIncrementalSuffixMutation({
+      database,
+      expectedRows,
+      next,
+      nextCreatedAt,
+      resolved,
+      startSeq,
+    });
   }
   const retainedActiveCount = anchor ? anchor.active_position + 1 : 0;
   const activeSuffixRows = executeSqliteQuerySync(
