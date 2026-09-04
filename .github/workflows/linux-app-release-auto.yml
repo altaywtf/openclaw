@@ -1,0 +1,58 @@
+name: Linux App Release Auto
+run-name: Linux App Release Auto [tag=${{ github.event.client_payload.tag }} source=${{ github.event.client_payload.sha }}]
+
+on:
+  repository_dispatch:
+    types: [openclaw-linux-release]
+
+permissions: {}
+
+concurrency:
+  group: linux-release-auto-${{ github.event.client_payload.tag }}-${{ github.event.client_payload.sha }}
+  cancel-in-progress: false
+
+jobs:
+  linux:
+    name: Dispatch or adopt and collect Linux publication
+    if: github.repository == 'openclaw/openclaw'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Checkout trusted automation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/linux-release-auto.mts
+            scripts/release-tooling-identity.mjs
+            scripts/lib/record-shared.mjs
+          sparse-checkout-cone-mode: false
+
+      - name: Setup trusted Node runtime
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Continue Linux publication outside the npm lock
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/linux-release-auto.mts
+
+      - name: Upload immutable coordinator outcome
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: linux-release-outcome-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/linux-release-outcome/outcome.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Record automation failure
+        if: failure()
+        run: |
+          echo "::error::Linux automation stopped. Inspect the exact request/builder and coordinator outcome; do not rerun the release campaign."
+          echo "Linux automation failed; npm/Docker publication is unchanged. No build retry or replacement dispatch was attempted." >> "$GITHUB_STEP_SUMMARY"

@@ -1894,6 +1894,69 @@ jobs:
             exit 1
           fi
 
+  linux_handoff:
+    name: Prepare detached Linux release
+    # Keep native handoff failure advisory, like Android/Windows: parent success
+    # still releases the independent ClawHub postpublish verifier.
+    continue-on-error: true
+    needs: [resolve_release_target, finalize_github_release]
+    if: ${{ !cancelled() && needs.finalize_github_release.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Record detached Linux release intent
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          TARGET_SHA: ${{ needs.resolve_release_target.outputs.sha }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/linux-release-intent"
+          jq -n --arg tag "$RELEASE_TAG" --arg sha "$TARGET_SHA" \
+            --arg parentRunId "$GITHUB_RUN_ID" --arg parentRunAttempt "$GITHUB_RUN_ATTEMPT" \
+            --arg parentWorkflowSha "$GITHUB_WORKFLOW_SHA" --arg parentWorkflowRef "$GITHUB_REF" \
+            '{tag: $tag, sha: $sha, parentRunId: $parentRunId, parentRunAttempt: $parentRunAttempt, parentWorkflowSha: $parentWorkflowSha, parentWorkflowRef: $parentWorkflowRef}' \
+            > "$RUNNER_TEMP/linux-release-intent/intent.json"
+
+      - name: Upload detached Linux release intent
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: linux-release-intent-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/linux-release-intent/intent.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Start detached Linux release automation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]{4}\.[1-9][0-9]*\.[1-9][0-9]*(-[1-9][0-9]*)?$ ]]; then
+            echo "Linux automation is stable-only; no event emitted."
+            exit 0
+          fi
+          # One request only. A lost response is not a retry grant; duplicate
+          # deliveries reconcile the release key and immutable coordinator outcomes.
+          jq '{event_type: "openclaw-linux-release", client_payload: .}' \
+            "$RUNNER_TEMP/linux-release-intent/intent.json" |
+            gh api --method POST "repos/$GITHUB_REPOSITORY/dispatches" --input -
+
+      - name: Report failed Linux handoff
+        if: failure()
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          TARGET_SHA: ${{ needs.resolve_release_target.outputs.sha }}
+        run: |
+          echo "::warning::Linux handoff failed for ${RELEASE_TAG}@${TARGET_SHA}; core publication remains complete."
+          {
+            echo "### Linux handoff needs inspection"
+            printf -- '- Release key: %s@%s\n' "$RELEASE_TAG" "$TARGET_SHA"
+            printf -- '- Parent run: %s; attempt: %s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+            echo "- If event submission started, its outcome may be uncertain. Inspect this job and the exact same-key coordinator/request outcomes before manual recovery."
+            echo "- Do not repeat an uncertain POST or rerun the release campaign/E2E suite. No automatic retry was attempted; this native handoff is advisory to the parent."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   publish_windows:
     name: Dispatch Windows assets after publication
     needs: [resolve_release_target, finalize_github_release]

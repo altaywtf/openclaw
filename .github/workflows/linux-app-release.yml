@@ -1,4 +1,5 @@
 name: Linux App Release
+run-name: Linux App Release [request=${{ github.event.workflow_run.id }}:${{ github.event.workflow_run.run_attempt }}]
 
 on:
   workflow_run: # zizmor: ignore[dangerous-triggers] main-only release builder; exact successful request/main identity is validated before selected-tag execution, while signing and publication stay in fresh jobs
@@ -51,19 +52,20 @@ jobs:
           WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
           set -euo pipefail
-          # Reject stale requests visibly before selected code runs; a job-level
-          # SHA gate would silently skip the whole release when main advances.
-          if [[ "$REQUEST_HEAD_SHA" != "$WORKFLOW_SHA" ]]; then
-            echo "::error::Main advanced after this Linux release request. Dispatch a new Linux App Release Request from main with the same inputs." >&2
-            exit 1
-          fi
-          pattern='^Linux App Release Request \[(v[0-9]{4}\.[1-9][0-9]*\.[1-9][0-9]*(-[1-9][0-9]*)?)\] desktop=(true|false)$'
+          pattern='^Linux App Release Request \[(v[0-9]{4}\.[1-9][0-9]*\.[1-9][0-9]*(-[1-9][0-9]*)?)\] desktop=(true|false)( source=([a-f0-9]{40}) parent=([1-9][0-9]*):([1-9][0-9]*))?$'
           if [[ ! "${REQUEST_TITLE}" =~ ${pattern} ]]; then
             echo "Release request title does not match the trusted request contract"
             exit 1
           fi
+          # Manual requests retain the visible strict-head refusal. Source-bound
+          # automation must prove byte-identical effective tooling in ancestry below.
+          if [[ -z "${BASH_REMATCH[5]}" && "$REQUEST_HEAD_SHA" != "$WORKFLOW_SHA" ]]; then
+            echo "::error::Main advanced after this Linux release request. Dispatch a new Linux App Release Request from main with the same inputs." >&2
+            exit 1
+          fi
           echo "release_tag=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
           echo "desktop_test_bundles=${BASH_REMATCH[3]}" >> "$GITHUB_OUTPUT"
+          echo "expected_sha=${BASH_REMATCH[5]}" >> "$GITHUB_OUTPUT"
 
       - name: Prepare Git owner
         uses: openclaw/openclaw/.github/actions/git-owner@dd4528b6393e7d00063067a080ca7241b48ce475
@@ -127,6 +129,8 @@ jobs:
         env:
           RELEASE_TAG: ${{ steps.request.outputs.release_tag }}
           WORKFLOW_SHA: ${{ github.workflow_sha }}
+          REQUEST_WORKFLOW_SHA: ${{ github.event.workflow_run.head_sha }}
+          EXPECTED_SHA: ${{ steps.request.outputs.expected_sha }}
         run: |
           set -euo pipefail
           exec python3 -I -S "$CI_GIT_OWNER" --policy - <<'PYTHON'
@@ -159,11 +163,40 @@ jobs:
           if not is_ancestor(os.environ["WORKFLOW_SHA"], "origin/main"):
               print("Linux release tooling must be reachable from current main.", file=sys.stderr)
               raise SystemExit(1)
+          request_sha = os.environ["REQUEST_WORKFLOW_SHA"]
+          workflow_sha = os.environ["WORKFLOW_SHA"]
+          if request_sha != workflow_sha:
+              if not is_ancestor(request_sha, workflow_sha):
+                  print("Request workflow is not an ancestor of trusted Linux tooling.", file=sys.stderr)
+                  raise SystemExit(1)
+              # Unrelated main movement is harmless only when the effective
+              # request, builder and trusted helper closure is byte-identical.
+              # Directory tree IDs include all packaging/test helper imports.
+              tooling_paths = [
+                  ".github/workflows/linux-app-release-request.yml",
+                  ".github/workflows/linux-app-release.yml",
+                  "scripts/lib/record-shared.mjs",
+                  "scripts/release-tooling-identity.mjs",
+                  "scripts/verify-release-tag-target.mjs",
+                  "apps/linux/src-tauri/tauri.conf.json",
+                  "apps/linux/scripts",
+                  "apps/linux/tests",
+              ]
+              for tooling_path in tooling_paths:
+                  before = git_output(workspace, "rev-parse", f"{request_sha}:{tooling_path}")
+                  after = git_output(workspace, "rev-parse", f"{workflow_sha}:{tooling_path}")
+                  if before != after:
+                      print(f"Linux request tooling changed: {tooling_path}", file=sys.stderr)
+                      raise SystemExit(1)
           tag_sha = git_output(
               workspace,
               "rev-parse",
               f"refs/tags/{release_tag}^{{commit}}",
           ).rstrip("\n")
+          expected_sha = os.environ["EXPECTED_SHA"]
+          if expected_sha and tag_sha != expected_sha:
+              print("Release tag no longer matches the automated request source.", file=sys.stderr)
+              raise SystemExit(1)
           if not is_ancestor(tag_sha, "origin/main"):
               # The validated stable tag chooses its sole eligible release branch;
               # numeric correction tags share the base version's release branch.
@@ -198,6 +231,9 @@ jobs:
   build_linux:
     name: Build Linux companion bundles
     needs: validate_release
+    concurrency:
+      group: linux-app-release-build-${{ needs.validate_release.outputs.release_tag }}
+      cancel-in-progress: false
     # Oldest supported build base: bundles link against this glibc, so newer
     # runners would silently drop Ubuntu 22.04/Debian 12 users.
     runs-on: ubuntu-22.04

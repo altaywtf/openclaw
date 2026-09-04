@@ -172,17 +172,53 @@ requests touching `apps/linux/**` and on manual dispatch.
 
 ## Releases
 
-Manually dispatch `Linux App Release Request` from `main`. Provide the existing
+After core GitHub-release finalization, `OpenClaw Release Publish` uploads a
+source-bound intent and emits `openclaw-linux-release`. The default-branch
+`Linux App Release Auto` workflow can run while the parent's native sidecars are
+still active, outside the npm publication lock. It dispatches a Linux-only
+request or adopts the existing request for that exact tag and source SHA—even
+when the event comes from a different parent run. Linux failure never restarts
+npm, Docker, or successful native siblings. The handoff job is advisory, matching
+Android/Windows, so a Linux handoff failure cannot suppress the independent
+ClawHub postpublish verifier. Raw failed steps and a warning summary with the
+exact release key remain visible for inspection. Older publisher revisions
+without this handoff still use the manual request below.
+
+The Actions log and coordinator outcome artifact identify the exact request,
+builder, and attempts. `builder-succeeded` means the builder and its publication
+job succeeded; `assetsVerified: false` explicitly means this coordinator did not
+independently verify live assets. The outcome is not release authorization.
+
+A lost dispatch response is reconciled without another request POST. With no
+existing request, every prior same-key coordinator attempt must positively prove
+`no-dispatch` before a fresh request is allowed. Missing, expired, uncertain or
+cancelled outcomes stop automation for inspection. Keep the Actions history and
+30-day outcome artifacts; deleting control records is outside automatic recovery.
+A first successful parent recovery is not blocked merely because its attempt is
+greater than one. A failed builder is never automatically rerun. Cancelling the
+coordinator stops observation, not an already dispatched builder; cancel that
+exact builder separately if publication must stop.
+
+For manual recovery, dispatch `Linux App Release Request` from `main`. Provide the existing
 stable release tag in `tag`; prerelease tags are rejected because their semver
 suffix breaks Debian upgrade ordering. Enable the optional
 `desktop-test-bundles` input only when unsigned macOS and Windows test bundles
-are needed.
+are needed. Manual requests retain strict request/builder head equality: if main
+advances, validation fails visibly before checkout. Only source-bound automation
+can use the explicit unchanged-tooling closure check described below.
 
 A successful request automatically triggers `Linux App Release`. It builds from
 the validated release tag SHA and attaches the bundles to that tag's GitHub
 release with a `SHA256SUMS.linux-app.txt` checksum file. The tag commit must be
 reachable from `main` or its matching `release/YYYY.M.PATCH` branch; numeric
-correction tags use the base version's release branch.
+correction tags use the base version's release branch. Automatic requests also
+pin the expected source SHA before the build. A source-bound automated request from an earlier main SHA
+is accepted only when ancestry and identical owning workflow definitions and
+trusted helper trees prove unchanged effective tooling. Owned-tooling changes
+require inspection and a current request, not an automatic replacement.
+
+Native builds serialize by release tag. Publication retains its stronger shared
+lock because optional desktop bundles also update a shared channel.
 
 Publication rechecks that tag's commit immediately before each asset upload and
 before creating or updating the desktop-test channel. A moved, missing, or
@@ -192,3 +228,11 @@ atomic tag lock or identical-byte replay guarantee: existing asset replacement,
 same-tag desktop expansion, and the mutable desktop-test channel remain unchanged.
 Per-asset checks serialize uploads that previously ran as a batch, so publication
 can take longer; this is an identity check, not a throughput improvement.
+
+Leave `expected_sha`, `release_publish_run_id` and `release_publish_run_attempt`
+blank for manual requests. Together they correlate the automatic request with
+its original source and parent; they do not grant new release authority. Inspect
+a failed builder's exact jobs before using GitHub's failed-jobs rerun. Do not
+dispatch the request again merely because its builder is running or its response
+was lost. Legacy same-tag requests without source binding require manual
+reconciliation before automation will create another request.

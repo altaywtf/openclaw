@@ -16017,7 +16017,7 @@ it("reports stale Linux release requests before selected code runs", () => {
     const matching = workflowSha === requestSha;
     expect(result.status, `${result.stdout}${result.stderr}`).toBe(matching ? 0 : 1);
     expect(readFileSync(output, "utf8")).toBe(
-      matching ? "release_tag=v2026.8.2\ndesktop_test_bundles=false\n" : "",
+      matching ? "release_tag=v2026.8.2\ndesktop_test_bundles=false\nexpected_sha=\n" : "",
     );
     if (!matching) {
       expect(`${result.stdout}${result.stderr}`).toContain(
@@ -16066,10 +16066,16 @@ it("pins simple release admission owners before selected checkout and preserves 
   const request = parse(readFileSync(".github/workflows/linux-app-release-request.yml", "utf8"));
   const linux = parse(readFileSync(workflows[0].file, "utf8"));
   expect(request["run-name"]).toBe(
-    "Linux App Release Request [${{ inputs.tag }}] desktop=${{ inputs['desktop-test-bundles'] }}",
+    "Linux App Release Request [${{ inputs.tag }}] desktop=${{ inputs['desktop-test-bundles'] }}${{ inputs.expected_sha && format(' source={0} parent={1}:{2}', inputs.expected_sha, inputs.release_publish_run_id, inputs.release_publish_run_attempt) || '' }}",
   );
   expect(request.permissions).toEqual({});
-  expect(Object.keys(request.on.workflow_dispatch.inputs)).toEqual(["tag", "desktop-test-bundles"]);
+  expect(Object.keys(request.on.workflow_dispatch.inputs)).toEqual([
+    "tag",
+    "desktop-test-bundles",
+    "expected_sha",
+    "release_publish_run_id",
+    "release_publish_run_attempt",
+  ]);
   expect(request.jobs.validate_request.permissions).toBeUndefined();
   expect(JSON.stringify(request)).not.toContain("${{ secrets.");
   expect(linux.on).toEqual({
@@ -16098,6 +16104,8 @@ it("pins simple release admission owners before selected checkout and preserves 
   expect(linux.jobs.validate_release.if).toContain(
     "github.event.workflow_run.head_branch == 'main'",
   );
+  // Exact request -> builder main ancestry is exercised at the Git-owner
+  // boundary in the release lifecycle and Linux automation tests, including owned-tooling drift.
   expect(linux.jobs.validate_release.if).toContain(
     "github.event.workflow_run.conclusion == 'success'",
   );
@@ -16194,7 +16202,7 @@ it("pins simple release admission owners before selected checkout and preserves 
   });
   expect(acceptedRequest.status, `${acceptedRequest.stdout}${acceptedRequest.stderr}`).toBe(0);
   expect(readFileSync(requestOutput, "utf8")).toBe(
-    "release_tag=v2026.8.2\ndesktop_test_bundles=true\n",
+    "release_tag=v2026.8.2\ndesktop_test_bundles=true\nexpected_sha=\n",
   );
   const rejectedRequest = spawnSync("bash", ["-c", releaseRequest.run ?? ""], {
     encoding: "utf8",

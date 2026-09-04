@@ -25,7 +25,12 @@ const releases: Record<
       job: "validate_release",
       step: "Ensure tag commit is reachable from its release branch",
     },
-    env: { RELEASE_TAG: releaseTag, WORKFLOW_SHA: otherSha },
+    env: {
+      RELEASE_TAG: releaseTag,
+      WORKFLOW_SHA: otherSha,
+      REQUEST_WORKFLOW_SHA: otherSha,
+      EXPECTED_SHA: "",
+    },
     revisions: { [`refs/tags/${releaseTag}^{commit}`]: sha },
   },
   macos: {
@@ -65,6 +70,29 @@ function releaseRun(mode: ReleaseMode, options: RunOptions = {}) {
 function gitCommands(report: Awaited<ReturnType<typeof releaseRun>>) {
   return report.commands.filter(({ tool }) => tool === "git").map(({ args }) => args);
 }
+
+posixIt.each([
+  { expected: sha, requestAncestor: true, code: 0 },
+  { expected: otherSha, requestAncestor: true, code: 1 },
+  { expected: sha, requestAncestor: false, code: 1 },
+])(
+  "Linux request source contract: $expected ancestor=$requestAncestor",
+  async ({ expected, requestAncestor, code }) => {
+    const requestSha = requestAncestor ? otherSha : "b".repeat(40);
+    const report = await releaseRun("linux", {
+      env: { EXPECTED_SHA: expected, REQUEST_WORKFLOW_SHA: requestSha },
+      commandResults: {
+        [`merge-base --is-ancestor ${requestSha} ${otherSha}`]: { code: requestAncestor ? 0 : 1 },
+      },
+    });
+    expect(report.code, report.output).toBe(code);
+    expect(report.githubOutput).toBe(code === 0 ? `tag_sha=${sha}\n` : "");
+    if (!requestAncestor) {
+      expect(gitCommands(report).some(([operation]) => operation === "rev-parse")).toBe(false);
+    }
+  },
+  55_000,
+);
 
 posixIt.each([releaseTag, `${releaseTag}-2`])(
   "Linux admits a stable tag from its matching release branch: %s",
@@ -212,7 +240,14 @@ const terminalOperations = [
 
 posixIt.each(
   terminalOperations.flatMap((entry) =>
-    (["cleanup-failure", "cancel"] as const).map((failure) => ({ ...entry, failure })),
+    // Each invocation consumes only these parameters and owns an independent case.
+    (["cleanup-failure", "cancel"] as const).map((failure) => ({
+      mode: entry.mode,
+      match: entry.match,
+      occurrence: entry.occurrence,
+      operation: entry.operation,
+      failure,
+    })),
   ),
 )(
   "$mode $operation $failure is terminal before every later boundary",
