@@ -2841,30 +2841,30 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
       const errorStart = sharedAppPageErrors.length;
       try {
         await page.setViewportSize({ width: 900, height: 800 });
-        const textarea = page.locator(".agent-chat__composer-combobox > textarea");
-        await textarea.waitFor({ timeout: APP_FIRST_RENDER_TIMEOUT_MS });
-        await textarea.fill(
+        const editor = page.locator(".agent-chat__composer-editor .cm-content");
+        await editor.waitFor({ timeout: APP_FIRST_RENDER_TIMEOUT_MS });
+        await editor.fill(
           "Resize this populated draft across a narrow pane so its wrapped lines change height without waiting for another input event. ".repeat(
             2,
           ),
         );
-        await waitForLayoutSettled(page, ".agent-chat__composer-combobox > textarea");
-        const wideHeight = (await textarea.boundingBox())?.height ?? 0;
+        await waitForLayoutSettled(page, ".agent-chat__composer-editor .cm-content");
+        const wideHeight = (await editor.boundingBox())?.height ?? 0;
 
         await page.setViewportSize({ width: 430, height: 800 });
         await page.waitForFunction((previousHeight) => {
-          const element = document.querySelector<HTMLTextAreaElement>(
-            ".agent-chat__composer-combobox > textarea",
+          const element = document.querySelector<HTMLElement>(
+            ".agent-chat__composer-editor .cm-content",
           );
           return element !== null && element.getBoundingClientRect().height > previousHeight + 1;
         }, wideHeight);
-        const narrowHeight = (await textarea.boundingBox())?.height ?? 0;
+        const narrowHeight = (await editor.boundingBox())?.height ?? 0;
         expect(narrowHeight).toBeGreaterThan(wideHeight + 1);
 
         await page.setViewportSize({ width: 900, height: 800 });
         await page.waitForFunction((previousHeight) => {
-          const element = document.querySelector<HTMLTextAreaElement>(
-            ".agent-chat__composer-combobox > textarea",
+          const element = document.querySelector<HTMLElement>(
+            ".agent-chat__composer-editor .cm-content",
           );
           return element !== null && element.getBoundingClientRect().height < previousHeight - 1;
         }, narrowHeight);
@@ -2874,7 +2874,7 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
             .filter((message) => message.includes("ResizeObserver loop")),
         ).toEqual([]);
       } finally {
-        await page.locator(".agent-chat__composer-combobox > textarea").fill("");
+        await page.locator(".agent-chat__composer-editor .cm-content").fill("");
         await page.setViewportSize({ width: 1366, height: 900 });
       }
     },
@@ -5250,13 +5250,13 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
       page = await getSharedAppPage();
       await page.setViewportSize({ width: 568, height: 320 });
       await page.getByText(SHARED_APP_SLASH_TEXT).waitFor({ timeout: APP_FIRST_RENDER_TIMEOUT_MS });
-      const textarea = page.locator(".agent-chat__composer-combobox > textarea");
-      await textarea.fill("/");
-      await textarea.focus();
+      const editor = page.locator(".agent-chat__composer-editor .cm-content");
+      await editor.fill("/");
+      await editor.focus();
     });
 
     afterAll(async () => {
-      await page.locator(".agent-chat__composer-combobox > textarea").fill("");
+      await page.locator(".agent-chat__composer-editor .cm-content").fill("");
       await page.setViewportSize({ width: 1366, height: 900 });
     });
 
@@ -5289,8 +5289,8 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
         await page.keyboard.press("ArrowDown");
       }
       await page.waitForFunction((expectedId) => {
-        const input = document.querySelector<HTMLTextAreaElement>(
-          ".agent-chat__composer-combobox > textarea",
+        const input = document.querySelector<HTMLElement>(
+          ".agent-chat__composer-editor .cm-content",
         );
         return input?.getAttribute("aria-activedescendant") === expectedId;
       }, initiallyHidden.id);
@@ -5306,8 +5306,8 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
       }, initiallyHidden.id);
 
       const result = await page.evaluate(() => {
-        const input = document.querySelector<HTMLTextAreaElement>(
-          ".agent-chat__composer-combobox > textarea",
+        const input = document.querySelector<HTMLElement>(
+          ".agent-chat__composer-editor .cm-content",
         );
         const scrollRegion = document.querySelector<HTMLElement>(".slash-menu__scroll");
         const active = document.querySelector<HTMLElement>(".slash-menu-item--active");
@@ -5324,7 +5324,7 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
         };
       });
 
-      expect(result.focusedTag).toBe("TEXTAREA");
+      expect(result.focusedTag).toBe("DIV");
       expect(result.activeDescendant).toBe(initiallyHidden.id);
       expect(result.scrollTop).toBeGreaterThan(0);
       expect(result.visible).toBe(true);

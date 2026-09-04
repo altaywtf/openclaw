@@ -21,6 +21,11 @@ import { cancelChatStreamRenderFrame } from "./chat-state-render.ts";
 import { renderChat } from "./chat-view.ts";
 import { projectSessionApprovalReplay } from "./session-approval-projection.ts";
 
+vi.mock(
+  "./components/chat-composer-rich-editor.ts",
+  async () => import("./chat-composer-rich-editor.test-support.ts"),
+);
+
 describe("chat pane assistant identity snapshots", () => {
   it("keeps an explicitly owned global Home pane on its agent across work selection", () => {
     const client = { request: vi.fn(async () => ({})) } as unknown as GatewayBrowserClient;
