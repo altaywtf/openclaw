@@ -387,6 +387,7 @@ export const reefPlugin: ChannelPlugin<ReefAccount> = {
           ReefFederationFrame,
           { type: "session.mount.offer" | "session.prompt.propose" }
         >,
+        claim?: ReturnType<ReefFederationCoordinator["claimPrompt"]>,
       ): Promise<void> => {
         const taskKey = `${request.frame.proposalId}:${request.frame.textSha256}`;
         const running = federationTasks.get(taskKey);
@@ -394,7 +395,8 @@ export const reefPlugin: ChannelPlugin<ReefAccount> = {
           return running;
         }
         const task = (async () => {
-          const outcome = storedOutcome ?? (await federationCoordinator.handlePrompt(request));
+          const outcome =
+            storedOutcome ?? (await federationCoordinator.handlePrompt(request, claim));
           const friend = trust.get(request.peer);
           const currentPeerIdentity =
             friend && !friend.safetyNumberChanged ? reefPeerIdentity(friend) : undefined;
@@ -485,9 +487,13 @@ export const reefPlugin: ChannelPlugin<ReefAccount> = {
               peerIdentity: reefPeerIdentity(friend),
               frame,
             };
-            // The synchronous prefix durably claims the proposal before returning. Approval and
-            // agent dispatch continue under the account-owned task so one peer cannot stall ingress.
-            void startFederatedPrompt(request);
+            const claim = federationCoordinator.claimPrompt(request);
+            if (claim.result === "peer-capacity") {
+              throw new Error(`Reef peer @${peer} exceeded retained prompt capacity`);
+            }
+            // Approval and agent dispatch continue under the account-owned task so one peer cannot
+            // stall ingress after the durable proposal claim succeeds.
+            void startFederatedPrompt(request, undefined, claim);
             return;
           }
           const friend = trust.get(peer);

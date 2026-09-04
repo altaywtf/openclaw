@@ -14,6 +14,8 @@ import { sameReefPeerIdentity, type ReefPeerIdentity } from "./friend-types.js";
 
 const REEF_FEDERATION_APPROVAL_TIMEOUT_MS = 10 * 60_000;
 
+type ProposalClaim = ReturnType<FederationState["claimProposal"]>;
+
 type FederationState = {
   getMount(mountId: string): ReefFederationMount | undefined;
   authorizeMount(params: ReefGrantAuthority): ReefFederationMount | undefined;
@@ -47,25 +49,38 @@ export class ReefFederationCoordinator {
     private readonly authoritySignal: AbortSignal,
   ) {}
 
-  /** Validate, approve, and dispatch one remote prompt through canonical agent admission. */
-  async handlePrompt(params: {
+  /** Durably claim one prompt before its transport envelope is acknowledged. */
+  claimPrompt(params: {
     from: string;
     to: string;
     peer: string;
     peerIdentity: ReefPeerIdentity;
     frame: Extract<ReefFederationFrame, { type: "session.prompt.propose" }>;
-  }): Promise<Exclude<ReefFederationFrame, { type: "session.prompt.propose" }>> {
+  }): ProposalClaim {
+    return this.state.claimProposal({
+      proposalId: params.frame.proposalId,
+      mountId: params.frame.mountId,
+      digest: params.frame.textSha256,
+      status: "pending",
+      request: structuredClone(params),
+    });
+  }
+
+  /** Validate, approve, and dispatch one remote prompt through canonical agent admission. */
+  async handlePrompt(
+    params: {
+      from: string;
+      to: string;
+      peer: string;
+      peerIdentity: ReefPeerIdentity;
+      frame: Extract<ReefFederationFrame, { type: "session.prompt.propose" }>;
+    },
+    claim = this.claimPrompt(params),
+  ): Promise<Exclude<ReefFederationFrame, { type: "session.prompt.propose" }>> {
     const { frame } = params;
     // Claim before any asynchronous work or authority rejection so every terminal result can be
     // recovered after the source envelope is acknowledged.
     const digest = frame.textSha256;
-    const claim = this.state.claimProposal({
-      proposalId: frame.proposalId,
-      mountId: frame.mountId,
-      digest,
-      status: "pending",
-      request: structuredClone(params),
-    });
     if (claim.result === "mismatch") {
       return this.recordFailure(
         frame,
