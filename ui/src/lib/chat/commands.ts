@@ -26,6 +26,8 @@ export type SlashCommandDef = {
   executeLocal?: boolean;
   /** Fixed argument choices for inline hints. */
   argOptions?: string[];
+  /** Whether the final argument consumes the rest of the input as free-form text. */
+  capturesRemainingArgs?: boolean;
   /** Keyboard shortcut hint shown in the menu (display only). */
   shortcut?: string;
   /** Progressive disclosure tier. Defaults to "standard" when omitted. */
@@ -47,6 +49,7 @@ type CommandLike = {
     name: string;
     required?: boolean;
     choices?: LocalArgChoice[];
+    captureRemaining?: boolean;
   }>;
   formatArgs?: (values: CommandArgValues) => string | undefined;
   category?: string;
@@ -271,6 +274,7 @@ function toSlashCommand(
     category: mapCategory(command),
     executeLocal: source === "local" && LOCAL_COMMANDS.has(command.key),
     argOptions: getArgOptions(command),
+    capturesRemainingArgs: command.args?.at(-1)?.captureRemaining === true,
     tier: source === "local" ? mapTier(command) : "standard",
     ...(resolvedSource ? { source: resolvedSource } : {}),
     ...(command.skillDisplayName ? { skillDisplayName: command.skillDisplayName } : {}),
@@ -373,6 +377,7 @@ function buildLocalSlashCommands(): SlashCommandDef[] {
         name: arg.name,
         required: arg.required,
         choices: Array.isArray(arg.choices) ? arg.choices : undefined,
+        captureRemaining: arg.captureRemaining,
       })),
       formatArgs: command.formatArgs,
       category: command.category,

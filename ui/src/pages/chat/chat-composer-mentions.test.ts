@@ -156,14 +156,14 @@ function composerFixture(
 }
 
 describe("chat inline commands with human mentions", () => {
-  it("runs an appended dashboard command separately and keeps the draft recipient", () => {
+  it("runs an appended multi-word dashboard request and keeps the draft recipient", () => {
     const mention = { profileId: "profile-alex-online", start: 7, end: 12 };
     const view = composerFixture("chat", "Review @Alex", [mention]);
 
-    view.edit("Review @Alex /dashboard ");
+    view.edit("Review @Alex /dashboard release health");
     view.key("Enter");
 
-    expect(view.slashCommand).toHaveBeenCalledExactlyOnceWith("/dashboard");
+    expect(view.slashCommand).toHaveBeenCalledExactlyOnceWith("/dashboard release health");
     expect(view.send).not.toHaveBeenCalled();
     expect(view.value()).toEqual({
       draft: "Review @Alex ",
