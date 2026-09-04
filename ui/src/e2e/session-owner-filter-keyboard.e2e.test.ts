@@ -281,7 +281,7 @@ suite.define(() => {
           const label = element.querySelector<HTMLElement>(":scope > .session-menu__text");
           const value = element.querySelector<HTMLElement>(".sidebar-session-owner-selection");
           const chevron =
-            element.querySelector<HTMLElement>(":scope > .session-menu__chevron") ??
+            element.querySelector<HTMLElement>(".session-menu__chevron") ??
             element.shadowRoot?.querySelector<HTMLElement>('[part="submenu-icon"]');
           if (!menuPart || !label || !value || !chevron) {
             throw new Error("expected the complete selected-owner row");
@@ -291,20 +291,22 @@ suite.define(() => {
           const valueBounds = value.getBoundingClientRect();
           const chevronBounds = chevron.getBoundingClientRect();
           return {
-            chevronLeft: chevronBounds.left,
             chevronRight: chevronBounds.right,
             labelFullyVisible: label.scrollWidth <= label.clientWidth,
             labelRight: labelBounds.right,
+            leadingIconCount: element.querySelectorAll(":scope > [slot='icon']").length,
             menuRight: menuBounds.right,
             menuWidth: menuBounds.width,
+            valueChevronGap: chevronBounds.left - valueBounds.right,
             valueLeft: valueBounds.left,
-            valueRight: valueBounds.right,
           };
         });
         expect(selectedGeometry.menuWidth).toBeLessThanOrEqual(220);
         expect(selectedGeometry.labelFullyVisible).toBe(true);
+        expect(selectedGeometry.leadingIconCount).toBe(0);
         expect(selectedGeometry.labelRight).toBeLessThanOrEqual(selectedGeometry.valueLeft);
-        expect(selectedGeometry.valueRight).toBeLessThanOrEqual(selectedGeometry.chevronLeft);
+        expect(selectedGeometry.valueChevronGap).toBeGreaterThanOrEqual(0);
+        expect(selectedGeometry.valueChevronGap).toBeLessThanOrEqual(8);
         expect(selectedGeometry.chevronRight).toBeLessThanOrEqual(selectedGeometry.menuRight);
       } finally {
         await context.close();

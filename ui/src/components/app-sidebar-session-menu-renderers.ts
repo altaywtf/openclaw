@@ -132,7 +132,6 @@ function renderSidebarOwnerFilter(params: {
           ? renderCompactSessionMenuNavigationItem({
               value: "compact:open-specific-owner",
               label: t("sessionsView.specificOwner"),
-              icon: icons.users,
               details: html`<span class="session-menu__shortcut sidebar-session-owner-selection"
                 >${details}</span
               >`,
