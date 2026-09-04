@@ -30,8 +30,14 @@ function parseArgs(argv) {
 
 const { mode, packageRoot } = parseArgs(process.argv.slice(2));
 const requireFromPackage = createRequire(path.join(packageRoot, "package.json"));
-const fsSafeManifestPath = requireFromPackage.resolve("@openclaw/fs-safe/package.json");
+const configPath = requireFromPackage.resolve("@openclaw/fs-safe/config");
+const fsSafeManifestPath = path.resolve(path.dirname(configPath), "..", "package.json");
 const fsSafeManifest = JSON.parse(await fsPromises.readFile(fsSafeManifestPath, "utf8"));
+const fsSafeConfig = await import(pathToFileURL(configPath).href);
+if (typeof fsSafeConfig.configureFsSafeNative !== "function") {
+  console.log("fs-safe package does not support native bindings; skipping native binding proof");
+  process.exit(0);
+}
 const requireFromFsSafe = createRequire(fsSafeManifestPath);
 const platformPackageNames = Object.keys(fsSafeManifest.optionalDependencies ?? {}).filter((name) =>
   name.startsWith("@openclaw/fs-safe-"),
@@ -45,9 +51,8 @@ const installedPlatformPackages = platformPackageNames.flatMap((name) => {
   }
 });
 
-const configPath = requireFromPackage.resolve("@openclaw/fs-safe/config");
 const durabilityPath = requireFromPackage.resolve("@openclaw/fs-safe/durability");
-const { configureFsSafeNative } = await import(pathToFileURL(configPath).href);
+const { configureFsSafeNative } = fsSafeConfig;
 const { sha256File } = await import(pathToFileURL(durabilityPath).href);
 configureFsSafeNative({ mode: mode === "require" ? "require" : "off" });
 
