@@ -6,6 +6,7 @@ import {
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveAgentConfig } from "./agent-scope-config.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults.js";
+import type { ModelCatalogEntry } from "./model-catalog.types.js";
 import { type ModelManifestNormalizationContext, modelKey } from "./model-ref-shared.js";
 import { resolveConfiguredModelFallbacks } from "./model-selection-resolve.js";
 import {
@@ -13,6 +14,7 @@ import {
   inferUniqueProviderFromConfiguredModels,
   type ModelAliasIndex,
   resolveConfiguredModelRef,
+  resolveBareModelDefaultProvider,
   resolveModelRefFromString,
 } from "./model-selection-shared.js";
 
@@ -34,6 +36,7 @@ export function resolveConfiguredModelEntries(
     allowPluginNormalization?: boolean;
     canonicalizeRef?: <TRef extends { provider: string; model: string }>(ref: TRef) => TRef;
     aliasIndex?: ModelAliasIndex;
+    catalog?: readonly ModelCatalogEntry[];
   } & ModelManifestNormalizationContext,
 ): {
   entries: ConfiguredModelEntry[];
@@ -88,13 +91,22 @@ export function resolveConfiguredModelEntries(
     const trimmed = raw.trim();
     const inferredProvider = trimmed.includes("/")
       ? undefined
-      : inferUniqueProviderFromConfiguredModels({
-          cfg: params.cfg,
-          agentId: params.agentId,
-          model: trimmed,
-          allowManifestNormalization: params.allowManifestNormalization,
-          manifestPlugins: params.manifestPlugins,
-        });
+      : params.catalog
+        ? resolveBareModelDefaultProvider({
+            cfg: params.cfg,
+            agentId: params.agentId,
+            catalog: params.catalog,
+            model: trimmed,
+            defaultProvider,
+            manifestPlugins: params.manifestPlugins,
+          })
+        : inferUniqueProviderFromConfiguredModels({
+            cfg: params.cfg,
+            agentId: params.agentId,
+            model: trimmed,
+            allowManifestNormalization: params.allowManifestNormalization,
+            manifestPlugins: params.manifestPlugins,
+          });
     const resolved = resolveModelRefFromString({
       ...params,
       raw,

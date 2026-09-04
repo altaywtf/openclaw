@@ -68,10 +68,8 @@ import {
   resolveProjectableCompactionCheckpoints,
   resolveRuntimeChildSessionKeys,
 } from "./session-utils-core.js";
-import {
-  resolveGatewaySessionThinkingProjectionInternal,
-  resolveSessionDisplayModelIdentityRefCached,
-} from "./session-utils-model.js";
+import { resolveSessionDisplayModelIdentityRefCached } from "./session-utils-model-identity.js";
+import { resolveGatewaySessionThinkingProjectionInternal } from "./session-utils-model.js";
 import {
   mergeChildSessionKeys,
   resolveChildSessionKeys,
@@ -294,15 +292,13 @@ export function buildGatewaySessionRow(params: {
   );
   const selectedModelProvider = selectedModel.provider;
   const selectedModelId = selectedModel.model;
-  const rowModelIdentity = lightweight
-    ? { provider: selectedModelProvider, model: selectedModelId }
-    : resolveSessionDisplayModelIdentityRefCached({
-        cfg,
-        agentId: sessionAgentId,
-        provider: selectedModelProvider,
-        model: selectedModelId,
-        rowContext: params.rowContext,
-      });
+  const rowModelIdentity = resolveSessionDisplayModelIdentityRefCached({
+    cfg,
+    agentId: sessionAgentId,
+    provider: selectedModelProvider,
+    model: selectedModelId,
+    rowContext: params.rowContext,
+  });
   const rowModelProvider = rowModelIdentity.provider;
   const rowModel = rowModelIdentity.model;
   const acpSessionKey = resolveStoredSessionKeyForAgentStore({
@@ -354,6 +350,7 @@ export function buildGatewaySessionRow(params: {
     agentId: sessionAgentId,
     provider: thinkingProvider,
     model: thinkingModel,
+    runtimeModel: selectedModel,
     sessionKey: acpSessionKey,
     entry,
     modelCatalog: thinkingModelCatalog,

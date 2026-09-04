@@ -543,7 +543,7 @@ describe("ModelSetupPage catalog icons", () => {
     runtimeConfig.dispose();
   });
 
-  it("owns the complete wizard action between draft flush and authoritative refresh", async () => {
+  it("completes credential-only sign-in between draft flush and authoritative refresh", async () => {
     const { context, client, request, runtimeConfig } = createContext();
     const order: string[] = [];
     let config: Record<string, unknown> = { pending: false };
@@ -569,9 +569,9 @@ describe("ModelSetupPage catalog icons", () => {
         return { sessionId: "wizard-session", done: false, status: "running" };
       }
       if (method === "wizard.next") {
-        config = { ...config, configuredModel: "provider/model" };
+        config = { ...config, credentialSaved: true };
         hash = "hash-3";
-        return { done: true, status: "done", modelActivation: { modelRef: "provider/model" } };
+        return { done: true, status: "done" };
       }
       if (method === "openclaw.setup.detect") {
         return {
@@ -606,9 +606,65 @@ describe("ModelSetupPage catalog icons", () => {
         "wizard.next",
         "config.get",
       ]);
-      expect(page.textContent).toContain("Connection verified");
+      expect(page.textContent).toContain(
+        "Signed in. Available models will update automatically; your default is unchanged.",
+      );
+      expect(page.textContent).not.toContain("Connection verified");
     });
     expect(runtimeConfig.state.configSnapshot?.hash).toBe("hash-3");
+    expect(context.navigate).not.toHaveBeenCalled();
+    runtimeConfig.dispose();
+  });
+
+  it("uses verified activation for first-run provider sign-in", async () => {
+    const { context, client, request, runtimeConfig } = createContext();
+    request.mockImplementation(async (method) => {
+      if (method === "config.get") {
+        return { config: {}, sourceConfig: {}, raw: "{}", hash: "hash-1", valid: true, issues: [] };
+      }
+      if (method === "openclaw.setup.activate.start") {
+        return {
+          sessionId: "first-run-auth",
+          done: true,
+          status: "done",
+          modelActivation: { modelRef: "provider/verified" },
+        };
+      }
+      if (method === "openclaw.setup.auth.start") {
+        return { sessionId: "credential-only", done: true, status: "done" };
+      }
+      throw new Error(`Unexpected method ${method}`);
+    });
+    await runtimeConfig.ensureLoaded();
+    const { page } = await mountPage(context, {
+      state: {
+        phase: "ready",
+        result: {
+          ...detection,
+          authOptions: [{ id: "provider-auth", label: "Provider", kind: "oauth", featured: true }],
+        },
+      },
+      client,
+      firstRun: true,
+    });
+
+    page.querySelector<HTMLButtonElement>('[data-auth-choice="provider-auth"] button')?.click();
+
+    await waitForFast(() => {
+      expect(context.navigate).toHaveBeenCalledWith("custodian", { search: "?onboarding=1" });
+    });
+    expect(request).toHaveBeenCalledWith(
+      "openclaw.setup.activate.start",
+      expect.objectContaining({
+        kind: "provider-auth",
+        authChoice: "provider-auth",
+        agentId: "main",
+      }),
+      expect.anything(),
+    );
+    expect(request.mock.calls.some(([method]) => method === "openclaw.setup.auth.start")).toBe(
+      false,
+    );
     runtimeConfig.dispose();
   });
 
@@ -787,32 +843,28 @@ describe("ModelSetupPage catalog icons", () => {
     expect(replacementRequest).not.toHaveBeenCalled();
   });
 
-  it.each(
-    ["candidate", "provider sign-in"].flatMap((entry) =>
-      [
-        {
-          feedback: "config refresh",
-          restart: false,
-          refreshError: "config.get failed after model commit",
-          warnings: ["config.get failed after model commit"],
-        },
-        {
-          feedback: "pending restart",
-          restart: true,
-          refreshError: null,
-          warnings: ["Gateway restart required."],
-        },
-        {
-          feedback: "restart and config refresh",
-          restart: true,
-          refreshError: "config.get failed after model commit",
-          warnings: ["Gateway restart required.", "config.get failed after model commit"],
-        },
-      ].map((outcome) => Object.assign({}, outcome, { entry })),
-    ),
-  )(
-    "keeps verified $entry success visible with $feedback feedback",
-    async ({ entry, restart, refreshError, warnings }) => {
+  it.each([
+    {
+      feedback: "config refresh",
+      restart: false,
+      refreshError: "config.get failed after model commit",
+      warnings: ["config.get failed after model commit"],
+    },
+    {
+      feedback: "pending restart",
+      restart: true,
+      refreshError: null,
+      warnings: ["Gateway restart required."],
+    },
+    {
+      feedback: "restart and config refresh",
+      restart: true,
+      refreshError: "config.get failed after model commit",
+      warnings: ["Gateway restart required.", "config.get failed after model commit"],
+    },
+  ])(
+    "keeps verified activation success visible with $feedback feedback",
+    async ({ restart, refreshError, warnings }) => {
       const { context: baseContext, client, request } = createContext();
       const modelActivation = {
         modelRef: "provider/verified",
@@ -820,12 +872,6 @@ describe("ModelSetupPage catalog icons", () => {
       };
       request.mockImplementation(async (method) => {
         if (method === "openclaw.setup.activate.start") {
-          return { done: true, status: "done", modelActivation };
-        }
-        if (method === "openclaw.setup.auth.start") {
-          return { sessionId: "warning-auth", done: false, status: "running" };
-        }
-        if (method === "wizard.next") {
           return { done: true, status: "done", modelActivation };
         }
         throw new Error(`Unexpected method ${method}`);
@@ -859,19 +905,14 @@ describe("ModelSetupPage catalog icons", () => {
                 credentials: true,
               },
             ],
-            authOptions: [
-              { id: "provider-auth", label: "Provider", kind: "oauth", featured: true },
-            ],
           },
         },
         client,
         firstRun: false,
       });
-      const selector =
-        entry === "candidate"
-          ? '[data-candidate-kind="openai-api-key"] button'
-          : '[data-auth-choice="provider-auth"] button';
-      page.querySelector<HTMLButtonElement>(selector)?.click();
+      page
+        .querySelector<HTMLButtonElement>('[data-candidate-kind="openai-api-key"] button')
+        ?.click();
       await waitForFast(() => {
         expect(page.textContent).toContain("Connection verified");
         const warning = page.querySelector(".model-setup-success__warning")?.textContent;

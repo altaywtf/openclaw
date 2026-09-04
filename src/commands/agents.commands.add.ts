@@ -424,11 +424,11 @@ export async function agentsAddCommand(
     await warnIfModelConfigLooksOff(nextConfig, prompter, {
       agentId,
       agentDir,
+      workspaceDir,
       pendingAuthProfiles: stagedAuthProfiles.map(({ profileId, credential }) => ({
         profileId,
         credential,
       })),
-      validateCatalog: false,
     });
 
     const channelSetup = createChannelSetupTransaction({ runtime: wizardRuntime });

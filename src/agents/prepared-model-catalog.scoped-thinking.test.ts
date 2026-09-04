@@ -2,9 +2,19 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPluginMetadataSnapshot } from "../config/plugin-auto-enable.test-helpers.js";
 import type { ModelCatalogEntry, ModelCatalogSnapshot } from "./model-catalog.types.js";
+import { setPreparedModelFullCatalogAuth } from "./prepared-model-runtime-auth.js";
 import { PreparedModelRuntimeOwnerNotPublishedError } from "./prepared-model-runtime.errors.js";
 import { markPreparedModelCatalogFull } from "./prepared-model-runtime.full-catalog.js";
 import type { PreparedModelRuntimeSnapshot } from "./prepared-model-runtime.types.js";
+
+const augmentHarnessMock = vi.fn(
+  async (params: { snapshot: ModelCatalogSnapshot }) => params.snapshot,
+);
+
+vi.mock("./harness/model-catalog.js", () => ({
+  augmentModelCatalogWithAgentHarness: (params: { snapshot: ModelCatalogSnapshot }) =>
+    augmentHarnessMock(params),
+}));
 
 const manifestCatalogMock = vi.fn((..._args: unknown[]): Array<Record<string, unknown>> => []);
 const scopedStaticMock = vi.fn(
@@ -106,6 +116,33 @@ describe("loadProviderScopedThinkingCatalog", () => {
     expect(manifestCatalogMock).not.toHaveBeenCalled();
     expect(scopedStaticMock).not.toHaveBeenCalled();
     expect(scopedLiveMock).not.toHaveBeenCalled();
+    expect(augmentHarnessMock).not.toHaveBeenCalled();
+  });
+
+  it("uses the completed worker capabilities instead of the startup subset", async () => {
+    const completed = {
+      entries: [{ ...ollamaEntry, input: ["text", "image"] as ModelCatalogEntry["input"] }],
+      routeVariants: [],
+    };
+    setPreparedModelFullCatalogAuth(completed, {
+      authStore: { version: 1, profiles: {} },
+      providerAuth: {},
+    });
+    publishedSnapshotMock.mockImplementation((input: { config: object }) => ({
+      config: input.config,
+      modelCatalog: { entries: [], routeVariants: [] },
+      readFullModelCatalog: () => completed,
+    }));
+    const { loadProviderScopedThinkingCatalog } = await import("./prepared-model-catalog.js");
+    const catalog = await loadProviderScopedThinkingCatalog({
+      config: {},
+      provider: ollamaEntry.provider,
+      model: ollamaEntry.id,
+    });
+    expect(catalog).toEqual(completed.entries);
+    expect(scopedStaticMock).not.toHaveBeenCalled();
+    expect(scopedLiveMock).not.toHaveBeenCalled();
+    expect(augmentHarnessMock).not.toHaveBeenCalled();
   });
 
   it.each(["thinking", "input"] as const)(

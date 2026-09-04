@@ -10,6 +10,7 @@ import {
 import { MINIMAX_OAUTH_MARKER } from "openclaw/plugin-sdk/provider-auth";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildMinimaxModelDiscovery } from "./provider-catalog.js";
+import { resolveFastModeCapability } from "./provider-policy-api.js";
 import { registerMinimaxProviders } from "./provider-registration.js";
 import { createMiniMaxWebSearchProvider } from "./src/minimax-web-search-provider.js";
 
@@ -451,6 +452,32 @@ describe("minimax provider hooks", () => {
 
     expect(resolvedApiModelId).toBe("MiniMax-M2.7-highspeed");
     expect(resolvedPortalModelId).toBe("MiniMax-M2.7-highspeed");
+    for (const provider of ["minimax", "minimax-portal"]) {
+      expect(
+        resolveFastModeCapability({
+          provider,
+          modelId: "MiniMax-M2.7",
+          api: "anthropic-messages",
+          agentRuntime: "openclaw",
+        }),
+      ).toBe(true);
+      expect(
+        resolveFastModeCapability({
+          provider,
+          modelId: "MiniMax-M3",
+          api: "anthropic-messages",
+          agentRuntime: "openclaw",
+        }),
+      ).toBe(false);
+      expect(
+        resolveFastModeCapability({
+          provider,
+          modelId: "MiniMax-M2.7",
+          api: "openai-completions",
+          agentRuntime: "openclaw",
+        }),
+      ).toBe(false);
+    }
   });
 
   it("shares the provider hook bundle across MiniMax variants", async () => {

@@ -118,7 +118,6 @@ export const CHAINED_ASSERTION_EXCLUDED_ROOTS = [
   "src/agents/embedded-agent-runner/run/images.ts", // Provider-only video blocks cross the canonical AgentMessage namespace.
   "src/agents/mcp-http-fetch.ts", // Undici Response crosses the DOM FetchLike type namespace.
   "src/agents/model-auth-model.ts", // Null Authorization sentinel crosses the SDK's string-only header type.
-  "src/agents/model-provider-auth.ts", // Route-fact cache keys cross a config-only hash API.
   "src/agents/modes/interactive/theme/theme.ts", // Global symbol registry and Proxy receiver bridge duplicate module copies.
   "src/agents/tool-search-transcript.ts", // Synthetic target turns omit provider-owned assistant metadata.
   "src/channels/plugins/config-schema.ts", // Public SDK Zod generics preserve caller schema identity.

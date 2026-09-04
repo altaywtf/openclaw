@@ -6,13 +6,11 @@ import type { FastMode, GatewayAgentRow, ModelCatalogEntry } from "../../api/typ
 import type { ApplicationContext } from "../../app/context.ts";
 import { t } from "../../i18n/index.ts";
 import { subscribeChatMetadata } from "../../lib/chat/chat-metadata-store.ts";
-import { buildQualifiedChatModelValue } from "../../lib/chat/model-ref.ts";
 import {
-  isChatFastModeProviderSupported,
   normalizeChatFastModeInput,
   resolveChatModelUnavailableReason,
 } from "../../lib/chat/model-select-state.ts";
-import { normalizeThinkingOptionValue } from "../../lib/chat/thinking.ts";
+import { resolveThinkingProfileForSession } from "../../lib/chat/thinking.ts";
 import { isGatewayMethodAdvertised } from "../../lib/gateway-methods.ts";
 import { loadModelCatalog } from "../../lib/model-catalog-store.ts";
 import { normalizeAgentId } from "../../lib/sessions/session-key.ts";
@@ -53,12 +51,6 @@ type CatalogTargetDiscoveryState =
     }
   | { status: "ready"; owner: CatalogTargetOwner; targets: CatalogCreateTarget[] }
   | { status: "error"; owner: CatalogTargetOwner };
-type ReconciledNewSessionSelection = {
-  model: string;
-  thinkingLevel: string;
-  repaired: boolean;
-};
-
 export class NewSessionModelControl {
   private selectionGeneration = 0;
   private agentId = "";
@@ -181,7 +173,7 @@ export class NewSessionModelControl {
   private publishMetadataCatalog(catalog: ModelCatalogEntry[], status: NewSessionMetadataStatus) {
     this.metadataState = { catalog, hasSnapshot: true, status };
     if (this.pendingSelectionGeneration === this.selectionGeneration) {
-      this.restorePreference(this.pendingPreference, this.pendingAgent, this.pendingContext);
+      this.restorePreference(this.pendingPreference);
     }
     this.pendingPreference = undefined;
     this.restoringPreference = false;
@@ -228,8 +220,7 @@ export class NewSessionModelControl {
           this.pendingSelectionGeneration === this.selectionGeneration &&
           this.pendingPreference
         ) {
-          this.selected = this.pendingPreference.model ?? "";
-          this.thinkingLevel = this.pendingPreference.thinkingLevel ?? "";
+          this.restorePreference(this.pendingPreference);
         }
         this.pendingPreference = undefined;
         this.restoringPreference = false;
@@ -405,70 +396,12 @@ export class NewSessionModelControl {
       : undefined;
   }
 
-  private restorePreference(
-    preference: NewSessionPreference | null | undefined,
-    agent: GatewayAgentRow | undefined,
-    context: ApplicationContext | undefined,
-  ) {
+  private restorePreference(preference: NewSessionPreference | null | undefined) {
     if (!preference) {
       return;
     }
-    if (this.metadataState.status === "error") {
-      this.selected = preference.model ?? "";
-      this.thinkingLevel = preference.thinkingLevel ?? "";
-      return;
-    }
-    const selection = this.reconcileSelection(
-      preference.model ?? "",
-      preference.thinkingLevel ?? "",
-      { agent, context },
-    );
-    this.selected = selection.model;
-    this.thinkingLevel = selection.thinkingLevel;
-    if (selection.repaired) {
-      this.onSelectionChange({ model: selection.model, thinkingLevel: selection.thinkingLevel });
-    }
-  }
-
-  private reconcileSelection(
-    model: string,
-    thinkingLevel: string,
-    options: { agent?: GatewayAgentRow; context: ApplicationContext | undefined },
-  ): ReconciledNewSessionSelection {
-    const requestedModel = model.trim();
-    const selectedTarget = requestedModel
-      ? resolveDraftModelTarget(requestedModel, undefined, this.catalog)
-      : null;
-    if (requestedModel && (!selectedTarget?.entry || selectedTarget.entry.available === false)) {
-      return { model: "", thinkingLevel: "", repaired: true };
-    }
-    const selected = selectedTarget?.entry
-      ? buildQualifiedChatModelValue(selectedTarget.entry.id, selectedTarget.entry.provider)
-      : "";
-    if (!thinkingLevel) {
-      return { model: selected, thinkingLevel: "", repaired: false };
-    }
-    const defaults = options.context?.sessions.state.result?.defaults;
-    const agentDefaultModel = options.agent?.model?.primary;
-    const defaultTarget = selected
-      ? null
-      : resolveDraftModelTarget(
-          agentDefaultModel ?? defaults?.model,
-          agentDefaultModel ? undefined : defaults?.modelProvider,
-          this.catalog,
-        );
-    const targetEntry = selectedTarget?.entry ?? defaultTarget?.entry;
-    const authoritativeLevels = selected
-      ? targetEntry?.thinkingLevels
-      : (options.agent?.thinkingLevels ?? defaults?.thinkingLevels ?? targetEntry?.thinkingLevels);
-    const normalizedThinking = normalizeThinkingOptionValue(thinkingLevel);
-    const supported = authoritativeLevels?.some(
-      (level) => normalizeThinkingOptionValue(level.id) === normalizedThinking,
-    );
-    if (targetEntry?.reasoning === false || (authoritativeLevels !== undefined && !supported)) {
-      return { model: selected, thinkingLevel: "", repaired: true };
-    }
-    return { model: selected, thinkingLevel, repaired: false };
+    this.selected = preference.model ?? "";
+    this.thinkingLevel = preference.thinkingLevel ?? "";
   }
 
   resolveAgentRuntime(options: {
@@ -556,24 +489,34 @@ export class NewSessionModelControl {
       this.catalog,
     );
     const selectedTarget = resolveDraftModelTarget(this.selected, undefined, this.catalog);
-    const contextWindowTarget = selectedTarget?.entry ?? defaultTarget?.entry;
-    const contextWindowDefault = contextWindowTarget?.contextWindowDefault;
+    const modelMetadata = this.selected ? selectedTarget?.entry : defaultTarget?.entry;
+    const contextWindowDefault = modelMetadata?.contextWindowDefault;
     const selectedContextWindow = this.contextWindow || contextWindowDefault;
     const thinkingTarget = {
       model: selectedTarget?.model,
       modelProvider: selectedTarget?.provider ?? undefined,
       thinkingLevel: this.thinkingLevel || undefined,
+      agentRuntime: selectedTarget?.entry?.agentRuntime,
     };
+    const defaultThinkingProfile = resolveThinkingProfileForSession(
+      {
+        model: defaultTarget?.model,
+        modelProvider: defaultTarget?.provider ?? undefined,
+        agentRuntime: options.agent?.agentRuntime,
+        thinkingLevels: options.agent?.thinkingLevels,
+        thinkingDefault: options.agent?.thinkingDefault,
+      },
+      sourceResult?.defaults,
+      this.catalog,
+    );
     const thinkingDefaults = {
       ...sourceResult?.defaults,
       modelProvider: defaultTarget?.provider ?? sourceResult?.defaults.modelProvider ?? null,
       model: defaultTarget?.model ?? sourceResult?.defaults.model ?? null,
       contextTokens: sourceResult?.defaults.contextTokens ?? null,
-      agentRuntime: options.agent?.agentRuntime ?? sourceResult?.defaults.agentRuntime,
-      thinkingLevels: options.agent?.thinkingLevels ?? sourceResult?.defaults.thinkingLevels,
-      thinkingOptions: options.agent?.thinkingOptions ?? sourceResult?.defaults.thinkingOptions,
-      thinkingDefault:
-        options.agent?.thinkingDefault ?? sourceResult?.defaults.thinkingDefault ?? "medium",
+      agentRuntime: defaultThinkingProfile?.agentRuntime,
+      thinkingLevels: defaultThinkingProfile?.thinkingLevels,
+      thinkingDefault: defaultThinkingProfile?.thinkingDefault,
     };
     return renderChatModelControls({
       activeRunId: null,
@@ -592,19 +535,21 @@ export class NewSessionModelControl {
             : this.metadataState.status,
       },
       contextWindowTarget:
-        contextWindowTarget?.contextWindows && selectedContextWindow
+        modelMetadata?.contextWindows && selectedContextWindow
           ? {
               contextWindow: selectedContextWindow,
-              contextWindows: contextWindowTarget.contextWindows,
+              contextWindows: modelMetadata.contextWindows,
               ...(contextWindowDefault ? { contextWindowDefault } : {}),
             }
           : undefined,
       fastModeTarget: {
+        agentRuntime: this.selected
+          ? selectedTarget?.entry?.agentRuntime
+          : defaultThinkingProfile?.agentRuntime,
         model: selectedTarget?.model ?? defaultTarget?.model,
         modelProvider: selectedTarget?.provider ?? defaultTarget?.provider ?? undefined,
         fastMode: this.fastMode,
-        effectiveFastMode:
-          this.fastMode ?? (selectedTarget?.entry ?? defaultTarget?.entry)?.effectiveFastMode,
+        effectiveFastMode: this.fastMode ?? modelMetadata?.effectiveFastMode,
       },
       modelOverrides: { [sessionKey]: this.selected },
       modelPickerTargetGroups: this.catalogTargetGroups(),
@@ -619,16 +564,8 @@ export class NewSessionModelControl {
       onModelSelect: (value) => {
         this.selectionGeneration += 1;
         this.restoringPreference = false;
-        const selection = this.reconcileSelection(value, this.thinkingLevel, options);
-        this.selected = selection.model;
+        this.selected = value;
         this.contextWindow = "";
-        this.thinkingLevel = selection.thinkingLevel;
-        this.fastMode = isChatFastModeProviderSupported(
-          (resolveDraftModelTarget(selection.model, undefined, this.catalog) ?? defaultTarget)
-            ?.provider,
-        )
-          ? this.fastMode
-          : undefined;
         this.onSelectionChange({ model: this.selected, thinkingLevel: this.thinkingLevel });
       },
       onModelPickerTargetSelect: (groupId, catalogId) => {

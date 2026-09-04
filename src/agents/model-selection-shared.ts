@@ -1694,7 +1694,16 @@ export function createModelVisibilityPolicyWithFallbacks(
       cfg: params.cfg,
       agentId: params.agentId,
       raw,
-      defaultProvider: params.defaultProvider,
+      defaultProvider: raw.trim().includes("/")
+        ? params.defaultProvider
+        : resolveBareModelDefaultProvider({
+            cfg: params.cfg,
+            catalog: prepared.catalog,
+            model: raw.trim(),
+            defaultProvider: params.defaultProvider,
+            agentId: params.agentId,
+            manifestPlugins: params.manifestPlugins,
+          }),
       aliasIndex,
       allowManifestNormalization: params.allowManifestNormalization,
       allowPluginNormalization: params.allowPluginNormalization,

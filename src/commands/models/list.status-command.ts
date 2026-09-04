@@ -18,29 +18,20 @@ import {
 } from "../../agents/auth-health.js";
 import { buildAuthProfileUnusableHint } from "../../agents/auth-profiles/oauth-refresh-failure.js";
 import { resolveAuthStorePathForDisplay } from "../../agents/auth-profiles/paths.js";
-import {
-  ensureAuthProfileStore,
-  ensureAuthProfileStoreWithoutExternalProfiles,
-  getRuntimeAuthProfileStoreSnapshot,
-} from "../../agents/auth-profiles/store.js";
 import type { AuthProfileCredential } from "../../agents/auth-profiles/types.js";
 import { resolveProfileUnusableUntilForDisplay } from "../../agents/auth-profiles/usage.js";
-import { resolveAgentHarnessPolicy } from "../../agents/harness/policy.js";
 import {
   resolveAgentHarnessOwnerPluginIds,
   resolveAgentHarnessRuntimeAvailability,
   type AgentHarnessRuntimeAvailability,
 } from "../../agents/harness/runtime-plugin.js";
-import {
-  createModelAuthAvailabilityResolver,
-  type ModelAuthAvailabilityEvaluation,
-  type ModelAuthAvailabilityResolver,
-} from "../../agents/model-auth-availability.js";
+import type { ModelAuthAvailabilityEvaluation } from "../../agents/model-auth-availability.js";
 import {
   listProviderEnvAuthLookupKeys,
   resolveProviderEnvAuthLookupMaps,
 } from "../../agents/model-auth-env-vars.js";
 import { resolveEnvApiKey } from "../../agents/model-auth.js";
+import { getPreparedModelCatalogDecisions } from "../../agents/model-catalog-decisions.js";
 import { resolveCliRuntimeExecutionProvider } from "../../agents/model-runtime-aliases.js";
 import { resolveConfiguredModelPolicyAllow } from "../../agents/model-selection-shared.js";
 import {
@@ -52,7 +43,6 @@ import {
   resolveModelRefFromString,
 } from "../../agents/model-selection.js";
 import { createModelVisibilityPolicy } from "../../agents/model-visibility-policy.js";
-import { modelCatalogLogicalKey } from "../../agents/openai-model-routes.js";
 import { OPENAI_PROVIDER_ID } from "../../agents/openai-routing.js";
 import { resolveProviderIdForAuth } from "../../agents/provider-auth-aliases.js";
 import {
@@ -134,15 +124,10 @@ type StatusSyntheticAuth = {
 type StatusProviderUseRef = {
   provider: string;
   model: string;
-  allowCodexRuntimeFallback: boolean;
-  /** Text uses get per-model route analysis; image auth stays provider-wide. */
-  routeScope: "text" | "image";
+  routeScope: "agent" | "utility" | "image";
 };
 
-type StatusProviderUse = {
-  provider: string;
-  model: string;
-  allowCodexRuntimeFallback: boolean;
+type StatusProviderUse = StatusProviderUseRef & {
   evaluation: ModelAuthAvailabilityEvaluation;
   usesCodexRuntimeAuth: boolean;
   runtimeAvailability?: AgentHarnessRuntimeAvailability;
@@ -466,18 +451,14 @@ export async function modelsStatusCommand(
         ...DISPLAY_MODEL_PARSE_OPTIONS,
       })?.ref;
     };
-    const textUsesOpenAI = [defaultLabel, ...fallbacks].some(
-      (raw) =>
-        normalizeProviderId(resolveStatusModelRef(raw)?.provider ?? "") === OPENAI_PROVIDER_ID,
-    );
-    // Status reads the normal OpenClaw store without prompting the keychain.
-    const store = textUsesOpenAI
-      ? ensureAuthProfileStore(agentDir, {
-          allowKeychainPrompt: false,
-          config: cfg,
-          readOnly: true,
-        })
-      : ensureAuthProfileStoreWithoutExternalProfiles(agentDir);
+    const catalogOwner = await loadPreparedGatewayModelCatalogSnapshot({
+      agentId: workspaceAgentId,
+      agentDir,
+      workspaceDir,
+      getConfig: () => cfg,
+      readOnly: true,
+    });
+    const store = catalogOwner.authStore;
     const providersFromStore = new Set(
       Object.values(store.profiles)
         .map((profile) => normalizeProviderId(profile.provider))
@@ -492,7 +473,6 @@ export async function modelsStatusCommand(
     const providerUseRefs: StatusProviderUseRef[] = [];
     const addProviderUse = (
       raw: string | undefined,
-      allowCodexRuntimeFallback: boolean,
       routeScope: StatusProviderUseRef["routeScope"],
     ) => {
       const ref = resolveStatusModelRef(raw);
@@ -501,7 +481,6 @@ export async function modelsStatusCommand(
         providerUseRefs.push({
           provider,
           model: ref.model,
-          allowCodexRuntimeFallback,
           routeScope,
         });
       }
@@ -520,16 +499,16 @@ export async function modelsStatusCommand(
       }
     }
     for (const raw of [defaultLabel, ...fallbacks]) {
-      addProviderUse(raw, true, "text");
+      addProviderUse(raw, "agent");
     }
     for (const raw of [imageModel, ...imageFallbacks]) {
-      addProviderUse(raw, false, "image");
+      addProviderUse(raw, "image");
     }
     // Utility completions (narration/titles) are a text-route auth consumer in
     // their own right: an OAuth-healthy primary does not prove the utility's
     // plain API path, so the ref gets full route analysis without inheriting
     // the primary's codex-runtime fallback.
-    addProviderUse(utilityModelRef, false, "text");
+    addProviderUse(utilityModelRef, "utility");
     // Display the canonical provider/model: utilityModel accepts aliases, and
     // route issues/probes always report the resolved ref.
     const resolvedUtilityRef = utilityModelRef ? resolveStatusModelRef(utilityModelRef) : undefined;
@@ -568,31 +547,16 @@ export async function modelsStatusCommand(
         registryDiagnostics: metadataSnapshot.registryDiagnostics,
       }).map((provider) => normalizeProviderId(provider)),
     );
-    const createStatusAuthResolver = (
-      authStore: Parameters<typeof createModelAuthAvailabilityResolver>[0]["authStore"],
-      preparedProviderAuth?: Parameters<
-        typeof createModelAuthAvailabilityResolver
-      >[0]["preparedProviderAuth"],
-    ) =>
-      createModelAuthAvailabilityResolver({
-        cfg,
-        authStore,
-        agentDir,
-        workspaceDir,
-        env: process.env,
-        // A native runtime marker proves only that its owner can be contacted. It is not a
-        // provider model credential.
-        syntheticAuthProviderRefs: [...syntheticAuthProviderRefs],
-        ...(preparedProviderAuth ? { preparedProviderAuth } : {}),
-        metadataSnapshot,
-      });
-    // Status and Gateway models.list read the same prepared owner generation.
-    const catalogOwner = await loadPreparedGatewayModelCatalogSnapshot({
+    const catalogDecisions = getPreparedModelCatalogDecisions({
+      cfg,
       agentId: workspaceAgentId,
-      getConfig: () => cfg,
-      readOnly: true,
+      workspaceDir,
+      snapshot: catalogOwner,
+      metadataSnapshot: catalogOwner.metadataSnapshot,
+      auth: { authStore: catalogOwner.authStore, providerAuth: catalogOwner.providerAuth },
+      authMaterializations: catalogOwner.authMaterializations,
+      catalogComplete: catalogOwner.catalogComplete,
     });
-    let authResolver = createStatusAuthResolver(store, catalogOwner.providerAuth);
     const catalog = catalogOwner;
     const visibilityPolicy = createModelVisibilityPolicy({
       cfg,
@@ -620,88 +584,47 @@ export async function modelsStatusCommand(
             }),
           ]),
         ].toSorted();
-    const routeSourcesByModel = new Map<
-      string,
-      Array<{ api?: (typeof catalog.routeVariants)[number]["api"]; baseUrl?: string }>
-    >();
-    for (const entry of catalog.routeVariants) {
-      if (entry.api === undefined && entry.baseUrl === undefined) {
-        continue;
-      }
-      const key = modelCatalogLogicalKey(entry);
-      const sources = routeSourcesByModel.get(key) ?? [];
-      sources.push({ api: entry.api, baseUrl: entry.baseUrl });
-      routeSourcesByModel.set(key, sources);
-    }
-    const resolveProviderUses = async (
-      resolver: ModelAuthAvailabilityResolver,
-    ): Promise<StatusProviderUse[]> =>
-      await Promise.all(
-        providerUseRefs.map(async (usage) => {
-          const observedRoutes = routeSourcesByModel.get(
-            modelCatalogLogicalKey({ provider: usage.provider, id: usage.model }),
-          );
-          const ref = {
-            modelId: usage.model,
-            ...(observedRoutes ? { observedRoutes } : {}),
-          };
-          // Image tools own their provider auth behavior. The text-route artifact
-          // must not reinterpret image auth as an OpenAI text transport.
-          const rawEvaluation: ModelAuthAvailabilityEvaluation =
-            usage.routeScope === "text"
-              ? resolver.evaluateModelAuth(usage.provider, ref)
-              : {
-                  availability: resolver.resolveProviderAuthAvailability(usage.provider, ref),
-                  routeResolution: null,
-                };
-          const providerRouteIncompatible = rawEvaluation.routeResolution?.kind === "incompatible";
-          const requestedCodexRuntimeAuth =
-            !providerRouteIncompatible &&
-            usage.allowCodexRuntimeFallback &&
-            resolveAgentHarnessPolicy({
-              provider: usage.provider,
-              modelId: usage.model,
-              ...(rawEvaluation.selectedRoute
-                ? {
-                    modelApi: rawEvaluation.selectedRoute.api,
-                    modelBaseUrl: rawEvaluation.selectedRoute.baseUrl,
-                  }
-                : {}),
-              config: cfg,
-              agentId: workspaceAgentId,
-            }).runtime === "codex";
-          const runtimeIncompatibility =
-            requestedCodexRuntimeAuth &&
-            usage.provider !== OPENAI_PROVIDER_ID &&
-            usage.provider !== "codex"
-              ? {
-                  code: "unsupported-codex-runtime-provider",
-                  message: `The Codex runtime does not support provider ${usage.provider}.`,
-                }
-              : undefined;
-          const usesCodexRuntimeAuth =
-            requestedCodexRuntimeAuth && runtimeIncompatibility === undefined;
-          const runtimeAvailability = usesCodexRuntimeAuth
-            ? await resolveCodexRuntimeAvailability(usage.provider)
+    const providerUses: StatusProviderUse[] = await Promise.all(
+      providerUseRefs.map(async (usage) => {
+        const entry = { provider: usage.provider, id: usage.model, name: usage.model };
+        const rawEvaluation = await catalogDecisions.evaluate(entry, {
+          purpose: usage.routeScope,
+        });
+        const providerRouteIncompatible = rawEvaluation.routeResolution?.kind === "incompatible";
+        const requestedCodexRuntimeAuth =
+          !providerRouteIncompatible &&
+          (await catalogDecisions.runtime(entry, { purpose: usage.routeScope }))?.id === "codex";
+        const runtimeIncompatibility =
+          requestedCodexRuntimeAuth &&
+          usage.provider !== OPENAI_PROVIDER_ID &&
+          usage.provider !== "codex"
+            ? {
+                code: "unsupported-codex-runtime-provider",
+                message: `The Codex runtime does not support provider ${usage.provider}.`,
+              }
             : undefined;
-          return {
-            provider: usage.provider,
-            model: usage.model,
-            allowCodexRuntimeFallback: usage.allowCodexRuntimeFallback,
-            evaluation: rawEvaluation,
-            usesCodexRuntimeAuth,
-            runtimeAvailability,
-            runtimeIncompatibility,
-          };
-        }),
-      );
-    let providerUses = await resolveProviderUses(authResolver);
+        const usesCodexRuntimeAuth =
+          requestedCodexRuntimeAuth && runtimeIncompatibility === undefined;
+        const runtimeAvailability = usesCodexRuntimeAuth
+          ? await resolveCodexRuntimeAvailability(usage.provider)
+          : undefined;
+        return {
+          provider: usage.provider,
+          model: usage.model,
+          routeScope: usage.routeScope,
+          evaluation: rawEvaluation,
+          usesCodexRuntimeAuth,
+          runtimeAvailability,
+          runtimeIncompatibility,
+        };
+      }),
+    );
     const syntheticAuthByProvider = new Map<string, StatusSyntheticAuth>();
     const runtimeSyntheticAuthByProvider = new Map<string, StatusSyntheticAuth>();
     const cliRuntimeAuthUsages = providerUses
       // Codex harness auth is already modeled by the selected OpenAI route.
       // CLI-runtime aliases are only for distinct backends such as Gemini CLI.
-      .filter((usage) => usage.allowCodexRuntimeFallback && !usage.usesCodexRuntimeAuth)
+      .filter((usage) => usage.routeScope === "agent" && !usage.usesCodexRuntimeAuth)
       .map((usage) => {
         const runtimeProvider = resolveCliRuntimeExecutionProvider({
           provider: usage.provider,
@@ -716,7 +639,8 @@ export async function modelsStatusCommand(
           ? {
               provider: usage.provider,
               model: usage.model,
-              allowCodexRuntimeFallback: usage.allowCodexRuntimeFallback,
+              routeScope: usage.routeScope,
+              evaluation: usage.evaluation,
               runtime: normalizedRuntime,
             }
           : undefined;
@@ -739,7 +663,7 @@ export async function modelsStatusCommand(
       providers.map((provider) => normalizeProviderId(provider)),
     );
     const codexProvider = normalizeProviderId(OPENAI_PROVIDER_ID);
-    let codexRuntimeAuthUsages = providerUses.filter((usage) => usage.usesCodexRuntimeAuth);
+    const codexRuntimeAuthUsages = providerUses.filter((usage) => usage.usesCodexRuntimeAuth);
     if (codexRuntimeAuthUsages.length > 0) {
       syntheticProvidersToProbe.add(codexProvider);
     }
@@ -779,20 +703,6 @@ export async function modelsStatusCommand(
         .map(([provider, auth]) => [provider, syntheticAuthCredential(provider, auth)] as const)
         .filter((entry): entry is readonly [string, AuthProfileCredential] => Boolean(entry[1])),
     );
-    if (runtimeCredentialsByProvider.size > 0) {
-      const syntheticProfiles = Object.fromEntries(
-        Array.from(runtimeCredentialsByProvider.entries()).map(([provider, credential]) => [
-          `${provider}:runtime-synthetic`,
-          credential,
-        ]),
-      );
-      authResolver = createStatusAuthResolver({
-        ...store,
-        profiles: { ...store.profiles, ...syntheticProfiles },
-      });
-      providerUses = await resolveProviderUses(authResolver);
-      codexRuntimeAuthUsages = providerUses.filter((usage) => usage.usesCodexRuntimeAuth);
-    }
 
     const applied = getShellEnvAppliedKeys();
     const shellFallbackEnabled =
@@ -833,15 +743,8 @@ export async function modelsStatusCommand(
       kind: "missing",
       detail: "missing",
     };
-    const runtimeAuthStore = getRuntimeAuthProfileStoreSnapshot(agentDir);
-    const healthStore = runtimeAuthStore
-      ? {
-          ...store,
-          profiles: { ...store.profiles, ...runtimeAuthStore.profiles },
-        }
-      : store;
     const authHealth = buildAuthHealthSummary({
-      store: healthStore,
+      store,
       cfg,
       warnAfterMs: DEFAULT_OAUTH_WARN_MS,
       runtimeCredentialsByProvider,
@@ -901,13 +804,9 @@ export async function modelsStatusCommand(
         (candidate) =>
           candidate.provider === usage.provider &&
           candidate.model === usage.model &&
-          candidate.allowCodexRuntimeFallback === usage.allowCodexRuntimeFallback,
+          candidate.routeScope === usage.routeScope,
       )?.runtime;
     const hasUsableAuthForProviderInUse = (usage: (typeof providerUses)[number]): boolean => {
-      const cliRuntimeAuthProvider = resolveCliRuntimeAuthProvider(usage);
-      if (cliRuntimeAuthProvider) {
-        return authResolver.resolveProviderAuthAvailability(cliRuntimeAuthProvider) !== false;
-      }
       if (resolveStatusProviderUseIncompatibility(usage)) {
         // Route contract failures are reported separately from missing auth.
         return true;
@@ -960,7 +859,7 @@ export async function modelsStatusCommand(
         return [`${provider}:codex:${codexProvider}`, route] as const;
       }),
       ...cliRuntimeAuthUsages.map((usage) => {
-        const evaluation = authResolver.evaluateModelAuth(usage.runtime);
+        const evaluation = usage.evaluation;
         const effective = resolveRuntimeAuthRouteEffective(usage.runtime, evaluation);
         return [
           `${usage.provider}:${usage.runtime}:${usage.runtime}`,
@@ -983,10 +882,7 @@ export async function modelsStatusCommand(
       new Map<string, StatusRuntimeAuthRoute>(runtimeAuthRouteEntries).values(),
     ).toSorted((a, b) => a.provider.localeCompare(b.provider));
     const modelRouteIssues = providerUses.flatMap<StatusModelRouteIssue>((usage) => {
-      const cliRuntimeAuthProvider = resolveCliRuntimeAuthProvider(usage);
-      const evaluation = cliRuntimeAuthProvider
-        ? authResolver.evaluateModelAuth(cliRuntimeAuthProvider)
-        : usage.evaluation;
+      const evaluation = usage.evaluation;
       const incompatibility = resolveStatusProviderUseIncompatibility(usage);
       if (incompatibility) {
         return [
@@ -1202,10 +1098,7 @@ export async function modelsStatusCommand(
         if (resolveStatusProviderUseIncompatibility(usage)) {
           return "missing";
         }
-        const cliRuntimeAuthProvider = resolveCliRuntimeAuthProvider(usage);
-        const evaluation = cliRuntimeAuthProvider
-          ? authResolver.evaluateModelAuth(cliRuntimeAuthProvider)
-          : usage.evaluation;
+        const evaluation = usage.evaluation;
         if (evaluation.availability === undefined) {
           return "indeterminate";
         }

@@ -13,7 +13,7 @@ import {
   hasTelegramApprovalCallbackPrefix,
   parseTelegramApprovalCallbackData,
 } from "./approval-callback-data.js";
-import { resolveAgentDir, resolveDefaultModelForAgent } from "./bot-handlers.agent.runtime.js";
+import { resolveDefaultModelForAgent } from "./bot-handlers.agent.runtime.js";
 import {
   createTelegramCallbackMessageActions,
   handleTelegramQuestionCallback,
@@ -585,9 +585,7 @@ async function handleTelegramModelCallback(params: {
     const text = `${formatModelsAvailableHeader({
       provider,
       total: models.length,
-      cfg: runtimeCfg,
-      agentDir: resolveAgentDir(runtimeCfg, sessionState.agentId),
-      sessionEntry: sessionState.sessionEntry,
+      authLabel: modelData.providerAuthLabels?.get(provider),
     })}\nSelecting a model also applies its configured runtime.`;
     await retryModelAction(() => editMessageWithButtons(text, buttons));
     return true;

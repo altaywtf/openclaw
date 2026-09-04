@@ -7,6 +7,7 @@ import {
   deprecatedProfileIds,
   normalizeConfig,
   resolveThinkingProfile,
+  resolveFastModeCapability,
 } from "./provider-policy-api.js";
 
 function createModel(id: string, name: string): ModelDefinitionConfig {
@@ -53,6 +54,29 @@ const modelRefCases: Array<[string, string | null, string | null, boolean | null
 ];
 
 describe("anthropic provider policy public artifact", () => {
+  it.each([
+    { overrides: {}, expected: true },
+    { overrides: { endpointClass: "custom" }, expected: false },
+    { overrides: { authRequirement: "subscription" as const }, expected: false },
+    { overrides: { agentRuntime: "claude-cli" }, expected: false },
+    { overrides: { params: { serviceTier: "standard_only" } }, expected: false },
+    { overrides: { params: { serviceTier: "invalid" } }, expected: true },
+    { overrides: { authRequirement: undefined }, expected: undefined },
+    { overrides: { endpointClass: undefined }, expected: undefined },
+  ])("keeps route-specific fast capability $overrides", ({ overrides, expected }) => {
+    expect(
+      resolveFastModeCapability({
+        provider: "anthropic",
+        modelId: "claude-opus-5",
+        api: "anthropic-messages",
+        endpointClass: "anthropic-public",
+        agentRuntime: "openclaw",
+        authRequirement: "api-key",
+        ...overrides,
+      }),
+    ).toBe(expected);
+  });
+
   it.each(modelRefCases)(
     "parses Anthropic model ref %s",
     (raw, provider, model, explicitProvider) => {

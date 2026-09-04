@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ModelCatalogSnapshot } from "../../agents/model-catalog.types.js";
+import { notifyPreparedModelRuntimePublication } from "../../agents/prepared-model-runtime.publication-events.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import type { PreparedGatewayModelCatalogSnapshot } from "../server-model-catalog-auth.js";
 import { registerGatewayModelCatalogPrivateAccess } from "../server-model-catalog-auth.js";
-import { buildModelsListResult } from "./models-list-result.js";
+import { buildModelsListResult, prepareModelsListResult } from "./models-list-result.js";
 
 describe("models.list completed catalog facts", () => {
   it("has a credential provider's curated rows in the configured catalog before discovery runs", async () => {
@@ -83,7 +84,10 @@ describe("models.list completed catalog facts", () => {
       ...catalog,
       catalogComplete: true,
     };
-    const loadDeferred = vi.fn(async () => owner);
+    const loadDeferred = vi.fn(async () => {
+      notifyPreparedModelRuntimePublication({ phase: "catalog-published" });
+      return owner;
+    });
     const readPrepared = vi.fn(async () => owner);
     const loadGatewayModelCatalogSnapshot = vi.fn();
     registerGatewayModelCatalogPrivateAccess(loadGatewayModelCatalogSnapshot, {
@@ -96,11 +100,12 @@ describe("models.list completed catalog facts", () => {
       logGateway: { debug: vi.fn(), warn: vi.fn() },
     } as never;
 
-    await buildModelsListResult({
+    const refreshed = await prepareModelsListResult({
       source: { kind: "gateway", context },
       agentId: "main",
       params: { view: "configured", refresh: true },
     });
+    expect(refreshed.isCurrent()).toBe(true);
     const ordinary = await buildModelsListResult({
       source: { kind: "gateway", context },
       agentId: "main",
@@ -110,6 +115,8 @@ describe("models.list completed catalog facts", () => {
     expect(ordinary.models).toEqual([expect.objectContaining({ id: "discovered" })]);
     expect(loadDeferred).toHaveBeenCalledOnce();
     expect(readPrepared).toHaveBeenCalledOnce();
+    notifyPreparedModelRuntimePublication({ phase: "invalidated" });
+    expect(refreshed.isCurrent()).toBe(false);
   });
 
   it("uses an inherited auth profile from the prepared owner", async () => {

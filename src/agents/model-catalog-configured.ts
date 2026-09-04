@@ -1,12 +1,12 @@
-import { DEFAULT_PROVIDER } from "../../agents/defaults.js";
-import type { ModelCatalogEntry, ModelCatalogSnapshot } from "../../agents/model-catalog.types.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
+import { DEFAULT_PROVIDER } from "./defaults.js";
+import type { ModelCatalogEntry, ModelCatalogSnapshot } from "./model-catalog.types.js";
 import {
   createModelVisibilityPolicy,
   RUNTIME_MODEL_VISIBILITY_NORMALIZATION,
-} from "../../agents/model-visibility-policy.js";
-import { resolveModelCatalogIdentityKey } from "../../agents/openai-model-routes.js";
-import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
+} from "./model-visibility-policy.js";
+import { resolveModelCatalogIdentityKey } from "./openai-model-routes.js";
 
 export function includeConfiguredStaticCatalogEntries(params: {
   cfg: OpenClawConfig;

@@ -1,8 +1,8 @@
 import type { ModelCatalogEntry } from "../../api/types.ts";
 import {
   buildQualifiedChatModelValue,
+  findChatModelCatalogEntry,
   normalizeChatModelProviderId,
-  resolvePreferredServerChatModelValue,
 } from "../../lib/chat/model-ref.ts";
 
 type DraftModelTarget = {
@@ -16,15 +16,11 @@ export function resolveDraftModelTarget(
   provider: string | null | undefined,
   catalog: ModelCatalogEntry[],
 ): DraftModelTarget | null {
-  const value = resolvePreferredServerChatModelValue(model, provider, catalog);
+  const value = buildQualifiedChatModelValue(model, provider);
   if (!value) {
     return null;
   }
-  const normalized = value.toLowerCase();
-  const entry = catalog.find(
-    (candidate) =>
-      buildQualifiedChatModelValue(candidate.id, candidate.provider).toLowerCase() === normalized,
-  );
+  const entry = findChatModelCatalogEntry(value, catalog);
   if (entry) {
     return {
       entry,

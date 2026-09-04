@@ -7,7 +7,6 @@ import { hashRuntimeConfigValue } from "../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
 import { WorkerTaskError, WorkerTaskPool } from "../infra/worker-task-pool.js";
-import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
 import {
   listAgentIds,
   resolveAgentDir,
@@ -23,12 +22,6 @@ import {
   listProfilesForProvider,
   type AuthProfileStore,
 } from "./auth-profiles.js";
-import {
-  createModelAuthAvailabilityResolver,
-  type ModelAuthAvailabilityEvaluation,
-  type ModelAuthAvailabilityRef,
-  type ModelAuthAvailabilityResolver,
-} from "./model-auth-availability.js";
 import {
   createRuntimeProviderAuthLookup,
   hasAvailableAuthForProvider,
@@ -48,7 +41,6 @@ import {
   type ProviderAuthWarmSnapshot,
 } from "./model-provider-auth-state.js";
 import { normalizeProviderId } from "./model-selection.js";
-import type { PreparedModelRuntimeAuth } from "./prepared-model-runtime-auth.js";
 import { resolveDefaultAgentWorkspaceDir } from "./workspace.js";
 
 export type ProviderAuthWarmWorkerResult =
@@ -228,129 +220,6 @@ export async function hasAuthForModelProvider(params: {
         });
   }
   return false;
-}
-
-export type ProviderModelAuthChecker = ((
-  provider: string,
-  ref?: ModelAuthAvailabilityRef,
-) => Promise<boolean>) & {
-  evaluateModelAuth(
-    provider: string,
-    ref?: ModelAuthAvailabilityRef,
-  ): Promise<ModelAuthAvailabilityEvaluation>;
-};
-
-/** Creates a cached provider-auth evaluator bound to one agent/runtime context. */
-export function createProviderAuthChecker(params: {
-  cfg?: OpenClawConfig;
-  workspaceDir?: string;
-  agentDir?: string;
-  agentId?: string;
-  env?: NodeJS.ProcessEnv;
-  allowPluginSyntheticAuth?: boolean;
-  discoverExternalCliAuth?: boolean;
-  allowPreparedRuntimeAuth?: boolean;
-  preparedAuth?: PreparedModelRuntimeAuth;
-  metadataSnapshot?: PluginMetadataSnapshot;
-}): ProviderModelAuthChecker {
-  const authCache = new Map<string, Promise<ModelAuthAvailabilityEvaluation>>();
-  let runtimeAuthLookup: RuntimeProviderAuthLookup | undefined;
-  let modelAuthResolver: ModelAuthAvailabilityResolver | undefined;
-  const resolveModelAuthResolver = () => {
-    if (modelAuthResolver) {
-      return modelAuthResolver;
-    }
-    const agentDir =
-      params.agentDir ??
-      (params.agentId && params.cfg
-        ? resolveAgentDir(params.cfg, params.agentId, params.env)
-        : undefined);
-    const authStore =
-      params.preparedAuth?.authStore ??
-      ensureAuthProfileStoreWithoutExternalProfiles(agentDir, { allowKeychainPrompt: false });
-    runtimeAuthLookup ??= createRuntimeProviderAuthLookup({
-      cfg: params.cfg,
-      workspaceDir: params.workspaceDir,
-      env: params.env,
-      includePluginSyntheticAuth: params.allowPluginSyntheticAuth !== false,
-    });
-    modelAuthResolver = createModelAuthAvailabilityResolver({
-      cfg: params.cfg ?? {},
-      authStore,
-      preparedRuntimeAuthStore: params.preparedAuth?.authStore,
-      preparedProviderAuth: params.preparedAuth?.providerAuth,
-      metadataSnapshot: params.metadataSnapshot,
-      agentDir,
-      workspaceDir: params.workspaceDir,
-      env: params.env,
-      allowPreparedRuntimeAuth:
-        params.allowPreparedRuntimeAuth === true || params.allowPluginSyntheticAuth !== false,
-      syntheticAuthProviderRefs: runtimeAuthLookup.syntheticAuthProviderRefs,
-    });
-    return modelAuthResolver;
-  };
-  const evaluateModelAuth = (
-    provider: string,
-    ref: ModelAuthAvailabilityRef = {},
-  ): Promise<ModelAuthAvailabilityEvaluation> => {
-    const key = normalizeProviderId(provider);
-    const hasRouteFacts =
-      ref.modelId !== undefined ||
-      ref.api !== undefined ||
-      ref.baseUrl !== undefined ||
-      ref.observedRoutes !== undefined;
-    const cacheKey = hasRouteFacts
-      ? `${key}\0${hashRuntimeConfigValue(ref as unknown as OpenClawConfig)}`
-      : key;
-    const cached = authCache.get(cacheKey);
-    if (cached) {
-      return cached;
-    }
-    const resolveLegacyProviderAuth = () =>
-      hasAuthForModelProvider({
-        provider: key,
-        modelApi: typeof ref.api === "string" ? ref.api : undefined,
-        cfg: params.cfg,
-        workspaceDir: params.workspaceDir,
-        agentDir: params.agentDir,
-        agentId: params.agentId,
-        env: params.env,
-        store: params.preparedAuth?.authStore,
-        allowPluginSyntheticAuth: params.allowPluginSyntheticAuth,
-        discoverExternalCliAuth: params.discoverExternalCliAuth,
-        allowPreparedRuntimeAuth: params.allowPreparedRuntimeAuth,
-        resolveRuntimeAuthLookup: () =>
-          (runtimeAuthLookup ??= createRuntimeProviderAuthLookup({
-            cfg: params.cfg,
-            workspaceDir: params.workspaceDir,
-            env: params.env,
-            includePluginSyntheticAuth: params.allowPluginSyntheticAuth !== false,
-          })),
-      });
-    const evaluation = Promise.resolve().then(
-      async (): Promise<ModelAuthAvailabilityEvaluation> => {
-        if (hasRouteFacts) {
-          return resolveModelAuthResolver().evaluateModelAuth(key, ref);
-        }
-        return {
-          availability: await resolveLegacyProviderAuth(),
-          routeResolution: null,
-        };
-      },
-    );
-    authCache.set(cacheKey, evaluation);
-    void evaluation.catch(() => {
-      if (authCache.get(cacheKey) === evaluation) {
-        authCache.delete(cacheKey);
-      }
-    });
-    return evaluation;
-  };
-  return Object.assign(
-    async (provider: string, ref: ModelAuthAvailabilityRef = {}) =>
-      (await evaluateModelAuth(provider, ref)).availability === true,
-    { evaluateModelAuth },
-  );
 }
 
 function serializeProviderAuthStates(

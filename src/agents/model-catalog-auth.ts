@@ -1,24 +1,24 @@
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
-import type { PreparedProviderAuth } from "../../agents/agent-auth-credential-modes.js";
-import { resolveAgentDir } from "../../agents/agent-scope.js";
-import { resolveExternalCliAuthScopeFromConfig } from "../../agents/auth-profiles/external-cli-scope.js";
-import type { RuntimeAuthMaterialization } from "../../agents/auth-profiles/runtime-materializations.js";
-import type { AuthProfileStore } from "../../agents/auth-profiles/types.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { isManifestPluginAvailableForControlPlane } from "../plugins/manifest-contract-eligibility.js";
+import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
+import type { ProviderCatalogOutcome } from "../plugins/provider-catalog.types.js";
+import type { PreparedProviderAuth } from "./agent-auth-credential-modes.js";
+import { resolveAgentDir } from "./agent-scope.js";
+import type { RuntimeAuthMaterialization } from "./auth-profiles/runtime-materializations.js";
+import type { AuthProfileStore } from "./auth-profiles/types.js";
+import { resolveConfiguredAgentHarnessPolicy } from "./harness/policy.js";
 import {
   applyCliRuntimeModelAuthAvailability,
   createModelAuthAvailabilityResolver,
   type ModelAuthAvailabilityResolver,
   type ModelAuthAvailabilityEvaluation,
-} from "../../agents/model-auth-availability.js";
-import type { ModelCatalogEntry } from "../../agents/model-catalog.types.js";
+} from "./model-auth-availability.js";
+import type { ModelCatalogEntry } from "./model-catalog.types.js";
 import {
   openAIModelCatalogRoutePolicy,
   resolveModelCatalogIdentityKey,
-} from "../../agents/openai-model-routes.js";
-import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { isManifestPluginAvailableForControlPlane } from "../../plugins/manifest-contract-eligibility.js";
-import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
-import type { ProviderCatalogOutcome } from "../../plugins/provider-catalog.types.js";
+} from "./openai-model-routes.js";
 
 function listEnabledSyntheticAuthProviderRefs(
   metadataSnapshot: PluginMetadataSnapshot,
@@ -31,7 +31,7 @@ function listEnabledSyntheticAuthProviderRefs(
     .flatMap((plugin) => plugin.syntheticAuthRefs ?? []);
 }
 
-export function createModelsListAuthResolver(params: {
+export function createModelCatalogAuthResolver(params: {
   cfg: OpenClawConfig;
   agentId: string;
   metadataSnapshot: PluginMetadataSnapshot;
@@ -40,6 +40,8 @@ export function createModelsListAuthResolver(params: {
   preparedRuntimeAuthMaterializations?: readonly RuntimeAuthMaterialization[];
   preparedSyntheticAuthComplete?: boolean;
   workspaceDir: string;
+  env?: NodeJS.ProcessEnv;
+  now?: number;
 }): ModelAuthAvailabilityResolver {
   const agentDir = resolveAgentDir(params.cfg, params.agentId);
   return createModelAuthAvailabilityResolver({
@@ -47,7 +49,8 @@ export function createModelsListAuthResolver(params: {
     authStore: params.preparedAuthStore,
     agentDir,
     workspaceDir: params.workspaceDir,
-    env: process.env,
+    env: params.env ?? process.env,
+    now: params.now,
     metadataSnapshot: params.metadataSnapshot,
     preparedProviderAuth: params.preparedProviderAuth,
     preparedRuntimeAuthMaterializations: params.preparedRuntimeAuthMaterializations,
@@ -56,12 +59,11 @@ export function createModelsListAuthResolver(params: {
       params.metadataSnapshot,
       params.cfg,
     ),
-    externalCliProviderIds: resolveExternalCliAuthScopeFromConfig(params.cfg)?.providerIds ?? [],
     preparedRuntimeAuthStore: params.preparedAuthStore,
   });
 }
 
-export function createModelsListEntryEvaluator(params: {
+export function createModelCatalogEntryEvaluator(params: {
   cfg: OpenClawConfig;
   agentId: string;
   authResolver: ModelAuthAvailabilityResolver;
@@ -69,6 +71,7 @@ export function createModelsListEntryEvaluator(params: {
   providerOutcomes?: readonly ProviderCatalogOutcome[];
   preferredProfileId?: string;
   lockedProfileId?: string;
+  runtimeId?: string;
 }): (
   entry: ModelCatalogEntry,
   routeVariants?: readonly ModelCatalogEntry[],
@@ -82,8 +85,19 @@ export function createModelsListEntryEvaluator(params: {
       return cached;
     }
     const next = Promise.resolve().then((): ModelAuthAvailabilityEvaluation => {
+      const policy = resolveConfiguredAgentHarnessPolicy({
+        config: params.cfg,
+        agentId: params.agentId,
+        provider: entry.provider,
+        modelId: entry.id,
+        modelApi: entry.api,
+        modelBaseUrl: entry.baseUrl,
+      });
+      const runtimeId =
+        params.runtimeId ?? (policy.runtime === "auto" ? undefined : policy.runtime);
       const evaluation = params.authResolver.evaluateModelAuth(entry.provider, {
         modelId: identity?.id ?? entry.id,
+        runtimeId,
         ...(normalizeProviderId(entry.provider) === "openai"
           ? {}
           : { api: entry.api, baseUrl: entry.baseUrl }),
@@ -101,6 +115,8 @@ export function createModelsListEntryEvaluator(params: {
         metadataSnapshot: params.metadataSnapshot,
         provider: entry.provider,
         nativeRuntime: entry.nativeRuntime,
+        runtimeId,
+        lockedProfileId: params.lockedProfileId,
       });
       const provider = normalizeProviderId(entry.provider);
       // Stored credentials prove presence, not acceptance. Apply the live rejection only to the
@@ -109,7 +125,7 @@ export function createModelsListEntryEvaluator(params: {
         (outcome) =>
           outcome.status === "auth-rejected" &&
           outcome.rejectionScope !== "catalog" &&
-          resolved.evidence !== "runtime" &&
+          resolved.runtimeAuth?.source !== "native" &&
           normalizeProviderId(outcome.provider) === provider &&
           (outcome.profileId === undefined || outcome.profileId === resolved.selectedProfileId),
       )

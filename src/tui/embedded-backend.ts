@@ -12,7 +12,6 @@ import {
   isDefinitiveRunLifecycle,
   type AgentRunTerminalOutcome,
 } from "../agents/agent-run-terminal-outcome.js";
-import { listAgentEntries } from "../agents/agent-scope-config.js";
 import {
   resolveAgentDir,
   resolveAgentWorkspaceDir,
@@ -20,14 +19,10 @@ import {
   resolveSessionAgentId,
 } from "../agents/agent-scope.js";
 import { ensureContextWindowCacheLoaded } from "../agents/context.js";
-import { DEFAULT_PROVIDER } from "../agents/defaults.js";
 import { resolveActiveEmbeddedRunSessionId } from "../agents/embedded-agent-runner/active-run-projections.js";
 import { queueEmbeddedAgentMessageWithOutcomeAsync } from "../agents/embedded-agent-runner/runs.js";
-import {
-  buildAllowedModelSet,
-  buildConfiguredModelCatalog,
-  resolveThinkingDefault,
-} from "../agents/model-selection.js";
+import { loadPreparedModelCatalogView } from "../agents/model-catalog-view.js";
+import { resolveThinkingDefault } from "../agents/model-selection.js";
 import { loadAgentRuntimePluginRegistryHandle } from "../agents/runtime-plugins.js";
 import { readToolValidationErrorSummary } from "../agents/tool-error-summary.js";
 import { resolveTextCommand } from "../auto-reply/commands-registry.js";
@@ -62,7 +57,6 @@ import {
   CHAT_HISTORY_MAX_SINGLE_MESSAGE_BYTES,
   replaceOversizedChatHistoryMessages,
 } from "../gateway/server-methods/chat.js";
-import { loadGatewayModelCatalog } from "../gateway/server-model-catalog.js";
 import { createGatewaySession } from "../gateway/session-create-service.js";
 import { performGatewaySessionReset } from "../gateway/session-reset-service.js";
 import { capArrayByJsonBytes } from "../gateway/session-transcript-readers.js";
@@ -89,7 +83,6 @@ import {
 } from "../infra/embedded-plugin-approval-broker.js";
 import { logInfo, logWarn } from "../logger.js";
 import type { PluginRegistry } from "../plugins/registry-types.js";
-import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-request-scope.js";
 import { agentSessionKeysMatchByRequestKey, normalizeAgentId } from "../routing/session-key.js";
 import { defaultRuntime } from "../runtime.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel.js";
@@ -176,30 +169,6 @@ const embeddedSessionStartupMigrationLog = {
   warn: (message: string) => logWarn(message, silentRuntime),
 };
 
-function hasProviderWildcardModelAllowlist(cfg: OpenClawConfig) {
-  const modelMaps = [
-    cfg.agents?.defaults?.models,
-    ...listAgentEntries(cfg).map((agent) => agent.models),
-  ];
-  return modelMaps.some((models) =>
-    Object.keys(models ?? {}).some((key) => key.trim().endsWith("/*")),
-  );
-}
-
-function resolveConfiguredReplaceModeCatalog(cfg: OpenClawConfig) {
-  if (cfg.models?.mode !== "replace") {
-    return undefined;
-  }
-  if (hasProviderWildcardModelAllowlist(cfg)) {
-    return undefined;
-  }
-  return buildConfiguredModelCatalog({ cfg });
-}
-
-function shouldLoadFullGatewayCatalogForReplaceMode(cfg: OpenClawConfig) {
-  return cfg.models?.mode === "replace" && hasProviderWildcardModelAllowlist(cfg);
-}
-
 function ensureEmbeddedHistoryRuntimePluginsLoaded(params: {
   cfg: OpenClawConfig;
   sessionAgentId: string;
@@ -214,16 +183,6 @@ function ensureEmbeddedHistoryRuntimePluginsLoaded(params: {
   } catch (err) {
     return { status: "failed", error: formatTuiErrorMessage(err) };
   }
-}
-
-async function loadEmbeddedTuiModelCatalog(cfg: OpenClawConfig) {
-  const configuredCatalog = resolveConfiguredReplaceModeCatalog(cfg);
-  if (configuredCatalog !== undefined) {
-    return configuredCatalog;
-  }
-  return await loadGatewayModelCatalog(
-    shouldLoadFullGatewayCatalogForReplaceMode(cfg) ? { readOnly: false } : undefined,
-  );
 }
 
 function resolveBtwQuestion(message: string): string | undefined {
@@ -358,11 +317,6 @@ async function waitForQueuedLocalRun(previousRun: QueuedSessionRun, runId: strin
 }
 
 export class EmbeddedTuiBackend implements TuiBackend {
-  private runtimePluginRegistry?: PluginRegistry;
-
-  private withRuntimePluginRegistry<T>(run: () => T): T {
-    return withPluginRuntimeRegistryScope(this.runtimePluginRegistry, run);
-  }
   readonly connection = { url: "local embedded" };
 
   onEvent?: (evt: TuiEvent) => void;
@@ -641,8 +595,6 @@ export class EmbeddedTuiBackend implements TuiBackend {
       cfg,
       sessionAgentId,
     });
-    this.runtimePluginRegistry =
-      runtimePluginsPrewarm.status === "warmed" ? runtimePluginsPrewarm.registry : undefined;
     const resolvedSessionModel = resolveSessionModelRef(cfg, entry, sessionAgentId);
     const max = Math.min(
       CHAT_HISTORY_MAX_ENTRIES,
@@ -692,7 +644,10 @@ export class EmbeddedTuiBackend implements TuiBackend {
 
     let thinkingLevel = entry?.thinkingLevel;
     if (!thinkingLevel) {
-      const catalog = await this.withRuntimePluginRegistry(() => loadEmbeddedTuiModelCatalog(cfg));
+      const { entries: catalog } = await loadPreparedModelCatalogView({
+        config: cfg,
+        agentId: sessionAgentId,
+      });
       thinkingLevel = resolveThinkingDefault({
         cfg,
         provider: resolvedSessionModel.provider,
@@ -780,8 +735,17 @@ export class EmbeddedTuiBackend implements TuiBackend {
           storeKey: primaryKey,
           agentId: opts.agentId,
           patch: opts,
-          loadGatewayModelCatalog: () =>
-            this.withRuntimePluginRegistry(() => loadEmbeddedTuiModelCatalog(cfg)),
+          loadGatewayModelCatalog: async () =>
+            (
+              await loadPreparedModelCatalogView({
+                config: cfg,
+                agentId: resolveSessionAgentId({
+                  sessionKey: primaryKey,
+                  config: cfg,
+                  agentId: opts.agentId,
+                }),
+              })
+            ).entries,
         }),
     });
     if (!applied.ok) {
@@ -839,8 +803,17 @@ export class EmbeddedTuiBackend implements TuiBackend {
       armSessionDiffBaselineCapture: true,
       emitCommandHooks: Boolean(opts.parentSessionKey),
       commandSource: "tui:embedded",
-      loadGatewayModelCatalog: () =>
-        this.withRuntimePluginRegistry(() => loadEmbeddedTuiModelCatalog(cfg)),
+      loadGatewayModelCatalog: async () =>
+        (
+          await loadPreparedModelCatalogView({
+            config: cfg,
+            agentId: resolveSessionAgentId({
+              sessionKey: opts.key,
+              config: cfg,
+              agentId: opts.agentId,
+            }),
+          })
+        ).entries,
     });
     if (!result.ok) {
       throw new Error(result.error.message);
@@ -924,21 +897,25 @@ export class EmbeddedTuiBackend implements TuiBackend {
   }
 
   async listModels(opts?: { agentId?: string }): Promise<TuiModelChoice[]> {
+    await this.ready;
+    await this.preparedModelRuntime.waitUntilReady();
     const cfg = getRuntimeConfig();
-    const catalog = await this.withRuntimePluginRegistry(() => loadEmbeddedTuiModelCatalog(cfg));
-    const { allowedCatalog } = buildAllowedModelSet({
-      cfg,
-      catalog,
-      defaultProvider: DEFAULT_PROVIDER,
-      agentId: opts?.agentId,
+    const view = await loadPreparedModelCatalogView({
+      config: cfg,
+      agentId: opts?.agentId ?? resolveDefaultAgentId(cfg),
     });
-    return allowedCatalog.map((entry) => ({
-      id: entry.id,
-      name: entry.name ?? entry.id,
-      provider: entry.provider,
-      contextWindow: entry.contextWindow,
-      reasoning: entry.reasoning,
-    }));
+    return view.entries.map((entry) => {
+      const evaluation = view.evaluate(entry);
+      return {
+        id: entry.id,
+        name: entry.name,
+        provider: entry.provider,
+        contextWindow: entry.contextWindow,
+        reasoning: entry.reasoning,
+        available: evaluation.availability,
+        unavailableReason: evaluation.unavailableReason,
+      };
+    });
   }
 
   async runGoalCommand(opts: Parameters<NonNullable<TuiBackend["runGoalCommand"]>>[0]) {

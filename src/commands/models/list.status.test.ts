@@ -2,9 +2,12 @@
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { describe, expect, it, type Mock, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import type { RuntimeAuthMaterialization } from "../../agents/auth-profiles/runtime-materializations.js";
+import { getPreparedModelCatalogDecisions } from "../../agents/model-catalog-decisions.js";
 import { getCurrentPluginMetadataSnapshot } from "../../plugins/current-plugin-metadata-snapshot.js";
 import { setCurrentPluginMetadataSnapshot } from "../../plugins/current-plugin-metadata.test-support.js";
 import { clearPluginMetadataLifecycleCaches } from "../../plugins/plugin-metadata-lifecycle.js";
+import type { ProviderCatalogOutcome } from "../../plugins/provider-catalog-outcome.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 
 const mocks = vi.hoisted(() => {
@@ -169,11 +172,16 @@ const mocks = vi.hoisted(() => {
       ownerPluginIds: ["codex"],
     }),
     loadModelCatalog: vi.fn().mockResolvedValue([]),
+    onCatalogLoaded: undefined as (() => Promise<void>) | undefined,
     modelCatalogRouteVariants: undefined as unknown[] | undefined,
+    preparedAuthStore: undefined as MockAuthStore | undefined,
+    providerOutcomes: undefined as readonly ProviderCatalogOutcome[] | undefined,
+    authMaterializations: [] as readonly RuntimeAuthMaterialization[],
     preparedProviderAuth: undefined as
       | Record<string, { mode: "api_key" | "oauth" | "token"; runtime?: string }>
       | undefined,
     openAIModelRouteOverride: undefined as ((params: unknown) => unknown) | undefined,
+    runAuthProbes: vi.fn(),
   };
 });
 
@@ -214,7 +222,8 @@ vi.mock("../../agents/auth-profiles.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../agents/auth-profiles.js")>()),
   getRuntimeAuthProfileStoreSnapshot: mocks.getRuntimeAuthProfileStoreSnapshot,
 }));
-vi.mock("../../agents/auth-profiles/usage.js", () => ({
+vi.mock("../../agents/auth-profiles/usage.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../agents/auth-profiles/usage.js")>()),
   resolveProfileUnusableUntilForDisplay: mocks.resolveProfileUnusableUntilForDisplay,
 }));
 vi.mock("../../agents/auth-health.js", () => ({
@@ -259,7 +268,8 @@ vi.mock("../../agents/model-auth-env-vars.js", () => ({
   resolveProviderEnvAuthLookupMaps: mocks.resolveProviderEnvAuthLookupMaps,
   listKnownProviderEnvApiKeyNames: mocks.listKnownProviderEnvApiKeyNames,
 }));
-vi.mock("../../agents/provider-auth-aliases.js", () => ({
+vi.mock("../../agents/provider-auth-aliases.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../agents/provider-auth-aliases.js")>()),
   resolveProviderAuthAliasMap: vi.fn(() => ({ "codex-cli": "openai" })),
   resolveProviderIdForAuth: vi.fn((provider: string) =>
     provider === "codex-cli" ? "openai" : provider,
@@ -303,12 +313,29 @@ vi.mock("../../plugins/payload-verification.js", () => ({
 vi.mock("../../gateway/server-model-catalog.js", () => ({
   loadPreparedGatewayModelCatalogSnapshot: async (...args: unknown[]) => {
     const entries = await mocks.loadModelCatalog(...args);
+    await mocks.onCatalogLoaded?.();
     return {
       entries,
       routeVariants: mocks.modelCatalogRouteVariants ?? entries,
       providerAuth: mocks.preparedProviderAuth ?? {},
+      authStore: mocks.preparedAuthStore ?? mocks.store,
+      metadataSnapshot: getCurrentPluginMetadataSnapshot({
+        config: mocks.loadConfig(),
+        workspaceDir: mocks.resolveAgentWorkspaceDir(),
+        env: process.env,
+      }),
+      providerOutcomes: mocks.providerOutcomes,
+      authMaterializations: mocks.authMaterializations,
+      catalogComplete: false,
     };
   },
+}));
+vi.mock("./list.probe.js", () => ({
+  runAuthProbes: mocks.runAuthProbes,
+}));
+vi.mock("../../cli/progress.js", () => ({
+  withProgressTotals: async (_options: unknown, run: (update: () => void) => Promise<unknown>) =>
+    run(() => {}),
 }));
 vi.mock("../../agents/openai-model-routes.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../agents/openai-model-routes.js")>();
@@ -436,6 +463,7 @@ async function withOpenAIStatusFixture<T>(
     primary: string;
     fallbacks?: string[];
     profiles: typeof mocks.store.profiles;
+    preparedProfiles?: typeof mocks.store.profiles;
     resolveEnvApiKey?: (provider: string) => { apiKey: string; source: string } | null;
     routeOverride?: (params: unknown) => unknown;
     preparedProviderAuth?: Record<
@@ -450,13 +478,17 @@ async function withOpenAIStatusFixture<T>(
     agentRuntime?: string;
     catalog?: unknown[];
     routeVariants?: unknown[];
+    providerOutcomes?: readonly ProviderCatalogOutcome[];
+    authMaterializations?: readonly RuntimeAuthMaterialization[];
     utilityModel?: string;
+    imageModel?: string;
     modelPolicyAllow?: string[];
   },
   run: () => Promise<T>,
 ): Promise<T> {
   const originalLoadConfig = mocks.loadConfig.getMockImplementation();
   const originalProfiles = { ...mocks.store.profiles };
+  const originalPreparedAuthStore = mocks.preparedAuthStore;
   const originalOrder = mocks.store.order ? { ...mocks.store.order } : undefined;
   const originalEnvImpl = mocks.resolveEnvApiKey.getMockImplementation();
   const originalCustomKeyImpl = mocks.getCustomProviderApiKey.getMockImplementation();
@@ -466,6 +498,8 @@ async function withOpenAIStatusFixture<T>(
   const originalCatalogImpl = mocks.loadModelCatalog.getMockImplementation();
   const originalRouteVariants = mocks.modelCatalogRouteVariants;
   const originalPreparedProviderAuth = mocks.preparedProviderAuth;
+  const originalProviderOutcomes = mocks.providerOutcomes;
+  const originalAuthMaterializations = mocks.authMaterializations;
   const configuredModels = Object.fromEntries(
     [params.primary, ...(params.fallbacks ?? [])].map((model) => [model, {}]),
   );
@@ -479,6 +513,7 @@ async function withOpenAIStatusFixture<T>(
         // Route tests target the configured primary/fallback models; keep the
         // derived utility model out unless a test opts in explicitly.
         utilityModel: params.utilityModel ?? "",
+        ...(params.imageModel ? { imageModel: { primary: params.imageModel } } : {}),
         models: Object.fromEntries(
           Object.keys(configuredModels).map((model) => [
             model,
@@ -508,8 +543,13 @@ async function withOpenAIStatusFixture<T>(
     env: { shellEnv: { enabled: false } },
   });
   mocks.store.profiles = params.profiles;
+  mocks.preparedAuthStore = params.preparedProfiles
+    ? { version: 1, profiles: params.preparedProfiles }
+    : undefined;
   mocks.store.order = undefined;
   mocks.preparedProviderAuth = params.preparedProviderAuth;
+  mocks.providerOutcomes = params.providerOutcomes;
+  mocks.authMaterializations = params.authMaterializations ?? [];
   mocks.resolveEnvApiKey.mockImplementation(params.resolveEnvApiKey ?? (() => null));
   const providerApiKey =
     typeof params.providerApiKey === "string" ? params.providerApiKey.trim() : "";
@@ -528,10 +568,13 @@ async function withOpenAIStatusFixture<T>(
     return await run();
   } finally {
     mocks.store.profiles = originalProfiles;
+    mocks.preparedAuthStore = originalPreparedAuthStore;
     mocks.store.order = originalOrder;
     mocks.openAIModelRouteOverride = originalRouteOverride;
     mocks.modelCatalogRouteVariants = originalRouteVariants;
     mocks.preparedProviderAuth = originalPreparedProviderAuth;
+    mocks.providerOutcomes = originalProviderOutcomes;
+    mocks.authMaterializations = originalAuthMaterializations;
     if (originalCustomKeyImpl) {
       mocks.getCustomProviderApiKey.mockImplementation(originalCustomKeyImpl);
     } else {
@@ -561,6 +604,361 @@ async function withOpenAIStatusFixture<T>(
 }
 
 describe("modelsStatusCommand auth overview", () => {
+  it.each(["agent", "utility", "image"] as const)(
+    "reuses the warmed %s decision instead of observing credentials again",
+    async (purpose) => {
+      const catalog = [
+        {
+          provider: "openai",
+          id: "gpt-status-route",
+          name: "Status route",
+          api: "openai-responses" as const,
+          baseUrl: "https://api.openai.com/v1",
+        },
+      ];
+      const providerAuth = {};
+      const preparedStore = {
+        version: 1,
+        profiles: {
+          "openai:env": {
+            provider: "openai",
+            type: "api_key" as const,
+            keyRef: { source: "env" as const, provider: "default", id: "STATUS_SOURCE_KEY" },
+          },
+        },
+      };
+      await withOpenAIStatusFixture(
+        {
+          primary: "openai/gpt-status-route",
+          utilityModel: purpose === "utility" ? "openai/gpt-status-route" : "",
+          imageModel: purpose === "image" ? "openai/gpt-status-route" : undefined,
+          profiles: {},
+          catalog,
+          preparedProviderAuth: providerAuth,
+        },
+        async () => {
+          mocks.preparedAuthStore = preparedStore;
+          mocks.onCatalogLoaded = async () => {
+            const cfg = mocks.loadConfig();
+            const workspaceDir = mocks.resolveAgentWorkspaceDir();
+            const metadataSnapshot = getCurrentPluginMetadataSnapshot({
+              config: cfg,
+              workspaceDir,
+              env: process.env,
+            });
+            if (!metadataSnapshot) {
+              throw new Error("Expected command metadata");
+            }
+            const source = getPreparedModelCatalogDecisions({
+              cfg,
+              agentId: "main",
+              workspaceDir,
+              snapshot: { entries: catalog, routeVariants: catalog },
+              metadataSnapshot,
+              auth: { authStore: preparedStore, providerAuth },
+              authMaterializations: mocks.authMaterializations,
+              catalogComplete: false,
+            });
+            expect(await source.evaluate(catalog[0], { purpose })).toMatchObject({
+              availability: true,
+            });
+            delete process.env.STATUS_SOURCE_KEY;
+          };
+          try {
+            await withEnvAsync({ STATUS_SOURCE_KEY: "captured-key" }, async () => {
+              const statusRuntime = createRuntime();
+              await modelsStatusCommand({ json: true, check: true }, statusRuntime);
+              expect(parseFirstJsonLog(statusRuntime).auth.modelRouteIssues).toEqual([]);
+              expect(statusRuntime.exit).toHaveBeenCalledWith(0);
+            });
+          } finally {
+            mocks.onCatalogLoaded = undefined;
+          }
+        },
+      );
+    },
+  );
+
+  it.each([
+    { provider: "anthropic", model: "claude-status-native", nativeRuntime: "claude-cli" },
+    { provider: "openai", model: "gpt-status-native", nativeRuntime: "codex" },
+  ])("uses published $provider native login without a host credential", async (entry) => {
+    await withOpenAIStatusFixture(
+      {
+        primary: `${entry.provider}/${entry.model}`,
+        profiles: {},
+        preparedProviderAuth: {
+          ...(entry.provider === "openai"
+            ? { openai: { mode: "oauth" as const, runtime: entry.nativeRuntime } }
+            : {}),
+          [entry.nativeRuntime]: { mode: "oauth" },
+        },
+        catalog: [{ ...entry, id: entry.model, name: entry.model }],
+      },
+      async () => {
+        const statusRuntime = createRuntime();
+        await modelsStatusCommand({ json: true, check: true }, statusRuntime);
+        expect(parseFirstJsonLog(statusRuntime).auth).toMatchObject({
+          missingProvidersInUse: [],
+          modelRouteIssues: [],
+        });
+        expect(statusRuntime.exit).toHaveBeenCalledWith(0);
+      },
+    );
+  });
+
+  it.each([
+    { profileId: "openai:selected", rejectionScope: undefined, missing: true },
+    { profileId: "openai:other", rejectionScope: undefined, missing: false },
+    { profileId: "openai:selected", rejectionScope: "catalog" as const, missing: false },
+  ])("applies published rejection only to its selected profile: %j", async (rejection) => {
+    await withOpenAIStatusFixture(
+      {
+        primary: "openai/gpt-status-route",
+        profiles: {
+          "openai:selected": { provider: "openai", type: "api_key", key: "fixture-key" },
+          "openai:other": { provider: "openai", type: "api_key", key: "other-key" },
+        },
+        authOrder: ["openai:selected"],
+        catalog: [
+          {
+            provider: "openai",
+            id: "gpt-status-route",
+            name: "Status route",
+            api: "openai-responses",
+            baseUrl: "https://api.openai.com/v1",
+          },
+        ],
+        providerOutcomes: [
+          {
+            provider: "openai",
+            profileId: rejection.profileId,
+            rejectionScope: rejection.rejectionScope,
+            status: "auth-rejected",
+          },
+        ],
+      },
+      async () => {
+        const statusRuntime = createRuntime();
+        await modelsStatusCommand({ json: true, check: true }, statusRuntime);
+        const payload = parseFirstJsonLog(statusRuntime);
+        expect(payload.auth.missingProvidersInUse).toEqual(rejection.missing ? ["openai"] : []);
+        expect(statusRuntime.exit).toHaveBeenCalledWith(rejection.missing ? 1 : 0);
+      },
+    );
+  });
+
+  it.each(["gpt-status-route", "gpt-other-route"])(
+    "keeps successful runtime auth scoped to the selected text route: %s",
+    async (materializedModel) => {
+      await withOpenAIStatusFixture(
+        {
+          primary: "openai/gpt-status-route",
+          profiles: {},
+          catalog: [
+            {
+              provider: "openai",
+              id: "gpt-status-route",
+              name: "Status route",
+              api: "openai-responses",
+              baseUrl: "https://api.openai.com/v1",
+            },
+          ],
+          authMaterializations: [
+            {
+              provider: "openai",
+              modelId: materializedModel,
+              modelApi: "openai-responses",
+              modelBaseUrl: "https://api.openai.com/v1",
+              requestTransportOverrides: "none",
+              authMode: "api_key",
+              runtimeOwnerId: "codex",
+            },
+          ],
+        },
+        async () => {
+          const statusRuntime = createRuntime();
+          await modelsStatusCommand({ json: true, check: true }, statusRuntime);
+          expect(parseFirstJsonLog(statusRuntime).auth.missingProvidersInUse).toEqual(
+            materializedModel === "gpt-status-route" ? [] : ["openai"],
+          );
+          expect(statusRuntime.exit).toHaveBeenCalledWith(
+            materializedModel === "gpt-status-route" ? 0 : 1,
+          );
+        },
+      );
+    },
+  );
+
+  it("uses the catalog generation instead of a separately loaded credential store", async () => {
+    await withOpenAIStatusFixture(
+      {
+        primary: "openai/gpt-status-route",
+        profiles: {
+          "openai:stale": { provider: "openai", type: "api_key", key: "stale-fixture-key" },
+        },
+        preparedProfiles: {},
+        catalog: [
+          {
+            provider: "openai",
+            id: "gpt-status-route",
+            name: "Status route",
+            api: "openai-responses",
+            baseUrl: "https://api.openai.com/v1",
+          },
+        ],
+      },
+      async () => {
+        const statusRuntime = createRuntime();
+        await modelsStatusCommand({ json: true, check: true }, statusRuntime);
+        expect(parseFirstJsonLog(statusRuntime).auth).toMatchObject({
+          missingProvidersInUse: ["openai"],
+          providers: [],
+        });
+        expect(statusRuntime.exit).toHaveBeenCalledWith(1);
+      },
+    );
+  });
+
+  it.each(["utility", "image"] as const)(
+    "does not transfer agent-runtime auth to a direct %s request",
+    async (routeScope) => {
+      await withOpenAIStatusFixture(
+        {
+          primary: "openai/gpt-status-route",
+          utilityModel: routeScope === "utility" ? "openai/gpt-status-route" : "",
+          imageModel: routeScope === "image" ? "openai/image-status" : undefined,
+          profiles: {},
+          preparedProviderAuth: { openai: { mode: "oauth", runtime: "codex" } },
+          catalog: [
+            {
+              provider: "openai",
+              id: "gpt-status-route",
+              name: "Status route",
+              api: "openai-responses",
+              baseUrl: "https://api.openai.com/v1",
+            },
+          ],
+          authMaterializations: [
+            {
+              provider: "openai",
+              modelId: "gpt-status-route",
+              modelApi: "openai-responses",
+              modelBaseUrl: "https://api.openai.com/v1",
+              requestTransportOverrides: "none",
+              authMode: "api_key",
+              runtimeOwnerId: "codex",
+            },
+          ],
+        },
+        async () => {
+          const statusRuntime = createRuntime();
+          await modelsStatusCommand({ json: true, check: true }, statusRuntime);
+          expect(parseFirstJsonLog(statusRuntime).auth).toMatchObject({
+            missingProvidersInUse: routeScope === "utility" ? ["openai"] : [],
+            modelRouteIssues: [
+              expect.objectContaining({
+                kind: routeScope === "utility" ? "missing-auth" : "indeterminate",
+              }),
+            ],
+            runtimeAuthRoutes: [expect.objectContaining({ provider: "openai", status: "usable" })],
+          });
+          expect(statusRuntime.exit).toHaveBeenCalledWith(1);
+        },
+      );
+    },
+  );
+
+  it("keeps image auth provider-wide rather than applying a text-route restriction", async () => {
+    await withOpenAIStatusFixture(
+      {
+        primary: "openai/gpt-status-route",
+        imageModel: "openai/gpt-5.3-codex-spark",
+        profiles: {
+          "openai:key": { provider: "openai", type: "api_key", key: "fixture-key" },
+        },
+        catalog: [
+          {
+            provider: "openai",
+            id: "gpt-status-route",
+            name: "Status route",
+            api: "openai-responses",
+            baseUrl: "https://api.openai.com/v1",
+          },
+        ],
+      },
+      async () => {
+        const statusRuntime = createRuntime();
+        await modelsStatusCommand({ json: true, check: true }, statusRuntime);
+        expect(parseFirstJsonLog(statusRuntime).auth).toMatchObject({
+          missingProvidersInUse: [],
+          modelRouteIssues: [],
+        });
+        expect(statusRuntime.exit).toHaveBeenCalledWith(0);
+      },
+    );
+  });
+
+  it("runs explicit profile probes even when published catalog auth rejects the profile", async () => {
+    const summary = {
+      startedAt: 1,
+      finishedAt: 2,
+      durationMs: 1,
+      totalTargets: 1,
+      options: { timeoutMs: 2000, concurrency: 1, maxTokens: 4 },
+      results: [{ provider: "openai", label: "selected", source: "profile", status: "auth" }],
+    };
+    mocks.runAuthProbes.mockReset().mockResolvedValue(summary);
+    await withOpenAIStatusFixture(
+      {
+        primary: "openai/gpt-status-route",
+        utilityModel: "openai/utility-status",
+        profiles: {
+          "openai:selected": { provider: "openai", type: "api_key", key: "fixture-key" },
+        },
+        providerOutcomes: [
+          { provider: "openai", profileId: "openai:selected", status: "auth-rejected" },
+        ],
+      },
+      async () => {
+        await modelsStatusCommand({ json: true }, createRuntime());
+        expect(mocks.runAuthProbes).not.toHaveBeenCalled();
+        const statusRuntime = createRuntime();
+        await modelsStatusCommand(
+          {
+            json: true,
+            probe: true,
+            probeProvider: "openai",
+            probeProfile: ["openai:selected,openai:other"],
+            probeTimeout: "2000",
+            probeConcurrency: "1",
+            probeMaxTokens: "4",
+          },
+          statusRuntime,
+        );
+        expect(mocks.runAuthProbes).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({
+            agentId: "main",
+            agentDir: "/tmp/openclaw-agent",
+            modelCandidates: expect.arrayContaining([
+              "openai/gpt-status-route",
+              "openai/utility-status",
+            ]),
+            options: {
+              provider: "openai",
+              profileIds: ["openai:selected", "openai:other"],
+              timeoutMs: 2000,
+              concurrency: 1,
+              maxTokens: 4,
+            },
+            stateOwnership: { mode: "exclusive" },
+          }),
+        );
+        expect(parseFirstJsonLog(statusRuntime).auth.probes).toEqual(summary);
+      },
+    );
+  });
+
   it("shows cooldown reasons and recovery guidance in JSON and text output", async () => {
     const now = Date.now();
     const store = mocks.store as typeof mocks.store & {
@@ -760,7 +1158,6 @@ describe("modelsStatusCommand auth overview", () => {
       }),
     );
     expectResolveAgentDirCalledFor("main");
-    expect(mocks.ensureAuthProfileStore).toHaveBeenCalled();
     expect(payload.defaultModel).toBe("anthropic/claude-opus-4-6");
     expect(payload.configPath).toBe("/tmp/openclaw-dev/openclaw.json");
     expect(payload.auth.storePath).toBe("/tmp/openclaw-agent/auth-profiles.json");
@@ -943,7 +1340,9 @@ describe("modelsStatusCommand auth overview", () => {
     });
 
     expectResolveAgentDirCalledFor("main");
-    expect(mocks.ensureAuthProfileStore).toHaveBeenCalledWith("/tmp/openclaw-isolated-agent");
+    expect(mocks.loadModelCatalog).toHaveBeenCalledWith(
+      expect.objectContaining({ agentDir: "/tmp/openclaw-isolated-agent", readOnly: true }),
+    );
     const payload = parseFirstJsonLog(localRuntime);
     expect(payload.agentDir).toBe("/tmp/openclaw-isolated-agent");
     expect(payload.auth.storePath).toBe("/tmp/openclaw-isolated-agent/auth-profiles.json");
@@ -963,7 +1362,9 @@ describe("modelsStatusCommand auth overview", () => {
     );
 
     expectResolveAgentDirCalledFor("main");
-    expect(mocks.ensureAuthProfileStore).toHaveBeenCalledWith("/tmp/openclaw-legacy-agent");
+    expect(mocks.loadModelCatalog).toHaveBeenCalledWith(
+      expect.objectContaining({ agentDir: "/tmp/openclaw-legacy-agent", readOnly: true }),
+    );
     const payload = parseFirstJsonLog(localRuntime);
     expect(payload.agentDir).toBe("/tmp/openclaw-legacy-agent");
   });
@@ -1497,9 +1898,11 @@ describe("modelsStatusCommand auth overview", () => {
   });
 
   it.each([
-    ["ChatGPT first", false],
-    ["Platform first", true],
-  ])("selects ChatGPT nano from grouped physical routes with %s", async (_label, reverse) => {
+    { label: "ChatGPT first", reverse: false, namespaced: false },
+    { label: "Platform first", reverse: true, namespaced: false },
+    { label: "distinct namespaced model first", reverse: false, namespaced: true },
+    { label: "distinct namespaced model last", reverse: true, namespaced: true },
+  ])("matches physical routes by catalog identity: $label", async ({ reverse, namespaced }) => {
     const localRuntime = createRuntime();
     const platform = {
       id: "gpt-5.4-nano",
@@ -1509,7 +1912,7 @@ describe("modelsStatusCommand auth overview", () => {
       baseUrl: "https://api.openai.com/v1",
     };
     const chatGPT = {
-      id: "openai/gpt-5.4-nano",
+      id: namespaced ? "openai/gpt-5.4-nano" : "gpt-5.4-nano",
       name: "ChatGPT Nano",
       provider: "openai",
       api: "openai-chatgpt-responses",
@@ -1538,9 +1941,8 @@ describe("modelsStatusCommand auth overview", () => {
     );
 
     const payload = parseFirstJsonLog(localRuntime);
-    expect(payload.auth.missingProvidersInUse).toEqual([]);
-    expect(payload.auth.modelRouteIssues).toEqual([]);
-    expect(localRuntime.exit).not.toHaveBeenCalledWith(1);
+    expect(payload.auth.missingProvidersInUse).toEqual(namespaced ? ["openai"] : []);
+    expect(localRuntime.exit).toHaveBeenCalledWith(namespaced ? 1 : 0);
   });
 
   it("keeps API-key SecretRef profiles usable for a concrete OpenAI route", async () => {

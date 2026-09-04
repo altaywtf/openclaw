@@ -900,6 +900,9 @@
       ],
       "openclaw/plugin-sdk/blob-runtime": [
         "../packages/plugin-sdk/dist/src/plugin-sdk/blob-runtime.d.ts"
+      ],
+      "openclaw/plugin-sdk/provider-model-capabilities": [
+        "../packages/plugin-sdk/dist/src/plugin-sdk/provider-model-capabilities.d.ts"
       ]
     }
   }

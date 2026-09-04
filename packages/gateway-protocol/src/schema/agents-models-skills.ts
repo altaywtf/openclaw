@@ -79,6 +79,7 @@ export const ModelChoiceSchema = closedObject({
   thinkingLevels: Type.Optional(Type.Array(GatewayThinkingLevelOptionSchema)),
   thinkingDefault: Type.Optional(NonEmptyString),
   effectiveFastMode: Type.Optional(Type.Union([Type.Boolean(), Type.Literal("auto")])),
+  supportsFastMode: Type.Optional(Type.Boolean()),
   supportsTools: Type.Optional(Type.Boolean()),
   agentRuntime: Type.Optional(GatewayAgentRuntimeSchema),
   apiKeySupported: Type.Optional(Type.Boolean()),

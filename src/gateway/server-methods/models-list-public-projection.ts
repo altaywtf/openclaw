@@ -3,12 +3,8 @@ import type {
   ModelCatalogProviderOutcome,
   ModelChoice,
 } from "../../../packages/gateway-protocol/src/schema/agents-models-skills.js";
-import { resolveAgentHarnessPolicy } from "../../agents/harness/policy.js";
 import type { ModelCatalogEntry } from "../../agents/model-catalog.types.js";
-import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ProviderCatalogOutcome } from "../../plugins/provider-catalog.types.js";
-import type { GatewayAgentRuntime } from "../../shared/session-types.js";
-import { projectWorkerPlacementAgentRuntime } from "../worker-environments/placement-session-runtime.js";
 
 /** Keeps concrete route, auth, cost, and provider parameters out of public model rows. */
 export function buildPublicModelProjection(entry: ModelCatalogEntry): ModelChoice {
@@ -36,26 +32,4 @@ export function projectProviderCatalogOutcomes(
     ...(profileId ? { profileId } : {}),
     status,
   }));
-}
-
-export function resolveModelChoiceAgentRuntime(params: {
-  cfg: OpenClawConfig;
-  agentId: string;
-  entry: ModelCatalogEntry;
-}): GatewayAgentRuntime | undefined {
-  const harnessPolicy = resolveAgentHarnessPolicy({
-    provider: params.entry.provider,
-    modelId: params.entry.id,
-    modelApi: params.entry.api,
-    modelBaseUrl: params.entry.baseUrl,
-    config: params.cfg,
-    agentId: params.agentId,
-  });
-  if (harnessPolicy.runtime === "auto") {
-    return undefined;
-  }
-  return projectWorkerPlacementAgentRuntime({
-    id: harnessPolicy.runtime,
-    source: harnessPolicy.runtimeSource ?? "implicit",
-  });
 }

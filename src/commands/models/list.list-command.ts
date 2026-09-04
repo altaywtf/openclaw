@@ -1,17 +1,15 @@
 /** Implementation of `openclaw models list`. */
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
-import type { ModelChoice } from "../../../packages/gateway-protocol/src/schema/agents-models-skills.js";
 import { sanitizeTerminalText } from "../../../packages/terminal-core/src/safe-text.js";
-import { resolveConfiguredModelEntries } from "../../agents/configured-model-entries.js";
 import { DEFAULT_PROVIDER } from "../../agents/defaults.js";
+import type { ModelAuthAvailabilityEvaluation } from "../../agents/model-auth-availability.js";
+import { loadPreparedModelCatalogView } from "../../agents/model-catalog-view.js";
 import type { ModelCatalogEntry } from "../../agents/model-catalog.types.js";
 import { modelKey } from "../../agents/model-ref-shared.js";
 import { parseModelRef } from "../../agents/model-selection-normalize.js";
 import { formatCliCommand } from "../../cli/command-format.js";
 import { ExpectedCliError } from "../../cli/failure-output.js";
 import { requestExitAfterOneShotOutput } from "../../cli/one-shot-exit.js";
-import { buildModelsListResult } from "../../gateway/server-methods/models-list-result.js";
-import { loadPreparedGatewayModelCatalogSnapshot } from "../../gateway/server-model-catalog.js";
 import type { RuntimeEnv } from "../../runtime.js";
 import { isLocalBaseUrl } from "./list.local-url.js";
 import { printModelTable } from "./list.table.js";
@@ -24,57 +22,24 @@ const DISPLAY_MODEL_PARSE_OPTIONS = { allowPluginNormalization: false } as const
 
 const ROW_INPUT_KINDS = new Set(["text", "image", "document"]);
 
-type CliCatalogIndex = {
-  entries: ReadonlyMap<string, ModelCatalogEntry>;
-  routes: ReadonlyMap<string, ModelCatalogEntry>;
-  localKeys: ReadonlySet<string>;
-};
-
-/** Catalog rows carry route facts (base URL, context tokens) that the public model choice omits. */
-function indexCliCatalog(snapshot: {
-  entries: readonly ModelCatalogEntry[];
-  routeVariants: readonly ModelCatalogEntry[];
-}): CliCatalogIndex {
-  const routes = new Map<string, ModelCatalogEntry>();
-  const localKeys = new Set<string>();
-  for (const entry of snapshot.routeVariants) {
-    const key = modelKey(entry.provider, entry.id);
-    if (!routes.has(key)) {
-      routes.set(key, entry);
-    }
-    if (isLocalBaseUrl(entry.baseUrl ?? "")) {
-      localKeys.add(key);
-    }
-  }
-  return {
-    entries: new Map(snapshot.entries.map((entry) => [modelKey(entry.provider, entry.id), entry])),
-    routes,
-    localKeys,
-  };
-}
-
 function toCliModelRow(
-  model: ModelChoice,
-  catalog: CliCatalogIndex,
+  model: ModelCatalogEntry,
+  evaluation: ModelAuthAvailabilityEvaluation,
   configuredTags: ReadonlyMap<string, readonly string[]>,
 ): ModelRow {
   const key = modelKey(model.provider, model.id);
-  const catalogEntry = catalog.entries.get(key);
-  const baseUrl = catalog.routes.get(key)?.baseUrl ?? catalogEntry?.baseUrl ?? "";
+  const baseUrl = model.baseUrl ?? "";
   const input = (model.input ?? []).filter((item) => ROW_INPUT_KINDS.has(item));
   return {
     key,
     name: model.name || model.id,
     input: input.length > 0 ? input.join("+") : "text",
     contextWindow: model.contextWindow ?? null,
-    ...(typeof catalogEntry?.contextTokens === "number"
-      ? { contextTokens: catalogEntry.contextTokens }
-      : {}),
+    ...(typeof model.contextTokens === "number" ? { contextTokens: model.contextTokens } : {}),
     local: isLocalBaseUrl(baseUrl),
-    available: model.available ?? null,
+    available: evaluation.availability ?? null,
     tags: [
       ...new Set([
-        ...(model.tags ?? []),
         ...(configuredTags.get(key) ?? []),
         ...(model.alias ? [`alias:${model.alias}`] : []),
       ]),
@@ -119,10 +84,11 @@ export async function modelsListCommand(
     kind: "read",
   });
   const includeFullCatalog = Boolean(opts.all || parsedProviderFilter);
-  const preparedCatalog = await loadPreparedGatewayModelCatalogSnapshot({
+  const preparedCatalog = await loadPreparedModelCatalogView({
     agentId,
     agentDir,
-    getConfig: () => cfg,
+    config: cfg,
+    view: includeFullCatalog ? "all" : "default",
     readOnly: !includeFullCatalog,
     ...(includeFullCatalog ? { refreshFullCatalog: true } : {}),
   });
@@ -133,13 +99,7 @@ export async function modelsListCommand(
   const providerFilter = parsedProviderFilter
     ? providerAliasCanonicalizer.provider(parsedProviderFilter)
     : undefined;
-  const { entries } = resolveConfiguredModelEntries({
-    cfg,
-    agentId,
-    ...DISPLAY_MODEL_PARSE_OPTIONS,
-    canonicalizeRef: providerAliasCanonicalizer.ref,
-    manifestPlugins: preparedCatalog.metadataSnapshot,
-  });
+  const { entries } = preparedCatalog.configuredEntries;
   if (providerFilter) {
     const knownProviderIds = new Set(
       [
@@ -155,21 +115,15 @@ export async function modelsListCommand(
       throw new ExpectedCliError({ message, humanOutput: message, machineOutput: message });
     }
   }
-  const result = await buildModelsListResult({
-    source: { kind: "prepared", catalog: preparedCatalog },
-    agentId,
-    params: { view: includeFullCatalog ? "all" : "default" },
-  });
   const configuredTags = new Map(entries.map((entry) => [entry.key, [...entry.tags]] as const));
-  const catalog = indexCliCatalog(preparedCatalog);
-  const rows = result.models
+  const rows = preparedCatalog.entries
     .filter(
       (model) =>
         (!providerFilter ||
           providerAliasCanonicalizer.provider(model.provider) === providerFilter) &&
-        (!opts.local || catalog.localKeys.has(modelKey(model.provider, model.id))),
+        (!opts.local || isLocalBaseUrl(model.baseUrl ?? "")),
     )
-    .map((model) => toCliModelRow(model, catalog, configuredTags));
+    .map((model) => toCliModelRow(model, preparedCatalog.evaluate(model), configuredTags));
 
   if (rows.length === 0 && !opts.json && !opts.plain) {
     runtime.log("No models found.");

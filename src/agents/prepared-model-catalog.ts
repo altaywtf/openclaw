@@ -37,12 +37,12 @@ import {
 import {
   prepareScopedReadOnlyLiveModelCatalog,
   prepareScopedReadOnlyModelCatalog,
+  prepareScopedReadOnlyModelCatalogOwner,
 } from "./prepared-model-runtime.scoped-catalog.js";
 import {
   hasResolvedThinkingCatalogEntry,
   normalizeThinkingCatalogProviders,
 } from "./thinking-runtime.js";
-import { resolveDefaultAgentWorkspaceDir } from "./workspace.js";
 
 export type LoadPreparedModelCatalogParams = {
   agentId?: string;
@@ -330,8 +330,9 @@ async function loadScopedReadOnlyModelCatalog(
       if (!preparedModelRuntimeConfigsMatch(prepared.config, candidate.config)) {
         continue;
       }
-      if (isPreparedModelCatalogFull(prepared.modelCatalog)) {
-        return prepared.modelCatalog;
+      const catalog = readPublishedPreparedModelCatalog(prepared).modelCatalog;
+      if (isPreparedModelCatalogFull(catalog)) {
+        return catalog;
       }
     } catch (error) {
       if (!(error instanceof PreparedModelRuntimeOwnerNotPublishedError)) {
@@ -382,27 +383,16 @@ export async function loadProviderScopedThinkingCatalog(params: {
       entry?.input !== undefined && modelTransportRoutesMatch(entry, params.requiredInputRoute)
     );
   };
-  const augmentHarnessCatalog = async (snapshot: ModelCatalogSnapshot) => {
-    const agentId = params.agentId ?? resolveAmbientOwnerAgentId(params.config);
-    const { augmentModelCatalogWithAgentHarness } = await import("./harness/model-catalog.js");
-    const augmented = await augmentModelCatalogWithAgentHarness({
-      cfg: params.config,
-      agentId,
-      agentDir: params.agentDir ?? resolveAgentDir(params.config, agentId),
-      workspaceDir:
-        params.workspaceDir ??
-        resolveAgentWorkspaceDir(params.config, agentId) ??
-        resolveDefaultAgentWorkspaceDir(),
-      defaultProvider: params.provider,
-      defaultModel: `${params.provider}/${params.model}`,
-      snapshot,
-    });
-    const entries = normalizeThinkingCatalogProviders(augmented.entries);
+  const resolveEntries = (snapshot: ModelCatalogSnapshot) => {
+    const entries = normalizeThinkingCatalogProviders(snapshot.entries);
     return params.requiredInputRoute !== undefined && !entryResolved(entries) ? [] : entries;
   };
-  const publishedCatalog = getPreparedModelCatalogSnapshot(scopedParams);
+  const publishedOwner = getPreparedModelCatalogOwnerSnapshot(scopedParams);
+  const publishedCatalog = publishedOwner
+    ? readPublishedPreparedModelCatalog(publishedOwner).modelCatalog
+    : undefined;
   if (publishedCatalog && entryResolved(publishedCatalog.entries)) {
-    return await augmentHarnessCatalog(publishedCatalog);
+    return resolveEntries(publishedCatalog);
   }
   const { loadManifestModelCatalog } = await import("./model-catalog.js");
   const manifestCatalog = normalizeThinkingCatalogProviders(
@@ -412,7 +402,7 @@ export async function loadProviderScopedThinkingCatalog(params: {
     }),
   );
   if (entryResolved(manifestCatalog)) {
-    return await augmentHarnessCatalog({
+    return resolveEntries({
       entries: manifestCatalog,
       routeVariants: manifestCatalog,
       staticEntries: manifestCatalog,
@@ -420,9 +410,9 @@ export async function loadProviderScopedThinkingCatalog(params: {
   }
   const scopedStatic = await loadPreparedModelCatalogSnapshot(scopedParams);
   if (entryResolved(scopedStatic.entries)) {
-    return await augmentHarnessCatalog(scopedStatic);
+    return resolveEntries(scopedStatic);
   }
-  return await augmentHarnessCatalog(
+  return resolveEntries(
     await loadPreparedModelCatalogSnapshot({
       ...scopedParams,
       scopedLiveProviderDiscovery: true,
@@ -448,6 +438,23 @@ export async function loadPublishedPreparedModelCatalogOwnerSnapshot(
 export async function loadResolvedPublishedModelCatalogOwner(
   params: LoadPreparedModelCatalogParams = {},
 ): Promise<ResolvedPublishedModelCatalogOwner> {
+  if (params.readOnly && params.providerDiscoveryProviderIds) {
+    const published = getPreparedModelCatalogOwnerSnapshot(params);
+    if (published) {
+      const candidate = readPublishedPreparedModelCatalog(published);
+      if (isPreparedModelCatalogFull(candidate.modelCatalog)) {
+        return resolvePublishedModelCatalogOwner(candidate);
+      }
+    }
+    const { activationExact } = resolveInputs(params);
+    return resolvePublishedModelCatalogOwner(
+      await prepareScopedReadOnlyModelCatalogOwner(
+        activationExact,
+        params.providerDiscoveryProviderIds,
+        params.scopedLiveProviderDiscovery ? "live" : "static",
+      ),
+    );
+  }
   return resolvePublishedModelCatalogOwner(
     await loadPublishedPreparedModelCatalogOwnerSnapshot(params),
   );

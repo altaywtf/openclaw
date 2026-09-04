@@ -30,13 +30,16 @@ const gatewayOptions = {
   featureMethods: [
     "openclaw.setup.detect",
     "openclaw.setup.activate.start",
-    "openclaw.setup.auth.start",
     "wizard.next",
     "wizard.cancel",
   ],
   methodResponses: {
     "openclaw.setup.detect": detection,
-    "openclaw.setup.auth.start": { done: false, status: "running" },
+    "openclaw.setup.activate.start": {
+      sessionId: "provider-login-session",
+      done: false,
+      status: "running",
+    },
     "wizard.next": {
       done: false,
       status: "running",
@@ -61,6 +64,7 @@ suite.define(() => {
         },
         async ({ page }) => {
           const gateway = await installMockGateway(page, {
+            deferredMethods: ["openclaw.setup.activate.start"],
             featureMethods: [
               "openclaw.setup.detect",
               "openclaw.setup.activate.start",
@@ -89,11 +93,6 @@ suite.define(() => {
                     recommended: false,
                   },
                 ],
-              },
-              "openclaw.setup.activate.start": {
-                sessionId: "activation-review-session",
-                done: false,
-                status: "running",
               },
               "wizard.next": {
                 sequence: [
@@ -127,6 +126,13 @@ suite.define(() => {
                 ],
               },
               "wizard.cancel": { status: "cancelled" },
+              "channels.status": {
+                ts: 1,
+                channelOrder: [],
+                channelLabels: {},
+                channels: {},
+                channelAccounts: {},
+              },
               "openclaw.chat": {
                 sessionId: "consent-onboarding",
                 reply: "Your reviewed model is ready.",
@@ -142,6 +148,11 @@ suite.define(() => {
             kind: "openai-api-key",
             agentId: "main",
             modelRef: "provider/selected",
+          });
+          await gateway.resolveDeferred("openclaw.setup.activate.start", {
+            sessionId,
+            done: false,
+            status: "running",
           });
           const dialog = page.locator("openclaw-modal-dialog");
           await dialog.getByRole("heading", { name: "Review model setup" }).waitFor();
@@ -247,9 +258,9 @@ suite.define(() => {
           await expect.poll(readReceipt).toBeNull();
           await signIn.click();
           await page.getByText("Complete provider sign-in").waitFor();
-          expect(await gateway.getRequests("openclaw.setup.auth.start")).toHaveLength(2);
+          expect(await gateway.getRequests("openclaw.setup.activate.start")).toHaveLength(2);
           expect(await gateway.getRequests("wizard.cancel")).toHaveLength(1);
-          expect(await gateway.getRequests("openclaw.setup.activate.start")).toHaveLength(0);
+          expect(await gateway.getRequests("openclaw.setup.auth.start")).toHaveLength(0);
           expect(new URL(page.url()).pathname).toBe("/settings/model-providers");
         },
       );
@@ -293,7 +304,7 @@ suite.define(() => {
           receipt,
         );
         await replacement.getByText("Complete provider sign-in").waitFor();
-        expect(await nextGateway.getRequests("openclaw.setup.auth.start")).toHaveLength(1);
+        expect(await nextGateway.getRequests("openclaw.setup.activate.start")).toHaveLength(1);
         expect(await nextGateway.getRequests("wizard.cancel")).toHaveLength(0);
         expect(new URL(page.url()).pathname).toBe("/settings/model-providers");
         expect(new URL(replacement.url()).pathname).toBe("/settings/model-providers");

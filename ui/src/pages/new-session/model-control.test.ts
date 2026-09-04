@@ -11,6 +11,58 @@ afterEach(() => {
 });
 
 describe("new-session model runtime", () => {
+  it("does not copy global thinking metadata onto an unknown agent default", async () => {
+    const { context, request } = contextWith([
+      { id: "gpt-5.6-luna", provider: "openai", name: "Global model" },
+    ]);
+    Object.assign(context.sessions.state.result!.defaults, {
+      thinkingDefault: "high",
+      thinkingLevels: [
+        { id: "low", label: "Low" },
+        { id: "high", label: "High" },
+      ],
+    });
+    const agent = { id: "other", model: { primary: "custom/unknown" } };
+    const control = new NewSessionModelControl(() => undefined);
+    control.load(context, "other", true, { agent });
+    await waitForFast(() => expect(request).toHaveBeenCalledOnce());
+    await waitForFast(() =>
+      expect(renderControl(control, context, "other", agent).textContent).toContain("Global model"),
+    );
+    expect(
+      renderControl(control, context, "other", agent).querySelector("[data-chat-thinking-select]"),
+    ).toBeNull();
+    control.reset();
+  });
+
+  it("does not copy default speed or context options onto a saved unknown model", async () => {
+    const { context } = contextWith([
+      {
+        id: "gpt-5.6-luna",
+        provider: "openai",
+        name: "Global model",
+        supportsFastMode: true,
+        effectiveFastMode: true,
+        contextWindows: [
+          { id: "small", label: "Small", contextWindow: 1000 },
+          { id: "large", label: "Large", contextWindow: 2000 },
+        ],
+        contextWindowDefault: "large",
+      },
+    ]);
+    const control = new NewSessionModelControl(() => undefined);
+    control.load(context, "main", true, {
+      preference: { model: "custom/unknown", thinkingLevel: "high" },
+    });
+    await waitForFast(() => expect(control.selected).toBe("custom/unknown"));
+    const container = renderControl(control, context);
+    expect(
+      container.querySelector("[data-chat-thinking-select]")?.getAttribute("data-chat-fast-mode"),
+    ).toBe("false");
+    expect(container.querySelector("[data-chat-context-window-toggle]")).toBeNull();
+    control.reset();
+  });
+
   it("keeps a draft model local without exposing its internal selection target", async () => {
     const { context, request } = contextWith([
       { id: "gpt-5.6-luna", name: "GPT-5.6 Luna", provider: "openai" },
@@ -251,6 +303,7 @@ describe("new-session model runtime", () => {
           provider: "openai",
           reasoning: true,
           effectiveFastMode: inherited,
+          supportsFastMode: true,
         },
       ]);
       const control = new NewSessionModelControl(() => undefined);
@@ -274,10 +327,10 @@ describe("new-session model runtime", () => {
     },
   );
 
-  it("clears Fast Mode when switching to a provider without a wire mapping", async () => {
+  it("preserves Fast Mode across a model switch and offers an explicit clear", async () => {
     const { context } = contextWith([
-      { id: "gpt-5.6-luna", name: "GPT-5.6 Luna", provider: "openai", reasoning: true },
-      { id: "llama-4", name: "Llama 4", provider: "ollama" },
+      { id: "gpt-5.6-luna", name: "GPT-5.6 Luna", provider: "openai", supportsFastMode: true },
+      { id: "llama-4", name: "Llama 4", provider: "ollama", supportsFastMode: false },
     ]);
     const control = new NewSessionModelControl(() => undefined);
     control.load(context, "main", true);
@@ -297,13 +350,15 @@ describe("new-session model runtime", () => {
       ?.click();
 
     expect(control.selected).toBe("ollama/llama-4");
-    expect(control.fastMode).toBeUndefined();
+    expect(control.fastMode).toBe(true);
     const unsupportedToggle = renderControl(control, context).querySelector<HTMLButtonElement>(
       "[data-chat-speed-toggle]",
     );
-    expect(unsupportedToggle?.disabled).toBe(true);
-    expect(unsupportedToggle?.getAttribute("aria-checked")).toBe("false");
+    expect(unsupportedToggle?.disabled).toBe(false);
+    expect(unsupportedToggle?.getAttribute("aria-checked")).toBe("true");
     expect(unsupportedToggle?.dataset.chatSpeedToggle).toBe("");
+    unsupportedToggle?.click();
+    expect(control.fastMode).toBeUndefined();
   });
 
   it("does not mark ordinary catalog loading as preference restoration", async () => {
@@ -388,6 +443,10 @@ describe("new-session model runtime", () => {
       id: "main",
       model: { primary: "openai/gpt-5.6-sol" },
       thinkingDefault: "high",
+      thinkingLevels: [
+        { id: "low", label: "Low" },
+        { id: "high", label: "High" },
+      ],
     });
     expect(
       container.querySelector(
@@ -409,9 +468,15 @@ describe("new-session model runtime", () => {
     expect(control.thinkingLevel).toBe("");
   });
 
-  it("shows Medium for a hydrated agent without a projected thinking default", async () => {
+  it("uses the catalog thinking default when the agent has no projected default", async () => {
     const { context, request } = contextWith([
-      { id: "gpt-5.6-sol", name: "GPT-5.6 Sol", provider: "openai", reasoning: true },
+      {
+        id: "gpt-5.6-sol",
+        name: "GPT-5.6 Sol",
+        provider: "openai",
+        reasoning: true,
+        thinkingDefault: "high",
+      },
     ]);
     const notify = vi.fn();
     const control = new NewSessionModelControl(notify);
@@ -430,7 +495,7 @@ describe("new-session model runtime", () => {
       "GPT-5.6 Sol",
     );
     expect(container.querySelector('[data-chat-thinking-select="true"]')?.textContent).toContain(
-      "Medium",
+      "High",
     );
     expect(control.selected).toBe("");
     expect(control.thinkingLevel).toBe("");
@@ -891,31 +956,49 @@ describe("new-session model runtime", () => {
     pending.resolve({ models: [] });
   });
 
-  it("drops a stored model and its reasoning override when the model is unavailable", async () => {
-    const { context, request } = contextWith([
-      { id: "gpt-5.6-sol", name: "GPT-5.6 Sol", provider: "openai", reasoning: true },
-    ]);
-    const notify = vi.fn();
-    const onSelectionChange = vi.fn();
-    const control = new NewSessionModelControl(notify, onSelectionChange);
+  it.each(["missing", "missing-auth", "cooldown"] as const)(
+    "preserves the stored model and reasoning when its catalog state is %s",
+    async (availability) => {
+      const { context, request } = contextWith([
+        { id: "gpt-5.6-sol", name: "GPT-5.6 Sol", provider: "openai", reasoning: true },
+        ...(availability === "missing"
+          ? []
+          : [
+              {
+                id: "remembered",
+                name: "Remembered",
+                provider: "anthropic",
+                available: false,
+                unavailableReason: availability,
+              },
+            ]),
+      ]);
+      const notify = vi.fn();
+      const onSelectionChange = vi.fn();
+      const control = new NewSessionModelControl(notify, onSelectionChange);
 
-    control.load(context, "main", true, {
-      preference: { model: "openai/gpt-5.6-sol", thinkingLevel: "high" },
-    });
-    await vi.waitFor(() => expect(control.selected).toBe("openai/gpt-5.6-sol"));
-    expect(control.thinkingLevel).toBe("high");
+      control.load(context, "main", true, {
+        preference: { model: "openai/gpt-5.6-sol", thinkingLevel: "high" },
+      });
+      await vi.waitFor(() => expect(control.selected).toBe("openai/gpt-5.6-sol"));
+      expect(control.thinkingLevel).toBe("high");
 
-    control.load(context, "main", true, {
-      preference: { model: "anthropic/retired-model", thinkingLevel: "high" },
-    });
+      control.load(context, "main", true, {
+        preference: { model: "anthropic/remembered", thinkingLevel: "high" },
+      });
 
-    expect(request).toHaveBeenCalledOnce();
-    expect(control.selected).toBe("");
-    expect(control.thinkingLevel).toBe("");
-    expect(onSelectionChange).toHaveBeenLastCalledWith({ model: "", thinkingLevel: "" });
-  });
+      expect(request).toHaveBeenCalledOnce();
+      expect(control.selected).toBe("anthropic/remembered");
+      expect(control.thinkingLevel).toBe("high");
+      expect(control.modelUnavailableReason(undefined)).toBe(
+        availability === "missing" ? undefined : availability,
+      );
+      expect(onSelectionChange).not.toHaveBeenCalled();
+      control.reset();
+    },
+  );
 
-  it("drops a stored reasoning override when its option is no longer available", async () => {
+  it("preserves a stored reasoning override when its option is absent from the catalog", async () => {
     const { context, request } = contextWith([
       {
         id: "gpt-5.6-sol",
@@ -942,15 +1025,12 @@ describe("new-session model runtime", () => {
     });
 
     expect(request).toHaveBeenCalledOnce();
-    expect(control.thinkingLevel).toBe("");
+    expect(control.thinkingLevel).toBe("retired");
     expect(control.selected).toBe("openai/gpt-5.6-sol");
-    expect(onSelectionChange).toHaveBeenLastCalledWith({
-      model: "openai/gpt-5.6-sol",
-      thinkingLevel: "",
-    });
+    expect(onSelectionChange).not.toHaveBeenCalled();
   });
 
-  it("clears xhigh when an interactive model switch targets a profile ending at high", async () => {
+  it("preserves explicit effort when a model switch targets a different profile", async () => {
     const levels = (ids: string[]) => ids.map((id) => ({ id, label: id }));
     const { context, request } = contextWith([
       {
@@ -987,10 +1067,10 @@ describe("new-session model runtime", () => {
       ?.click();
 
     expect(control.selected).toBe("demo/limited");
-    expect(control.thinkingLevel).toBe("");
+    expect(control.thinkingLevel).toBe("xhigh");
     expect(onSelectionChange).toHaveBeenLastCalledWith({
       model: "demo/limited",
-      thinkingLevel: "",
+      thinkingLevel: "xhigh",
     });
   });
 });

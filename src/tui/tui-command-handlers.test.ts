@@ -3266,6 +3266,33 @@ describe("tui command handlers", () => {
     expect(addSystem).toHaveBeenCalledWith("fast mode: auto");
   });
 
+  it("keeps unavailable model choices visible without applying them", async () => {
+    const harness = createHarness({
+      listModels: vi.fn().mockResolvedValue([
+        {
+          provider: "fixture",
+          id: "waiting",
+          name: "Waiting model",
+          available: false,
+          unavailableReason: "missing-auth",
+        },
+        { provider: "fixture", id: "ready", name: "Ready model", available: true },
+      ]),
+    });
+
+    await harness.handleCommand("/model");
+
+    const selector = firstMockArg(harness.openOverlay, "openOverlay") as SelectableOverlay;
+    const unavailable = selector.items?.find((item) => item.value === "fixture/waiting");
+    selector.onSelect?.(expectDefined(unavailable, "unavailable model option"));
+    await flushAsyncSelect();
+    expect(harness.patchSession).not.toHaveBeenCalled();
+    expect(unavailable?.description).toContain("missing-auth");
+    expect(harness.addSystem).toHaveBeenCalledWith(
+      "model unavailable: missing-auth. Run openclaw models auth login or choose another model.",
+    );
+  });
+
   it("uses canonical model refs in the model selector", async () => {
     const listModels = vi.fn().mockResolvedValue([
       {

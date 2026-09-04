@@ -1,8 +1,77 @@
 import { describe, expect, it } from "vitest";
 import type { ModelCatalogEntry } from "../../api/types.ts";
-import { resolveChatThinkingSelectState, resolveThinkingLevelInput } from "./thinking.ts";
+import {
+  formatThinkingCommandOptionsForSession,
+  isThinkingLevelOptionForSession,
+  resolveChatThinkingSelectState,
+  resolveThinkingLevelInput,
+} from "./thinking.ts";
 
 describe("chat thinking helpers", () => {
+  it.each([undefined, []])("does not invent thinking metadata from %j", (thinkingLevels) => {
+    const session = { model: "model", modelProvider: "openai", thinkingLevels };
+    const state = resolveChatThinkingSelectState({
+      catalog: [{ id: "model", provider: "openai", name: "Model", reasoning: true }],
+      session,
+      sessionKey: "main",
+      sessionsResult: null,
+    });
+    expect(state.options).toEqual([]);
+    expect(state.inherited.value).toBe("");
+    expect(state.selection.value).toBe("");
+    expect(isThinkingLevelOptionForSession(session, undefined, "high")).toBe(
+      thinkingLevels === undefined ? undefined : false,
+    );
+    expect(formatThinkingCommandOptionsForSession(session)).toBe(
+      thinkingLevels === undefined ? "Unknown" : "none",
+    );
+  });
+
+  it("keeps an explicitly empty session profile and its saved override", () => {
+    const state = resolveChatThinkingSelectState({
+      catalog: [
+        {
+          id: "model",
+          provider: "openai",
+          name: "Model",
+          thinkingLevels: [{ id: "high", label: "High" }],
+          thinkingDefault: "high",
+        },
+      ],
+      session: {
+        model: "model",
+        modelProvider: "openai",
+        thinkingLevels: [],
+        thinkingLevel: "off",
+      },
+      sessionKey: "main",
+      sessionsResult: null,
+    });
+    expect(state.options).toEqual([]);
+    expect(state.inherited.value).toBe("");
+    expect(state.selection).toMatchObject({ source: "override", value: "off" });
+  });
+
+  it("does not combine a session model with another provider from defaults", () => {
+    const state = resolveChatThinkingSelectState({
+      catalog: [
+        {
+          id: "model",
+          provider: "openai",
+          name: "Model",
+          thinkingLevels: [{ id: "high", label: "High" }],
+          thinkingDefault: "high",
+        },
+      ],
+      session: { model: "model" },
+      defaults: { model: "other", modelProvider: "openai", contextTokens: null },
+      sessionKey: "main",
+      sessionsResult: null,
+    });
+    expect(state.options).toEqual([]);
+    expect(state.inherited.value).toBe("");
+  });
+
   const lunaModel: ModelCatalogEntry = {
     id: "gpt-5.6-luna",
     name: "GPT-5.6 Luna",

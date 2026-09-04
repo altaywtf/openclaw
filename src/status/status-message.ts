@@ -12,12 +12,12 @@ import { resolveCronStyleNow } from "../agents/current-time.js";
 import { DEFAULT_CONTEXT_TOKENS, DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
 import { resolveExtraParams } from "../agents/embedded-agent-runner/extra-params.js";
 import { resolveFastModeState } from "../agents/fast-mode.js";
-import { resolveModelAuthMode } from "../agents/model-auth.js";
-import { findModelInCatalog } from "../agents/model-catalog-lookup.js";
 import {
-  areRuntimeModelRefsEquivalent,
-  shouldPreferActiveRuntimeAliasAuthLabel,
-} from "../agents/model-runtime-aliases.js";
+  resolveModelAuthLabel,
+  type PreparedStatusModelFacts,
+} from "../agents/model-auth-label.js";
+import { findModelInCatalog } from "../agents/model-catalog-lookup.js";
+import { areRuntimeModelRefsEquivalent } from "../agents/model-runtime-aliases.js";
 import {
   buildModelAliasIndex,
   resolveConfiguredModelRef,
@@ -116,6 +116,7 @@ type StatusArgs = {
   resolvedVerbose?: VerboseLevel;
   resolvedReasoning?: ReasoningLevel;
   resolvedElevated?: ElevatedLevel;
+  modelAuthFacts?: PreparedStatusModelFacts;
   modelAuth?: string;
   activeModelAuth?: string;
   usageLine?: string;
@@ -130,44 +131,6 @@ type StatusArgs = {
   includeTranscriptUsage?: boolean;
   now?: number;
 };
-
-type NormalizedAuthMode =
-  | "api-key"
-  | "oauth"
-  | "token"
-  | "aws-sdk"
-  | "native"
-  | "mixed"
-  | "unknown";
-
-function normalizeAuthMode(value?: string): NormalizedAuthMode | undefined {
-  const normalized = normalizeOptionalLowercaseString(value);
-  if (!normalized) {
-    return undefined;
-  }
-  if (normalized === "api-key" || normalized.startsWith("api-key ")) {
-    return "api-key";
-  }
-  if (normalized === "oauth" || normalized.startsWith("oauth ")) {
-    return "oauth";
-  }
-  if (normalized === "token" || normalized.startsWith("token ")) {
-    return "token";
-  }
-  if (normalized === "aws-sdk" || normalized.startsWith("aws-sdk ")) {
-    return "aws-sdk";
-  }
-  if (normalized === "native" || normalized.startsWith("native ")) {
-    return "native";
-  }
-  if (normalized === "mixed" || normalized.startsWith("mixed ")) {
-    return "mixed";
-  }
-  if (normalized === "unknown") {
-    return "unknown";
-  }
-  return undefined;
-}
 
 function resolveConfiguredTextVerbosity(params: {
   config?: OpenClawConfig;
@@ -614,12 +577,14 @@ export function buildStatusMessageParts(args: StatusArgs): StatusMessageParts {
   const parseSelectedProvider = Boolean(
     entry?.modelOverride?.trim() && !entry?.providerOverride?.trim(),
   );
-  const modelRefs = resolveSelectedAndActiveModel({
-    selectedProvider,
-    selectedModel,
-    sessionEntry: entry,
-    parseSelectedProvider,
-  });
+  const modelRefs =
+    args.modelAuthFacts ??
+    resolveSelectedAndActiveModel({
+      selectedProvider,
+      selectedModel,
+      sessionEntry: entry,
+      parseSelectedProvider,
+    });
   const selectedLookupProvider = modelRefs.selected.provider || selectedProvider;
   const selectedLookupModel = modelRefs.selected.model || selectedModel;
   const initialFallbackState = resolveActiveFallbackState({
@@ -921,27 +886,14 @@ export function buildStatusMessageParts(args: StatusArgs): StatusMessageParts {
     .join(" · ");
 
   const selectedModelLabel = modelRefs.selected.label || "unknown";
-  const selectedAuthMode =
-    normalizeAuthMode(args.modelAuth) ?? resolveModelAuthMode(selectedLookupProvider, args.config);
-  const rawSelectedAuthLabelValue =
-    selectedAuthMode && selectedAuthMode !== "unknown"
-      ? (args.modelAuth ?? selectedAuthMode)
-      : undefined;
-  const activeAuthMode =
-    normalizeAuthMode(args.activeModelAuth) ?? resolveModelAuthMode(activeProvider, args.config);
-  const activeAuthLabelValue =
-    activeAuthMode && activeAuthMode !== "unknown"
-      ? (args.activeModelAuth ?? activeAuthMode)
-      : undefined;
-  const preferActiveAuthLabel = shouldPreferActiveRuntimeAliasAuthLabel({
-    runtimeAliasModelEquivalent,
-    selectedAuthLabel: rawSelectedAuthLabelValue,
-    activeAuthLabel: activeAuthLabelValue,
-  });
-  const selectedAuthLabelValue = preferActiveAuthLabel
-    ? activeAuthLabelValue
-    : (rawSelectedAuthLabelValue ??
-      (runtimeAliasModelEquivalent ? activeAuthLabelValue : undefined));
+  const selectedAuthLabelValue = resolveModelAuthLabel(
+    args.modelAuthFacts?.selected.auth ?? { kind: "provided", label: args.modelAuth },
+  );
+  const activeAuthLabelValue = args.modelAuthFacts
+    ? args.modelAuthFacts.active.label === activeModelLabel
+      ? resolveModelAuthLabel(args.modelAuthFacts.active.auth)
+      : undefined
+    : resolveModelAuthLabel({ kind: "provided", label: args.activeModelAuth });
   const fallbackState = resolveActiveFallbackState({
     selectedModelRef: selectedModelLabel,
     activeModelRef: activeModelLabel,

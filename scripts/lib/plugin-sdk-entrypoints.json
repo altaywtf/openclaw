@@ -302,6 +302,7 @@
   "provider-http",
   "provider-binary-stream",
   "provider-model-types",
+  "provider-model-capabilities",
   "provider-model-shared",
   "provider-onboard",
   "provider-stream-family",

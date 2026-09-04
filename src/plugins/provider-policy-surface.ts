@@ -12,6 +12,7 @@ import type {
   ProviderNormalizeConfigContext,
   ProviderResolveConfigApiKeyContext,
 } from "./provider-config-context.types.js";
+import type { ProviderFastModeCapabilityContext } from "./provider-fast-mode.types.js";
 import type { ProviderRuntimeModel } from "./provider-runtime-model.types.js";
 import type {
   ProviderDefaultThinkingPolicyContext,
@@ -58,6 +59,9 @@ export type ProviderPolicySurface = {
   resolveThinkingProfile?: (
     ctx: ProviderDefaultThinkingPolicyContext,
   ) => ProviderThinkingProfile | null | undefined;
+  resolveFastModeCapability?: (
+    ctx: ProviderFastModeCapabilityContext,
+  ) => boolean | null | undefined;
   resolveModelRoutes?: (
     ctx: ProviderResolveModelRoutesContext,
   ) => ProviderModelRouteResolution | null | undefined;
@@ -82,6 +86,7 @@ const PROVIDER_POLICY_HOOK_KEYS = [
   "applyConfigDefaults",
   "resolveConfigApiKey",
   "resolveThinkingProfile",
+  "resolveFastModeCapability",
   "resolveModelRoutes",
   "normalizeModelCatalogId",
   "isResponseModelEquivalent",

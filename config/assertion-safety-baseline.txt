@@ -1893,7 +1893,7 @@ src/agents/model-auth-model.ts	2
 src/agents/model-catalog.ts	1
 src/agents/model-fallback-attempt.ts	1
 src/agents/model-fallback-runner.ts	2
-src/agents/model-provider-auth.ts	4
+src/agents/model-provider-auth.ts	3
 src/agents/model-provider-auth.worker.ts	1
 src/agents/model-scan.ts	3
 src/agents/model-selection-shared.ts	1
@@ -2140,7 +2140,6 @@ src/auto-reply/reply/config-mutations.ts	3
 src/auto-reply/reply/conversation-turn-capture.ts	2
 src/auto-reply/reply/directive-handling.impl.ts	2
 src/auto-reply/reply/directive-handling.levels.ts	9
-src/auto-reply/reply/directive-handling.model-picker.ts	1
 src/auto-reply/reply/directive-handling.model.ts	2
 src/auto-reply/reply/directive-handling.parse.ts	2
 src/auto-reply/reply/directive-handling.shared.ts	2

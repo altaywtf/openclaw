@@ -34,6 +34,16 @@ const onboardingWelcome = {
   reply: "Your model is ready. Let's finish setting up OpenClaw.",
   action: "none",
 };
+const onboardingResponses = {
+  "openclaw.chat": onboardingWelcome,
+  "channels.status": {
+    ts: 1,
+    channelOrder: [],
+    channelLabels: {},
+    channels: {},
+    channelAccounts: {},
+  },
+};
 
 function detection(modelRef: string) {
   return {
@@ -73,7 +83,7 @@ suite.define(() => {
               "openclaw.chat",
             ],
             methodResponses: {
-              "openclaw.chat": onboardingWelcome,
+              ...onboardingResponses,
               "openclaw.setup.detect": {
                 ...detection(modelRef),
                 configuredModel: undefined,
@@ -133,7 +143,7 @@ suite.define(() => {
             reconnectedGateway = await installMockGateway(destination, {
               featureMethods: ["openclaw.setup.detect", "openclaw.setup.verify", "openclaw.chat"],
               methodResponses: {
-                "openclaw.chat": onboardingWelcome,
+                ...onboardingResponses,
                 "openclaw.setup.detect": detection(modelRef),
                 "openclaw.setup.verify": pendingVerification,
               },
@@ -209,13 +219,12 @@ suite.define(() => {
             "openclaw.setup.detect",
             "openclaw.setup.activate.start",
             "openclaw.setup.verify",
-            "openclaw.setup.auth.start",
             "openclaw.setup.prepare.start",
             "wizard.next",
             "openclaw.chat",
           ],
           methodResponses: {
-            "openclaw.chat": onboardingWelcome,
+            ...onboardingResponses,
             "openclaw.setup.detect": {
               ...detection(modelRef),
               configuredModel: undefined,
@@ -240,11 +249,6 @@ suite.define(() => {
             },
             "openclaw.setup.activate.start": {
               sessionId: "activation-session",
-              done: false,
-              status: "running",
-            },
-            "openclaw.setup.auth.start": {
-              sessionId: "auth-session",
               done: false,
               status: "running",
             },
@@ -302,9 +306,8 @@ suite.define(() => {
         await expect.poll(() => new URL(page.url()).pathname).toBe("/custodian");
         expect(new URL(page.url()).searchParams.get("onboarding")).toBe("1");
         await page.getByText(onboardingWelcome.reply, { exact: true }).waitFor();
-        expect(await gateway.getRequests("openclaw.setup.activate.start")).toHaveLength(
-          entry === "provider sign-in" ? 0 : 1,
-        );
+        expect(await gateway.getRequests("openclaw.setup.activate.start")).toHaveLength(1);
+        expect(await gateway.getRequests("openclaw.setup.auth.start")).toHaveLength(0);
       });
     },
   );

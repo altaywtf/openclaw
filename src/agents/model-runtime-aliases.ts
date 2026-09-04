@@ -3,7 +3,6 @@
  */
 import { parseModelCatalogRef } from "@openclaw/model-catalog-core/model-catalog-refs";
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
-import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveAgentDir } from "./agent-scope-config.js";
 import { resolveExplicitAuthOrderSelection } from "./auth-profiles/order.js";
@@ -136,28 +135,6 @@ export function areRuntimeModelRefsEquivalent(
   return (
     normalizeRuntimeModelRefForComparison(left, options) ===
     normalizeRuntimeModelRefForComparison(right, options)
-  );
-}
-
-export function shouldPreferActiveRuntimeAliasAuthLabel(params: {
-  runtimeAliasModelEquivalent: boolean;
-  selectedAuthLabel?: string;
-  activeAuthLabel?: string;
-}): boolean {
-  if (!params.runtimeAliasModelEquivalent) {
-    return false;
-  }
-  const selectedAuth = normalizeOptionalLowercaseString(params.selectedAuthLabel);
-  const activeAuth = normalizeOptionalLowercaseString(params.activeAuthLabel);
-  if (!activeAuth || activeAuth === "unknown") {
-    return false;
-  }
-  return (
-    selectedAuth === "unknown" ||
-    (Boolean(selectedAuth?.startsWith("api-key")) &&
-      (activeAuth.startsWith("oauth") ||
-        activeAuth.startsWith("token") ||
-        activeAuth.startsWith("native")))
   );
 }
 

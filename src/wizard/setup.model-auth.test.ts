@@ -167,8 +167,8 @@ describe("runSetupModelAuthStep", () => {
       expect(warnIfModelConfigLooksOff).toHaveBeenCalledWith(expect.anything(), expect.anything(), {
         agentId: "ops",
         agentDir: "/tmp/ops-agent",
+        workspaceDir: "/tmp/ops-workspace",
         pendingAuthProfiles: [],
-        validateCatalog: false,
       });
     },
   );
@@ -183,7 +183,7 @@ describe("runSetupModelAuthStep", () => {
       persistAuthProfiles: async () => {},
     });
 
-    await runSetupModelAuthStep({
+    const result = await runSetupModelAuthStep({
       config,
       opts: {},
       pendingAgent: { name: "Robby!", workspaceDir },
@@ -204,10 +204,16 @@ describe("runSetupModelAuthStep", () => {
       expect.objectContaining({ agentId: "robby", agentDir, workspaceDir }),
     );
     expect(warnIfModelConfigLooksOff).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agents: expect.objectContaining({
+          entries: { robby: expect.objectContaining({ workspace: workspaceDir, agentDir }) },
+        }),
+      }),
       expect.anything(),
-      expect.anything(),
-      expect.objectContaining({ agentId: "robby", agentDir }),
+      expect.objectContaining({ agentId: "robby", agentDir, workspaceDir }),
     );
+    expect(result.config).toBe(config);
+    expect(config.agents?.entries).toBeUndefined();
   });
 
   it("targets the system agent when an explicit fleet selects Claude CLI", async () => {
@@ -375,7 +381,8 @@ describe("runSetupModelAuthStep", () => {
     expect(warnIfModelConfigLooksOff).toHaveBeenCalledWith(expect.anything(), expect.anything(), {
       agentId: "ops",
       agentDir: "/tmp/ops-agent",
-      validateCatalog: false,
+      workspaceDir: "/tmp/ops-workspace",
+      pendingAuthProfiles: [],
     });
   });
 
@@ -409,8 +416,8 @@ describe("runSetupModelAuthStep", () => {
     expect(warnIfModelConfigLooksOff).toHaveBeenCalledWith(expect.anything(), expect.anything(), {
       agentId: "ops",
       agentDir: "/tmp/ops-agent",
+      workspaceDir: "/tmp/ops-workspace",
       pendingAuthProfiles,
-      validateCatalog: false,
     });
     expect(persistAuthProfiles).not.toHaveBeenCalled();
   });

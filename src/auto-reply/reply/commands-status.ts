@@ -1,4 +1,5 @@
 /** Builds /status replies using the command's authorized channel context. */
+import { prepareStatusModelAuth } from "../../agents/model-auth-label.js";
 import { logVerbose } from "../../globals.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { logError } from "../../logger.js";
@@ -25,8 +26,10 @@ export async function buildStatusReply(
   }
 
   try {
+    const modelAuthFacts = params.modelAuthFacts ?? (await prepareStatusModelAuth(params));
     const { text, presentation } = await buildStatusReplyParts({
       ...params,
+      modelAuthFacts,
       statusChannel: command.channel,
       statusAccountId: command.accountId,
     });

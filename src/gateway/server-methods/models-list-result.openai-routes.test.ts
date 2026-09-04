@@ -1,8 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ModelCatalogEntry } from "../../agents/model-catalog.types.js";
-import { openAIModelRoutesMock } from "../../agents/openai-model-routes.test-support.js";
+import {
+  openAIModelRoutesMock,
+  platformRoute,
+  subscriptionRoute,
+} from "../../agents/openai-model-routes.test-support.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { loadManifestMetadataSnapshot } from "../../plugins/manifest-contract-eligibility.js";
+import {
+  PREPARED_THINKING_POLICY,
+  type PreparedThinkingPolicy,
+  type ThinkingCatalogPolicyCarrier,
+} from "../../plugins/provider-thinking-catalog.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { buildModelsListResult } from "./models-list-result.js";
@@ -66,6 +75,48 @@ function emptyPreparedOwner(config: OpenClawConfig) {
 }
 
 describe("models.list OpenAI routes", () => {
+  it.each([false, true])("publishes selected route capabilities (empty=%s)", async (empty) => {
+    openAIModelRoutesMock.resolution = {
+      kind: "routes",
+      defaultRuntimeId: "codex",
+      routes: [platformRoute, subscriptionRoute],
+    };
+    await withEnvAsync(WITHOUT_OPENAI_ENV_AUTH, async () => {
+      const policy: PreparedThinkingPolicy = ({ api }) => ({
+        levels: empty
+          ? []
+          : [{ id: api === subscriptionRoute.api ? "high" : "low", label: "Route effort" }],
+      });
+      const catalog: (ModelCatalogEntry & ThinkingCatalogPolicyCarrier)[] = [
+        {
+          ...catalogEntry("gpt-thinking-route", platformRoute.api),
+          baseUrl: platformRoute.baseUrl,
+          reasoning: true,
+          [PREPARED_THINKING_POLICY]: policy,
+        },
+        {
+          ...catalogEntry("gpt-thinking-route", subscriptionRoute.api),
+          baseUrl: subscriptionRoute.baseUrl,
+          reasoning: true,
+          [PREPARED_THINKING_POLICY]: policy,
+        },
+      ];
+      const result = await listModels({
+        preparedProviderAuth: { openai: { mode: "oauth", runtime: "codex" } },
+        catalog,
+      });
+      expect(result.models).toHaveLength(1);
+      expect(result.models[0].available).toBe(true);
+      expect(result.models[0].supportsFastMode).toBe(true);
+      expect(result.models[0].thinkingLevels).toEqual(
+        empty ? [] : [{ id: "high", label: "Route effort" }],
+      );
+      if (empty) {
+        expect(result.models[0].thinkingDefault).toBeUndefined();
+      }
+    });
+  });
+
   it("uses the published fallback owner's identity for implicit projection", async () => {
     const config = {
       agents: {

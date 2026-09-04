@@ -1,10 +1,16 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { testing as cliBackendsTesting } from "../../agents/cli-backends.test-support.js";
+import type { ModelCatalogEntry } from "../../agents/model-catalog.types.js";
+import type { ResolvedPublishedModelCatalogOwner } from "../../agents/prepared-model-catalog.types.js";
+import { markPreparedModelCatalogFull } from "../../agents/prepared-model-runtime.full-catalog.js";
+import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
 
 const mocks = vi.hoisted(() => ({
-  buildModelsListResult: vi.fn(),
-  loadPreparedGatewayModelCatalogSnapshot: vi.fn(),
+  loadOwner:
+    vi.fn<
+      typeof import("../../agents/prepared-model-catalog.js").loadResolvedPublishedModelCatalogOwner
+    >(),
   loadModelsConfigWithSource: vi.fn(),
-  printModelTable: vi.fn(),
   resolveModelsTargetAgent: vi.fn(),
 }));
 
@@ -12,16 +18,8 @@ vi.mock("./load-config.js", () => ({
   loadModelsConfigWithSource: mocks.loadModelsConfigWithSource,
 }));
 
-vi.mock("../../gateway/server-model-catalog.js", () => ({
-  loadPreparedGatewayModelCatalogSnapshot: mocks.loadPreparedGatewayModelCatalogSnapshot,
-}));
-
-vi.mock("../../gateway/server-methods/models-list-result.js", () => ({
-  buildModelsListResult: mocks.buildModelsListResult,
-}));
-
-vi.mock("./list.table.js", () => ({
-  printModelTable: mocks.printModelTable,
+vi.mock("../../agents/prepared-model-catalog.js", () => ({
+  loadResolvedPublishedModelCatalogOwner: mocks.loadOwner,
 }));
 
 vi.mock("./shared.js", async (importOriginal) => ({
@@ -31,108 +29,181 @@ vi.mock("./shared.js", async (importOriginal) => ({
 
 import { modelsListCommand } from "./list.list-command.js";
 
-const config = {
-  agents: { defaults: { model: { primary: "anthropic/claude-sonnet-5" } } },
+let owner: ResolvedPublishedModelCatalogOwner;
+const runtime = {
+  log: vi.fn(),
+  error: vi.fn(),
+  exit: vi.fn(),
+  writeJson: vi.fn(),
+  writeStdout: vi.fn(),
 };
-
-const preparedCatalog = {
-  agentId: "main",
-  agentDir: "/tmp/openclaw-agent",
-  workspaceDir: "/tmp/openclaw-workspace",
-  config,
-  providerAuth: {},
-  authStore: { version: 1, profiles: {} },
-  metadataSnapshot: {
-    manifestRegistry: { plugins: [] },
-    owners: { providers: new Map(), modelCatalogProviders: new Map() },
-  },
-  authMaterializations: [],
-  entries: [
-    {
-      provider: "anthropic",
-      id: "claude-sonnet-5",
-      name: "Claude Sonnet 5",
-      baseUrl: "https://api.anthropic.com",
-      input: ["text"],
-      contextWindow: 200_000,
-    },
-  ],
-  routeVariants: [],
-};
-
-const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.loadModelsConfigWithSource.mockResolvedValue({ resolvedConfig: config });
-  mocks.resolveModelsTargetAgent.mockReturnValue({
+  cliBackendsTesting.setDepsForTest({
+    resolveRuntimeCliBackends: () => [],
+    resolvePluginSetupRegistry: () => ({
+      providers: [],
+      cliBackends: [],
+      configMigrations: [],
+      autoEnableProbes: [],
+      diagnostics: [],
+    }),
+  });
+  const entries: ModelCatalogEntry[] = [
+    {
+      provider: "catalog-provider",
+      id: "pinned",
+      name: "Pinned Model",
+      api: "anthropic-messages",
+      baseUrl: "https://catalog.example.test",
+      input: ["text"],
+      contextWindow: 200_000,
+    },
+    { provider: "catalog-provider", id: "discovered", name: "Discovered Model" },
+    { provider: "another", id: "other-model", name: "Other Model" },
+  ];
+  owner = {
+    catalogOwner: { agentId: "main", workspaceDir: "/tmp/openclaw-workspace" },
     agentId: "main",
-    agentDir: preparedCatalog.agentDir,
-  });
-  mocks.loadPreparedGatewayModelCatalogSnapshot.mockResolvedValue(preparedCatalog);
-  mocks.buildModelsListResult.mockResolvedValue({
-    models: [
-      {
-        provider: "anthropic",
-        id: "claude-sonnet-5",
-        name: "Claude Sonnet 5",
-        input: ["text"],
-        contextWindow: 200_000,
-        available: true,
+    agentDir: "/tmp/openclaw-agent",
+    workspaceDir: "/tmp/openclaw-workspace",
+    config: {
+      agents: { defaults: { model: { primary: "catalog-provider/pinned" } } },
+    },
+    providerAuth: {},
+    authStore: {
+      version: 1,
+      profiles: {
+        "catalog-provider:test": {
+          type: "api_key",
+          provider: "catalog-provider",
+          key: "test-provider-key",
+        },
       },
-    ],
+    },
+    metadataSnapshot: createPluginMetadataSnapshotFixture(),
+    oauthRefreshProviderIds: [],
+    modelCatalog: markPreparedModelCatalogFull({ entries, routeVariants: entries }),
+  };
+  mocks.loadModelsConfigWithSource.mockImplementation(async () => ({
+    resolvedConfig: owner.config,
+  }));
+  mocks.resolveModelsTargetAgent.mockReturnValue({
+    agentId: owner.agentId,
+    agentDir: owner.agentDir,
   });
+  mocks.loadOwner.mockImplementation(async () => owner);
+});
+
+afterEach(() => {
+  cliBackendsTesting.resetDepsForTest();
 });
 
 describe("models list prepared catalog boundary", () => {
-  it("discovers the full provider inventory without requiring --all", async () => {
-    mocks.buildModelsListResult.mockResolvedValue({
-      models: [
-        {
-          provider: "anthropic",
-          id: "discovered-model",
-          name: "Discovered Model",
-          available: true,
-        },
-        { provider: "another", id: "other-model", name: "Other Model", available: true },
-      ],
-    });
-    await modelsListCommand({ provider: "anthropic", json: true }, runtime);
-    expect(mocks.loadPreparedGatewayModelCatalogSnapshot).toHaveBeenCalledWith(
+  it("discovers and filters provider inventory without requiring --all", async () => {
+    await modelsListCommand({ provider: "catalog-provider", json: true }, runtime);
+
+    expect(mocks.loadOwner).toHaveBeenCalledWith(
       expect.objectContaining({ readOnly: false, refreshFullCatalog: true }),
     );
-    expect(mocks.buildModelsListResult).toHaveBeenCalledWith(
-      expect.objectContaining({ params: { view: "all" } }),
-    );
-    expect(mocks.printModelTable).toHaveBeenCalledWith(
-      [expect.objectContaining({ key: "anthropic/discovered-model" })],
-      runtime,
-      { provider: "anthropic", json: true },
+    expect(runtime.writeJson).toHaveBeenCalledWith(
+      {
+        count: 2,
+        models: [
+          expect.objectContaining({ key: "catalog-provider/discovered", available: true }),
+          expect.objectContaining({ key: "catalog-provider/pinned", available: true }),
+        ],
+      },
+      2,
     );
   });
 
-  it("renders the public prepared owner projection and never assembles a CLI catalog", async () => {
-    await modelsListCommand({ all: true, json: true }, runtime);
+  it("shows only authenticated or configured rows on ordinary reads without full discovery", async () => {
+    await modelsListCommand({ json: true }, runtime);
 
-    expect(mocks.loadPreparedGatewayModelCatalogSnapshot).toHaveBeenCalledWith({
-      agentId: "main",
-      agentDir: "/tmp/openclaw-agent",
-      getConfig: expect.any(Function),
-      readOnly: false,
-      refreshFullCatalog: true,
-    });
-    expect(mocks.buildModelsListResult).toHaveBeenCalledWith({
-      source: { kind: "prepared", catalog: preparedCatalog },
-      agentId: "main",
-      params: { view: "all" },
-    });
-    expect(mocks.printModelTable).toHaveBeenCalledWith(
-      [expect.objectContaining({ key: "anthropic/claude-sonnet-5", available: true })],
-      runtime,
-      { all: true, json: true },
+    expect(mocks.loadOwner).toHaveBeenCalledWith(expect.objectContaining({ readOnly: true }));
+    expect(mocks.loadOwner.mock.calls[0]?.[0]).not.toHaveProperty("refreshFullCatalog");
+    expect(runtime.writeJson).toHaveBeenCalledWith(
+      {
+        count: 2,
+        models: [
+          expect.objectContaining({ key: "catalog-provider/discovered", available: true }),
+          {
+            key: "catalog-provider/pinned",
+            name: "Pinned Model",
+            input: "text",
+            contextWindow: 200_000,
+            local: false,
+            available: true,
+            tags: ["default"],
+          },
+        ],
+      },
+      2,
     );
-    expect(mocks.printModelTable.mock.calls[0]?.[0]).not.toContainEqual(
-      expect.objectContaining({ key: expect.stringMatching(/^claude-cli\//u) }),
+  });
+
+  it.each([
+    { credential: "unknown", available: null },
+    { credential: "expired", available: false },
+  ])(
+    "keeps $credential auth inventory visible in explicit all browse",
+    async ({ credential, available }) => {
+      if (credential === "expired") {
+        owner.authStore.profiles["another:test"] = {
+          type: "token",
+          provider: "another",
+          token: "test-expired-token",
+          expires: 1,
+        };
+      }
+      await modelsListCommand({ all: true, json: true }, runtime);
+
+      expect(mocks.loadOwner).toHaveBeenCalledWith(
+        expect.objectContaining({ readOnly: false, refreshFullCatalog: true }),
+      );
+      expect(runtime.writeJson).toHaveBeenCalledWith(
+        {
+          count: 3,
+          models: [
+            expect.objectContaining({ key: "another/other-model", available }),
+            expect.objectContaining({ key: "catalog-provider/discovered", available: true }),
+            expect.objectContaining({ key: "catalog-provider/pinned", available: true }),
+          ],
+        },
+        2,
+      );
+    },
+  );
+
+  it("reports rejected provider credentials rather than treating their presence as availability", async () => {
+    owner.modelCatalog.providerOutcomes = [
+      {
+        provider: "catalog-provider",
+        status: "auth-rejected",
+        profileId: "catalog-provider:test",
+      },
+    ];
+
+    await modelsListCommand({ provider: "catalog-provider", json: true }, runtime);
+
+    expect(runtime.writeJson).toHaveBeenCalledWith(
+      {
+        count: 2,
+        models: [
+          expect.objectContaining({ key: "catalog-provider/discovered", available: false }),
+          expect.objectContaining({ key: "catalog-provider/pinned", available: false }),
+        ],
+      },
+      2,
     );
+  });
+
+  it("rejects an unknown provider instead of printing another provider's models", async () => {
+    await expect(modelsListCommand({ provider: "missing", json: true }, runtime)).rejects.toThrow(
+      'Unknown provider filter "missing"',
+    );
+    expect(runtime.writeJson).not.toHaveBeenCalled();
   });
 });

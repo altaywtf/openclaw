@@ -10,7 +10,6 @@ import {
   resolveClaudeOpus5ModelIdentity,
   resolveClaudeSonnet5ModelIdentity,
   supportsClaude1MContext,
-  supportsClaudeFastMode,
 } from "openclaw/plugin-sdk/provider-model-shared";
 import {
   applyAnthropicPayloadPolicyToParams,
@@ -27,6 +26,11 @@ import {
   normalizeLowercaseStringOrEmpty,
   readStringValue,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
+import {
+  resolveAnthropicFastModeTransport,
+  normalizeAnthropicServiceTier,
+  type AnthropicServiceTier,
+} from "./fast-mode.js";
 
 const log = createSubsystemLogger("anthropic-stream");
 
@@ -44,7 +48,6 @@ const OPENCLAW_OAUTH_ANTHROPIC_BETAS = [
   ...OPENCLAW_DEFAULT_ANTHROPIC_BETAS,
 ] as const;
 
-type AnthropicServiceTier = "auto" | "standard_only";
 type DynamicFastMode = boolean | (() => boolean | undefined);
 
 function isAnthropic1MModel(modelId: string): boolean {
@@ -82,17 +85,6 @@ function resolveAnthropicFastServiceTier(enabled: boolean): AnthropicServiceTier
   return enabled ? "auto" : "standard_only";
 }
 
-function isDirectAnthropicApiModel(model: Parameters<StreamFn>[0]): boolean {
-  if (
-    normalizeLowercaseStringOrEmpty(model.provider) !== "anthropic" ||
-    normalizeLowercaseStringOrEmpty(model.api) !== "anthropic-messages"
-  ) {
-    return false;
-  }
-  const endpointClass = resolveProviderEndpoint(model.baseUrl).endpointClass;
-  return endpointClass === "default" || endpointClass === "anthropic-public";
-}
-
 function applyAnthropicFastModePricing(model: Parameters<StreamFn>[0]): Parameters<StreamFn>[0] {
   return {
     ...model,
@@ -103,17 +95,6 @@ function applyAnthropicFastModePricing(model: Parameters<StreamFn>[0]): Paramete
       cacheWrite: model.cost.cacheWrite * ANTHROPIC_FAST_MODE_COST_MULTIPLIER,
     },
   };
-}
-
-function normalizeAnthropicServiceTier(value: unknown): AnthropicServiceTier | undefined {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-  const normalized = normalizeLowercaseStringOrEmpty(value);
-  if (normalized === "auto" || normalized === "standard_only") {
-    return normalized;
-  }
-  return undefined;
 }
 
 function hasConfiguredAnthropicBeta(extraParams: Record<string, unknown> | undefined): boolean {
@@ -191,12 +172,15 @@ export function createAnthropicFastModeWrapper(
     if (resolved === undefined) {
       return underlying(model, context, options);
     }
-    if (supportsClaudeFastMode(model)) {
-      if (
-        !resolved ||
-        isAnthropicOAuthApiKey(options?.apiKey) ||
-        !isDirectAnthropicApiModel(model)
-      ) {
+    const transport = resolveAnthropicFastModeTransport(
+      model,
+      resolveProviderEndpoint(model.baseUrl).endpointClass,
+    );
+    if (!transport || isAnthropicOAuthApiKey(options?.apiKey)) {
+      return underlying(model, context, options);
+    }
+    if (transport === "speed") {
+      if (!resolved) {
         return underlying(model, context, options);
       }
       return fastPayloadWrapper(applyAnthropicFastModePricing(model), context, {

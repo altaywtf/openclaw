@@ -4,6 +4,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
 import { resolveProviderEndpoint } from "openclaw/plugin-sdk/provider-model-shared";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { resolveFastModeCapability } from "./provider-policy-api.js";
 import {
   createAnthropicBetaHeadersWrapper,
   createAnthropicFastModeWrapper,
@@ -342,6 +343,25 @@ describe("anthropic stream wrappers", () => {
 
   it("ignores unresolved auto fast mode at the provider boundary", () => {
     expect(resolveAnthropicFastMode({ fastMode: "auto" })).toBeUndefined();
+  });
+
+  it.each([
+    { modelId: "claude-opus-5", payload: { speed: "fast" }, supported: true },
+    { modelId: "claude-opus-4-8", payload: { speed: "fast" }, supported: true },
+    { modelId: "claude-sonnet-4-6", payload: { service_tier: "auto" }, supported: true },
+    { modelId: "claude-sonnet-5", payload: {}, supported: false },
+  ])("publishes only the transport capability for $modelId", ({ modelId, payload, supported }) => {
+    expect(
+      resolveFastModeCapability({
+        provider: "anthropic",
+        modelId,
+        api: "anthropic-messages",
+        endpointClass: "anthropic-public",
+        agentRuntime: "openclaw",
+        authRequirement: "api-key",
+      }),
+    ).toBe(supported);
+    expect(runNativeFastModeWrapper({ modelId }).payload).toEqual(payload);
   });
 
   it("uses native fast mode and premium pricing for Claude Opus 5", () => {

@@ -431,7 +431,7 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
         agentEpoch,
         isCurrentClient: () => this.isCurrentClient(client, clientEpoch),
         isCurrentAgent: () => this.agentEpoch === agentEpoch,
-        refreshProviders: () => this.refresh("discover"),
+        refreshProviders: () => this.refresh("prepared"),
         setBusy: (busy) => this.setBusy(params.key, busy),
         setMessage: (message) => this.setMessage(params.key, message),
       },

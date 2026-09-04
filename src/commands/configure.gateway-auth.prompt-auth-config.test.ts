@@ -103,7 +103,6 @@ function promptModelAllowlistOptions(index = 0) {
         loadCatalog?: boolean;
         message?: string;
         preferredProvider?: string;
-        providerScopedCatalog?: boolean;
       }
     | undefined;
 }
@@ -495,7 +494,6 @@ describe("promptAuthConfig", () => {
 
     expect(promptModelAllowlistOptions()?.preferredProvider).toBe("github-copilot");
     expect(promptModelAllowlistOptions()?.loadCatalog).toBe(true);
-    expect(promptModelAllowlistOptions()?.providerScopedCatalog).toBe(false);
   });
 
   it("loads configured provider models after Ollama Cloud + Local and Cloud only setup", async () => {
@@ -527,7 +525,6 @@ describe("promptAuthConfig", () => {
     const allowlistOptions = promptModelAllowlistOptions();
     expect(allowlistOptions?.preferredProvider).toBe("ollama");
     expect(allowlistOptions?.loadCatalog).toBe(true);
-    expect(allowlistOptions?.providerScopedCatalog).toBe(true);
   });
 
   it("loads plugin catalog when the selected provider allowlist requires it", async () => {
@@ -569,7 +566,6 @@ describe("promptAuthConfig", () => {
     const allowlistOptions = promptModelAllowlistOptions();
     expect(allowlistOptions?.preferredProvider).toBe("github-copilot");
     expect(allowlistOptions?.loadCatalog).toBe(true);
-    expect(allowlistOptions?.providerScopedCatalog).toBe(true);
   });
 
   it("loads catalog when the selected provider has manifest catalog rows", async () => {
@@ -609,7 +605,6 @@ describe("promptAuthConfig", () => {
     const call = promptModelAllowlistOptions();
     expect(call?.preferredProvider).toBe("github-copilot");
     expect(call?.loadCatalog).toBe(true);
-    expect(call?.providerScopedCatalog).toBe(true);
   });
 
   it("lets skip-auth model browsing scope the allowlist to the selected model provider", async () => {

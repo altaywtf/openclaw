@@ -34,6 +34,7 @@ function createChatModelState(
 
 function resolveFastModeState(params: {
   provider: string;
+  supportsFastMode?: boolean;
   fastMode?: boolean | "auto";
   effectiveFastMode?: boolean | "auto";
 }) {
@@ -51,7 +52,14 @@ function resolveFastModeState(params: {
   };
   return resolveChatFastModeSelectState({
     activeRunId: null,
-    catalog: [],
+    catalog: [
+      {
+        id: "model",
+        name: "Model",
+        provider: params.provider,
+        supportsFastMode: params.supportsFastMode,
+      },
+    ],
     connected: true,
     currentModelOverride: `${params.provider}/model`,
     fastModeTarget: sessionsResult.sessions[0],
@@ -64,6 +72,13 @@ function resolveFastModeState(params: {
 }
 
 describe("chat-model-select-state", () => {
+  it("does not infer fast-mode support from a provider name without capability metadata", () => {
+    expect(resolveFastModeState({ provider: "anthropic" })).toMatchObject({
+      supported: false,
+      disabled: true,
+    });
+  });
+
   it.each([
     { reason: "missing-auth", expected: "missing-auth" },
     { reason: "auth-failed", expected: "auth-failed" },
@@ -88,7 +103,7 @@ describe("chat-model-select-state", () => {
     { available: undefined, reason: undefined, expected: undefined },
     { available: false, reason: undefined, expected: undefined },
     { available: false, reason: "cooldown", expected: "cooldown" },
-    { available: false, reason: "missing-auth", expected: "auth-failed" },
+    { available: false, reason: "missing-auth", expected: "missing-auth" },
   ] as const)(
     "does not let an auth-failed alias override a $reason/$available route",
     ({ available, reason, expected }) => {
@@ -109,28 +124,37 @@ describe("chat-model-select-state", () => {
         },
       ];
       expect(resolveChatModelUnavailableReason("gpt-5.6-luna", "openai", catalog)).toBe(expected);
+      expect(resolveChatModelUnavailableReason("gpt-5.6-luna", "codex", catalog)).toBe(
+        "auth-failed",
+      );
     },
   );
 
   it("toggles between Standard and Fast for OpenAI models", () => {
-    expect(resolveFastModeState({ provider: "openai" })).toMatchObject({
+    expect(resolveFastModeState({ provider: "openai", supportsFastMode: true })).toMatchObject({
       active: false,
-      currentOverride: "off",
-      label: "Standard",
+      currentOverride: "",
+      label: "Default",
       nextValue: "on",
       supported: true,
     });
-    expect(resolveFastModeState({ provider: "openai", fastMode: true })).toMatchObject({
+    expect(
+      resolveFastModeState({ provider: "openai", supportsFastMode: true, fastMode: true }),
+    ).toMatchObject({
       active: true,
       currentOverride: "on",
       label: "Fast",
       nextValue: "off",
     });
-    expect(resolveFastModeState({ provider: "openai", effectiveFastMode: true })).toMatchObject({
+    expect(
+      resolveFastModeState({ provider: "openai", supportsFastMode: true, effectiveFastMode: true }),
+    ).toMatchObject({
       active: true,
-      currentOverride: "on",
+      currentOverride: "",
     });
-    expect(resolveFastModeState({ provider: "openai", fastMode: "auto" })).toMatchObject({
+    expect(
+      resolveFastModeState({ provider: "openai", supportsFastMode: true, fastMode: "auto" }),
+    ).toMatchObject({
       active: true,
       currentOverride: "auto",
       label: "Auto",
@@ -139,7 +163,7 @@ describe("chat-model-select-state", () => {
   });
 
   it("toggles between the inherited default and Fast for other fast-mode providers", () => {
-    expect(resolveFastModeState({ provider: "anthropic" })).toMatchObject({
+    expect(resolveFastModeState({ provider: "anthropic", supportsFastMode: true })).toMatchObject({
       active: false,
       currentOverride: "",
       label: "Default",
@@ -149,23 +173,35 @@ describe("chat-model-select-state", () => {
     // Turning fast off always writes an explicit off override: the inherited
     // baseline is unknowable while an override exists, and clearing could
     // land on a fast default, turning the click into a visible no-op.
-    expect(resolveFastModeState({ provider: "anthropic", fastMode: true })).toMatchObject({
+    expect(
+      resolveFastModeState({ provider: "anthropic", supportsFastMode: true, fastMode: true }),
+    ).toMatchObject({
       active: true,
       label: "Fast",
       nextValue: "off",
     });
-    expect(resolveFastModeState({ provider: "anthropic", effectiveFastMode: true })).toMatchObject({
+    expect(
+      resolveFastModeState({
+        provider: "anthropic",
+        supportsFastMode: true,
+        effectiveFastMode: true,
+      }),
+    ).toMatchObject({
       active: true,
       currentOverride: "",
       nextValue: "off",
     });
-    expect(resolveFastModeState({ provider: "anthropic", fastMode: false })).toMatchObject({
+    expect(
+      resolveFastModeState({ provider: "anthropic", supportsFastMode: true, fastMode: false }),
+    ).toMatchObject({
       active: false,
       currentOverride: "off",
       label: "Standard",
       nextValue: "on",
     });
-    expect(resolveFastModeState({ provider: "anthropic", fastMode: "auto" })).toMatchObject({
+    expect(
+      resolveFastModeState({ provider: "anthropic", supportsFastMode: true, fastMode: "auto" }),
+    ).toMatchObject({
       active: true,
       currentOverride: "auto",
       label: "Auto",
@@ -215,21 +251,21 @@ describe("chat-model-select-state", () => {
     expect(resolveChatModelOverrideValue(state)).toBe("openai/gpt-5-mini");
   });
 
-  it("normalizes cached bare overrides to the matching catalog option", () => {
+  it("preserves cached bare overrides without choosing a provider", () => {
     const state = createChatModelState({
       modelOverrides: { main: "gpt-5-mini" },
       chatModelCatalog: createModelCatalog(...DEFAULT_CHAT_MODEL_CATALOG),
     });
 
     const resolved = resolveChatModelSelectState(state);
-    expect(resolved.currentOverride).toBe("openai/gpt-5-mini");
+    expect(resolved.currentOverride).toBe("gpt-5-mini");
     expect(resolved.options).toEqual([
       { value: "openai/gpt-5", label: "GPT-5" },
       { value: "openai/gpt-5-mini", label: "GPT-5 Mini" },
     ]);
   });
 
-  it("prefers catalog provider matches over stale session providers", () => {
+  it("preserves the session provider when another catalog provider has the same model", () => {
     const state = createChatModelState({
       chatModelCatalog: createModelCatalog(DEEPSEEK_CHAT_MODEL),
       sessionsResult: createSessionsListResult({
@@ -238,7 +274,7 @@ describe("chat-model-select-state", () => {
       }),
     });
 
-    expect(resolveChatModelSelectState(state).currentOverride).toBe("deepseek/deepseek-chat");
+    expect(resolveChatModelSelectState(state).currentOverride).toBe("zai/deepseek-chat");
   });
 
   it("keeps the active model value but does not synthesize a picker option when the catalog is empty", () => {
@@ -250,7 +286,7 @@ describe("chat-model-select-state", () => {
     });
 
     const resolved = resolveChatModelSelectState(state);
-    expect(resolved.currentOverride).toBe("openai/gpt-5-mini");
+    expect(resolved.currentOverride).toBe("zai/openai/gpt-5-mini");
     expect(resolved.options).toEqual([]);
   });
 
@@ -323,12 +359,18 @@ describe("chat-model-select-state", () => {
     {
       name: "available",
       available: true,
-      options: [{ value: "openai/gpt-5.5", label: "GPT-5.5" }],
+      options: [
+        { value: "openai/gpt-5.5", label: "GPT-5.5 · openai" },
+        { value: "codex/gpt-5.5", label: "GPT-5.5 · codex", disabled: true },
+      ],
     },
     {
       name: "indeterminate",
       available: undefined,
-      options: [{ value: "openai/gpt-5.5", label: "GPT-5.5" }],
+      options: [
+        { value: "openai/gpt-5.5", label: "GPT-5.5 · openai" },
+        { value: "codex/gpt-5.5", label: "GPT-5.5 · codex", disabled: true },
+      ],
     },
     {
       name: "all-cold",
@@ -365,8 +407,8 @@ describe("chat-model-select-state", () => {
       });
 
       const resolved = resolveChatModelSelectState(state);
-      expect(resolved.currentOverride).toBe("openai/gpt-5.5");
-      expect(resolved.defaultModel).toBe("openai/gpt-5.5");
+      expect(resolved.currentOverride).toBe("codex/gpt-5.5");
+      expect(resolved.defaultModel).toBe("codex/gpt-5.5");
       expect(resolved.options).toEqual(options);
     },
   );
@@ -447,216 +489,60 @@ describe("chat-model-select-state", () => {
     ]);
   });
 
-  it("supports fast mode for a default legacy Codex provider", () => {
-    const sessionsResult = createSessionsListResult({
-      model: "gpt-5.5",
-      modelProvider: "codex",
-      defaultsModel: "gpt-5.5",
-      defaultsProvider: "codex",
-    });
+  it.each([true, false, undefined])(
+    "uses only the published fast capability %s for a canonical model",
+    (supportsFastMode) => {
+      expect(resolveFastModeState({ provider: "custom", supportsFastMode })).toMatchObject({
+        supported: supportsFastMode === true,
+        disabled: supportsFastMode !== true,
+        nextValue: supportsFastMode === true ? "on" : "",
+      });
+    },
+  );
 
+  it.each([true, false, "auto"] as const)(
+    "keeps a saved %s override clearable without advertising missing support",
+    (fastMode) => {
+      expect(resolveFastModeState({ provider: "custom", fastMode })).toMatchObject({
+        supported: true,
+        disabled: false,
+        nextValue: "",
+      });
+    },
+  );
+
+  it("does not use another provider or runtime to fill a missing fast capability", () => {
+    const sessionsResult = createSessionsListResult({ model: "model", modelProvider: "custom" });
+    const input = {
+      activeRunId: null,
+      catalog: [
+        {
+          id: "model",
+          name: "Model",
+          provider: "openai",
+          supportsFastMode: true,
+          agentRuntime: { id: "openclaw", source: "model" as const },
+        },
+      ],
+      connected: true,
+      currentModelOverride: "custom/model",
+      fastModeTarget: sessionsResult.sessions[0],
+      gatewayAvailable: true,
+      loading: false,
+      sending: false,
+      sessionsResult,
+      stream: null,
+    };
+    expect(resolveChatFastModeSelectState(input).supported).toBe(false);
     expect(
       resolveChatFastModeSelectState({
-        activeRunId: null,
-        catalog: [],
-        connected: true,
-        currentModelOverride: "",
-        fastModeTarget: sessionsResult.sessions[0],
-        gatewayAvailable: true,
-        loading: false,
-        sending: false,
-        sessionsResult,
-        stream: null,
-      }).supported,
-    ).toBe(true);
-  });
-
-  it.each([
-    { name: "missing", providers: [] },
-    { name: "ambiguous", providers: ["xai", "proxy"] },
-  ])("uses the session provider with a $name raw-id catalog", ({ providers }) => {
-    const model = "google/gemma-4-26b-a4b-it";
-    const sessionsResult = createSessionsListResult({
-      model,
-      modelProvider: "xai",
-      defaultsModel: model,
-      defaultsProvider: "xai",
-    });
-
-    expect(
-      resolveChatFastModeSelectState({
-        activeRunId: null,
-        catalog: providers.map((provider) => ({ id: model, name: "Gemma", provider })),
-        connected: true,
-        currentModelOverride: model,
-        fastModeTarget: sessionsResult.sessions[0],
-        gatewayAvailable: true,
-        loading: false,
-        sending: false,
-        sessionsResult,
-        stream: null,
-      }).supported,
-    ).toBe(true);
-  });
-
-  it("does not offer the speed toggle for providers without a runtime fast-mode mapping", () => {
-    // openrouter is proxied without a fast-mode wire mapping; an enabled
-    // toggle there would silently do nothing.
-    expect(resolveFastModeState({ provider: "openrouter" })).toMatchObject({
-      supported: false,
-      disabled: true,
-    });
-    // Legacy overrides stay visible but the toggle is clear-only: it must
-    // never write a fresh no-op fast override for an unmapped provider.
-    expect(resolveFastModeState({ provider: "openrouter", fastMode: true })).toMatchObject({
-      supported: true,
-      active: true,
-      nextValue: "",
-    });
-    expect(resolveFastModeState({ provider: "openrouter", fastMode: false })).toMatchObject({
-      supported: true,
-      active: false,
-      label: "Standard",
-      nextValue: "",
-    });
-  });
-
-  it("uses a catalog-qualified model provider before a stale session runtime provider", () => {
-    const sessionsResult = createSessionsListResult({
-      model: "claude-opus-4-8",
-      modelProvider: "claude-cli",
-      defaultsModel: "claude-opus-4-8",
-      defaultsProvider: "claude-cli",
-    });
-
-    expect(
-      resolveChatFastModeSelectState({
-        activeRunId: null,
-        catalog: [
-          {
-            id: "claude-opus-4-8",
-            name: "Claude Opus 4.8",
-            provider: "anthropic",
-          },
-        ],
-        connected: true,
-        currentModelOverride: "anthropic/claude-opus-4-8",
-        fastModeTarget: sessionsResult.sessions[0],
-        gatewayAvailable: true,
-        loading: false,
-        sending: false,
-        sessionsResult,
-        stream: null,
-      }).supported,
-    ).toBe(true);
-  });
-
-  it("keeps a unique qualified provider when proxy catalogs reuse the nested id", () => {
-    const sessionsResult = createSessionsListResult({
-      model: "claude-opus-4-8",
-      modelProvider: "claude-cli",
-      defaultsModel: "claude-opus-4-8",
-      defaultsProvider: "claude-cli",
-    });
-
-    expect(
-      resolveChatFastModeSelectState({
-        activeRunId: null,
-        catalog: [
-          {
-            id: "claude-opus-4-8",
-            name: "Claude Opus 4.8",
-            provider: "anthropic",
-          },
-          {
-            id: "anthropic/claude-opus-4-8",
-            name: "Claude Opus 4.8",
-            provider: "openrouter",
-          },
-          {
-            id: "anthropic/claude-opus-4-8",
-            name: "Claude Opus 4.8",
-            provider: "gateway-proxy",
-          },
-        ],
-        connected: true,
-        currentModelOverride: "anthropic/claude-opus-4-8",
-        fastModeTarget: sessionsResult.sessions[0],
-        gatewayAvailable: true,
-        loading: false,
-        sending: false,
-        sessionsResult,
-        stream: null,
-      }).supported,
-    ).toBe(true);
-  });
-
-  it("prefers an explicit native qualified route over a stale proxy provider hint", () => {
-    const sessionsResult = createSessionsListResult({
-      model: "google/gemini-2.5-pro",
-      modelProvider: "openrouter",
-      defaultsModel: "google/gemini-2.5-pro",
-      defaultsProvider: "openrouter",
-    });
-
-    expect(
-      resolveChatFastModeSelectState({
-        activeRunId: null,
-        catalog: [
-          {
-            id: "gemini-2.5-pro",
-            name: "Gemini 2.5 Pro",
-            provider: "google",
-          },
-          {
-            id: "google/gemini-2.5-pro",
-            name: "Gemini 2.5 Pro",
-            provider: "openrouter",
-          },
-        ],
-        connected: true,
-        currentModelOverride: "google/gemini-2.5-pro",
-        fastModeTarget: sessionsResult.sessions[0],
-        gatewayAvailable: true,
-        loading: false,
-        sending: false,
-        sessionsResult,
-        stream: null,
-      }).supported,
-    ).toBe(false);
-  });
-
-  it("does not restore a session provider rejected by relevant catalog metadata", () => {
-    const sessionsResult = createSessionsListResult({
-      model: "vendor/model",
-      modelProvider: "openrouter",
-      defaultsModel: "vendor/model",
-      defaultsProvider: "openrouter",
-    });
-
-    expect(
-      resolveChatFastModeSelectState({
-        activeRunId: null,
-        catalog: [
-          {
-            id: "vendor/model",
-            name: "Vendor Model",
-            provider: "proxy-a",
-          },
-          {
-            id: "vendor/model",
-            name: "Vendor Model",
-            provider: "proxy-b",
-          },
-        ],
-        connected: true,
-        currentModelOverride: "vendor/model",
-        fastModeTarget: sessionsResult.sessions[0],
-        gatewayAvailable: true,
-        loading: false,
-        sending: false,
-        sessionsResult,
-        stream: null,
+        ...input,
+        currentModelOverride: "openai/model",
+        fastModeTarget: {
+          model: "model",
+          modelProvider: "openai",
+          agentRuntime: { id: "other-runtime", source: "model" },
+        },
       }).supported,
     ).toBe(false);
   });

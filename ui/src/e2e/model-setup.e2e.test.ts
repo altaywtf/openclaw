@@ -154,6 +154,13 @@ suite.define(() => {
               status: "done",
               modelActivation: { modelRef: "openai/gpt-5" },
             },
+            "channels.status": {
+              ts: 1,
+              channelOrder: [],
+              channelLabels: {},
+              channels: {},
+              channelAccounts: {},
+            },
             "openclaw.chat": {
               sessionId: "e2e-custodian",
               reply: "## Hi, I'm OpenClaw",
@@ -220,7 +227,7 @@ suite.define(() => {
     );
   });
 
-  it("completes device-code sign-in from its verified activation result", async () => {
+  it("completes device-code sign-in without selecting a default", async () => {
     await suite.withPage(
       {
         ...(artifactDir
@@ -292,7 +299,6 @@ suite.define(() => {
                 {
                   done: true,
                   status: "done",
-                  modelActivation: { modelRef: "provider/verified-model" },
                 },
               ],
             },
@@ -356,13 +362,27 @@ suite.define(() => {
           sessionId: expect.any(String),
           answer: { stepId: "device-code" },
         });
-        await page.getByRole("heading", { name: "Connection verified" }).waitFor();
+        await page
+          .getByRole("status")
+          .filter({
+            hasText:
+              "Signed in. Available models will update automatically; your default is unchanged.",
+          })
+          .waitFor();
         expect(await gateway.getRequests("openclaw.setup.detect")).toHaveLength(
           detectCountBeforeCompletion,
         );
-        await expect
-          .poll(async () => page.locator(".model-setup-success").textContent())
-          .toContain("provider/verified-model");
+        expect(await gateway.getRequests("openclaw.setup.activate.start")).toHaveLength(0);
+        expect(
+          await page.evaluate(() =>
+            localStorage.getItem("openclaw.modelSetup.pendingActivation.v1"),
+          ),
+        ).toBeNull();
+        if (artifactDir) {
+          await page.screenshot({
+            path: path.join(artifactDir, "credential-login-complete.png"),
+          });
+        }
       },
     );
   });

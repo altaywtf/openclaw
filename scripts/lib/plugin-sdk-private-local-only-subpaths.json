@@ -120,6 +120,7 @@
   "provider-http-test-mocks",
   "provider-model-shared",
   "provider-model-types",
+  "provider-model-capabilities",
   "provider-oauth-runtime",
   "provider-onboard",
   "provider-selection-runtime",

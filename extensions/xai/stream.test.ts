@@ -9,6 +9,7 @@ import {
   type ModelThinkingLevel,
 } from "openclaw/plugin-sdk/llm";
 import { describe, expect, it } from "vitest";
+import { resolveFastModeCapability } from "./provider-policy-api.js";
 import { applyXaiRuntimeModelCompat } from "./runtime-model-compat.js";
 import { wrapXaiProviderStream } from "./stream.js";
 import {
@@ -93,6 +94,31 @@ function captureWrappedModelId(params: {
 
   return capturedModelId;
 }
+
+it.each([
+  { modelId: "grok-3", target: "grok-3-fast", supported: true },
+  { modelId: "grok-4-0709", target: "grok-4-fast", supported: true },
+  { modelId: "grok-4.3", target: "grok-4.3", supported: false },
+  { modelId: "grok-3-fast", target: "grok-3-fast", supported: false },
+])("publishes the actual fast variant contract for $modelId", ({ modelId, target, supported }) => {
+  expect(
+    resolveFastModeCapability({
+      modelId,
+      provider: "xai",
+      api: "openai-responses",
+      agentRuntime: "openclaw",
+    }),
+  ).toBe(supported);
+  expect(captureWrappedModelId({ modelId, fastMode: true })).toBe(target);
+  expect(
+    resolveFastModeCapability({
+      modelId,
+      provider: "xai",
+      api: "anthropic-messages",
+      agentRuntime: "openclaw",
+    }),
+  ).toBe(false);
+});
 
 function runXaiToolPayloadWrapper(params: {
   payload: Record<string, unknown>;

@@ -1,11 +1,207 @@
 import { expect, it } from "vitest";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
-import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
+import {
+  createControlUiMockSameOriginGatewayScript,
+  installMockGateway,
+} from "../test-helpers/control-ui-e2e.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
 const suite = createControlUiE2eSuite({ name: "Control UI model and effort controls" });
 
 suite.define(() => {
+  it.each(
+    ["chat", "new"].flatMap((route) => [false, true].map((knownEmpty) => ({ route, knownEmpty }))),
+  )(
+    "does not invent controls in $route (known empty: $knownEmpty)",
+    async ({ route, knownEmpty }) => {
+      await suite.withPage(
+        { viewport: { width: 1280, height: 900 }, recordVideo: { dir: suite.artifactDir } },
+        async ({ page }) => {
+          const profile = knownEmpty ? { thinkingLevels: [] } : {};
+          await installMockGateway(page, {
+            agentModel: "openai/unknown",
+            models: [
+              {
+                id: "unknown",
+                name: "Unknown capabilities",
+                provider: "openai",
+                reasoning: true,
+                ...profile,
+              },
+            ],
+            methodResponses: {
+              "agents.list": {
+                defaultId: "main",
+                mainKey: "main",
+                scope: "agent",
+                agents: [
+                  { id: "main", name: "Main", model: { primary: "openai/unknown" }, ...profile },
+                ],
+              },
+              "sessions.list": {
+                count: 1,
+                path: "",
+                ts: 1,
+                defaults: {
+                  model: "unknown",
+                  modelProvider: "openai",
+                  contextTokens: null,
+                  ...profile,
+                },
+                sessions: [
+                  {
+                    key: "agent:main:main",
+                    kind: "direct",
+                    updatedAt: 1,
+                    model: "unknown",
+                    modelProvider: "openai",
+                    ...profile,
+                  },
+                ],
+              },
+            },
+          });
+          await page.goto(`${suite.server.baseUrl}${route}`);
+          await expect
+            .poll(() => page.locator('[data-chat-model-select="true"]').textContent())
+            .toContain("Unknown capabilities");
+          await expect
+            .poll(() => page.locator('[data-chat-thinking-select="true"]').count())
+            .toBe(0);
+          expect(
+            await page.locator("[data-chat-speed-toggle], [data-chat-thinking-slider]").count(),
+          ).toBe(0);
+          await page.screenshot({ path: `${suite.artifactDir}/${route}-unknown-capabilities.png` });
+        },
+      );
+    },
+  );
+
+  it("preserves a remembered unavailable New Session model without changing its preference", async () => {
+    await suite.withPage(
+      {
+        viewport: { width: 1280, height: 900 },
+        recordVideo: { dir: suite.artifactDir },
+      },
+      async ({ page }) => {
+        await page.addInitScript({ content: createControlUiMockSameOriginGatewayScript() });
+        const appUrl = new URL(suite.server.baseUrl);
+        const gatewayUrl = `ws://${appUrl.host}`;
+        const key = `openclaw.new-session.preferences.v1:${gatewayOriginScope(gatewayUrl)}`;
+        const preference = { model: "openai/remembered", thinkingLevel: "high" };
+        await page.addInitScript(
+          ({ key: storageKey, preference: rememberedPreference }) => {
+            localStorage.setItem(
+              storageKey,
+              JSON.stringify({ agents: { main: rememberedPreference } }),
+            );
+          },
+          { key, preference },
+        );
+        const gateway = await installMockGateway(page, {
+          agentModel: "openai/starter",
+          models: [
+            { id: "starter", name: "Starter", provider: "openai", available: true },
+            {
+              id: "remembered",
+              name: "Remembered",
+              provider: "openai",
+              available: false,
+              unavailableReason: "missing-auth",
+            },
+          ],
+        });
+        await page.goto(`${suite.server.baseUrl}new`);
+        const model = page.locator('[data-chat-model-select="true"]');
+        await expect
+          .poll(() => model.getAttribute("data-chat-select-value"))
+          .toBe(preference.model);
+        await page.locator(".new-session-page__message").fill("Keep my model choice");
+        expect(await page.getByRole("button", { name: "Start session" }).isEnabled()).toBe(false);
+        expect(
+          await page.evaluate(
+            (storageKey) => JSON.parse(localStorage.getItem(storageKey)!).agents.main,
+            key,
+          ),
+        ).toMatchObject(preference);
+        await model.click();
+        await page
+          .locator('[data-chat-model-option="openai/remembered"]')
+          .waitFor({ state: "visible" });
+        expect(
+          await page
+            .locator('[data-chat-model-option="openai/remembered"]')
+            .getAttribute("data-chat-model-setup"),
+        ).toBe("true");
+        await page.screenshot({ path: `${suite.artifactDir}/remembered-unavailable.png` });
+        expect(await gateway.getRequests("sessions.create")).toHaveLength(0);
+        expect(await gateway.getRequests("sessions.patch")).toHaveLength(0);
+      },
+    );
+  });
+
+  it.each(["chat", "new"])(
+    "preserves the Gateway model route and availability in %s",
+    async (route) => {
+      await suite.withPage(
+        {
+          viewport: { width: 1280, height: 900 },
+          recordVideo: { dir: suite.artifactDir },
+        },
+        async ({ page }) => {
+          const gateway = await installMockGateway(page, {
+            agentModel: "openai/chosen",
+            models: [
+              {
+                id: "chosen",
+                provider: "openai",
+                name: "Chosen",
+                available: false,
+                unavailableReason: "missing-auth",
+              },
+              { id: "chosen", provider: "codex", name: "Other route", available: true },
+            ],
+            methodResponses: {
+              "sessions.list": {
+                count: 1,
+                path: "",
+                ts: 1,
+                defaults: { model: "chosen", modelProvider: "openai" },
+                sessions: [
+                  {
+                    key: "agent:main:main",
+                    kind: "direct",
+                    model: "chosen",
+                    modelProvider: "openai",
+                    modelOverrideSource: "user",
+                    updatedAt: 1,
+                  },
+                ],
+              },
+            },
+          });
+          await page.goto(`${suite.server.baseUrl}${route}`);
+          const model = page.locator('[data-chat-model-select="true"]');
+          await expect.poll(() => model.textContent()).toContain("Chosen");
+          await model.click();
+          const unavailable = page.locator('[data-chat-model-option="openai/chosen"]');
+          await expect.poll(() => unavailable.isVisible()).toBe(true);
+          expect(await unavailable.getAttribute("data-chat-model-setup")).toBe("true");
+          expect(await unavailable.getAttribute("data-chat-model-default")).toBe("true");
+          expect(await page.locator('[data-chat-model-option="codex/chosen"]').isEnabled()).toBe(
+            true,
+          );
+          expect(await unavailable.locator("[data-chat-model-auth-warning]").count()).toBe(1);
+          await page.screenshot({ path: `${suite.artifactDir}/${route}-availability.png` });
+          await unavailable.click();
+          await expect.poll(() => new URL(page.url()).pathname).toContain("model-providers");
+          expect(await gateway.getRequests("sessions.patch")).toHaveLength(0);
+          expect(await gateway.getRequests("sessions.create")).toHaveLength(0);
+        },
+      );
+    },
+  );
+
   it.each(
     ["chat", "new"].flatMap((route) =>
       [false, true].map((tooltipOpen) => ({ route, tooltipOpen })),
@@ -29,6 +225,8 @@ suite.define(() => {
               name: longName,
               reasoning: true,
               thinkingLevels,
+              thinkingDefault: "high",
+              supportsFastMode: true,
             },
             {
               id: "speed-only",
@@ -36,6 +234,7 @@ suite.define(() => {
               name: "Speed only",
               reasoning: false,
               thinkingLevels: [],
+              supportsFastMode: true,
             },
             {
               id: "basic",
@@ -43,6 +242,7 @@ suite.define(() => {
               name: "Basic",
               reasoning: false,
               thinkingLevels: [],
+              supportsFastMode: false,
             },
           ],
           methodResponses: {
@@ -262,24 +462,41 @@ suite.define(() => {
             });
         } else {
           await expect.poll(() => effort.count()).toBe(1);
-          await expect.poll(() => effort.getAttribute("aria-label")).toBe("Fast mode: Standard");
+          await expect.poll(() => effort.getAttribute("data-chat-thinking-value")).toBe("high");
+          expect(await composer.locator("[data-chat-thinking-slider]").count()).toBe(0);
           await expect
             .poll(() => composer.locator("[data-chat-speed-toggle]").getAttribute("aria-checked"))
             .toBe("false");
           await model.click();
           await composer.locator('[data-chat-model-option="example/basic"]').click();
-          await expect.poll(() => effort.count()).toBe(0);
+          await expect.poll(() => effort.getAttribute("data-chat-thinking-value")).toBe("high");
+          expect(
+            await composer.locator("[data-chat-thinking-slider], [data-chat-speed-toggle]").count(),
+          ).toBe(0);
         }
       });
     },
   );
-  it.each(["openai", "example"])(
-    "keeps %s non-reasoning capabilities reachable without a model-menu bridge",
-    async (provider) => {
+  it.each([
+    { provider: "openai", supportsFastMode: true },
+    { provider: "custom", supportsFastMode: true },
+    { provider: "example", supportsFastMode: false },
+  ])(
+    "keeps $provider non-reasoning capabilities reachable without a model-menu bridge",
+    async ({ provider, supportsFastMode }) => {
       await suite.withPage({ viewport: { width: 320, height: 852 } }, async ({ page }) => {
         const gateway = await installMockGateway(page, {
           agentModel: `${provider}/basic`,
-          models: [{ id: "basic", provider, name: "Basic", reasoning: false, thinkingLevels: [] }],
+          models: [
+            {
+              id: "basic",
+              provider,
+              name: "Basic",
+              reasoning: false,
+              thinkingLevels: [],
+              supportsFastMode,
+            },
+          ],
           methodResponses: {
             "sessions.list": {
               count: 1,
@@ -312,11 +529,11 @@ suite.define(() => {
         const model = composer.locator('[data-chat-model-select="true"]');
         await expect.poll(() => model.getAttribute("aria-busy")).toBe("false");
         const effort = composer.locator('[data-chat-thinking-select="true"]');
-        if (provider === "example") {
+        if (!supportsFastMode) {
           await expect.poll(() => effort.count()).toBe(0);
           return;
         }
-        await expect.poll(() => effort.getAttribute("aria-label")).toBe("Fast mode: Standard");
+        await expect.poll(() => effort.getAttribute("aria-label")).toBe("Fast mode: Default");
         const [modelBox, effortBox, actionsBox] = await Promise.all([
           model.boundingBox(),
           effort.boundingBox(),
@@ -354,3 +571,4 @@ suite.define(() => {
     },
   );
 });
+import { gatewayOriginScope } from "@openclaw/gateway-client/browser";

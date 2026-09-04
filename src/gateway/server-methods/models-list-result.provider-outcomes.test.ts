@@ -131,6 +131,12 @@ describe("models.list provider catalog outcomes", () => {
   it.each([
     { name: "provider auth", rejectionScope: undefined, usageStats: undefined },
     {
+      name: "materialized profile",
+      rejectionScope: undefined,
+      usageStats: undefined,
+      materialized: true,
+    },
+    {
       name: "model-route auth",
       rejectionScope: "catalog" as const,
       usageStats: {
@@ -193,6 +199,21 @@ describe("models.list provider catalog outcomes", () => {
         ...(testCase.usageStats ? { usageStats: testCase.usageStats } : {}),
       },
       preferredProfileId: "openai:chatgpt",
+      preparedRuntimeAuthMaterializations:
+        "materialized" in testCase
+          ? [
+              {
+                provider: "openai",
+                modelId: "gpt-5.6-sol",
+                modelApi: "openai-responses",
+                modelBaseUrl: "https://api.openai.com/v1",
+                requestTransportOverrides: "none",
+                authMode: "api_key",
+                runtimeOwnerId: "openclaw",
+                authProfileId: "openai:chatgpt",
+              },
+            ]
+          : [],
     });
     const context = {
       getRuntimeConfig: () => config,
@@ -274,7 +295,9 @@ describe("models.list provider catalog outcomes", () => {
       },
     });
 
-    await expect(projector.evaluateEntry(model, [model])).resolves.toMatchObject({
+    await expect(
+      projector.decisions.evaluate(model, projector.decisionContext),
+    ).resolves.toMatchObject({
       availability: true,
       selectedProfileId: "openai:accepted",
     });

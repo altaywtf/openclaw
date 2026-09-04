@@ -1023,9 +1023,9 @@ describe("gateway session utils", () => {
   test("session rows project the selected catalog context window", () => {
     const catalog = [
       {
-        provider: "claude-cli",
-        id: "claude-fable-5",
-        name: "Claude Fable 5",
+        provider: "anthropic",
+        id: "catalog-context-model",
+        name: "Catalog Context Model",
         contextWindow: 1_000_000,
         contextWindows: [
           { id: "200k", label: "200K", contextWindow: 200_000 },
@@ -1034,7 +1034,7 @@ describe("gateway session utils", () => {
         contextWindowDefault: "1m",
       },
     ];
-    const cfg = createModelDefaultsConfig({ primary: "claude-cli/claude-fable-5" });
+    const cfg = createModelDefaultsConfig({ primary: "anthropic/catalog-context-model" });
 
     const defaults = getSessionDefaults(cfg, catalog);
     const row = buildGatewaySessionRow({

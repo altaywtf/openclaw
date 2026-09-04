@@ -31,6 +31,13 @@ describe("buildModelOptions", () => {
     },
   ];
 
+  it("preserves catalog unavailability when an agent has configured the same model", () => {
+    const config = { agents: { defaults: { models: { [model]: {} } } } };
+    expect(buildModelOptions(config, model, [{ ...catalog[0], available: false }])).toContainEqual(
+      expect.objectContaining({ value: model, disabled: true }),
+    );
+  });
+
   it.each([
     {
       name: "inherits the default alias when agent metadata omits alias",
@@ -348,6 +355,7 @@ describe("buildAgentContext", () => {
 
     expect(context.workspace).toBe("/tmp/default-workspace");
     expect(context.model).toBe("openai/gpt-5.5 (+1 fallback)");
+    expect(context.runtime).toBe("-");
   });
 
   it("shows inherited skill filters in the agent context", () => {

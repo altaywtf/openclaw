@@ -166,6 +166,7 @@
     "!dist/plugin-sdk/provider-http-test-mocks.d.ts",
     "!dist/plugin-sdk/provider-model-shared.d.ts",
     "!dist/plugin-sdk/provider-model-types.d.ts",
+    "!dist/plugin-sdk/provider-model-capabilities.d.ts",
     "!dist/plugin-sdk/provider-oauth-runtime.d.ts",
     "!dist/plugin-sdk/provider-onboard.d.ts",
     "!dist/plugin-sdk/provider-selection-runtime.d.ts",
@@ -1377,6 +1378,9 @@
     },
     "./plugin-sdk/provider-model-types": {
       "default": "./dist/plugin-sdk/provider-model-types.js"
+    },
+    "./plugin-sdk/provider-model-capabilities": {
+      "default": "./dist/plugin-sdk/provider-model-capabilities.js"
     },
     "./plugin-sdk/provider-model-shared": {
       "default": "./dist/plugin-sdk/provider-model-shared.js"

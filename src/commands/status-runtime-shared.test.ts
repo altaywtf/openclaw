@@ -1,5 +1,6 @@
 // Status runtime shared tests cover gateway health, runtime details, and safe status probe fallbacks.
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ModelAuthAvailabilityEvaluation } from "../agents/model-auth-availability.js";
 import {
   resolveStatusGatewayDiagnosticsSafe,
   resolveStatusGatewayHealth,
@@ -16,16 +17,26 @@ const mocks = vi.hoisted(() => ({
   callGateway: vi.fn(),
   getDaemonStatusSummary: vi.fn(),
   getNodeDaemonStatusSummary: vi.fn(),
-  resolveModelAuthLabel: vi.fn(),
+  loadPreparedModelCatalogView: vi.fn(),
 }));
 
 vi.mock("../infra/provider-usage.js", () => ({
   loadProviderUsageSummary: mocks.loadProviderUsageSummary,
 }));
 
-vi.mock("../agents/model-auth-label.js", () => ({
-  resolveModelAuthLabel: mocks.resolveModelAuthLabel,
+vi.mock("../agents/model-catalog-view.js", () => ({
+  loadPreparedModelCatalogView: mocks.loadPreparedModelCatalogView,
 }));
+
+function preparedUsageCatalog(evaluation: ModelAuthAvailabilityEvaluation) {
+  const entry = { provider: "openai", id: "gpt-5.5", name: "Test model" };
+  return {
+    entries: [entry],
+    resolvedDefault: { provider: entry.provider, model: entry.id },
+    evaluate: () => evaluation,
+    runtime: () => ({ id: "codex", source: "model" }),
+  };
+}
 
 vi.mock("../security/audit.runtime.js", () => ({
   runSecurityAudit: mocks.runSecurityAudit,
@@ -72,7 +83,10 @@ describe("status-runtime-shared", () => {
     mocks.callGateway.mockResolvedValue({ ok: true });
     mocks.getDaemonStatusSummary.mockResolvedValue({ label: "LaunchAgent" });
     mocks.getNodeDaemonStatusSummary.mockResolvedValue({ label: "node" });
-    mocks.resolveModelAuthLabel.mockReturnValue(undefined);
+    mocks.loadPreparedModelCatalogView.mockResolvedValue({
+      ...preparedUsageCatalog({ availability: undefined, routeResolution: null }),
+      entries: [],
+    });
   });
 
   it("resolves the shared security audit payload", async () => {
@@ -138,7 +152,15 @@ describe("status-runtime-shared", () => {
     expect(mocks.loadProviderUsageSummary).not.toHaveBeenCalled();
   });
 
-  it("adds Codex synthetic usage for configured OpenAI Codex runtime routes without profiles", async () => {
+  it("adds Codex synthetic usage for a prepared native sign-in without profiles", async () => {
+    mocks.loadPreparedModelCatalogView.mockResolvedValue(
+      preparedUsageCatalog({
+        availability: true,
+        routeResolution: null,
+        selectedAuthMode: "oauth",
+        evidence: "runtime",
+      }),
+    );
     mocks.loadProviderUsageSummary
       .mockResolvedValueOnce({
         updatedAt: 1,
@@ -210,6 +232,14 @@ describe("status-runtime-shared", () => {
   });
 
   it("keeps existing OpenAI usage when Codex synthetic usage has no windows", async () => {
+    mocks.loadPreparedModelCatalogView.mockResolvedValue(
+      preparedUsageCatalog({
+        availability: true,
+        routeResolution: null,
+        selectedAuthMode: "oauth",
+        evidence: "runtime",
+      }),
+    );
     mocks.loadProviderUsageSummary
       .mockResolvedValueOnce({
         updatedAt: 1,
@@ -260,6 +290,14 @@ describe("status-runtime-shared", () => {
   });
 
   it("does not add Codex synthetic usage for OpenAI routes pinned to OpenClaw runtime", async () => {
+    mocks.loadPreparedModelCatalogView.mockResolvedValue({
+      ...preparedUsageCatalog({
+        availability: true,
+        routeResolution: null,
+        selectedAuthMode: "oauth",
+      }),
+      runtime: () => ({ id: "openclaw", source: "model" }),
+    });
     await resolveStatusUsageSummary({
       timeoutMs: 3456,
       config: {
@@ -279,33 +317,93 @@ describe("status-runtime-shared", () => {
     expect(requireProviderUsageCall()).not.toHaveProperty("auth");
   });
 
-  it("does not add Codex synthetic usage for API-key-backed OpenAI Codex runtime routes", async () => {
-    mocks.resolveModelAuthLabel.mockReturnValue("api-key (openai:api)");
+  it.each(["api_key", "api-key"])(
+    "does not add Codex synthetic usage for %s routes",
+    async (mode) => {
+      mocks.loadPreparedModelCatalogView.mockResolvedValue(
+        preparedUsageCatalog({
+          availability: true,
+          routeResolution: null,
+          selectedAuthMode: mode,
+          selectedProfileId: "openai:api",
+        }),
+      );
+
+      await resolveStatusUsageSummary({
+        timeoutMs: 3456,
+        config: {
+          agents: {
+            defaults: {
+              model: { primary: "openai/gpt-5.5" },
+              models: {
+                "openai/gpt-5.5": { agentRuntime: { id: "codex" } },
+              },
+            },
+          },
+        },
+        agentDir: "/tmp/status-agent",
+      });
+
+      expect(mocks.loadProviderUsageSummary).toHaveBeenCalledOnce();
+      expect(requireProviderUsageCall()).not.toHaveProperty("auth");
+    },
+  );
+
+  it.each(["missing-auth", "auth-failed", "cooldown"] as const)(
+    "keeps live quota probes when model inference reports %s",
+    async (unavailableReason) => {
+      mocks.loadPreparedModelCatalogView.mockResolvedValue(
+        preparedUsageCatalog({
+          availability: false,
+          unavailableReason,
+          routeResolution: null,
+        }),
+      );
+
+      await resolveStatusUsageSummary({
+        config: {
+          agents: {
+            defaults: {
+              model: { primary: "openai/gpt-5.5" },
+              models: { "openai/gpt-5.5": { agentRuntime: { id: "codex" } } },
+            },
+          },
+        },
+        agentDir: "/tmp/status-agent",
+      });
+
+      expect(mocks.loadProviderUsageSummary).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("binds native usage to the prepared model's selected profile", async () => {
+    mocks.loadPreparedModelCatalogView.mockResolvedValue(
+      preparedUsageCatalog({
+        availability: true,
+        routeResolution: null,
+        selectedAuthMode: "oauth",
+        selectedProfileId: "openai:selected",
+      }),
+    );
 
     await resolveStatusUsageSummary({
-      timeoutMs: 3456,
       config: {
         agents: {
           defaults: {
             model: { primary: "openai/gpt-5.5" },
-            models: {
-              "openai/gpt-5.5": { agentRuntime: { id: "codex" } },
-            },
+            models: { "openai/gpt-5.5": { agentRuntime: { id: "codex" } } },
           },
         },
       },
       agentDir: "/tmp/status-agent",
     });
 
-    expect(mocks.loadProviderUsageSummary).toHaveBeenCalledOnce();
-    expect(requireProviderUsageCall()).not.toHaveProperty("auth");
-    expect(mocks.resolveModelAuthLabel).toHaveBeenCalledWith({
-      provider: "openai",
-      acceptedProviderIds: ["openai"],
-      cfg: expect.any(Object),
-      agentDir: "/tmp/status-agent",
-      includeExternalProfiles: false,
-    });
+    expect(mocks.loadProviderUsageSummary).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        auth: [expect.objectContaining({ authProfileId: "openai:selected" })],
+      }),
+    );
   });
 
   it("resolves usage summaries with explicit agent scope", async () => {

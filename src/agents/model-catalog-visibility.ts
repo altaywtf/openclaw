@@ -4,10 +4,7 @@
  * auth-backed availability.
  */
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import type {
-  ModelAuthAvailabilityEvaluation,
-  ModelAuthAvailabilityRef,
-} from "./model-auth-availability.js";
+import type { ModelAuthAvailabilityEvaluation } from "./model-auth-availability.js";
 import { compareModelCatalogEntries } from "./model-catalog-order.js";
 import {
   type ModelCatalogRoutePolicy,
@@ -28,10 +25,6 @@ import {
 import { modelCatalogLogicalKey } from "./openai-model-routes.js";
 
 type ModelCatalogVisibilityView = "default" | "configured" | "all";
-export type ModelCatalogAuthChecker = (
-  provider: string,
-  ref?: ModelAuthAvailabilityRef,
-) => boolean | Promise<boolean>;
 
 type LogicalModelCatalogEntryState = {
   authBacked: boolean;
@@ -112,25 +105,6 @@ type LogicalModelCatalogParams = {
   routePolicy: ModelCatalogRoutePolicy;
   routeVariants?: readonly ModelCatalogEntry[];
 };
-
-/** Resolves logical rows while keeping provider-owned physical route precedence. */
-export async function resolveLogicalVisibleModelCatalog(
-  params: LogicalModelCatalogParams & {
-    evaluateEntry(
-      entry: ModelCatalogEntry,
-      routeVariants: readonly ModelCatalogEntry[],
-    ): Promise<LogicalModelCatalogEntryState>;
-  },
-): Promise<ModelCatalogEntry[]> {
-  const read = await prepareLogicalVisibleModelCatalog({
-    ...params,
-    prepareEntry: async (entry, variants) => {
-      const state = await params.evaluateEntry(entry, variants);
-      return () => state;
-    },
-  });
-  return read();
-}
 
 /** Prepare host facts once; observe revocable state only in the synchronous publication. */
 export async function prepareLogicalVisibleModelCatalog(
@@ -301,8 +275,11 @@ export async function prepareLogicalVisibleModelCatalog(
       );
     });
     // Selected physical routes must lead dedupe so sibling metadata cannot win.
-    return projectEntries([...preferred, ...kept, ...retained, ...routeBacked]).filter((entry) =>
-      isPickerVisibleCatalogEntry(entry, configuredKeys, params.routePolicy),
+    return projectEntries([...preferred, ...kept, ...retained, ...routeBacked]).filter(
+      (entry) =>
+        (!policy.hasProviderWildcards ||
+          policy.allows({ provider: entry.provider, model: entry.id })) &&
+        isPickerVisibleCatalogEntry(entry, configuredKeys, params.routePolicy),
     );
   };
 }

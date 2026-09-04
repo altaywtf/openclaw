@@ -589,19 +589,22 @@ describe("listThinkingLevels", () => {
     expect(listThinkingLevels("claude-cli", "company-fable", catalog)).toEqual(["off"]);
   });
 
-  it("uses generic thinking levels when a provider has no custom profile", () => {
-    providerRuntimeMocks.resolveProviderThinkingProfile.mockReturnValue(null);
+  it.each([undefined, null])(
+    "uses generic thinking levels when a provider returns %s",
+    (profile) => {
+      providerRuntimeMocks.resolveProviderThinkingProfile.mockReturnValue(profile);
 
-    expect(
-      listThinkingLevels("vllm", "reasoning-model", [
-        {
-          provider: "vllm",
-          id: "reasoning-model",
-          reasoning: true,
-        },
-      ]),
-    ).toEqual(["off", "minimal", "low", "medium", "high"]);
-  });
+      expect(
+        listThinkingLevels("vllm", "reasoning-model", [
+          {
+            provider: "vllm",
+            id: "reasoning-model",
+            reasoning: true,
+          },
+        ]),
+      ).toEqual(["off", "minimal", "low", "medium", "high"]);
+    },
+  );
 
   it("honors provider-owned thinking maps before compat and derives OpenClaw Ultra", () => {
     const catalog = [

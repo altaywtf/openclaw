@@ -18,7 +18,7 @@ import type {
   SessionListRowContext,
   SessionListRowContextProvider,
 } from "./session-utils-contracts.js";
-import { resolveSessionDisplayModelIdentityRefCached } from "./session-utils-model.js";
+import { resolveSessionDisplayModelIdentityRefCached } from "./session-utils-model-identity.js";
 import {
   buildSingleRowStoreChildSessionsByKey,
   resolveSessionSelectedModelRef,

@@ -38,7 +38,6 @@ const getSessionGoalMock = vi.fn();
 const updateSessionGoalObjectiveMock = vi.fn();
 const updateSessionGoalStatusMock = vi.fn();
 const loadAgentRuntimePluginRegistryHandleMock = vi.fn();
-const withPluginRuntimeRegistryScopeMock = vi.fn((_registry: unknown, run: () => unknown) => run());
 const ensureContextWindowCacheLoadedMock = vi.fn(async () => undefined);
 const runSessionStartupMigrationMock = vi.fn<(...args: unknown[]) => Promise<void>>(
   async () => undefined,
@@ -71,12 +70,8 @@ const loadCombinedSessionStoreForGatewayMock = vi.fn((_options?: unknown) => ({
   store: {},
 }));
 const getRuntimeConfigMock = vi.fn(() => ({}));
-const loadGatewayModelCatalogMock = vi.fn(
-  (_params?: unknown): Array<{ id: string; name: string; provider: string }> => [],
-);
-const buildAllowedModelSetMock = vi.fn(({ catalog }: { catalog: unknown[] }) => ({
-  allowedCatalog: catalog,
-}));
+const loadPreparedModelCatalogViewMock = vi.fn();
+const resolveThinkingDefaultMock = vi.fn<(_params: unknown) => "low" | undefined>(() => undefined);
 const readChatHistoryPageMock = vi.fn(
   async (_params?: unknown): Promise<{ messages: unknown[] }> => ({
     messages: [],
@@ -175,11 +170,6 @@ vi.mock("../agents/runtime-plugins.js", () => ({
     loadAgentRuntimePluginRegistryHandleMock(...args),
 }));
 
-vi.mock("../plugins/runtime/gateway-request-scope.js", () => ({
-  withPluginRuntimeRegistryScope: (...args: [unknown, () => unknown]) =>
-    withPluginRuntimeRegistryScopeMock(...args),
-}));
-
 vi.mock("../agents/context.js", () => ({
   ensureContextWindowCacheLoaded: () => ensureContextWindowCacheLoadedMock(),
 }));
@@ -194,19 +184,7 @@ vi.mock("../agents/defaults.js", () => ({
 }));
 
 vi.mock("../agents/model-selection.js", () => ({
-  buildAllowedModelSet: (params: { catalog: unknown[]; agentId?: string }) =>
-    buildAllowedModelSetMock(params),
-  buildConfiguredModelCatalog: ({ cfg }: { cfg: { models?: { providers?: unknown } } }) =>
-    Object.entries(
-      (cfg.models?.providers as Record<string, { models?: Array<{ id: string }> }>) ?? {},
-    ).flatMap(([provider, entry]) =>
-      (entry.models ?? []).map((model) => ({
-        id: `${provider}/${model.id}`,
-        name: model.id,
-        provider,
-      })),
-    ),
-  resolveThinkingDefault: () => undefined,
+  resolveThinkingDefault: (params: unknown) => resolveThinkingDefaultMock(params),
 }));
 
 vi.mock("../config/config.js", () => ({
@@ -269,8 +247,8 @@ vi.mock("../gateway/session-utils.js", () => ({
   resolveSessionModelRef: () => ({ provider: "openai", model: "gpt-5.4" }),
 }));
 
-vi.mock("../gateway/server-model-catalog.js", () => ({
-  loadGatewayModelCatalog: (params?: unknown) => loadGatewayModelCatalogMock(params),
+vi.mock("../agents/model-catalog-view.js", () => ({
+  loadPreparedModelCatalogView: (...args: unknown[]) => loadPreparedModelCatalogViewMock(...args),
 }));
 
 vi.mock("../gateway/session-create-service.js", () => ({
@@ -375,7 +353,6 @@ describe("EmbeddedTuiBackend", () => {
       tokensUsed: 0,
     }));
     loadAgentRuntimePluginRegistryHandleMock.mockReset();
-    withPluginRuntimeRegistryScopeMock.mockClear();
     ensureContextWindowCacheLoadedMock.mockReset();
     ensureContextWindowCacheLoadedMock.mockResolvedValue(undefined);
     runSessionStartupMigrationMock.mockReset();
@@ -421,9 +398,13 @@ describe("EmbeddedTuiBackend", () => {
     projectSessionsPatchEntryMock.mockResolvedValue({ ok: true, entry: {} });
     getRuntimeConfigMock.mockReset();
     getRuntimeConfigMock.mockReturnValue({});
-    loadGatewayModelCatalogMock.mockReset();
-    loadGatewayModelCatalogMock.mockReturnValue([]);
-    buildAllowedModelSetMock.mockClear();
+    loadPreparedModelCatalogViewMock.mockReset();
+    loadPreparedModelCatalogViewMock.mockResolvedValue({
+      entries: [],
+      evaluate: () => ({ availability: true, routeResolution: null }),
+    });
+    resolveThinkingDefaultMock.mockReset();
+    resolveThinkingDefaultMock.mockReturnValue(undefined);
     readChatHistoryPageMock.mockReset();
     readChatHistoryPageMock.mockResolvedValue({ messages: [] });
     loadSessionEntryMock.mockReset();
@@ -650,186 +631,72 @@ describe("EmbeddedTuiBackend", () => {
     expect(getEmbeddedPluginApprovalBroker()).toBeNull();
   });
 
-  it("lists configured replace-mode models without loading the gateway catalog", async () => {
-    getRuntimeConfigMock.mockReturnValue({
-      models: {
-        mode: "replace",
-        providers: {
-          "tui-pty-mock": {
-            models: [{ id: "gpt-5.5" }],
-          },
-        },
-      },
+  it("lists the selected agent's prepared rows and availability without a second model filter", async () => {
+    const row = { provider: "fixture", id: "work-model", name: "Work model" };
+    const cfg = { agents: { entries: { work: { model: "fixture/work-model" } } } };
+    getRuntimeConfigMock.mockReturnValue(cfg);
+    loadPreparedModelCatalogViewMock.mockResolvedValue({
+      entries: [row],
+      evaluate: () => ({
+        availability: false,
+        unavailableReason: "missing-auth",
+        routeResolution: null,
+      }),
     });
-
     const backend = new EmbeddedTuiBackend();
 
-    await expect(backend.listModels()).resolves.toEqual([
+    await expect(backend.listModels({ agentId: "work" })).resolves.toEqual([
       {
-        id: "tui-pty-mock/gpt-5.5",
-        name: "gpt-5.5",
-        provider: "tui-pty-mock",
+        ...row,
         contextWindow: undefined,
         reasoning: undefined,
+        available: false,
+        unavailableReason: "missing-auth",
       },
     ]);
-    expect(loadGatewayModelCatalogMock).not.toHaveBeenCalled();
+    expect(loadPreparedModelCatalogViewMock).toHaveBeenCalledWith({ config: cfg, agentId: "work" });
   });
 
-  it("preserves empty configured replace-mode model catalogs", async () => {
-    getRuntimeConfigMock.mockReturnValue({
-      models: {
-        mode: "replace",
-        providers: {},
-      },
-    });
-
-    const backend = new EmbeddedTuiBackend();
-
-    await expect(backend.listModels()).resolves.toEqual([]);
-    expect(loadGatewayModelCatalogMock).not.toHaveBeenCalled();
-  });
-
-  it("loads the gateway catalog for replace-mode provider wildcard allowlists", async () => {
-    getRuntimeConfigMock.mockReturnValue({
-      agents: {
-        defaults: {
-          models: {
-            "tui-pty-mock/*": {},
-          },
-        },
-      },
-      models: {
-        mode: "replace",
-        providers: {
-          "tui-pty-mock": {
-            models: [{ id: "configured" }],
-          },
-        },
-      },
-    });
-    loadGatewayModelCatalogMock.mockReturnValue([
-      {
-        id: "discovered",
-        name: "discovered",
-        provider: "tui-pty-mock",
-      },
-    ]);
-
-    const backend = new EmbeddedTuiBackend();
-
-    await expect(backend.listModels()).resolves.toEqual([
-      {
-        id: "discovered",
-        name: "discovered",
-        provider: "tui-pty-mock",
-        contextWindow: undefined,
-        reasoning: undefined,
-      },
-    ]);
-    expect(loadGatewayModelCatalogMock).toHaveBeenCalledWith({ readOnly: false });
-  });
-
-  it("passes the selected agent into model filtering", async () => {
-    getRuntimeConfigMock.mockReturnValue({
-      agents: {
-        ownership: "explicit",
-        entries: {
-          main: { modelPolicy: { allow: ["fixture/main-model"] } },
-          work: { modelPolicy: { allow: ["fixture/work-model"] } },
-        },
-      },
-      models: {
-        mode: "replace",
-        providers: {
-          fixture: {
-            models: [{ id: "main-model" }, { id: "work-model" }],
-          },
-        },
-      },
-    });
-
-    const backend = new EmbeddedTuiBackend();
-
-    await backend.listModels({ agentId: "work" });
-
-    expect(buildAllowedModelSetMock).toHaveBeenCalledWith(
-      expect.objectContaining({ agentId: "work" }),
-    );
-  });
-
-  it("preserves an empty restrictive model policy for the selected agent", async () => {
-    getRuntimeConfigMock.mockReturnValue({
-      agents: {
-        ownership: "explicit",
-        entries: {
-          main: { modelPolicy: { allow: ["openai/*"] } },
-          work: { modelPolicy: { allow: ["openai/*"] } },
-        },
-      },
-    });
-    loadGatewayModelCatalogMock.mockReturnValue([
-      { id: "claude-sonnet", name: "Claude Sonnet", provider: "anthropic" },
-    ]);
-    buildAllowedModelSetMock.mockReturnValueOnce({ allowedCatalog: [] });
-
+  it("preserves an empty prepared model view", async () => {
     await expect(new EmbeddedTuiBackend().listModels({ agentId: "work" })).resolves.toEqual([]);
-    expect(buildAllowedModelSetMock).toHaveBeenCalledWith(
-      expect.objectContaining({ agentId: "work" }),
-    );
   });
 
-  it("patches wildcard replace-mode sessions against the same full catalog as model listing", async () => {
-    getRuntimeConfigMock.mockReturnValue({
-      agents: {
-        defaults: {
-          models: {
-            "tui-pty-mock/*": {},
-          },
-        },
-      },
-      models: {
-        mode: "replace",
-        providers: {
-          "tui-pty-mock": {
-            models: [{ id: "configured" }],
-          },
-        },
-      },
+  it("patches the selected agent against prepared raw model rows", async () => {
+    const row = { provider: "fixture", id: "work-model", name: "Work model", reasoning: false };
+    loadPreparedModelCatalogViewMock.mockResolvedValue({ entries: [row] });
+    projectSessionsPatchEntryMock.mockImplementation(async ({ loadGatewayModelCatalog }) => {
+      expect(await loadGatewayModelCatalog()).toEqual([row]);
+      return { ok: true, entry: {} };
     });
-    loadGatewayModelCatalogMock.mockReturnValue([
-      {
-        id: "discovered",
-        name: "discovered",
-        provider: "tui-pty-mock",
-      },
-    ]);
-    projectSessionsPatchEntryMock.mockImplementation(
-      async ({
-        loadGatewayModelCatalog,
-      }: {
-        loadGatewayModelCatalog?: () => Promise<unknown[]>;
-      }) => {
-        await loadGatewayModelCatalog?.();
-        return { ok: true, entry: {} };
-      },
-    );
-
     const backend = new EmbeddedTuiBackend();
 
     await expect(
       backend.patchSession({
-        key: "agent:main:main",
-        model: "tui-pty-mock/discovered",
+        key: "agent:work:main",
+        model: "fixture/work-model",
       }),
-    ).resolves.toMatchObject({
-      ok: true,
-      key: "agent:main:main",
+    ).resolves.toMatchObject({ ok: true, key: "agent:work:main" });
+    expect(loadPreparedModelCatalogViewMock).toHaveBeenCalledWith({ config: {}, agentId: "work" });
+  });
+
+  it("creates a session using the key owner's prepared raw models", async () => {
+    const row = { provider: "fixture", id: "work-model", name: "Work model" };
+    loadPreparedModelCatalogViewMock.mockResolvedValue({ entries: [row] });
+    createGatewaySessionMock.mockImplementation(async ({ loadGatewayModelCatalog }) => {
+      expect(await loadGatewayModelCatalog()).toEqual([row]);
+      return {
+        ok: true,
+        key: "agent:work:new",
+        entry: { sessionId: "new-session" },
+        resolved: { modelProvider: "fixture", model: "work-model" },
+        resetExisting: false,
+      };
     });
-    expect(applySessionPatchProjectionMock).toHaveBeenCalledWith(
-      expect.objectContaining({ sessionKeys: ["agent:main:main"] }),
-    );
-    expect(loadGatewayModelCatalogMock).toHaveBeenCalledWith({ readOnly: false });
+
+    await expect(
+      new EmbeddedTuiBackend().createSession({ key: "agent:work:new" }),
+    ).resolves.toMatchObject({ ok: true, key: "agent:work:new" });
+    expect(loadPreparedModelCatalogViewMock).toHaveBeenCalledWith({ config: {}, agentId: "work" });
   });
 
   it("rejects a missing harness-owned session before a local patch can create it", async () => {
@@ -1189,7 +1056,10 @@ describe("EmbeddedTuiBackend", () => {
     expect(agentCommandFromIngressMock).not.toHaveBeenCalled();
   });
 
-  it("loads history thinking defaults from configured replace-mode models", async () => {
+  it("loads history thinking defaults from the prepared model view", async () => {
+    const entry = { provider: "fixture", id: "native", name: "Native", reasoning: true };
+    loadPreparedModelCatalogViewMock.mockResolvedValue({ entries: [entry] });
+    resolveThinkingDefaultMock.mockReturnValue("low");
     loadSessionEntryMock.mockReturnValue({
       cfg: {
         models: {
@@ -1210,9 +1080,11 @@ describe("EmbeddedTuiBackend", () => {
     await expect(backend.loadHistory({ sessionKey: "agent:main:main" })).resolves.toMatchObject({
       sessionKey: "agent:main:main",
       messages: [],
-      thinkingLevel: undefined,
+      thinkingLevel: "low",
     });
-    expect(loadGatewayModelCatalogMock).not.toHaveBeenCalled();
+    expect(resolveThinkingDefaultMock).toHaveBeenCalledWith(
+      expect.objectContaining({ catalog: [entry] }),
+    );
   });
 
   it("loads selected-agent global history from the selected agent store", async () => {
@@ -1382,54 +1254,6 @@ describe("EmbeddedTuiBackend", () => {
       messages: [],
       runtimePluginsPrewarm: { status: "failed", error: "runtime unavailable" },
     });
-  });
-
-  it("clears a prior runtime registry after plugins are disabled", async () => {
-    const registry = {};
-    loadAgentRuntimePluginRegistryHandleMock
-      .mockReturnValueOnce(registry)
-      .mockReturnValueOnce(undefined);
-    loadSessionEntryMock.mockReturnValue({
-      cfg: {},
-      canonicalKey: "agent:main:main",
-      entry: {},
-    });
-    const backend = new EmbeddedTuiBackend();
-
-    await backend.loadHistory({ sessionKey: "agent:main:main" });
-    await backend.loadHistory({ sessionKey: "agent:main:main" });
-    withPluginRuntimeRegistryScopeMock.mockClear();
-    await backend.listModels();
-
-    expect(withPluginRuntimeRegistryScopeMock).toHaveBeenCalledWith(
-      undefined,
-      expect.any(Function),
-    );
-  });
-
-  it("clears a prior runtime registry after a later preload fails", async () => {
-    const registry = {};
-    loadAgentRuntimePluginRegistryHandleMock
-      .mockReturnValueOnce(registry)
-      .mockImplementationOnce(() => {
-        throw new Error("runtime unavailable");
-      });
-    loadSessionEntryMock.mockReturnValue({
-      cfg: {},
-      canonicalKey: "agent:main:main",
-      entry: {},
-    });
-    const backend = new EmbeddedTuiBackend();
-
-    await backend.loadHistory({ sessionKey: "agent:main:main" });
-    await backend.loadHistory({ sessionKey: "agent:main:main" });
-    withPluginRuntimeRegistryScopeMock.mockClear();
-    await backend.listModels();
-
-    expect(withPluginRuntimeRegistryScopeMock).toHaveBeenCalledWith(
-      undefined,
-      expect.any(Function),
-    );
   });
 
   it("passes selected-agent global scope into local chat turns", async () => {

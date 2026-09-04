@@ -19,9 +19,6 @@ import {
 import { resolveModelContextWindowProfile } from "../agents/model-context-window.js";
 import {
   findNormalizedProviderValue,
-  inferUniqueProviderFromConfiguredModels,
-  isCliProvider,
-  parseModelRef,
   resolveConfiguredModelRef,
   resolveDefaultModelForAgent,
   resolveThinkingDefault,
@@ -50,6 +47,7 @@ import {
   type GatewayModelThinkingProfile,
   type SessionListRowContext,
 } from "./session-utils-contracts.js";
+import { resolveSessionDisplayModelIdentityRef } from "./session-utils-model-identity.js";
 import type { GatewaySessionsDefaults, SessionsPatchResult } from "./session-utils.types.js";
 import { projectWorkerPlacementAgentRuntime } from "./worker-environments/placement-session-runtime.js";
 
@@ -197,26 +195,30 @@ export function resolveGatewayModelThinkingProfile(params: {
   if (cached) {
     return cached;
   }
+  const thinkingLevels = listGatewayThinkingLevelOptions({
+    provider: thinkingPolicyProvider,
+    model: params.model,
+    modelCatalog: params.modelCatalog,
+    agentRuntime,
+    configuredReasoning: params.configuredReasoning,
+    providerPolicySource: params.providerPolicySource,
+  });
   const metadata = {
-    thinkingLevels: listGatewayThinkingLevelOptions({
-      provider: thinkingPolicyProvider,
-      model: params.model,
-      modelCatalog: params.modelCatalog,
-      agentRuntime,
-      configuredReasoning: params.configuredReasoning,
-      providerPolicySource: params.providerPolicySource,
-    }),
-    thinkingDefault: resolveGatewaySessionThinkingDefault({
-      cfg: params.cfg,
-      provider: params.provider,
-      thinkingPolicyProvider,
-      model: params.model,
-      agentId: params.agentId,
-      modelCatalog: params.modelCatalog,
-      agentRuntime,
-      configuredReasoning: params.configuredReasoning,
-      providerPolicySource: params.providerPolicySource,
-    }),
+    thinkingLevels,
+    thinkingDefault:
+      thinkingLevels.length > 0
+        ? resolveGatewaySessionThinkingDefault({
+            cfg: params.cfg,
+            provider: params.provider,
+            thinkingPolicyProvider,
+            model: params.model,
+            agentId: params.agentId,
+            modelCatalog: params.modelCatalog,
+            agentRuntime,
+            configuredReasoning: params.configuredReasoning,
+            providerPolicySource: params.providerPolicySource,
+          })
+        : undefined,
   };
   params.rowContext?.thinkingMetadataByModelRef.set(key, metadata);
   return metadata;
@@ -226,6 +228,7 @@ type GatewaySessionThinkingProjectionParams = {
   cfg: OpenClawConfig;
   provider: string;
   model: string;
+  runtimeModel?: { provider: string; model: string };
   agentId: string;
   sessionKey: string;
   entry?: SessionEntry;
@@ -238,6 +241,7 @@ export function resolveGatewaySessionThinkingProjectionInternal(
   params: GatewaySessionThinkingProjectionParams,
 ) {
   const { cfg, agentId, sessionKey, entry } = params;
+  const runtimeModel = params.runtimeModel ?? params;
   const cachedAcpMeta = params.rowContext?.acpSessionMetaByEntry;
   // Keep metadata bound to the projected row; rereading its key can adopt a
   // replacement lifecycle while projecting the original entry.
@@ -251,8 +255,8 @@ export function resolveGatewaySessionThinkingProjectionInternal(
   const agentRuntime = resolveCurrentSessionAgentRuntimeMetadata({
     cfg: params.cfg,
     agentId: params.agentId,
-    provider: params.provider,
-    model: params.model,
+    provider: runtimeModel.provider,
+    model: runtimeModel.model,
     sessionKey: params.sessionKey,
     sessionEntry: params.entry,
     acpRuntime: acpMeta != null,
@@ -268,8 +272,8 @@ export function resolveGatewaySessionThinkingProjectionInternal(
     ? concretizeAgentRuntime(acpMeta.backend ?? agentRuntime.id)
     : resolveEffectiveAgentRuntime({
         cfg: params.cfg,
-        provider: params.provider,
-        modelId: params.model,
+        provider: runtimeModel.provider,
+        modelId: runtimeModel.model,
         modelApi: catalogEntry?.api,
         modelBaseUrl: catalogEntry?.baseUrl,
         agentId: params.agentId,
@@ -332,18 +336,26 @@ export function getSessionDefaults(
         defaultModel: DEFAULT_MODEL,
         allowPluginNormalization: options?.allowPluginNormalization,
       });
+  const displayModel = resolveSessionDisplayModelIdentityRef({
+    cfg,
+    agentId,
+    provider: resolved.provider,
+    model: resolved.model,
+  });
+  const provider = displayModel.provider ?? resolved.provider;
+  const model = displayModel.model ?? resolved.model;
   const catalogEntry = modelCatalog
     ? findModelCatalogEntry(modelCatalog, {
-        provider: resolved.provider,
-        modelId: resolved.model,
+        provider,
+        modelId: model,
       })
     : undefined;
   const contextWindowProfile = resolveModelContextWindowProfile({ catalogEntry });
   const resolvedContextTokens =
     resolveContextTokensForModel({
       cfg,
-      provider: resolved.provider,
-      model: resolved.model,
+      provider,
+      model,
       modelContextTokens: catalogEntry?.contextTokens,
       modelContextWindow: contextWindowProfile.contextTokens,
       allowAsyncLoad: false,
@@ -364,9 +376,18 @@ export function getSessionDefaults(
   );
   const thinkingProfile = resolveGatewayModelThinkingProfile({
     cfg,
-    provider: resolved.provider,
-    model: resolved.model,
+    provider,
+    model,
     agentId,
+    agentRuntime: resolveEffectiveAgentRuntime({
+      cfg,
+      provider: resolved.provider,
+      modelId: resolved.model,
+      modelApi: catalogEntry?.api,
+      modelBaseUrl: catalogEntry?.baseUrl,
+      agentId,
+      sessionKey,
+    }),
     modelCatalog:
       modelCatalog ??
       (options?.providerPolicySource !== undefined &&
@@ -377,8 +398,8 @@ export function getSessionDefaults(
     providerPolicySource: options?.providerPolicySource,
   });
   return {
-    modelProvider: resolved.provider ?? null,
-    model: resolved.model ?? null,
+    modelProvider: provider,
+    model,
     contextTokens: contextTokens ?? null,
     contextWindow: contextWindowProfile.contextWindow,
     contextWindows: contextWindowProfile.contextWindows,
@@ -599,70 +620,6 @@ export async function resolveGatewayModelSupportsImages(params: {
   }
 }
 
-export function resolveSessionDisplayModelIdentityRefCached(params: {
-  cfg: OpenClawConfig;
-  agentId: string;
-  provider?: string;
-  model?: string;
-  rowContext?: SessionListRowContext;
-}): { provider?: string; model?: string } {
-  const ctx = params.rowContext;
-  if (!ctx) {
-    return resolveSessionDisplayModelIdentityRef(params);
-  }
-  const key = `${params.agentId}\u0000${createSessionRowModelCacheKey(
-    params.provider,
-    params.model,
-  )}`;
-  const cached = ctx.displayModelIdentityByKey.get(key);
-  if (cached) {
-    return cached;
-  }
-  const value = resolveSessionDisplayModelIdentityRef(params);
-  ctx.displayModelIdentityByKey.set(key, value);
-  return value;
-}
-
-function resolveSessionDisplayModelIdentityRef(params: {
-  cfg: OpenClawConfig;
-  agentId: string;
-  provider?: string;
-  model?: string;
-}): { provider?: string; model?: string } {
-  const provider = normalizeOptionalString(params.provider);
-  const model = normalizeOptionalString(params.model);
-  if (!provider || !model || !isCliProvider(provider, params.cfg)) {
-    return { provider, model };
-  }
-
-  const defaultRef = resolveDefaultModelForAgent({ cfg: params.cfg, agentId: params.agentId });
-  if (model.includes("/")) {
-    const parsedModel = parseModelRef(model, defaultRef.provider);
-    if (parsedModel && !isCliProvider(parsedModel.provider, params.cfg)) {
-      return parsedModel;
-    }
-  }
-
-  const inferredProvider = inferUniqueProviderFromConfiguredModels({
-    cfg: params.cfg,
-    model,
-    agentId: params.agentId,
-  });
-  if (inferredProvider && !isCliProvider(inferredProvider, params.cfg)) {
-    return { provider: inferredProvider, model };
-  }
-
-  const parsedModel = parseModelRef(model, defaultRef.provider);
-  if (parsedModel && !isCliProvider(parsedModel.provider, params.cfg)) {
-    return parsedModel;
-  }
-
-  return {
-    provider: defaultRef.provider || provider,
-    model,
-  };
-}
-
 export async function projectSessionPatchResult(params: {
   canonicalKey: string;
   cfg: OpenClawConfig;
@@ -689,6 +646,7 @@ export async function projectSessionPatchResult(params: {
     agentId,
     provider: displayModel.provider ?? resolved.provider,
     model: displayModel.model ?? resolved.model,
+    runtimeModel: resolved,
     sessionKey: params.canonicalKey,
     entry: params.entry,
     modelCatalog,

@@ -4,10 +4,8 @@ import {
   resolveConfiguredAgentId,
 } from "../agents/agent-scope-config.js";
 import { resolveAgentDir } from "../agents/agent-scope.js";
-import { resolveAgentHarnessPolicy } from "../agents/harness/policy.js";
-import { resolveModelAuthLabel } from "../agents/model-auth-label.js";
-import { resolveDefaultModelForAgent } from "../agents/model-selection.js";
-import { listOpenAIAuthProfileProvidersForAgentRuntime } from "../agents/openai-routing.js";
+import { findModelInCatalog } from "../agents/model-catalog-lookup.js";
+import { loadPreparedModelCatalogView } from "../agents/model-catalog-view.js";
 import type { OpenClawConfig } from "../config/types.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { createLazyImportLoader } from "../shared/lazy-promise.js";
@@ -15,48 +13,9 @@ import {
   buildCodexSyntheticUsageAuth,
   mergeUsageSummaries,
   shouldUseCodexSyntheticUsageForRuntime,
-  resolveUsageCredentialType,
 } from "../status/codex-synthetic-usage.js";
 
 const providerUsageLoader = createLazyImportLoader(() => import("../infra/provider-usage.js"));
-
-function shouldUseConfiguredCodexSyntheticUsage(params: {
-  config: OpenClawConfig;
-  agentDir: string;
-  agentId?: string;
-}): boolean {
-  const configuredDefault = resolveDefaultModelForAgent({
-    cfg: params.config,
-    agentId: params.agentId,
-    allowPluginNormalization: false,
-  });
-  const policy = resolveAgentHarnessPolicy({
-    config: params.config,
-    agentId: params.agentId,
-    provider: configuredDefault.provider,
-    modelId: configuredDefault.model,
-  });
-  if (
-    !shouldUseCodexSyntheticUsageForRuntime({
-      provider: configuredDefault.provider,
-      effectiveHarness: policy.runtime,
-    })
-  ) {
-    return false;
-  }
-  const authLabel = resolveModelAuthLabel({
-    provider: configuredDefault.provider,
-    acceptedProviderIds: listOpenAIAuthProfileProvidersForAgentRuntime({
-      provider: configuredDefault.provider,
-      harnessRuntime: policy.runtime,
-      config: params.config,
-    }),
-    cfg: params.config,
-    agentDir: params.agentDir,
-    includeExternalProfiles: false,
-  });
-  return resolveUsageCredentialType(authLabel) !== "api_key";
-}
 
 export type StatusUsageSummaryOptions = {
   config: OpenClawConfig;
@@ -90,11 +49,27 @@ export async function resolveStatusUsageSummary(params: StatusUsageSummaryOption
     config: params.config,
     agentDir,
   });
+  const prepared = await loadPreparedModelCatalogView({
+    config: params.config,
+    agentDir,
+    agentId: resolvedAgentId,
+    readOnly: true,
+  });
+  const entry = findModelInCatalog(
+    prepared.entries,
+    prepared.resolvedDefault.provider,
+    prepared.resolvedDefault.model,
+  );
+  if (!entry) {
+    return usage;
+  }
+  const evaluation = prepared.evaluate(entry);
   if (
-    !shouldUseConfiguredCodexSyntheticUsage({
-      config: params.config,
-      agentDir,
-      agentId: resolvedAgentId,
+    evaluation.selectedAuthMode === "api_key" ||
+    evaluation.selectedAuthMode === "api-key" ||
+    !shouldUseCodexSyntheticUsageForRuntime({
+      provider: entry.provider,
+      effectiveHarness: prepared.runtime(entry)?.id,
     })
   ) {
     return usage;
@@ -102,7 +77,7 @@ export async function resolveStatusUsageSummary(params: StatusUsageSummaryOption
   const codexUsage = await loadProviderUsageSummary({
     timeoutMs: params.timeoutMs,
     providers: ["openai"],
-    auth: [buildCodexSyntheticUsageAuth()],
+    auth: [buildCodexSyntheticUsageAuth({ authProfileId: evaluation.selectedProfileId })],
     config: params.config,
     agentDir,
   });

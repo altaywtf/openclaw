@@ -311,11 +311,6 @@ export async function promptAuthConfig(
     const shouldLoadModelCatalog =
       modelPrompt?.loadCatalog ??
       (hasPromptProviderConfiguredModels || hasPromptProviderStaticManifestRows);
-    const useProviderScopedCatalog = Boolean(
-      promptProvider &&
-      shouldLoadModelCatalog &&
-      (modelPrompt?.loadCatalog === true || hasPromptProviderConfiguredModels),
-    );
     const allowlistSelection = await promptModelAllowlist({
       config: next,
       prompter,
@@ -327,7 +322,6 @@ export async function promptAuthConfig(
       initialSelections: modelPrompt?.initialSelections,
       message: modelPrompt?.message,
       preferredProvider: promptProvider,
-      providerScopedCatalog: useProviderScopedCatalog,
       loadCatalog: shouldLoadModelCatalog,
     });
     if (allowlistSelection.models) {

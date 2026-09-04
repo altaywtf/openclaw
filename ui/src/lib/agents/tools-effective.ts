@@ -3,10 +3,7 @@ import type {
   SessionsListResult,
   ToolsEffectiveResult,
 } from "../../api/types.ts";
-import {
-  normalizeChatModelOverrideValue,
-  resolvePreferredServerChatModelValue,
-} from "../chat/model-ref.ts";
+import { buildQualifiedChatModelValue } from "../chat/model-ref.ts";
 // Shared effective-tools loading for agent and Chat model changes.
 import { formatUiError } from "../format-error.ts";
 import type { SessionCapability } from "../sessions/index.ts";
@@ -141,23 +138,18 @@ function resolveEffectiveToolsModelKey(
   if (!resolvedSessionKey) {
     return "";
   }
-  const catalog = state.chatModelCatalog ?? [];
   const cachedOverride = state.sessions.state.modelOverrides[resolvedSessionKey];
   const defaults = state.sessionsResult?.defaults;
-  const defaultModel = resolvePreferredServerChatModelValue(
-    defaults?.model,
-    defaults?.modelProvider,
-    catalog,
-  );
+  const defaultModel = buildQualifiedChatModelValue(defaults?.model, defaults?.modelProvider);
   if (cachedOverride === null) {
     return defaultModel;
   }
   if (cachedOverride) {
-    return normalizeChatModelOverrideValue(cachedOverride, catalog);
+    return buildQualifiedChatModelValue(cachedOverride);
   }
   const activeRow = state.sessionsResult?.sessions?.find((row) => row.key === resolvedSessionKey);
   if (activeRow?.model) {
-    return resolvePreferredServerChatModelValue(activeRow.model, activeRow.modelProvider, catalog);
+    return buildQualifiedChatModelValue(activeRow.model, activeRow.modelProvider);
   }
   return defaultModel;
 }

@@ -342,7 +342,7 @@ async function expectNativeHarnessModelsPublished(params: {
       preparedAuthStore: fullAuth.authStore,
       preparedProviderAuth: fullAuth.providerAuth,
     });
-    await expect(projector.evaluateEntry(nativeEntry!)).resolves.toMatchObject({
+    await expect(projector.decisions.evaluate(nativeEntry!)).resolves.toMatchObject({
       availability: true,
     });
     const preparedModels = await buildModelsListResult({

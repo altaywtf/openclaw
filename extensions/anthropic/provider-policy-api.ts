@@ -7,15 +7,30 @@ import {
   resolveClaudeMythos5ModelIdentity,
   resolveClaudeThinkingProfile,
 } from "openclaw/plugin-sdk/claude-model-runtime";
+import type { ProviderFastModeCapabilityContext } from "openclaw/plugin-sdk/provider-model-capabilities";
 import type { ModelProviderConfig } from "openclaw/plugin-sdk/provider-model-types";
 import { CLAUDE_CLI_OFF_THINKING_PROFILE, CLAUDE_CLI_PROFILE_ID } from "./cli-constants.js";
 import {
   applyAnthropicConfigDefaults,
   normalizeAnthropicProviderConfigForProvider,
 } from "./config-defaults.js";
+import { resolveAnthropicFastModeTransport, normalizeAnthropicServiceTier } from "./fast-mode.js";
 
 /** Profile ids that native Claude auth has retired from OpenClaw ownership. */
 export const deprecatedProfileIds = [CLAUDE_CLI_PROFILE_ID] as const;
+
+export function resolveFastModeCapability(ctx: ProviderFastModeCapabilityContext) {
+  if (!ctx.api || !ctx.endpointClass || !ctx.agentRuntime || !ctx.authRequirement) {
+    return undefined;
+  }
+  return (
+    ctx.agentRuntime === "openclaw" &&
+    ctx.authRequirement === "api-key" &&
+    normalizeAnthropicServiceTier(ctx.params?.serviceTier ?? ctx.params?.service_tier) ===
+      undefined &&
+    resolveAnthropicFastModeTransport({ ...ctx, id: ctx.modelId }, ctx.endpointClass) !== undefined
+  );
+}
 
 /** Normalize Anthropic provider config without importing runtime registration. */
 export function normalizeConfig(params: { provider: string; providerConfig: ModelProviderConfig }) {

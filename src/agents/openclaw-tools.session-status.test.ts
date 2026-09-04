@@ -5,6 +5,7 @@ import { Value } from "typebox/value";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveSessionStoreEntryCore } from "../config/sessions/store-entry.js";
 import { mergeSessionEntry, type SessionEntry } from "../config/sessions/types.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   clearInternalHooks,
   registerInternalHook,
@@ -17,11 +18,13 @@ import { resolvePreferredSessionKeyForSessionIdMatches } from "../sessions/sessi
 import type { TaskRecord } from "../tasks/task-registry.types.js";
 import { buildTaskStatusSnapshot } from "../tasks/task-status.js";
 import { normalizeSessionDeliveryState } from "../utils/delivery-context.shared.js";
+import { resolveModelAuthLabel, type PreparedStatusModelFacts } from "./model-auth-label.js";
 import { compactToolOutputHint } from "./tool-schema-hints.js";
 
 const loadSessionStoreMock = vi.fn();
 const updateSessionStoreMock = vi.fn();
 const callGatewayMock = vi.fn();
+const preparedStatusCatalogMock = vi.hoisted(() => vi.fn());
 const agentToolGatewayCallMock = vi.fn();
 const buildStatusMessageMock = vi.hoisted(() =>
   vi.fn((_params?: unknown) => "OpenClaw\n🧠 Model: GPT-5.4"),
@@ -204,28 +207,46 @@ function createConfigModuleMock() {
 }
 
 function createModelCatalogModuleMock() {
+  const entries = [
+    {
+      provider: "anthropic",
+      id: "claude-sonnet-4-6",
+      name: "Claude Sonnet 4.6",
+      contextWindow: 200000,
+    },
+    {
+      provider: "openai",
+      id: "gpt-5.4",
+      name: "GPT-5.4",
+      reasoning: true,
+      contextWindow: 400000,
+    },
+  ];
   return {
+    loadResolvedPublishedModelCatalogOwner: async (params: {
+      config: OpenClawConfig;
+      agentId: string;
+      agentDir: string;
+      workspaceDir: string;
+    }) => ({
+      config: params.config,
+      agentId: params.agentId,
+      agentDir: params.agentDir,
+      workspaceDir: params.workspaceDir,
+      catalogOwner: { agentId: params.agentId, workspaceDir: params.workspaceDir },
+      oauthRefreshProviderIds: [],
+      modelCatalog: { entries, routeVariants: entries },
+      metadataSnapshot: emptyPluginMetadataSnapshot,
+      authStore: { version: 1, profiles: {} },
+      providerAuth: {},
+    }),
     loadProviderScopedThinkingCatalog: async () => [],
     // A run's captured config goes stale after any Gateway config republish; the exact
     // loader then throws, and session_status must read the published owner instead.
     loadPreparedModelCatalog: async () => {
       throw new Error("prepared model catalog owner config was replaced during the read (/tmp)");
     },
-    loadPublishedPreparedModelCatalog: async () => [
-      {
-        provider: "anthropic",
-        id: "claude-sonnet-4-6",
-        name: "Claude Sonnet 4.6",
-        contextWindow: 200000,
-      },
-      {
-        provider: "openai",
-        id: "gpt-5.4",
-        name: "GPT-5.4",
-        reasoning: true,
-        contextWindow: 400000,
-      },
-    ],
+    loadPublishedPreparedModelCatalog: async () => entries,
   };
 }
 
@@ -276,6 +297,7 @@ function createCommandsStatusRuntimeModuleMock() {
       provider?: string;
       model: string;
       thinkingCatalog?: Array<{ provider: string; id: string; contextWindow?: number }>;
+      modelAuthFacts?: PreparedStatusModelFacts;
       workspaceDir?: string;
       primaryModelLabelOverride?: string;
       includeTranscriptUsage?: boolean;
@@ -297,16 +319,7 @@ function createCommandsStatusRuntimeModuleMock() {
         : undefined;
       const primary =
         params.primaryModelLabelOverride ?? formatPrimaryModelLabel(params.provider, params.model);
-      const customAuth = params.provider
-        ? resolveUsableCustomProviderApiKeyMock({ provider: params.provider })
-        : null;
-      const envAuth =
-        !customAuth && params.provider ? resolveEnvApiKeyMock(params.provider, process.env) : null;
-      const modelAuth = customAuth
-        ? `api-key (${customAuth.source})`
-        : envAuth
-          ? "api-key (env)"
-          : undefined;
+      const modelAuth = resolveModelAuthLabel(params.modelAuthFacts?.selected.auth);
       buildStatusMessageMock({
         agentId,
         agent: {
@@ -316,6 +329,7 @@ function createCommandsStatusRuntimeModuleMock() {
         },
         sessionEntry: params.sessionEntry,
         modelAuth,
+        modelAuthFacts: params.modelAuthFacts,
         thinkingCatalog: params.thinkingCatalog,
         includeTranscriptUsage: params.includeTranscriptUsage,
         workspaceDir: params.workspaceDir,
@@ -330,6 +344,9 @@ vi.mock("../gateway/call.js", createGatewayCallModuleMock);
 vi.mock("./tools/in-process-gateway.js", createInProcessGatewayModuleMock);
 vi.mock("../config/config.js", createConfigModuleMock);
 vi.mock("../agents/prepared-model-catalog.js", createModelCatalogModuleMock);
+vi.mock("../agents/model-catalog-view.js", () => ({
+  prepareModelCatalogView: preparedStatusCatalogMock,
+}));
 vi.mock("../agents/provider-model-normalization.runtime.js", () => ({
   normalizeProviderModelIdWithRuntime: () => undefined,
 }));
@@ -419,6 +436,11 @@ function resetSessionStore(inputStore: Record<string, SessionEntry>) {
   resolveQueueSettingsMock.mockClear();
   resolveQueueSettingsMock.mockReturnValue({ mode: "interrupt" });
   resolveEnvApiKeyMock.mockReset();
+  preparedStatusCatalogMock.mockReset().mockImplementation(async () => ({
+    entries: await createModelCatalogModuleMock().loadPublishedPreparedModelCatalog(),
+    evaluate: () => ({ availability: undefined, routeResolution: null }),
+    runtime: () => undefined,
+  }));
   resolveEnvApiKeyMock.mockReturnValue(null);
   resolveUsableCustomProviderApiKeyMock.mockReset();
   resolveUsableCustomProviderApiKeyMock.mockReturnValue(null);
@@ -892,6 +914,12 @@ describe("session_status tool", () => {
     expectRecordFields(mockCallArg(buildStatusMessageMock), {
       workspaceDir: "/tmp/openclaw-spawned-workspace",
     });
+    expect(preparedStatusCatalogMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceDir: "/tmp/openclaw-spawned-workspace",
+        view: "all",
+      }),
+    );
   });
 
   it("errors for unknown session keys", async () => {
@@ -1971,9 +1999,15 @@ describe("session_status tool", () => {
         agentToAgent: { enabled: false },
       },
     };
-    resolveUsableCustomProviderApiKeyMock.mockImplementation((params) =>
-      params?.provider === "qwen-dashscope" ? { apiKey: "sk-test", source: "models.json" } : null,
-    );
+    preparedStatusCatalogMock.mockResolvedValue({
+      entries: [{ provider: "qwen-dashscope", id: "qwen-max", name: "Qwen" }],
+      evaluate: () => ({
+        availability: true,
+        routeResolution: null,
+        selectedAuthMode: "api-key",
+      }),
+      runtime: () => ({ id: "openclaw", source: "implicit" }),
+    });
 
     const tool = getSessionStatusTool();
 
@@ -1982,7 +2016,7 @@ describe("session_status tool", () => {
     const statusArg = mockCallArg(buildStatusMessageMock) as Record<string, unknown>;
     const agent = statusArg.agent as Record<string, unknown>;
     expectRecordFields(agent.model, { primary: "qwen-dashscope/qwen-max" });
-    expect(statusArg.modelAuth).toBe("api-key (models.json)");
+    expect(statusArg.modelAuth).toBe("api-key");
   });
 
   it("preserves an unknown runtime provider in the selected status card model", async () => {

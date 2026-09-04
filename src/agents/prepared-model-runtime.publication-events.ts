@@ -7,6 +7,11 @@ type PreparedModelRuntimePublicationEvent =
   | { phase: "failed" | "catalog-failed"; error: Error };
 
 const publicationListeners = new Set<(event: PreparedModelRuntimePublicationEvent) => void>();
+let publicationRevision = 0;
+
+export function getPreparedModelRuntimePublicationRevision(): number {
+  return publicationRevision;
+}
 
 /** Observes committed prepared model/auth generations without starting discovery. */
 export function registerPreparedModelRuntimePublicationListener(
@@ -19,6 +24,7 @@ export function registerPreparedModelRuntimePublicationListener(
 export function notifyPreparedModelRuntimePublication(
   event: PreparedModelRuntimePublicationEvent,
 ): void {
+  publicationRevision += 1;
   for (const listener of publicationListeners) {
     try {
       listener(event);

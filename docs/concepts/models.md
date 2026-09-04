@@ -94,6 +94,10 @@ require new discovery after authentication changes; login status alone cannot pr
 that the account stayed the same. Explicit refresh replaces the inventory. If discovery fails, existing
 choices remain available and the picker shows a warning until discovery succeeds.
 
+Authentication eligibility also expires at known token and cooldown deadlines.
+The next catalog read updates those decisions from the captured credentials,
+without another provider discovery request.
+
 Full mechanics: [Model failover](/concepts/model-failover).
 
 ## Quick model policy
@@ -273,7 +277,9 @@ Without a scope flag, `agents.defaults.modelSelectionScope` can opt into `"sessi
 - **Use the configured default:** `/model default -s` clears the current session model selection without writing configured defaults. A compatible auth-profile pin remains. An incompatible pin is cleared. Selecting the effective configured default by name also clears the session model pin, but agent/global scope still requests a write to that configured target. This does not restore an older configured default changed by a previous selection.
 - If the agent is idle, a model change applies to the next run immediately. If a run is already active, the switch is queued for the next clean retry point (or a later one, if tool activity or reply output already started).
 - A user-selected `/model` ref is strict for that session: if it becomes unreachable, the reply fails visibly instead of silently falling back through `agents.defaults.model.fallbacks`. Configured defaults and cron job primaries still use fallback chains.
-- `/model status` is the detailed view: auth candidates per provider, and (when configured) the provider endpoint `baseUrl` plus `api` mode.
+- `/model status` is the detailed view: prepared authentication, selected profile,
+  runtime, and transport details for each model. It does not choose one model's
+  credentials as the authentication label for every model from that provider.
 - Model refs are parsed by splitting on the first `/`; type `provider/model`. If the model ID itself contains `/` (OpenRouter-style), include the provider prefix, e.g. `/model openrouter/moonshotai/kimi-k2`. If you omit the provider, OpenClaw tries: (1) alias match, (2) unique configured-provider match for that exact unprefixed model id, (3) the configured default provider (deprecated fallback) — and if that provider no longer exposes the configured default model, the first configured provider/model instead, to avoid surfacing a stale removed-provider default.
 - Model refs are normalized to lowercase; provider IDs are otherwise exact, so use the ID advertised by the plugin.
 

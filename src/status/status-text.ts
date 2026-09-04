@@ -6,20 +6,13 @@ import {
   resolveSessionAgentId,
   resolveAgentModelFallbacksOverride,
 } from "../agents/agent-scope.js";
-import { ensureAuthProfileStore } from "../agents/auth-profiles/store.js";
 import { waitForContextWindowCacheLoad } from "../agents/context.js";
 import { resolveFastModeState } from "../agents/fast-mode.js";
-import { resolveAgentHarnessAutoSelectionHint } from "../agents/harness/auto-selection.js";
-import { resolveAgentHarnessPolicy } from "../agents/harness/policy.js";
-import { listRegisteredAgentHarnesses } from "../agents/harness/registry.js";
-import { resolveModelAuthLabel } from "../agents/model-auth-label.js";
+import { resolveConfiguredAgentHarnessPolicy } from "../agents/harness/policy.js";
+import { resolveModelAuthLabel, type StatusModelAuth } from "../agents/model-auth-label.js";
 import { findModelInCatalog } from "../agents/model-catalog-lookup.js";
-import {
-  areRuntimeModelRefsEquivalent,
-  shouldPreferActiveRuntimeAliasAuthLabel,
-} from "../agents/model-runtime-aliases.js";
+import { areRuntimeModelRefsEquivalent } from "../agents/model-runtime-aliases.js";
 import { resolveDefaultModelForAgent } from "../agents/model-selection.js";
-import { listOpenAIAuthProfileProvidersForAgentRuntime } from "../agents/openai-routing.js";
 import { resolveSessionRuntimeOverrideForProvider } from "../agents/session-runtime-compat.js";
 import {
   resolveInternalSessionKey,
@@ -114,7 +107,6 @@ function resolveStatusChannelFeatureLine(params: {
 const loadStatusMessageRuntime = createLazyPromise(() =>
   import("./status-message.runtime.js").then((module) => module.loadStatusMessageRuntimeModule()),
 );
-const loadAgentThinkingRuntime = createLazyPromise(() => import("../agents/thinking-runtime.js"));
 const loadThinkingLevelRuntime = createLazyPromise(() => import("../auto-reply/thinking.js"));
 const loadStatusSubagentsRuntime = createLazyPromise(() => import("./status-subagents.runtime.js"));
 
@@ -146,34 +138,6 @@ function shouldLoadUsageSummary(params: {
   );
 }
 
-function resolveCodexSyntheticUsageAuthProfileId(params: {
-  profileId: string | undefined;
-  cfg: OpenClawConfig;
-  agentDir?: string;
-}): string | undefined {
-  const normalizedProfileId = params.profileId?.trim();
-  if (!normalizedProfileId) {
-    return undefined;
-  }
-  try {
-    const store = ensureAuthProfileStore(params.agentDir, {
-      allowKeychainPrompt: false,
-      config: params.cfg,
-      readOnly: true,
-      syncExternalCli: false,
-    });
-    const credential = store.profiles[normalizedProfileId];
-    if (!credential) {
-      return undefined;
-    }
-    return normalizeOptionalLowercaseString(credential.provider) === "openai"
-      ? normalizedProfileId
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 function formatSessionTaskLine(sessionKey: string, agentId: string): string | undefined {
   const snapshot = buildTaskStatusSnapshot(listTasksForSessionKeyForStatus(sessionKey, agentId));
   const task = snapshot.focus;
@@ -191,58 +155,6 @@ function formatSessionTaskLine(sessionKey: string, agentId: string): string | un
   const blocked = formatTaskStatus(task) === "blocked" ? "blocked" : undefined;
   const parts = [headline, blocked, task.runtime, title, detail].filter(Boolean);
   return parts.length ? `📌 Tasks: ${parts.join(" · ")}` : undefined;
-}
-
-async function resolveStatusHarnessId(params: {
-  cfg: OpenClawConfig;
-  provider: string;
-  model: string;
-  agentId: string;
-  sessionKey: string;
-  sessionEntry?: SessionEntry;
-}): Promise<string | undefined> {
-  try {
-    const sessionRuntime = resolveSessionRuntimeOverrideForProvider({
-      provider: params.provider,
-      entry: params.sessionEntry,
-      cfg: params.cfg,
-    });
-    const configuredRuntime = resolveAgentHarnessPolicy({
-      provider: params.provider,
-      modelId: params.model,
-      config: params.cfg,
-      agentId: params.agentId,
-      sessionKey: params.sessionKey,
-    }).runtime;
-    const runtime = sessionRuntime ?? configuredRuntime;
-    if (runtime !== "auto") {
-      return normalizeOptionalLowercaseString(runtime) || undefined;
-    }
-    const registeredHarnesses = listRegisteredAgentHarnesses();
-    if (
-      registeredHarnesses.every(
-        ({ harness }) =>
-          resolveAgentHarnessAutoSelectionHint({ harness, provider: params.provider }) !==
-          undefined,
-      )
-    ) {
-      return "openclaw";
-    }
-    const { resolveEffectiveAgentRuntime } = await loadAgentThinkingRuntime();
-    const id = resolveEffectiveAgentRuntime({
-      cfg: params.cfg,
-      provider: params.provider,
-      modelId: params.model,
-      agentId: params.agentId,
-      sessionKey: params.sessionKey,
-      sessionEntry: params.sessionEntry,
-    });
-    return normalizeOptionalLowercaseString(id) || undefined;
-  } catch {
-    // Harness selection is nice-to-have for display. Status should still render
-    // if dynamic harness modules are unavailable.
-    return undefined;
-  }
 }
 
 function resolveStatusRuntimeProvider(params: {
@@ -320,67 +232,57 @@ export async function buildStatusReplyParts(
   const parseSelectedProvider = Boolean(
     sessionEntry?.modelOverride?.trim() && !sessionEntry?.providerOverride?.trim(),
   );
-  const modelRefs = resolveSelectedAndActiveModel({
-    selectedProvider,
-    selectedModel,
-    sessionEntry,
-    parseSelectedProvider,
-  });
+  const modelRefs =
+    params.modelAuthFacts ??
+    resolveSelectedAndActiveModel({
+      selectedProvider,
+      selectedModel,
+      sessionEntry,
+      parseSelectedProvider,
+    });
   const selectedLookupProvider = modelRefs.selected.provider || selectedProvider || provider;
   const selectedLookupModel = modelRefs.selected.model || selectedModel || model;
   const effectiveHarness =
     params.resolvedHarness ??
-    (await resolveStatusHarnessId({
-      cfg,
-      provider: selectedLookupProvider,
-      model: selectedLookupModel,
-      agentId: statusAgentId,
-      sessionKey,
-      sessionEntry,
-    }));
+    (params.modelAuthFacts
+      ? params.modelAuthFacts.selected.runtime?.id
+      : (resolveSessionRuntimeOverrideForProvider({
+          provider: selectedLookupProvider,
+          entry: sessionEntry,
+          cfg,
+        }) ??
+        resolveConfiguredAgentHarnessPolicy({
+          config: cfg,
+          provider: selectedLookupProvider,
+          modelId: selectedLookupModel,
+          agentId: statusAgentId,
+          sessionKey,
+        }).runtime));
   const selectedStatusProvider = resolveStatusRuntimeProvider({
     provider: selectedLookupProvider,
     effectiveHarness,
   });
-  const selectedAuthProviders = listOpenAIAuthProfileProvidersForAgentRuntime({
-    provider: selectedLookupProvider,
-    harnessRuntime: effectiveHarness,
-    config: cfg,
-  });
   const activeProvider = modelRefs.active.provider || provider;
   const activeStatusProvider = resolveStatusRuntimeProvider({
     provider: activeProvider,
-    effectiveHarness,
+    effectiveHarness: params.modelAuthFacts
+      ? params.modelAuthFacts.active.runtime?.id
+      : effectiveHarness,
   });
-  const activeAuthProviders = listOpenAIAuthProfileProvidersForAgentRuntime({
-    provider: activeProvider,
-    harnessRuntime: effectiveHarness,
-    config: cfg,
-  });
-  let selectedModelAuth = Object.hasOwn(params, "modelAuthOverride")
-    ? params.modelAuthOverride
-    : resolveModelAuthLabel({
-        provider: selectedStatusProvider,
-        acceptedProviderIds: selectedAuthProviders,
-        cfg,
-        sessionEntry,
-        agentDir: statusAgentDir,
-        workspaceDir: statusWorkspaceDir,
-        includeExternalProfiles: false,
-      });
-  const activeModelAuth = Object.hasOwn(params, "activeModelAuthOverride")
-    ? params.activeModelAuthOverride
-    : modelRefs.activeDiffers
-      ? resolveModelAuthLabel({
-          provider: activeStatusProvider,
-          acceptedProviderIds: activeAuthProviders,
-          cfg,
-          sessionEntry,
-          agentDir: statusAgentDir,
-          workspaceDir: statusWorkspaceDir,
-          includeExternalProfiles: false,
-        })
-      : selectedModelAuth;
+  const selectedAuth: StatusModelAuth = params.modelAuthFacts?.selected.auth ?? {
+    kind: "provided",
+    label: params.modelAuthOverride,
+  };
+  const activeAuth: StatusModelAuth = params.modelAuthFacts?.active.auth ?? {
+    kind: "provided",
+    label: Object.hasOwn(params, "activeModelAuthOverride")
+      ? params.activeModelAuthOverride
+      : modelRefs.activeDiffers
+        ? undefined
+        : params.modelAuthOverride,
+  };
+  const selectedModelAuth = resolveModelAuthLabel(selectedAuth);
+  const activeModelAuth = resolveModelAuthLabel(activeAuth);
   const runtimeAliasModelEquivalent = areRuntimeModelRefsEquivalent(
     modelRefs.selected.label,
     modelRefs.active.label,
@@ -392,17 +294,6 @@ export async function buildStatusReplyParts(
     config: cfg,
     state: sessionEntry,
   });
-  if (
-    shouldPreferActiveRuntimeAliasAuthLabel({
-      runtimeAliasModelEquivalent,
-      selectedAuthLabel: selectedModelAuth,
-      activeAuthLabel: activeModelAuth,
-    })
-  ) {
-    // Runtime aliases can make selected/active model refs equivalent while auth
-    // labels differ; prefer the active auth label so status matches execution.
-    selectedModelAuth = activeModelAuth;
-  }
   const activeRuntimeIsAuthoritative =
     !modelRefs.activeDiffers ||
     fallbackState.active ||
@@ -413,7 +304,18 @@ export async function buildStatusReplyParts(
     ? activeStatusProvider
     : selectedStatusProvider;
   const usageProvider = activeRuntimeIsAuthoritative ? activeProvider : selectedLookupProvider;
-  const selectedUsageCredentialType = resolveUsageCredentialType(usageAuthLabel);
+  const usageAuth = activeRuntimeIsAuthoritative ? activeAuth : selectedAuth;
+  const usageAuthMode =
+    usageAuth.kind === "prepared"
+      ? usageAuth.evaluation.selectedAuthMode
+      : usageAuth.kind === "provided"
+        ? usageAuth.label
+        : undefined;
+  const selectedUsageCredentialType =
+    usageAuthMode === "api_key" ? "api_key" : resolveUsageCredentialType(usageAuthMode);
+  const hasUnresolvedProfileLock =
+    Boolean(params.modelAuthFacts?.lockedProfileId) &&
+    (usageAuth.kind !== "prepared" || !usageAuth.evaluation.selectedProfileId);
   const useCodexSyntheticUsage =
     selectedUsageCredentialType !== "api_key" &&
     shouldUseCodexSyntheticUsageForRuntime({
@@ -422,19 +324,17 @@ export async function buildStatusReplyParts(
       // A runtime fallback does not erase the session's Codex binding or its rate limits.
       sessionHarnessId: sessionEntry?.agentHarnessId,
     });
-  const codexUsageAuthProfileId = useCodexSyntheticUsage
-    ? resolveCodexSyntheticUsageAuthProfileId({
-        profileId: sessionEntry?.authProfileOverride,
-        cfg,
-        agentDir: statusAgentDir,
-      })
-    : undefined;
+  const codexUsageAuthProfileId =
+    useCodexSyntheticUsage && usageAuth.kind === "prepared"
+      ? usageAuth.evaluation.selectedProfileId
+      : undefined;
   const usageCredentialType = useCodexSyntheticUsage ? "token" : selectedUsageCredentialType;
   const currentUsageProvider =
     resolveUsageProviderId(usageStatusProvider, { credentialType: usageCredentialType }) ??
     resolveUsageProviderId(usageProvider, { credentialType: usageCredentialType });
   let usageLine: string | null = null;
   if (
+    !hasUnresolvedProfileLock &&
     currentUsageProvider &&
     shouldLoadUsageSummary({
       provider: currentUsageProvider,
@@ -658,6 +558,7 @@ export async function buildStatusReplyParts(
     resolvedVerbose: resolvedVerboseLevel,
     resolvedReasoning: resolvedReasoningLevel,
     resolvedElevated: resolvedElevatedLevel,
+    modelAuthFacts: params.modelAuthFacts,
     modelAuth: selectedModelAuth,
     activeModelAuth,
     uptimeValue: buildStatusUptimeValue(),

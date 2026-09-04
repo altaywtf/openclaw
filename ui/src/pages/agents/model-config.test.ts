@@ -61,25 +61,35 @@ describe("agent model config", () => {
     runtimeConfig.dispose();
   });
 
-  it("stages fallbacks without a primary when no model is authored anywhere", async () => {
-    // Fully implicit default model: typing a fallback chip must stage the
-    // { fallbacks }-only shape the gateway honors, not silently no-op.
-    const runtimeConfig = createRuntimeConfig({
-      agents: { entries: { main: { default: true } } },
-    });
-    await runtimeConfig.ensureLoaded();
+  it.each([undefined, { primary: "openai/default", fallbacks: ["openai/inherited"] }])(
+    "preserves model inheritance when editing fallbacks with defaults %j",
+    async (defaultModel) => {
+      const defaults = defaultModel ? { defaults: { model: defaultModel } } : {};
+      const runtimeConfig = createRuntimeConfig({
+        agents: { ...defaults, entries: { main: { default: true } } },
+      });
+      await runtimeConfig.ensureLoaded();
 
-    stageAgentModelFallbacks(runtimeConfig, "main", ["openai/gpt-5.4"]);
+      stageAgentModelFallbacks(runtimeConfig, "main", ["openai/gpt-5.4"]);
 
-    expect(runtimeConfig.state.configForm).toEqual({
-      agents: {
-        entries: {
-          main: { default: true, model: { fallbacks: ["openai/gpt-5.4"] } },
+      expect(runtimeConfig.state.configForm).toEqual({
+        agents: {
+          ...defaults,
+          entries: {
+            main: { default: true, model: { fallbacks: ["openai/gpt-5.4"] } },
+          },
         },
-      },
-    });
-    runtimeConfig.dispose();
-  });
+      });
+      stageAgentModelFallbacks(runtimeConfig, "main", []);
+      expect(runtimeConfig.state.configForm).toEqual({
+        agents: {
+          ...defaults,
+          entries: { main: { default: true, model: { fallbacks: [] } } },
+        },
+      });
+      runtimeConfig.dispose();
+    },
+  );
 
   it("keeps authored fallbacks when the primary model is cleared", async () => {
     const runtimeConfig = createRuntimeConfig({

@@ -127,7 +127,7 @@ export class ModelSetupPage extends OpenClawLightDomElement {
       }
     },
     onStart: (method, intent) => {
-      if (method === "openclaw.setup.prepare.start") {
+      if (method !== "openclaw.setup.activate.start") {
         return undefined;
       }
       const activation = this.firstRun.beginActivation(intent ?? { kind: "provider-auth" });
@@ -426,6 +426,11 @@ export class ModelSetupPage extends OpenClawLightDomElement {
     modelActivation,
     isCurrent,
   }: ModelSetupWizardCompletion): Promise<void> {
+    if (startMethod === "openclaw.setup.auth.start") {
+      this.wizard.close();
+      this.prepareMessage = t("modelProviders.login.done");
+      return;
+    }
     const prepareOption =
       startMethod === "openclaw.setup.prepare.start" ? this.pendingPrepareOption : null;
     this.pendingPrepareOption = null;
@@ -438,19 +443,13 @@ export class ModelSetupPage extends OpenClawLightDomElement {
       );
       return;
     }
-    if (startMethod !== "openclaw.setup.prepare.start") {
+    if (startMethod === "openclaw.setup.activate.start") {
       if (isCurrent?.() === false) {
         this.wizard.close();
         return;
       }
       if (!modelActivation) {
-        this.wizard.fail(
-          t(
-            startMethod === "openclaw.setup.activate.start"
-              ? "modelSetup.errors.activationFailed"
-              : "modelSetup.wizard.notComplete",
-          ),
-        );
+        this.wizard.fail(t("modelSetup.errors.activationFailed"));
         return;
       }
       this.wizard.close();
@@ -634,6 +633,10 @@ export class ModelSetupPage extends OpenClawLightDomElement {
       onVerify: () => void this.firstRun.verify(),
       onActivateCandidate: (candidate) => this.activateCandidate(candidate),
       onStartAuth: (option) => {
+        if (this.routeData?.firstRun) {
+          void this.activate({ kind: "provider-auth", authChoice: option.id }, `auth:${option.id}`);
+          return;
+        }
         this.prepareMessage = null;
         this.pendingPrepareOption = null;
         this.wizardMode = "auth";

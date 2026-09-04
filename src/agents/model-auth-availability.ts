@@ -96,6 +96,7 @@ type ModelAuthAvailability = boolean | undefined;
 type ModelAuthAvailabilityEvidence = Exclude<ProviderModelAuthEvidence, "none">;
 export type ModelAuthAvailabilityRef = {
   modelId?: string;
+  runtimeId?: string;
   api?: string | null;
   baseUrl?: unknown;
   /** All physical route rows observed for this logical provider/model pair. */
@@ -114,6 +115,7 @@ export type ModelAuthAvailabilityEvaluation = {
   selectedRoute?: ProviderModelRouteCandidate;
   selectedProfileId?: string;
   selectedAuthMode?: string;
+  runtimeAuth?: { id: string; source: "native" | "materialized" };
   evidence?: ModelAuthAvailabilityEvidence;
 };
 export type ModelAuthAvailabilityResolver = {
@@ -139,8 +141,10 @@ export function applyCliRuntimeModelAuthAvailability(params: {
   provider: string;
   /** Runtime that discovered the row; its own recorded login serves the row. */
   nativeRuntime?: string;
+  runtimeId?: string;
+  lockedProfileId?: string;
 }): ModelAuthAvailabilityEvaluation {
-  if (params.evaluation.routeResolution !== null) {
+  if (params.evaluation.routeResolution !== null || params.lockedProfileId) {
     return params.evaluation;
   }
   const preparedAuth =
@@ -149,7 +153,9 @@ export function applyCliRuntimeModelAuthAvailability(params: {
   const runtimeProvider = preparedAuth?.runtime;
   if (
     !runtimeProvider ||
-    normalizeProviderId(runtimeProvider) === normalizeProviderId(params.provider)
+    normalizeProviderId(runtimeProvider) === normalizeProviderId(params.provider) ||
+    (params.runtimeId !== undefined &&
+      normalizeProviderId(runtimeProvider) !== normalizeProviderId(params.runtimeId))
   ) {
     return params.evaluation;
   }
@@ -174,19 +180,15 @@ export function applyCliRuntimeModelAuthAvailability(params: {
       };
     }
   }
-  const runtimeAuth = preparedAuth;
   // The prepared native-runtime result is authoritative for this route. Provider
   // credentials cannot prove that the separately authenticated CLI is usable.
-  return runtimeAuth
-    ? {
-        availability: true,
-        routeResolution: null,
-        selectedAuthMode: runtimeAuth.mode,
-        evidence: "runtime",
-      }
-    : params.authResolver.preparedSyntheticAuthComplete
-      ? { availability: false, routeResolution: null, unavailableReason: "missing-auth" }
-      : { availability: undefined, routeResolution: null };
+  return {
+    availability: true,
+    routeResolution: null,
+    selectedAuthMode: preparedAuth.mode,
+    runtimeAuth: { id: runtimeProvider, source: "native" },
+    evidence: "runtime",
+  };
 }
 function resolveNativeRuntimeAuth(
   authResolver: ModelAuthAvailabilityResolver,
@@ -204,6 +206,7 @@ type CreateModelAuthAvailabilityResolverParams = {
   agentDir?: string;
   workspaceDir?: string;
   env?: NodeJS.ProcessEnv;
+  now?: number;
   syntheticAuthProviderRefs?: readonly string[];
   metadataSnapshot?: PluginMetadataSnapshot;
   externalCliProviderIds?: readonly string[];
@@ -221,6 +224,7 @@ type AuthSourceEvaluation = Pick<
   ModelAuthAvailabilityEvaluation,
   | "availability"
   | "selectedAuthMode"
+  | "runtimeAuth"
   | "evidence"
   | "selectedProfileId"
   | "unavailableReason"
@@ -255,8 +259,16 @@ function normalizeModelIdForProvider(provider: string, modelId: string): string 
 export function createModelAuthAvailabilityResolver(
   params: CreateModelAuthAvailabilityResolverParams,
 ): ModelAuthAvailabilityResolver {
-  const env = params.env ?? process.env;
-  const now = Date.now();
+  const env = Object.freeze({ ...(params.env ?? process.env) });
+  const now = params.now ?? Date.now();
+  const preparedAuthForTarget = (provider: string, target: ModelAuthAvailabilityRef) => {
+    const auth = params.preparedProviderAuth?.[normalizeProviderIdForAuth(provider)];
+    return auth?.runtime &&
+      target.runtimeId &&
+      normalizeProviderId(auth.runtime) !== normalizeProviderId(target.runtimeId)
+      ? undefined
+      : auth;
+  };
   const isExternalCliProvider = (provider: string) =>
     EXTERNAL_CLI_REFRESH_PROVIDER_IDS.has(normalizeProviderIdForAuth(provider));
   const externalCliProviderIds = (params.externalCliProviderIds ?? []).filter(
@@ -372,6 +384,17 @@ export function createModelAuthAvailabilityResolver(
     const normalized = normalizeProviderIdForAuth(provider);
     return aliasMap[normalized] ?? normalized;
   };
+  const managedProviderAuth = new Map(
+    Object.keys(params.cfg.models?.providers ?? {}).map((provider) => {
+      const normalized = normalizeProvider(provider);
+      return [
+        normalized,
+        Boolean(
+          resolveManagedSecretRefRuntimeProviderAuth({ provider: normalized, cfg: params.cfg }),
+        ),
+      ] as const;
+    }),
+  );
   // Refresh authority follows exact profiles marked by the external-auth
   // lifecycle. Provider-wide authority could bless an unrelated stale profile.
   const externalCliRefreshProfileIds = new Set([
@@ -438,6 +461,7 @@ export function createModelAuthAvailabilityResolver(
       preferredProfile: preferredProfileId,
       forModel,
       readinessMode: "read-only",
+      now,
     });
     orderCache.set(cacheKey, resolution);
     return resolution;
@@ -662,10 +686,7 @@ export function createModelAuthAvailabilityResolver(
       }
       const managed = typeof apiKey === "string" && isSecretRefHeaderValueMarker(apiKey);
       return {
-        availability: managed
-          ? Boolean(resolveManagedSecretRefRuntimeProviderAuth({ provider, cfg: params.cfg })) ||
-            undefined
-          : undefined,
+        availability: managed ? managedProviderAuth.get(provider) || undefined : undefined,
         selectedAuthMode: configuredBearerMode,
         evidence: managed ? "runtime" : binding.evidence,
       };
@@ -679,9 +700,7 @@ export function createModelAuthAvailabilityResolver(
         };
       }
       const available = resolveSecretRefReadOnlyAvailability(apiKeyRef, params.cfg, env);
-      const runtimeAvailable = Boolean(
-        resolveManagedSecretRefRuntimeProviderAuth({ provider, cfg: params.cfg }),
-      );
+      const runtimeAvailable = managedProviderAuth.get(provider) === true;
       return {
         availability: runtimeAvailable ? true : available,
         selectedAuthMode: configuredBearerMode,
@@ -703,12 +722,14 @@ export function createModelAuthAvailabilityResolver(
         evidence: "aws-sdk",
       };
     }
-    const preparedProviderAuth =
-      params.preparedProviderAuth?.[normalizeProviderIdForAuth(provider)];
+    const preparedProviderAuth = preparedAuthForTarget(provider, target);
     if (preparedProviderAuth) {
       return {
         availability: modeAllowed(provider, target, preparedProviderAuth.mode),
         selectedAuthMode: preparedProviderAuth.mode,
+        ...(preparedProviderAuth.runtime
+          ? { runtimeAuth: { id: preparedProviderAuth.runtime, source: "native" as const } }
+          : {}),
         evidence: "runtime",
       };
     }
@@ -1026,7 +1047,7 @@ export function createModelAuthAvailabilityResolver(
       // explicit profile lock still has to resolve against a host route.
       if (
         !ref.lockedProfileId?.trim() &&
-        params.preparedProviderAuth?.[provider]?.runtime === routeResolution.defaultRuntimeId
+        preparedAuthForTarget(provider, ref)?.runtime === routeResolution.defaultRuntimeId
       ) {
         return { availability: undefined, routeResolution: null };
       }
@@ -1058,6 +1079,8 @@ export function createModelAuthAvailabilityResolver(
       !modelLock && !bindingProfileId && !basePolicy.required && materializedModelId
         ? params.preparedRuntimeAuthMaterializations?.find(
             (fact) =>
+              (ref.runtimeId === undefined ||
+                normalizeProviderId(ref.runtimeId) === fact.runtimeOwnerId) &&
               // Explicit order remains authoritative: runtime success only satisfies it
               // when the producer names a profile still admitted by the current order.
               (!orderResolution.hasExplicitOrder ||
@@ -1116,6 +1139,7 @@ export function createModelAuthAvailabilityResolver(
           routeResolution,
           selectedRoute,
           selectedAuthMode: materialized.authMode,
+          runtimeAuth: { id: materialized.runtimeOwnerId, source: "materialized" },
           ...(materialized.authProfileId ? { selectedProfileId: materialized.authProfileId } : {}),
           evidence: "runtime",
         };
@@ -1195,7 +1219,7 @@ export function createModelAuthAvailabilityResolver(
       sourcePlan.kind === "automatic" &&
       !sourcePlan.profiles.explicitOrder &&
       (sourcePlan.profiles.kind === "empty" || sourcePlan.profiles.kind === "all-unavailable")
-        ? params.preparedProviderAuth?.[provider]?.runtime
+        ? preparedAuthForTarget(provider, ref)?.runtime
         : undefined;
     const nativeAuthOwnsRoute =
       nativeAuthRuntime !== undefined &&
@@ -1215,7 +1239,12 @@ export function createModelAuthAvailabilityResolver(
         : {}),
     });
     if (routeAuthDecision.kind === "deferred" && nativeAuthOwnsRoute) {
-      return { availability: true, routeResolution, evidence: "runtime" };
+      return {
+        availability: true,
+        routeResolution,
+        evidence: "runtime",
+        runtimeAuth: { id: nativeAuthRuntime, source: "native" },
+      };
     }
     if (routeAuthDecision.kind !== "selected") {
       const rejectedSource =

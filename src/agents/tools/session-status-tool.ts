@@ -59,6 +59,7 @@ import {
   resolveAgentWorkspaceDir,
   resolveSessionAgentIds,
 } from "../agent-scope.js";
+import { prepareStatusModelAuth } from "../model-auth-label.js";
 import {
   buildModelAliasIndex,
   modelKey,
@@ -1135,6 +1136,16 @@ export function createSessionStatusTool(opts?: {
               : {}),
           });
           const { buildStatusText } = await loadCommandsStatusRuntime();
+          const modelAuthFacts = await prepareStatusModelAuth({
+            cfg,
+            agentId,
+            sessionKey: scopedResolved.key,
+            sessionEntry: statusSessionEntry,
+            provider: providerForCard,
+            model: defaultModelForCard,
+            workspaceDir: statusSessionEntry.spawnedWorkspaceDir,
+            ...(providerForCard ? {} : { modelAuthOverride: undefined }),
+          });
           const statusText = await buildStatusText({
             cfg,
             agentId,
@@ -1148,6 +1159,7 @@ export function createSessionStatusTool(opts?: {
             provider: providerForCard,
             model: defaultModelForCard,
             thinkingCatalog,
+            modelAuthFacts,
             resolvedThinkLevel: statusSessionEntry.thinkingLevel as ThinkLevel | undefined,
             resolvedFastMode: statusSessionEntry.fastMode,
             resolvedVerboseLevel: (statusSessionEntry.verboseLevel ?? "off") as VerboseLevel,

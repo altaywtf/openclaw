@@ -2455,7 +2455,7 @@ describe("runSetupWizard", () => {
     expectMockCallArgNotNull(warnIfModelConfigLooksOff, 0, 1, "model warning");
     expectRecordFields(
       getMockCallArg(warnIfModelConfigLooksOff, 0, 2, "model warning"),
-      { validateCatalog: false },
+      { workspaceDir: expect.any(String), pendingAuthProfiles: [] },
       "model warning options",
     );
   });

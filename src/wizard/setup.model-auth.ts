@@ -1,5 +1,6 @@
 // Model/auth provider selection step shared by the classic wizard and bootstrap onboarding.
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
+import { applyAgentConfig } from "../commands/agents.config.js";
 import {
   applyOnboardingPrimaryModel,
   prepareAgentModelDefaults,
@@ -153,6 +154,23 @@ export async function runSetupModelAuthStep(params: {
   let detectedProviderIds: ReadonlySet<string> | undefined;
   // Auth/model proposals copy config; they do not change the admitted setup owner.
   const target = resolveOnboardingSetupTarget(params.config, params.pendingAgent);
+  const checkModel = async () => {
+    const { warnIfModelConfigLooksOff } = await loadAuthChoiceModule();
+    const draft = params.pendingAgent
+      ? applyAgentConfig(nextConfig, {
+          agentId: target.agentId,
+          agentDir: target.agentDir,
+          workspace: target.workspaceDir,
+        })
+      : nextConfig;
+    await warnIfModelConfigLooksOff(draft, prompter, {
+      agentId: target.agentId,
+      agentDir: target.agentDir,
+      workspaceDir: target.workspaceDir,
+      pendingAuthProfiles: authProfiles,
+      ...(env ? { env } : {}),
+    });
+  };
   if (authChoiceFromPrompt) {
     const [
       { ensureAuthProfileStore },
@@ -237,20 +255,13 @@ export async function runSetupModelAuthStep(params: {
           nextConfig = applyOnboardingPrimaryModel(nextConfig, target, modelSelection.model);
         }
 
-        const { warnIfModelConfigLooksOff } = await loadAuthChoiceModule();
-        await warnIfModelConfigLooksOff(nextConfig, prompter, {
-          agentId: target.agentId,
-          agentDir: target.agentDir,
-          validateCatalog: false,
-        });
+        await checkModel();
       }
       break;
     }
 
-    const [
-      { prepareAuthChoice, resolvePreferredProviderForAuthChoice, warnIfModelConfigLooksOff },
-      { promptDefaultModel },
-    ] = await Promise.all([loadAuthChoiceModule(), loadModelPickerModule()]);
+    const [{ prepareAuthChoice, resolvePreferredProviderForAuthChoice }, { promptDefaultModel }] =
+      await Promise.all([loadAuthChoiceModule(), loadModelPickerModule()]);
     prompter.disableBackNavigation?.();
     const agentScopedModels = nextConfig.agents?.ownership === "explicit";
     let authResult: PreparedAuthChoiceResult;
@@ -333,12 +344,7 @@ export async function runSetupModelAuthStep(params: {
       }
     }
 
-    await warnIfModelConfigLooksOff(nextConfig, prompter, {
-      agentId: target.agentId,
-      agentDir: target.agentDir,
-      pendingAuthProfiles: authProfiles,
-      validateCatalog: false,
-    });
+    await checkModel();
     break;
   }
   return { config: nextConfig, authProfiles, persistAuthProfiles };

@@ -423,7 +423,7 @@ describe("ModelProvidersPage agent scope", () => {
   });
 
   it("autosaves model behavior changes", async () => {
-    const { context, runtimeConfig } = createHarness("main");
+    const { context, request, runtimeConfig } = createHarness("main");
     const page = appendPage(context);
     await waitForFast(() => expect(page.querySelector("#settings-model-behavior")).not.toBeNull());
 
@@ -445,6 +445,36 @@ describe("ModelProvidersPage agent scope", () => {
       note: "Update defaults from Control UI",
       replacePaths: ["agents.defaults.model.fallbacks"],
     });
+    await waitForFast(() => expect(page.messages.defaults?.kind).toBe("success"));
+    expect(
+      request.mock.calls.filter(
+        ([method, params]) =>
+          (method === "models.list" || method === "models.authStatus") && params?.refresh === true,
+      ),
+    ).toEqual([]);
+  });
+
+  it("reads published auth after saving a provider key without starting discovery", async () => {
+    const { context, request } = createHarness("main");
+    const page = appendPage(context);
+    await waitForFast(() => expect(page.data?.config).toEqual({}));
+    request.mockClear();
+    page.keyEditor = { provider: "openai", draft: "replacement" };
+
+    await page.saveKey("openai", "openai");
+
+    expect(page.messages.openai).toEqual({ kind: "success", text: "Secret saved." });
+    expect(request).toHaveBeenCalledWith(
+      "models.list",
+      { agentId: "main", preparedOnly: true, view: "configured" },
+      expect.anything(),
+    );
+    expect(
+      request.mock.calls.filter(
+        ([method, params]) =>
+          (method === "models.list" || method === "models.authStatus") && params?.refresh === true,
+      ),
+    ).toEqual([]);
   });
 
   it("preserves trailing fallbacks when replacing the visible fallback", async () => {

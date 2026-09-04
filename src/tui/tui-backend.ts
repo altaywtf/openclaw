@@ -150,6 +150,8 @@ export type TuiModelChoice = {
   provider: string;
   contextWindow?: number;
   reasoning?: boolean;
+  available?: boolean;
+  unavailableReason?: "missing-auth" | "auth-failed" | "cooldown";
 };
 
 /** Result shape returned by session mutation commands. */

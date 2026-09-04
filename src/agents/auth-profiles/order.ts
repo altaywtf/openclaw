@@ -204,6 +204,7 @@ export function resolveAuthProfileEligibility(params: {
 }
 
 type ResolveAuthProfileOrderParams = {
+  now?: number;
   cfg?: OpenClawConfig;
   store: AuthProfileStore;
   provider: string;
@@ -255,7 +256,7 @@ export function resolveAuthProfileOrderWithMetadata(
     config: cfg,
     ...params.authAliasLookupParams,
   });
-  const now = Date.now();
+  const now = params.now ?? Date.now();
 
   // Clear expired windows so profiles become eligible for a half-open probe.
   // Rate-limit counts persist until success to back off repeated failed probes;

@@ -7,24 +7,15 @@ import {
   resolveExplicitAuthOrderSelection,
   setAuthProfileOrder,
 } from "../../agents/auth-profiles.js";
-import {
-  clearCurrentProviderAuthState,
-  warmCurrentProviderAuthStateOffMainThread,
-} from "../../agents/model-provider-auth.js";
-import { refreshPreparedModelRuntimeSnapshots } from "../../agents/prepared-model-runtime.js";
 import { resolveProviderIdForAuth } from "../../agents/provider-auth-aliases.js";
-import { createSubsystemLogger } from "../../logging/subsystem.js";
-import { refreshActiveProviderAuthRuntimeSnapshot } from "../../secrets/runtime.js";
 import { readPreparedCatalog } from "../server-model-catalog-auth.js";
 import { formatForLog } from "../ws-log.js";
 import { modelAuthAgentScopeError, resolveModelAuthAgentScope } from "./model-auth-agent-scope.js";
+import { refreshModelAuthStateAfterMutation } from "./models-auth-refresh.js";
 import { resolveConfigBoundProfileIds } from "./models-auth-status-config.js";
-import { clearModelAuthStatusUsageCache } from "./models-auth-status-usage-cache.js";
 import type { ModelAuthOrderSetResult } from "./models-auth-status.types.js";
 import type { GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
-
-const log = createSubsystemLogger("models-auth-order");
 
 export const modelsAuthOrderHandlers: GatewayRequestHandlers = {
   "models.authOrderSet": async ({ params, respond, context }) => {
@@ -37,6 +28,7 @@ export const modelsAuthOrderHandlers: GatewayRequestHandlers = {
     const profileIds = params.profileIds ?? null;
     const rejectInvalidOrder = (message: string) =>
       respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, message));
+    let updated = false;
     try {
       const cfg = context.getRuntimeConfig();
       const scope = resolveModelAuthAgentScope(cfg, params.agentId);
@@ -104,7 +96,7 @@ export const modelsAuthOrderHandlers: GatewayRequestHandlers = {
         );
         return;
       }
-      const updated = await setAuthProfileOrder({
+      updated = await setAuthProfileOrder({
         agentDir: preparedSnapshot.agentDir,
         provider: authProvider,
         order: profileIds,
@@ -118,23 +110,21 @@ export const modelsAuthOrderHandlers: GatewayRequestHandlers = {
         );
         return;
       }
-      clearModelAuthStatusUsageCache();
-      clearCurrentProviderAuthState();
+      await refreshModelAuthStateAfterMutation(context, "update", scope.agentId);
       const result: ModelAuthOrderSetResult = { provider, profileIds };
       respond(true, result, undefined);
-      void Promise.all([
-        refreshActiveProviderAuthRuntimeSnapshot(),
-        refreshPreparedModelRuntimeSnapshots(cfg, {
-          allowGatewaySubagentBinding: true,
-          agentIds: new Set([scope.agentId]),
-          pluginMetadataSnapshot: preparedSnapshot.metadataSnapshot,
-        }),
-        warmCurrentProviderAuthStateOffMainThread(cfg),
-      ]).catch((err: unknown) => {
-        log.warn(`provider auth state refresh after reorder failed: ${formatForLog(err)}`);
-      });
     } catch (err) {
-      respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, formatForLog(err)));
+      const detail = formatForLog(err);
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.UNAVAILABLE,
+          updated
+            ? `Auth order was saved, but its model catalog could not refresh: ${detail}. Refresh models to retry.`
+            : detail,
+        ),
+      );
     }
   },
 };

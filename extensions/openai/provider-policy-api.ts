@@ -1,6 +1,11 @@
 // Openai API module exposes the plugin public contract.
 import type { ProviderDefaultThinkingPolicyContext } from "openclaw/plugin-sdk/core";
 import type { ProviderNormalizeResolvedModelContext } from "openclaw/plugin-sdk/plugin-entry";
+import {
+  supportsOpenAIResponsesFastMode,
+  normalizeOpenAIServiceTier,
+  type ProviderFastModeCapabilityContext,
+} from "openclaw/plugin-sdk/provider-model-capabilities";
 import type {
   ModelApi,
   ModelProviderConfig,
@@ -27,6 +32,30 @@ import {
   OPENAI_GPT_56_SOL_MODEL_ID,
 } from "./model-route-contract.js";
 import { resolveUnifiedOpenAIThinkingProfile } from "./thinking-policy.js";
+
+export function resolveFastModeCapability(ctx: ProviderFastModeCapabilityContext) {
+  if (!ctx.api || !ctx.baseUrl || !ctx.agentRuntime) {
+    return undefined;
+  }
+  if (ctx.agentRuntime === "openclaw") {
+    return (
+      normalizeOpenAIServiceTier(ctx.params?.serviceTier ?? ctx.params?.service_tier) ===
+        undefined && supportsOpenAIResponsesFastMode(ctx)
+    );
+  }
+  if (ctx.requestTransportOverrides === undefined) {
+    return undefined;
+  }
+  return (
+    ctx.provider === "openai" &&
+    ctx.agentRuntime === "codex" &&
+    codexCanReproduceRoute({
+      api: ctx.api,
+      baseUrl: ctx.baseUrl,
+      requestTransportOverrides: ctx.requestTransportOverrides,
+    })
+  );
+}
 
 const OPENAI_RESPONSES_API = "openai-responses";
 const OPENAI_COMPLETIONS_API = "openai-completions";
@@ -156,7 +185,9 @@ function isHttpBaseUrl(baseUrl: unknown): boolean {
 }
 
 function codexCanReproduceRoute(
-  candidate: ProviderModelRouteCandidate,
+  candidate: Pick<ProviderModelRouteCandidate, "baseUrl" | "requestTransportOverrides"> & {
+    api: string;
+  },
   sourceBaseUrl: unknown = candidate.baseUrl,
 ): boolean {
   // Official HTTP ChatGPT input normalizes to the native HTTPS candidate. Retain the source

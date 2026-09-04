@@ -5,8 +5,12 @@ import {
   loadAuthProfileStoreWithoutExternalProfiles,
   saveAuthProfileStore,
 } from "../agents/auth-profiles.js";
-import { refreshPreparedModelRuntimeSnapshots } from "../agents/prepared-model-runtime.js";
+import {
+  loadPublishedGatewayReplyDispatchRuntime,
+  refreshPreparedModelRuntimeSnapshots,
+} from "../agents/prepared-model-runtime.js";
 import { getRuntimeConfig } from "../config/io.js";
+import * as secretsRuntime from "../secrets/runtime.js";
 import { rpcReq } from "./test-helpers.js";
 import { setupGatewaySessionsTestHarness } from "./test/server-sessions.test-helpers.js";
 
@@ -54,6 +58,7 @@ test("models.authOrderSet requires admin scope before updating the shared order"
 
     const { ws } = await openClient({ scopes: ["operator.admin", "operator.read"] });
     clients.push(ws);
+    const before = await loadPublishedGatewayReplyDispatchRuntime({ agentId: "main" });
     const allowed = await rpcReq(ws, "models.authOrderSet", {
       provider,
       profileIds: updatedOrder,
@@ -62,15 +67,36 @@ test("models.authOrderSet requires admin scope before updating the shared order"
     expect(loadAuthProfileStoreWithoutExternalProfiles(agentDir).order?.[provider]).toEqual(
       updatedOrder,
     );
-    await vi.waitFor(async () => {
-      const status = await rpcReq<{
-        providers: Array<{ provider: string; profileOrder?: string[] }>;
-      }>(ws, "models.authStatus", {});
-      expect(status.ok, JSON.stringify(status)).toBe(true);
-      expect(status.payload?.providers).toContainEqual(
-        expect.objectContaining({ provider, profileOrder: updatedOrder }),
+    const after = await loadPublishedGatewayReplyDispatchRuntime({ agentId: "main" });
+    expect(before).toBeDefined();
+    expect(after?.pluginGeneration).toBe(before?.pluginGeneration);
+    const status = await rpcReq<{
+      providers: Array<{ provider: string; profileOrder?: string[] }>;
+    }>(ws, "models.authStatus", {});
+    expect(status.ok, JSON.stringify(status)).toBe(true);
+    expect(status.payload?.providers).toContainEqual(
+      expect.objectContaining({ provider, profileOrder: updatedOrder }),
+    );
+    const refresh = vi
+      .spyOn(secretsRuntime, "refreshActiveProviderAuthRuntimeSnapshot")
+      .mockRejectedValueOnce(new Error("auth publication unavailable"));
+    try {
+      const failed = await rpcReq(ws, "models.authOrderSet", {
+        provider,
+        profileIds: initialOrder,
+      });
+      expect(failed.ok).toBe(false);
+      expect(failed.error).toMatchObject({
+        code: "UNAVAILABLE",
+        message:
+          "Auth order was saved, but its model catalog could not refresh: Error: auth publication unavailable. Refresh models to retry.",
+      });
+      expect(loadAuthProfileStoreWithoutExternalProfiles(agentDir).order?.[provider]).toEqual(
+        initialOrder,
       );
-    });
+    } finally {
+      refresh.mockRestore();
+    }
   } finally {
     for (const client of clients) {
       client.close();

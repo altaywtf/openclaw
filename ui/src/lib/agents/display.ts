@@ -229,7 +229,7 @@ export function buildAgentContext(
 export function resolveAgentRuntimeLabel(
   agentRuntime?: AgentsListResult["agents"][number]["agentRuntime"],
 ): string {
-  const id = normalizeOptionalString(agentRuntime?.id) ?? "pi";
+  const id = normalizeOptionalString(agentRuntime?.id) ?? "-";
   const fallback = normalizeOptionalString(agentRuntime?.fallback);
   return fallback ? `${id} (fallback ${fallback})` : id;
 }
@@ -320,6 +320,7 @@ type ConfiguredModelOption = {
   provider?: string;
   tags?: string[];
   alias?: string;
+  disabled?: boolean;
 };
 
 function resolveConfiguredModels(
@@ -392,6 +393,7 @@ export function buildModelOptions(
         ...option,
         provider: entry.provider,
         tags: entry.tags,
+        ...(entry.available === false ? { disabled: true } : {}),
       });
     }
   }

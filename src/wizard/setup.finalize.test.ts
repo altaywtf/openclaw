@@ -3,7 +3,6 @@ import fs from "node:fs/promises";
 import { expectDefined } from "@openclaw/normalization-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createWizardPrompter as buildWizardPrompter } from "../../test/helpers/wizard-prompter.js";
-import { PreparedModelCatalogConfigReplacedError } from "../agents/prepared-model-catalog.errors.js";
 import type * as AuthChoiceModelCheck from "../commands/auth-choice.model-check.js";
 import type { OpenClawConfig } from "../config/config.js";
 import type { GatewayTlsConfig } from "../config/types.gateway.js";
@@ -11,9 +10,8 @@ import type { PluginWebSearchProviderEntry } from "../plugins/types.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { withEnvAsync } from "../test-utils/env.js";
 
-type DefaultModelAuthStatus = ReturnType<typeof AuthChoiceModelCheck.resolveDefaultModelAuthStatus>;
-type DefaultModelCatalogFacts = ReturnType<
-  typeof AuthChoiceModelCheck.resolveDefaultModelCatalogFacts
+type DefaultModelAuthStatus = Awaited<
+  ReturnType<typeof AuthChoiceModelCheck.resolveDefaultModelAuthStatus>
 >;
 
 const runTui = vi.hoisted(() => vi.fn<(options: unknown) => Promise<void>>(async () => {}));
@@ -58,18 +56,11 @@ const resolveLocalControlUiProbeLinks = vi.hoisted(() =>
 const setupWizardShellCompletion = vi.hoisted(() => vi.fn(async () => {}));
 const healthCommand = vi.hoisted(() => vi.fn(async () => {}));
 const resolveDefaultModelAuthStatus = vi.hoisted(() =>
-  vi.fn<() => DefaultModelAuthStatus>(() => ({
+  vi.fn<() => Promise<DefaultModelAuthStatus>>(async () => ({
     provider: "anthropic",
-    model: "claude-opus-4-8",
-    status: "ready",
-    hasAuth: true,
+    model: "fixture-model",
+    evaluation: { availability: true, routeResolution: null },
   })),
-);
-const resolveDefaultModelCatalogFacts = vi.hoisted(() =>
-  vi.fn<() => DefaultModelCatalogFacts>(() => ({ found: true })),
-);
-const loadModelCatalog = vi.hoisted(() =>
-  vi.fn<(_params?: unknown) => Promise<unknown[]>>(async () => []),
 );
 const buildGatewayInstallPlan = vi.hoisted(() =>
   vi.fn(async (_params?: { warn?: (message: string, title?: string) => void }) => ({
@@ -263,18 +254,9 @@ vi.mock("../tui/tui.js", () => ({
 
 vi.mock("../commands/auth-choice.js", () => ({
   applyAuthChoice: vi.fn(),
-  resolveDefaultModelCatalogFacts,
   resolveDefaultModelAuthStatus,
   resolvePreferredProviderForAuthChoice: vi.fn(),
   warnIfModelConfigLooksOff: vi.fn(),
-}));
-
-vi.mock("../agents/prepared-model-catalog.js", () => ({
-  loadProviderScopedThinkingCatalog: vi.fn(async () => []),
-  loadPreparedModelCatalogSnapshot: async (...args: unknown[]) => {
-    const entries = await loadModelCatalog(...args);
-    return { entries, routeVariants: entries };
-  },
 }));
 
 vi.mock("./setup.secret-input.js", () => ({
@@ -508,16 +490,11 @@ describe("finalizeSetupWizard", () => {
       details: [],
     });
     resolveDefaultModelAuthStatus.mockReset();
-    resolveDefaultModelAuthStatus.mockReturnValue({
+    resolveDefaultModelAuthStatus.mockResolvedValue({
       provider: "anthropic",
-      model: "claude-opus-4-8",
-      status: "ready",
-      hasAuth: true,
+      model: "fixture-model",
+      evaluation: { availability: true, routeResolution: null },
     });
-    resolveDefaultModelCatalogFacts.mockReset();
-    resolveDefaultModelCatalogFacts.mockReturnValue({ found: true });
-    loadModelCatalog.mockReset();
-    loadModelCatalog.mockResolvedValue([]);
   });
 
   it("resolves gateway password SecretRef for probe but omits auth from TUI hatch", async () => {
@@ -794,53 +771,17 @@ describe("finalizeSetupWizard", () => {
     });
   });
 
-  it("finishes without a hatch message when the prepared catalog owner was replaced", async () => {
-    vi.spyOn(fs, "access").mockResolvedValueOnce(undefined);
-    loadModelCatalog.mockRejectedValueOnce(
-      new PreparedModelCatalogConfigReplacedError("/tmp/replaced-agent"),
-    );
-    const prompter = createLaterPrompter();
-
-    await expect(
-      finalizeSetupWizard(createFinalizeArgs("quickstart", { prompter })),
-    ).resolves.toEqual({ launchedTui: true });
-
-    expect(runTui).toHaveBeenCalledWith(
-      expect.objectContaining({
-        message: undefined,
-      }),
-    );
-    expect(resolveDefaultModelCatalogFacts).not.toHaveBeenCalled();
-    expect(resolveDefaultModelAuthStatus).not.toHaveBeenCalled();
-  });
-
   it("propagates unrelated prepared catalog failures", async () => {
     const error = new Error("catalog read failed");
-    loadModelCatalog.mockRejectedValueOnce(error);
+    resolveDefaultModelAuthStatus.mockRejectedValueOnce(error);
 
     await expect(finalizeSetupWizard(createFinalizeArgs("quickstart"))).rejects.toBe(error);
 
     expect(runTui).not.toHaveBeenCalled();
   });
 
-  it("passes physical catalog routes into the bootstrap auth decision", async () => {
+  it("passes the exact configuration to the shared bootstrap auth decision", async () => {
     vi.spyOn(fs, "access").mockResolvedValueOnce(undefined);
-    const catalog = [
-      {
-        id: "gpt-5.4-nano",
-        name: "GPT 5.4 Nano",
-        provider: "openai",
-      },
-    ];
-    const observedRoutes = [
-      {
-        api: "openai-chatgpt-responses" as const,
-        baseUrl: "https://chatgpt.com/backend-api/codex",
-      },
-      { api: "openai-responses" as const, baseUrl: "https://api.openai.com/v1" },
-    ];
-    loadModelCatalog.mockResolvedValueOnce(catalog);
-    resolveDefaultModelCatalogFacts.mockReturnValueOnce({ found: true, observedRoutes });
     const prompter = buildWizardPrompter({
       confirm: vi.fn(async () => false),
     });
@@ -853,23 +794,44 @@ describe("finalizeSetupWizard", () => {
 
     await finalizeSetupWizard(createFinalizeArgs("quickstart", { prompter, nextConfig }));
 
-    expect(loadModelCatalog).toHaveBeenCalledWith({ config: nextConfig, readOnly: true });
-    expect(resolveDefaultModelCatalogFacts).toHaveBeenCalledWith(nextConfig, catalog, {
-      routeVariants: catalog,
-    });
     expect(resolveDefaultModelAuthStatus).toHaveBeenCalledWith(nextConfig, {
       agentDir: "/tmp/custom-agent",
-      observedRoutes,
     });
+  });
+
+  it("waits for shared readiness before sending the first greeting", async () => {
+    vi.spyOn(fs, "access").mockResolvedValueOnce(undefined);
+    const readiness = Promise.withResolvers<DefaultModelAuthStatus>();
+    resolveDefaultModelAuthStatus.mockReturnValueOnce(readiness.promise);
+    const finalization = finalizeSetupWizard(
+      createFinalizeArgs("quickstart", { prompter: createLaterPrompter() }),
+    );
+    try {
+      await vi.waitFor(() => expect(resolveDefaultModelAuthStatus).toHaveBeenCalledOnce());
+      expect(runTui).not.toHaveBeenCalled();
+    } finally {
+      readiness.resolve({
+        provider: "fixture",
+        model: "model",
+        evaluation: { availability: true, routeResolution: null },
+      });
+    }
+    await finalization;
+    expect(runTui).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "Wake up, my friend!" }),
+    );
   });
 
   it("skips the doomed hatch seed message and warns when model auth is missing", async () => {
     vi.spyOn(fs, "access").mockResolvedValueOnce(undefined);
-    resolveDefaultModelAuthStatus.mockReturnValueOnce({
+    resolveDefaultModelAuthStatus.mockResolvedValueOnce({
       provider: "openai",
       model: "gpt-5.5",
-      status: "missing",
-      hasAuth: false,
+      evaluation: {
+        availability: false,
+        routeResolution: null,
+        unavailableReason: "missing-auth",
+      },
     });
     const prompter = buildWizardPrompter({
       confirm: vi.fn(async () => false),
@@ -904,11 +866,10 @@ describe("finalizeSetupWizard", () => {
 
   it("hatches without a seed and omits setup advice for indeterminate model auth", async () => {
     vi.spyOn(fs, "access").mockResolvedValueOnce(undefined);
-    resolveDefaultModelAuthStatus.mockReturnValueOnce({
+    resolveDefaultModelAuthStatus.mockResolvedValueOnce({
       provider: "openai",
       model: "gpt-5.5",
-      status: "indeterminate",
-      hasAuth: false,
+      evaluation: { availability: undefined, routeResolution: null },
     });
     const prompter = buildWizardPrompter({
       confirm: vi.fn(async () => false),
@@ -924,13 +885,17 @@ describe("finalizeSetupWizard", () => {
 
   it("hatches without a seed and omits setup advice for an incompatible model route", async () => {
     vi.spyOn(fs, "access").mockResolvedValueOnce(undefined);
-    resolveDefaultModelAuthStatus.mockReturnValueOnce({
+    resolveDefaultModelAuthStatus.mockResolvedValueOnce({
       provider: "openai",
       model: "gpt-5.6",
-      status: "incompatible",
-      hasAuth: false,
-      code: "auth_mode_unsupported",
-      message: "gpt-5.6 requires OpenAI Platform API-key authentication.",
+      evaluation: {
+        availability: false,
+        routeResolution: {
+          kind: "incompatible",
+          code: "auth_mode_unsupported",
+          message: "The selected route requires another authentication method.",
+        },
+      },
     });
     const prompter = buildWizardPrompter({
       confirm: vi.fn(async () => false),

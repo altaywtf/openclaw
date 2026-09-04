@@ -2,8 +2,9 @@ import { html, nothing } from "lit";
 import type { ModelCatalogEntry, SessionsListResult } from "../../../api/types.ts";
 import { t } from "../../../i18n/index.ts";
 import {
+  buildQualifiedChatModelValue,
+  findChatModelCatalogEntry,
   normalizeChatModelProviderId,
-  resolvePreferredServerChatModelValue,
 } from "../../../lib/chat/model-ref.ts";
 import {
   resolveChatFastModeSelectState,
@@ -69,6 +70,8 @@ type ChatModelControlsProps = {
 };
 
 const CHAT_MODEL_PROVIDER_GROUP_ALIASES: Readonly<Record<string, string>> = {
+  codex: "openai",
+  "openai-codex": "openai",
   "google-gemini-cli": "google",
   "moonshot-ai": "moonshot",
   moonshotai: "moonshot",
@@ -84,78 +87,18 @@ function normalizeChatModelProviderGroupId(provider: string): string {
 function resolveChatModelProvider(
   value: string,
   catalog: ModelCatalogEntry[],
-  fallbackValue = "",
   providerHint = "",
 ): string {
-  const modelRef = (value || fallbackValue).trim();
-  const normalizedModelRef = modelRef.toLowerCase();
-  const qualifiedCatalogEntry = catalog.find((entry) => {
-    const normalizedId = entry.id.trim().toLowerCase();
-    const normalizedProvider = normalizeChatModelProviderId(entry.provider);
-    return `${normalizedProvider}/${normalizedId}` === normalizedModelRef;
-  });
+  const modelRef = value.trim();
+  const qualifiedCatalogEntry = findChatModelCatalogEntry(modelRef, catalog);
   if (qualifiedCatalogEntry) {
     return normalizeChatModelProviderGroupId(qualifiedCatalogEntry.provider);
-  }
-  const idMatches = catalog.filter((entry) => entry.id.trim().toLowerCase() === normalizedModelRef);
-  const normalizedHint = normalizeChatModelProviderId(providerHint);
-  const hintOwnsRawId = idMatches.some(
-    (entry) => normalizeChatModelProviderId(entry.provider) === normalizedHint,
-  );
-  if (normalizedHint && (idMatches.length === 0 || hintOwnsRawId)) {
-    return normalizeChatModelProviderGroupId(normalizedHint);
-  }
-  if (idMatches.length === 1) {
-    return normalizeChatModelProviderGroupId(idMatches[0]?.provider ?? "");
   }
   const separator = modelRef.indexOf("/");
   if (separator > 0) {
     return normalizeChatModelProviderGroupId(modelRef.slice(0, separator));
   }
-  return "other";
-}
-
-function resolveChatModelCatalogEntry(
-  value: string,
-  catalog: ModelCatalogEntry[],
-): ModelCatalogEntry | undefined {
-  const trimmedValue = value.trim().toLowerCase();
-  const separator = trimmedValue.indexOf("/");
-  const normalizedValue =
-    separator > 0
-      ? `${normalizeChatModelProviderId(trimmedValue.slice(0, separator))}/${trimmedValue.slice(
-          separator + 1,
-        )}`
-      : trimmedValue;
-  if (!normalizedValue) {
-    return undefined;
-  }
-  const matches = catalog.filter((candidate) => {
-    const provider = normalizeChatModelProviderId(candidate.provider);
-    return `${provider}/${candidate.id.trim().toLowerCase()}` === normalizedValue;
-  });
-  if (matches.length > 0) {
-    return (
-      matches.find((candidate) => candidate.provider.trim().toLowerCase() === "openai") ??
-      matches[0]
-    );
-  }
-  const idMatches = catalog.filter(
-    (candidate) => candidate.id.trim().toLowerCase() === normalizedValue,
-  );
-  return idMatches.length === 1 ? idMatches[0] : undefined;
-}
-
-function resolveChatModelPickerLabel(
-  value: string,
-  fallbackLabel: string,
-  catalog: ModelCatalogEntry[],
-): string {
-  const entry = resolveChatModelCatalogEntry(value, catalog);
-  if (entry && normalizeChatModelProviderId(entry.provider) === "openai") {
-    return entry.name.trim() || fallbackLabel;
-  }
-  return fallbackLabel;
+  return normalizeChatModelProviderGroupId(providerHint) || "other";
 }
 
 function formatPickerModelLabel(label: string): string {
@@ -224,7 +167,7 @@ export function renderChatModelControls(props: ChatModelControlsProps) {
     activeRunId: props.activeRunId,
     catalog: props.modelCatalog,
     connected: props.connected,
-    currentModelOverride: currentOverride,
+    currentModelOverride: currentOverride || defaultModel,
     fastModeTarget: props.fastModeTarget ?? props.selectedSession,
     gatewayAvailable: props.gatewayAvailable,
     loading: props.loading,
@@ -240,22 +183,10 @@ export function renderChatModelControls(props: ChatModelControlsProps) {
   const activeSession = props.selectedSession;
   const currentProviderHint = activeSession?.modelProvider ?? "";
   const defaultProviderHint = props.sessionsResult?.defaults?.modelProvider ?? "";
-  const defaultCatalogEntry = resolveChatModelCatalogEntry(defaultModel, props.modelCatalog);
-  const canonicalDefaultLabel = resolveChatModelPickerLabel(
-    defaultModel,
-    defaultLabel,
-    props.modelCatalog,
-  );
-  const pickerDefaultLabel =
-    defaultModel && canonicalDefaultLabel !== defaultLabel
-      ? t("chat.modelControls.defaultWithModel", { model: canonicalDefaultLabel })
-      : defaultLabel;
   const normalizedDefaultModel = defaultModel.trim().toLowerCase();
   const modelOptions: ChatModelPickerOption[] = selectOptions.map((option) => {
-    const catalogEntry = resolveChatModelCatalogEntry(option.value, props.modelCatalog);
-    const isDefault =
-      option.value.trim().toLowerCase() === normalizedDefaultModel ||
-      (catalogEntry !== undefined && catalogEntry === defaultCatalogEntry);
+    const catalogEntry = findChatModelCatalogEntry(option.value, props.modelCatalog);
+    const isDefault = option.value.trim().toLowerCase() === normalizedDefaultModel;
     // Runtime meta labels operator-pinned runtimes (models/provider config) and runtimes chosen
     // by credentials (a CLI login serving the provider); implicit defaults stay unlabeled so
     // ordinary rows stay clean.
@@ -271,11 +202,10 @@ export function renderChatModelControls(props: ChatModelControlsProps) {
       commitValue: isDefault ? "" : option.value,
       isDefault,
       value: option.value,
-      label: resolveChatModelPickerLabel(option.value, option.label, props.modelCatalog),
+      label: option.label,
       provider: resolveChatModelProvider(
         option.value,
         props.modelCatalog,
-        "",
         isDefault
           ? defaultProviderHint
           : option.value === currentOverride
@@ -298,7 +228,7 @@ export function renderChatModelControls(props: ChatModelControlsProps) {
     }
     return pickerOption;
   });
-  const currentCatalogEntry = resolveChatModelCatalogEntry(currentOverride, props.modelCatalog);
+  const currentCatalogEntry = findChatModelCatalogEntry(currentOverride, props.modelCatalog);
   if (
     currentOverride &&
     modelOptions.length > 0 &&
@@ -312,18 +242,13 @@ export function renderChatModelControls(props: ChatModelControlsProps) {
       ...(typeof currentCatalogEntry?.supportsTools === "boolean"
         ? { supportsTools: currentCatalogEntry.supportsTools }
         : {}),
-      ...(currentCatalogEntry?.available === false
-        ? { disabled: true, unavailableReason: currentCatalogEntry.unavailableReason }
+      ...(!currentCatalogEntry || currentCatalogEntry.available === false
+        ? { disabled: true, unavailableReason: currentCatalogEntry?.unavailableReason }
         : {}),
       isDefault: false,
       value: currentOverride,
       label: currentCatalogEntry?.name.trim() || currentOverride,
-      provider: resolveChatModelProvider(
-        currentOverride,
-        props.modelCatalog,
-        "",
-        currentProviderHint,
-      ),
+      provider: resolveChatModelProvider(currentOverride, props.modelCatalog, currentProviderHint),
     });
   }
   // A persisted pin can match a changed default; equality cannot establish inheritance.
@@ -333,17 +258,13 @@ export function renderChatModelControls(props: ChatModelControlsProps) {
       ? modelOptions.find((option) => option.isDefault)
       : modelOptions.find((option) => option.value === pickerValue);
   const activeSessionModel = activeSession?.model
-    ? resolveChatModelCatalogEntry(
-        resolvePreferredServerChatModelValue(
-          activeSession.model,
-          activeSession.modelProvider,
-          props.modelCatalog,
-        ),
+    ? findChatModelCatalogEntry(
+        buildQualifiedChatModelValue(activeSession.model, activeSession.modelProvider),
         props.modelCatalog,
       )
     : undefined;
   const activeOptionModel = activeModelOption
-    ? resolveChatModelCatalogEntry(activeModelOption.value, props.modelCatalog)
+    ? findChatModelCatalogEntry(activeModelOption.value, props.modelCatalog)
     : undefined;
   const activeSessionRuntime = activeSession?.agentRuntime?.id.trim().toLowerCase();
   const activeOptionRuntime = (
@@ -374,11 +295,7 @@ export function renderChatModelControls(props: ChatModelControlsProps) {
     props.modelSelectionLocked === true
       ? lockedModelLabel
       : (modelOptions.find((entry) => entry.value === currentOverride)?.label ??
-        resolveChatModelPickerLabel(
-          currentOverride,
-          currentOverride || pickerDefaultLabel,
-          props.modelCatalog,
-        ));
+        (currentOverride || defaultLabel));
   const managedCatalog = props.modelCatalogState ?? {
     hasSnapshot: !props.modelsLoading,
     status: props.modelsLoading ? ("loading" as const) : ("ready" as const),
@@ -447,7 +364,7 @@ export function renderChatModelControls(props: ChatModelControlsProps) {
                 },
               }
             : undefined,
-        defaultModelLabel: formatPickerModelLabel(pickerDefaultLabel),
+        defaultModelLabel: formatPickerModelLabel(defaultLabel),
         disabled: modelDisabled,
         disabledReason: props.modelMutationDisabledReason,
         modelCatalogState: managedCatalog,

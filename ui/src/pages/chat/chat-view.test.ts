@@ -276,9 +276,24 @@ type ChatHeaderTestState = {
 type ChatProps = Parameters<typeof renderChat>[0];
 
 function createOpenAiModelCatalog(): ModelCatalogEntry[] {
+  const thinkingLevels = ["off", "low", "medium", "high"].map((id) => ({ id, label: id }));
   return [
-    { id: "gpt-5.4", name: "GPT-5.4", provider: "openai" },
-    { id: "gpt-5.5", name: "GPT-5.5", provider: "openai" },
+    {
+      id: "gpt-5.4",
+      name: "GPT-5.4",
+      provider: "openai",
+      supportsFastMode: true,
+      thinkingLevels,
+      thinkingDefault: "medium",
+    },
+    {
+      id: "gpt-5.5",
+      name: "GPT-5.5",
+      provider: "openai",
+      supportsFastMode: true,
+      thinkingLevels,
+      thinkingDefault: "medium",
+    },
   ];
 }
 
@@ -532,7 +547,9 @@ function createReasoningHeaderState(
   const result = createChatHeaderState({
     model: "gpt-5.5",
     modelProvider: "openai",
-    models: options.models ?? [{ id: "gpt-5.5", name: "GPT-5.5", provider: "openai" }],
+    models: options.models ?? [
+      { id: "gpt-5.5", name: "GPT-5.5", provider: "openai", supportsFastMode: true },
+    ],
     thinkingDefault: "high",
   });
   result.state.sessionsResult = createSessionsListResult({
@@ -7450,7 +7467,7 @@ describe("chat model controls", () => {
   it("hides model choices for locked sessions while preserving reasoning and speed", () => {
     const { state } = createReasoningHeaderState({
       models: [
-        { id: "gpt-5.5", name: "GPT-5.5", provider: "openai" },
+        { id: "gpt-5.5", name: "GPT-5.5", provider: "openai", supportsFastMode: true },
         { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", provider: "anthropic" },
       ],
     });
@@ -7981,7 +7998,7 @@ describe("chat model controls", () => {
     },
   );
 
-  it("synthesizes a selectable row for a persisted override missing from the catalog", () => {
+  it("displays a persisted override missing from the catalog without offering it as available", () => {
     const { state } = createChatHeaderState({
       model: "gpt-5.2-retired",
       modelProvider: "openai",
@@ -7998,6 +8015,7 @@ describe("chat model controls", () => {
       `[data-chat-model-option="${overrideValue}"]`,
     );
     expect(overrideOption?.querySelector(".chat-controls__inline-select-check")).not.toBeNull();
+    expect(overrideOption?.disabled).toBe(true);
   });
 
   it("distinguishes model rows that use different agent runtimes", () => {
@@ -8104,7 +8122,7 @@ describe("chat model controls", () => {
     ).not.toContain("Chat only");
   });
 
-  it("shows canonical OpenAI model names instead of command aliases", () => {
+  it("shows canonical OpenAI model names alongside configured aliases", () => {
     const { state } = createChatHeaderState({
       model: "gpt-5.5",
       modelProvider: "openai",
@@ -8130,7 +8148,7 @@ describe("chat model controls", () => {
       getChatModelSelect(container)
         .querySelector(".chat-controls__inline-select-label")
         ?.textContent?.trim(),
-    ).toBe("GPT-5.5");
+    ).toBe("GPT-5.5 · gpt");
     expect(
       getThinkingSelect(container)
         .querySelector(".chat-controls__inline-select-label")
@@ -8170,7 +8188,7 @@ describe("chat model controls", () => {
       getChatModelSelect(container)
         .querySelector(".chat-controls__inline-select-label")
         ?.textContent?.trim(),
-    ).toBe("GPT-5.5");
+    ).toBe("GPT-5.5 · gpt");
     const defaultOptions = container.querySelectorAll<HTMLButtonElement>(
       '[data-chat-model-default="true"]',
     );
@@ -8313,7 +8331,7 @@ describe("chat model controls", () => {
     ).toBe("true");
   });
 
-  it("uses a unique catalog provider before an unrelated stale session hint", () => {
+  it("does not replace a saved model route with a unique catalog provider", () => {
     const { state } = createChatHeaderState({
       model: "moonshotai/kimi-k2.5",
       modelProvider: "zai",
@@ -8335,8 +8353,13 @@ describe("chat model controls", () => {
     expect(providers).toContain("nvidia");
     expect(providers).not.toContain("zai");
     expect(
-      container.querySelector<HTMLElement>('[data-chat-model-provider-group="nvidia"]')?.hidden,
-    ).toBe(false);
+      container
+        .querySelector('[data-chat-model-option="nvidia/moonshotai/kimi-k2.5"]')
+        ?.getAttribute("aria-selected"),
+    ).toBe("false");
+    expect(getChatModelSelect(container).getAttribute("data-chat-select-value")).toBe(
+      "moonshotai/kimi-k2.5",
+    );
   });
 
   it("renders reasoning as a slider and speed as a fast-mode toggle", () => {
@@ -8386,6 +8409,7 @@ describe("chat model controls", () => {
           name: "GPT-5.5",
           provider: "openai",
           reasoning: false,
+          supportsFastMode: true,
         },
       ],
     });
@@ -8409,7 +8433,7 @@ describe("chat model controls", () => {
     const effortTrigger = container.querySelector('[data-chat-thinking-select="true"]');
     const modelTrigger = container.querySelector('[data-chat-model-select="true"]');
 
-    expect(effortTrigger?.getAttribute("aria-label")).toBe("Fast mode: Standard");
+    expect(effortTrigger?.getAttribute("aria-label")).toBe("Fast mode: Default");
     expect(modelTrigger?.getAttribute("aria-label")).not.toContain("Fast mode");
     expect(container.querySelector(".chat-controls__model-menu")?.textContent).not.toMatch(
       /Effort|Fast mode/,
@@ -8800,7 +8824,7 @@ describe("chat model controls", () => {
     ).toBe("true");
   });
 
-  it("keeps the speed toggle visible and disabled for unsupported providers", () => {
+  it("hides speed controls without a published capability or saved choice", () => {
     const { state } = createChatHeaderState({
       model: "local-model",
       modelProvider: "ollama",
@@ -8809,9 +8833,7 @@ describe("chat model controls", () => {
     const container = renderModelControls(state);
 
     const speedToggle = container.querySelector<HTMLButtonElement>("[data-chat-speed-toggle]");
-    expect(speedToggle).toBeInstanceOf(HTMLButtonElement);
-    expect(speedToggle?.getAttribute("aria-label")).toContain("Default");
-    expect(speedToggle?.disabled).toBe(true);
+    expect(speedToggle).toBeNull();
   });
 
   it("uses default thinking options when the active session is absent", () => {
@@ -8852,6 +8874,10 @@ describe("chat model controls", () => {
       modelProvider: "ollama",
       thinkingDefault: "adaptive",
     });
+    expectDefined(state.sessionsResult?.sessions[0], "unanchored session").thinkingLevels = [
+      { id: "off", label: "off" },
+      { id: "low", label: "low" },
+    ];
     const container = renderModelControls(state);
 
     const thinkingSelect = getThinkingSelect(container);
@@ -8877,6 +8903,11 @@ describe("chat model controls", () => {
       modelProvider: "openai",
       thinkingDefault: "medium",
     });
+    expectDefined(state.sessionsResult?.sessions[0], "anchored session").thinkingLevels = [
+      { id: "off", label: "off" },
+      { id: "medium", label: "medium" },
+      { id: "high", label: "high" },
+    ];
     const container = renderModelControls(state);
 
     const slider = getThinkingSlider(container);
@@ -8933,7 +8964,7 @@ describe("chat model controls", () => {
     expect(request).not.toHaveBeenCalled();
   });
 
-  it("disables thinking for known non-reasoning models without duplicate off options", () => {
+  it("preserves an explicit off choice and the published off-only profile", () => {
     const { state } = createChatHeaderState({
       model: "mistral:v0.3",
       modelProvider: "ollama",
@@ -8964,7 +8995,10 @@ describe("chat model controls", () => {
     };
     const container = renderModelControls(state);
 
-    expect(container.querySelector('[data-chat-thinking-select="true"]')).toBeNull();
+    expect(container.querySelector('[data-chat-thinking-select="true"]')?.textContent).toContain(
+      "Off",
+    );
+    expect(container.querySelectorAll('[data-chat-thinking-option="off"]')).toHaveLength(1);
     expect(getThinkingSlider(container)).toBeNull();
     expect(container.querySelector("[data-chat-speed-toggle]")).toBeNull();
   });
@@ -8992,7 +9026,7 @@ describe("chat model controls", () => {
     });
     const container = renderModelControls(state);
 
-    expect(getThinkingReasoningValueLabel(container)).toBe("Low");
+    expect(container.querySelector('[data-chat-thinking-select="true"]')).toBeNull();
   });
 
   it("always renders full thinking labels", () => {

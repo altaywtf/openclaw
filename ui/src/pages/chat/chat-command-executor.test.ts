@@ -782,9 +782,9 @@ describe("executeSlashCommand directives", () => {
 
     expect(result.content).toBe(
       [
-        t("chat.commandResults.thinking.current", { level: "low" }),
+        t("chat.commandResults.thinking.current", { level: t("common.unknown") }),
         t("chat.commandResults.options", {
-          options: "default, off, minimal, low, medium, high",
+          options: t("common.unknown"),
         }),
       ].join("\n"),
     );
@@ -853,9 +853,9 @@ describe("executeSlashCommand directives", () => {
 
     expect(result.content).toBe(
       [
-        t("chat.commandResults.thinking.current", { level: "off" }),
+        t("chat.commandResults.thinking.current", { level: t("common.unknown") }),
         t("chat.commandResults.options", {
-          options: "default, off, minimal, low, medium, high",
+          options: t("common.unknown"),
         }),
       ].join("\n"),
     );
@@ -869,7 +869,11 @@ describe("executeSlashCommand directives", () => {
             modelProvider: "openai",
             model: "work-default",
             thinkingDefault: "high",
-            thinkingOptions: ["off", "low", "high"],
+            thinkingLevels: [
+              { id: "off", label: "off" },
+              { id: "low", label: "low" },
+              { id: "high", label: "high" },
+            ],
           },
           sessions: [],
         };
@@ -1172,7 +1176,7 @@ describe("executeSlashCommand directives", () => {
 
     expect(status.content).toBe(
       [
-        t("chat.commandResults.thinking.current", { level: "low" }),
+        t("chat.commandResults.thinking.current", { level: t("common.unknown") }),
         t("chat.commandResults.options", {
           options: "default, off, minimal, low, medium, high, xhigh, max",
         }),
@@ -1184,7 +1188,7 @@ describe("executeSlashCommand directives", () => {
   it("does not use extended defaults for session with different model when thinkingLevels is empty (#76482)", async () => {
     // Regression: when session model differs from defaults and session has no thinkingLevels,
     // we should NOT blindly use defaults (which could have extra levels like xhigh/max
-    // from a different model). The client-side fallback uses the base thinking levels.
+    // from a different model). Missing profile metadata remains unknown.
     const request = vi.fn(async (method: string, _payload?: unknown) => {
       if (method === "sessions.list") {
         return {
@@ -1229,9 +1233,9 @@ describe("executeSlashCommand directives", () => {
 
     expect(status.content).toBe(
       [
-        t("chat.commandResults.thinking.current", { level: "low" }),
+        t("chat.commandResults.thinking.current", { level: t("common.unknown") }),
         t("chat.commandResults.options", {
-          options: "default, off, minimal, low, medium, high",
+          options: t("common.unknown"),
         }),
       ].join("\n"),
     );
@@ -1271,9 +1275,9 @@ describe("executeSlashCommand directives", () => {
 
     expect(status.content).toBe(
       [
-        t("chat.commandResults.thinking.current", { level: "low" }),
+        t("chat.commandResults.thinking.current", { level: t("common.unknown") }),
         t("chat.commandResults.options", {
-          options: "default, off, minimal, low, medium, high",
+          options: t("common.unknown"),
         }),
       ].join("\n"),
     );
