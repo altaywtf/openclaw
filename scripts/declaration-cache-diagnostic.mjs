@@ -5,6 +5,7 @@ import path from "node:path";
 
 const EXPECTED_NODE = "v26.8.1";
 const EXPECTED_PNPM = "12.1.0";
+const MAX_CACHE_DECISION_LINES = 40;
 const MAX_DIFF_ENTRIES = 30;
 const MAX_SUMMARY_BYTES = 256 * 1024;
 const command = process.argv[2];
@@ -267,6 +268,50 @@ function logTail(file) {
   };
 }
 
+function cacheDecisionSummary(file) {
+  if (!fs.existsSync(file)) {
+    return {
+      present: false,
+      declarationDecisionCount: 0,
+      hitCount: 0,
+      missCount: 0,
+      postDecisionTsdownInvocationCount: 0,
+      upstreamCacheRestoredCount: 0,
+      totalDecisionLines: 0,
+      truncated: false,
+      lines: [],
+    };
+  }
+  const lines = fs.readFileSync(file, "utf8").split("\n");
+  const declarationDecision = (line) =>
+    /^\[(?:tsdown-unified|tsdown-plugin-sdk)\] .+: cache (?:hit|miss) \(.+\)$/u.test(line);
+  const decisions = lines.filter(
+    (line) =>
+      declarationDecision(line) ||
+      /^\[build-all\] (?:tsdown-ai|tsdown-packages)(?: \(cache restored\))?$/u.test(line),
+  );
+  const declarationDecisionLines = lines.filter(declarationDecision);
+  const firstDecision = lines.findIndex(declarationDecision);
+  return {
+    present: true,
+    declarationDecisionCount: declarationDecisionLines.length,
+    hitCount: declarationDecisionLines.filter((line) => line.includes(": cache hit ")).length,
+    missCount: declarationDecisionLines.filter((line) => line.includes(": cache miss ")).length,
+    postDecisionTsdownInvocationCount:
+      firstDecision < 0
+        ? 0
+        : lines
+            .slice(firstDecision + 1)
+            .filter((line) => /^\[tsdown-build\] invocation \d+\/\d+ finished /u.test(line)).length,
+    upstreamCacheRestoredCount: lines.filter((line) =>
+      /^\[build-all\] (?:tsdown-ai|tsdown-packages) \(cache restored\)$/u.test(line),
+    ).length,
+    totalDecisionLines: decisions.length,
+    truncated: decisions.length > MAX_CACHE_DECISION_LINES,
+    lines: decisions.slice(0, MAX_CACHE_DECISION_LINES),
+  };
+}
+
 function partialEventSummary(file) {
   const { entries, parseErrors } = readPartialEvents(file);
   return {
@@ -517,6 +562,12 @@ function buildSummary(params) {
       cold: eventCounts(coldEntries),
       warm: eventCounts(warmEntries),
     },
+    coldBuildMs: params.coldBuildMs,
+    warmBuildMs: params.warmBuildMs,
+    cacheDecisions: {
+      cold: cacheDecisionSummary(params.coldLog),
+      warm: cacheDecisionSummary(params.warmLog),
+    },
     groups,
     records: recordComparisons(params.coldCache, params.warmCache),
   };
@@ -650,6 +701,8 @@ function runIndependentBuilds(expectedSha) {
     [process.env.HOME ?? "", "<home>"],
   ].toSorted((left, right) => right[0].length - left[0].length);
   let instrumentation = {};
+  let coldBuildMs;
+  let warmBuildMs;
   let stage = "preflight";
 
   fs.rmSync(evidenceRoot, { recursive: true, force: true });
@@ -676,7 +729,12 @@ function runIndependentBuilds(expectedSha) {
     stage = "cold-clone-install";
     const coldInstrumentation = cloneAndInstall(sourceRoot, scratchRoot, expectedSha, env, coldLog);
     stage = "cold-build";
-    runBuild(scratchRoot, env, coldEvents, coldLog);
+    const coldBuildStartedAt = Date.now();
+    try {
+      runBuild(scratchRoot, env, coldEvents, coldLog);
+    } finally {
+      coldBuildMs = Date.now() - coldBuildStartedAt;
+    }
     stage = "cold-archive";
     fs.cpSync(path.join(scratchRoot, ".artifacts/build-all-cache"), coldCache, {
       recursive: true,
@@ -697,7 +755,12 @@ function runIndependentBuilds(expectedSha) {
       recursive: true,
     });
     stage = "warm-build";
-    runBuild(scratchRoot, env, warmEvents, warmLog);
+    const warmBuildStartedAt = Date.now();
+    try {
+      runBuild(scratchRoot, env, warmEvents, warmLog);
+    } finally {
+      warmBuildMs = Date.now() - warmBuildStartedAt;
+    }
     stage = "warm-archive";
     fs.cpSync(path.join(scratchRoot, ".artifacts/build-all-cache"), warmCache, {
       recursive: true,
@@ -717,6 +780,10 @@ function runIndependentBuilds(expectedSha) {
       warmEvents,
       coldCache,
       warmCache,
+      coldBuildMs,
+      warmBuildMs,
+      coldLog,
+      warmLog,
     });
     writeSummary(summaryFile, summary, replacements);
     process.stdout.write(
@@ -735,8 +802,14 @@ function runIndependentBuilds(expectedSha) {
           arch: process.arch,
         },
         instrumentation,
+        coldBuildMs,
+        warmBuildMs,
         stage,
         error: error instanceof Error ? error.message : String(error),
+        cacheDecisions: {
+          cold: cacheDecisionSummary(coldLog),
+          warm: cacheDecisionSummary(warmLog),
+        },
         partialEvidence: failureEvidence({
           coldEvents,
           warmEvents,
