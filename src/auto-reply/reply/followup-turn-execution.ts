@@ -287,18 +287,17 @@ export async function executeFollowupTurn(params: {
           if (callback) {
             const visible = (await settleProgressVisibilityCallbackResult(callback(payload)))
               .visible;
-            if (visible && payload.isError === true) {
-              visibleToolError = true;
+            if (visible) {
+              return true;
             }
-            return visible;
+            if (!forceToolResultProgress && !verboseToolResult) {
+              return false;
+            }
           }
           if (!forceToolResultProgress && !verboseToolResult) {
             return false;
           }
           await params.onToolResult(payload, { runId: turn.runId });
-          if (payload.isError === true) {
-            visibleToolError = true;
-          }
           return true;
         }
         const verboseToolResult = !requiresDurableToolResult && shouldEmitVerboseToolResult();

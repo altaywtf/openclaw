@@ -97,6 +97,7 @@ beforeEach(() => {
 });
 
 async function runFastAutoProgressCase(params: {
+  currentInboundEventKind?: "room_event";
   verboseLevel?: "on" | "off";
   sourceReplyDeliveryMode?: "message_tool_only";
   includeChannelCallback?: boolean;
@@ -125,6 +126,7 @@ async function runFastAutoProgressCase(params: {
       adopt: () => undefined,
     },
   });
+  turn.queued.currentInboundEventKind = params.currentInboundEventKind;
   turn.queued.run.sourceReplyDeliveryMode = params.sourceReplyDeliveryMode;
   state.execute.mockImplementation(async (turnParams: AgentTurnParams) => {
     await turnParams.opts?.onToolResult?.(payload);
@@ -571,7 +573,7 @@ describe("executeFollowupTurn", () => {
       channelData: { openclawProgressKind: "fast-mode-auto" },
     } satisfies ReplyPayload;
     const { onChannelToolResult, onDurableToolResult } = await runFastAutoProgressCase({
-      callbackResult: false,
+      callbackResult: true,
       payload,
     });
     expect(onChannelToolResult).toHaveBeenCalledOnce();
@@ -601,7 +603,7 @@ describe("executeFollowupTurn", () => {
       channelData: { openclawProgressKind: "fast-mode-auto" },
     } satisfies ReplyPayload;
     const { onChannelToolResult, onDurableToolResult } = await runFastAutoProgressCase({
-      callbackResult: false,
+      callbackResult: true,
       sourceReplyDeliveryMode: "message_tool_only",
       opts: { allowProgressCallbacksWhenSourceDeliverySuppressed: true },
       payload,
@@ -610,6 +612,30 @@ describe("executeFollowupTurn", () => {
     expect(onChannelToolResult).toHaveBeenCalledWith(payload);
     expect(onDurableToolResult).not.toHaveBeenCalled();
   });
+
+  it("falls back once when a queued forced fast auto callback declines visibility", async () => {
+    const { onChannelToolResult, onDurableToolResult, payload } = await runFastAutoProgressCase({
+      callbackResult: false,
+      opts: { forceToolResultProgress: true },
+    });
+    expect(onChannelToolResult).toHaveBeenCalledOnce();
+    expect(onChannelToolResult).toHaveBeenCalledWith(payload);
+    expect(onDurableToolResult).toHaveBeenCalledOnce();
+    expect(onDurableToolResult).toHaveBeenCalledWith(payload, { runId: "run-1" });
+  });
+
+  it.each([true, undefined] as const)(
+    "does not duplicate queued fast auto progress accepted with %s",
+    async (callbackResult) => {
+      const { onChannelToolResult, onDurableToolResult, payload } = await runFastAutoProgressCase({
+        callbackResult,
+        opts: { forceToolResultProgress: true },
+      });
+      expect(onChannelToolResult).toHaveBeenCalledOnce();
+      expect(onChannelToolResult).toHaveBeenCalledWith(payload);
+      expect(onDurableToolResult).not.toHaveBeenCalled();
+    },
+  );
 
   it("falls back once for queued forced fast auto progress without a channel callback", async () => {
     const { onDurableToolResult, payload } = await runFastAutoProgressCase({
@@ -644,6 +670,32 @@ describe("executeFollowupTurn", () => {
     expect(onChannelToolResult).not.toHaveBeenCalled();
     expect(onDurableToolResult).not.toHaveBeenCalled();
   });
+
+  it.each([
+    {
+      label: "lifecycle",
+      verboseLevel: "off",
+      opts: { allowToolLifecycleWhenProgressHidden: true },
+    },
+    { label: "verbose", verboseLevel: "on", opts: {} },
+    { label: "forced", verboseLevel: "off", opts: { forceToolResultProgress: true } },
+  ] as const)(
+    "keeps queued room-event fast auto $label progress silent",
+    async ({ opts, verboseLevel }) => {
+      const { onChannelToolResult, onDurableToolResult } = await runFastAutoProgressCase({
+        currentInboundEventKind: "room_event",
+        verboseLevel,
+        callbackResult: true,
+        sourceReplyDeliveryMode: "message_tool_only",
+        opts: {
+          ...opts,
+          allowProgressCallbacksWhenSourceDeliverySuppressed: true,
+        },
+      });
+      expect(onChannelToolResult).not.toHaveBeenCalled();
+      expect(onDurableToolResult).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     {
