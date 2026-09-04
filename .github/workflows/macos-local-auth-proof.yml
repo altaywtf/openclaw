@@ -1,0 +1,68 @@
+name: macOS local auth proof
+
+on:
+  push:
+    branches: [codex/pr-128175-native-proof]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-local-auth-proof-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  native:
+    runs-on: blacksmith-12vcpu-macos-26
+    timeout-minutes: 60
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify native execution boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = Darwin
+          launchctl print "gui/$(id -u)" >/dev/null
+          test ! -d "$HOME/.openclaw"
+          if pgrep -x OpenClaw >/dev/null; then
+            echo "Refusing to run beside an existing app." >&2
+            exit 1
+          fi
+          sw_vers
+          xcodebuild -version
+
+      - uses: ./.github/actions/setup-node-env
+        with:
+          cache-mode: "off"
+          install-bun: "false"
+
+      - name: Build the actual ad-hoc app
+        shell: bash
+        env:
+          BUILD_CONFIG: debug
+          SKIP_PNPM_INSTALL: "1"
+          OPENCLAW_SKIP_MLX_TTS: "1"
+          SIGN_IDENTITY: "-"
+          SKIP_TEAM_ID_CHECK: "1"
+          CODESIGN_TIMESTAMP: "off"
+        run: bash scripts/package-mac-app.sh
+
+      - name: Observe fresh local auth connections
+        shell: bash
+        run: node scripts/e2e/macos-local-auth-proof.mts
+
+      - name: Retain synthetic native evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: macos-local-auth-proof
+          path: .artifacts/macos-local-auth-proof
+          if-no-files-found: warn
+          retention-days: 7
