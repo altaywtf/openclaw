@@ -562,7 +562,20 @@ jobs:
             --allow-failed-publish-recovery "$ALLOW_FAILED_PUBLISH_RECOVERY" \
             "${existing_manifest_args[@]}" \
             --output "$CLOSEOUT_DIR/stable-main-closeout.json"
-          jq -r '"Apps: \(.apps // "not recorded in legacy snapshot")\nAppcast: \(.appcast // "verified")"' \
+          jq -r '
+            "### Recorded closeout snapshot (not current platform readiness)",
+            "",
+            "- Release: \(.releaseTag) (\(.releaseTagSha))",
+            "- Main: \(.mainSha)",
+            "- Full Release Validation: \(.fullReleaseValidationRunId) / attempt \(.fullReleaseValidationRunAttempt)",
+            "- Release Publish: \(.releasePublishRunId)",
+            "",
+            "Apps at closeout: \(.apps // "unknown (not recorded)")",
+            ((.appPlatforms // {}) | to_entries[] | "- \(.key): \(.value)"),
+            "Appcast at closeout: \(.appcast // (if .appcastSha256 then "verified (recorded digest)" else "unknown (not recorded)" end))",
+            "",
+            "Unlisted surfaces are not assessed here. Verify current platform readiness separately."
+          ' \
             "$CLOSEOUT_DIR/stable-main-closeout.json" >> "$GITHUB_STEP_SUMMARY"
           release_version="${RELEASE_TAG#v}"
           sha256sum "$CLOSEOUT_DIR/stable-main-closeout.json" | awk -v asset="openclaw-${release_version}-stable-main-closeout.json" \
