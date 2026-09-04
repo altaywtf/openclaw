@@ -1171,7 +1171,7 @@ extension DashboardWindowController {
     private var canDispatchNativeCommands: Bool {
         // Older shared-credential Gateways predate the shell-ready signal.
         // Personal browser sign-in requires the current Control UI's listener-owned fact.
-        self.hasLiveContent && self.isTrustedDashboardDocument &&
+        self.hasLiveContent && self.pendingGatewaySwitch == nil && self.isTrustedDashboardDocument &&
             (!self.auth.usesBrowserIdentity || self.nativeCommandsReady)
     }
 
@@ -1201,7 +1201,7 @@ extension DashboardWindowController {
     }
 
     private func flushReadyNativeActions() {
-        guard self.canDispatchNativeCommands, self.pendingGatewaySwitch == nil else { return }
+        guard self.canDispatchNativeCommands else { return }
         self.flushPendingNativeCommands()
         self.flushPendingNativeNavigation()
     }
@@ -1307,8 +1307,7 @@ extension DashboardWindowController {
             self.advanceWindowIntent()
             self.advanceNavigationGeneration()
         }
-        guard self.canDispatchNativeCommands,
-              self.isWindowOpen, self.pendingGatewaySwitch == nil
+        guard self.canDispatchNativeCommands, self.isWindowOpen
         else {
             // Ordered queue, duplicates included: two ⌘K presses while loading
             // must toggle twice, and ⌘N followed by ⌘K must deliver both.
