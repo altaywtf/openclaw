@@ -156,14 +156,13 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
       closed: retired.closed,
       matchedSharedClient: retired.found,
     });
-    if (retired.closed) {
-      const closed = await state.client.closeAndWait({
-        exitTimeoutMs: 2_000,
-        forceKillDelayMs: 250,
-      });
-      if (params.oneShotCliRun && !closed) {
-        throw new Error("Codex one-shot client cleanup did not settle");
-      }
+    // Retained peers prevent retirement; preserve their client without treating
+    // missing close evidence as a completed one-shot cleanup.
+    const result = retired.closed
+      ? await state.client.closeAndWait({ exitTimeoutMs: 2_000, forceKillDelayMs: 250 })
+      : undefined;
+    if (params.oneShotCliRun && result?.cleanup !== "closed") {
+      throw new Error("Codex one-shot client cleanup could not be confirmed");
     }
   };
   const releaseSandboxExecEnvironment = async () => {
@@ -180,12 +179,12 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
       const ownedClient = state.releaseSharedClientLease ? state.client : undefined;
       releaseSharedClientLeaseOnce();
       if (ownedClient) {
-        const closed = await ownedClient.closeAndWait({
+        const result = await ownedClient.closeAndWait({
           exitTimeoutMs: 2_000,
           forceKillDelayMs: 250,
         });
-        if (params.oneShotCliRun && !closed) {
-          throw new Error("Codex isolated client cleanup did not settle");
+        if (params.oneShotCliRun && result.cleanup !== "closed") {
+          throw new Error("Codex isolated client cleanup could not be confirmed");
         }
       }
       return;
