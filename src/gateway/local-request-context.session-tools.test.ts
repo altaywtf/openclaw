@@ -49,6 +49,7 @@ function withSessionToolsFixture(run: (cfg: OpenClawConfig) => Promise<void>) {
           other: { workspace: state.path("other-workspace") },
         },
       },
+      browser: { enabled: false },
       tools: { sessions: { visibility: "all" } },
     };
     await state.writeConfig(cfg);
