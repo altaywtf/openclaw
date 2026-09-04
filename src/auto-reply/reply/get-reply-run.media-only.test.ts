@@ -28,6 +28,7 @@ import {
   buildInboundUserContextPrefix,
   resolveInboundUserContextPromptJoiner,
 } from "./inbound-meta.js";
+import { REPLY_OPERATION_RUN_STATE } from "./reply-operation-run-state.js";
 import { REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS, createReplyOperation } from "./reply-run-registry.js";
 import { getActiveReplyRunCount } from "./reply-run-registry.registry.js";
 import { testing as replyRunTesting } from "./reply-run-registry.test-support.js";
@@ -3727,65 +3728,86 @@ describe("runPreparedReply media-only handling", () => {
     expect(buildInboundUserContextPrefix).not.toHaveBeenCalled();
   });
 
-  it("uses persisted Discord chat metadata for system-event CLI static prompt identity", async () => {
-    vi.mocked(buildGroupChatContext).mockImplementation(({ sessionCtx }) =>
-      [`group`, sessionCtx.Provider, sessionCtx.ChatType, sessionCtx.GroupChannel].join(":"),
-    );
+  it.each([false, true])(
+    "uses persisted Discord chat metadata for system-event CLI static prompt identity, background=%s",
+    async (background) => {
+      vi.mocked(buildGroupChatContext).mockImplementation(({ sessionCtx }) =>
+        [`group`, sessionCtx.Provider, sessionCtx.ChatType, sessionCtx.GroupChannel].join(":"),
+      );
 
-    await runPrepared({
-      opts: { isHeartbeat: true },
-      isNewSession: false,
-      systemSent: true,
-      ctx: {
-        ...createInboundBody("scheduled wake"),
-        InternalTurnSource: "cron",
-        SessionKey: "agent:main:discord:guild-1:channel-1",
-      },
-      sessionCtx: {
-        ...createSessionBody("scheduled wake"),
-        InternalTurnSource: "cron",
-      },
-      sessionEntry: {
-        sessionId: "session-1",
-        updatedAt: 1,
+      await runPrepared({
+        opts: background
+          ? { [REPLY_OPERATION_RUN_STATE]: { backgroundTurn: { trigger: "background" } } }
+          : { isHeartbeat: true },
+        isNewSession: false,
         systemSent: true,
-        chatType: "channel",
-        groupId: "guild-1",
-        groupChannel: "#ops",
-        delivery: normalizeSessionDeliveryState({
-          context: { channel: "discord", to: "channel-1" },
-          origin: {
-            provider: "discord",
-            surface: "discord",
-            chatType: "channel",
-            to: "channel-1",
-          },
-        }),
-      },
-    });
+        ctx: {
+          ...createInboundBody("scheduled wake"),
+          InternalTurnSource: background ? undefined : "cron",
+          ...(background
+            ? {
+                Provider: "discord",
+                Surface: "discord",
+                OriginatingChannel: "discord",
+                OriginatingTo: "channel-1",
+              }
+            : {}),
+          SessionKey: "agent:main:discord:guild-1:channel-1",
+        },
+        sessionCtx: {
+          ...createSessionBody("scheduled wake"),
+          InternalTurnSource: background ? undefined : "cron",
+          ...(background
+            ? {
+                Provider: "discord",
+                Surface: "discord",
+                OriginatingChannel: "discord",
+                OriginatingTo: "channel-1",
+              }
+            : {}),
+        },
+        sessionEntry: {
+          sessionId: "session-1",
+          updatedAt: 1,
+          systemSent: true,
+          chatType: "channel",
+          groupId: "guild-1",
+          groupChannel: "#ops",
+          delivery: normalizeSessionDeliveryState({
+            context: { channel: "discord", to: "channel-1" },
+            origin: {
+              provider: "discord",
+              surface: "discord",
+              chatType: "channel",
+              to: "channel-1",
+            },
+          }),
+        },
+      });
 
-    const call = requireLastRunReplyAgentCall();
-    expect(buildGroupChatContext).toHaveBeenCalledTimes(2);
-    const groupContextParams = requireMockCallArg(
-      vi.mocked(buildGroupChatContext),
-      "group chat context",
-    ) as {
-      sessionCtx?: {
-        Provider?: string;
-        Surface?: string;
-        ChatType?: string;
-        GroupChannel?: string;
+      const call = requireLastRunReplyAgentCall();
+      expect(buildGroupChatContext).toHaveBeenCalledTimes(2);
+      const groupContextParams = requireMockCallArg(
+        vi.mocked(buildGroupChatContext),
+        "group chat context",
+      ) as {
+        sessionCtx?: {
+          Provider?: string;
+          Surface?: string;
+          ChatType?: string;
+          GroupChannel?: string;
+        };
       };
-    };
-    expect(groupContextParams?.sessionCtx?.Provider).toBe("discord");
-    expect(groupContextParams?.sessionCtx?.Surface).toBe("discord");
-    expect(groupContextParams?.sessionCtx?.ChatType).toBe("channel");
-    expect(groupContextParams?.sessionCtx?.GroupChannel).toBe("#ops");
-    expect(call?.followupRun.run.chatType).toBe("channel");
-    expect(call?.followupRun.run.extraSystemPromptStatic).toBe("group:discord:channel:#ops");
-    expect(call?.followupRun.originatingChannel).toBe("discord");
-    expect(call?.followupRun.originatingTo).toBe("channel-1");
-  });
+      expect(groupContextParams?.sessionCtx?.Provider).toBe("discord");
+      expect(groupContextParams?.sessionCtx?.Surface).toBe("discord");
+      expect(groupContextParams?.sessionCtx?.ChatType).toBe("channel");
+      expect(groupContextParams?.sessionCtx?.GroupChannel).toBe("#ops");
+      expect(call?.followupRun.run.chatType).toBe("channel");
+      expect(call?.followupRun.run.extraSystemPromptStatic).toBe("group:discord:channel:#ops");
+      expect(call?.followupRun.originatingChannel).toBe("discord");
+      expect(call?.followupRun.originatingTo).toBe("channel-1");
+    },
+  );
 
   it.each([
     {
@@ -4457,6 +4479,71 @@ describe("runPreparedReply media-only handling", () => {
     expect(call?.followupRun.run.chatType).toBe("direct");
   });
 
+  it.each(["heartbeat", "cron", "exec"] as const)(
+    "keeps cross-channel %s reply policy independent of remembered chat type",
+    async (source) => {
+      for (const liveChatType of [undefined, "direct"] as const) {
+        vi.mocked(runReplyAgent).mockClear();
+        const route = {
+          InternalTurnSource: source,
+          OriginatingChannel: "slack" as const,
+          OriginatingTo: "user:U1",
+          ChatType: liveChatType,
+        };
+        await runPrepared({
+          cfg: {
+            session: {},
+            channels: {
+              slack: {
+                replyToMode: "all",
+                replyToModeByChatType: { channel: "off", direct: "first" },
+              },
+            },
+            agents: { defaults: {} },
+          },
+          opts: { isHeartbeat: true },
+          ctx: { ...createInboundBody("scheduled wake"), ...route },
+          sessionCtx: { ...createSessionBody("scheduled wake"), ...route },
+          sessionEntry: {
+            sessionId: "session-1",
+            updatedAt: 1,
+            chatType: "channel",
+            delivery: normalizeSessionDeliveryState({
+              context: { channel: "discord", to: "channel:remembered" },
+            }),
+          },
+        });
+
+        const call = requireRunReplyAgentCall();
+        expect(call.followupRun.originatingChannel).toBe("slack");
+        expect(call.followupRun.originatingChatType).toBe(liveChatType);
+        expect(call.followupRun.run.chatType).toBe(liveChatType);
+        expect(call.followupRun.originatingReplyToMode).toBe(liveChatType ? "first" : "all");
+      }
+    },
+  );
+
+  it.each([undefined, "99"])(
+    "preserves captured background thread %s through execution",
+    async (threadId) => {
+      const route = {
+        Provider: "telegram",
+        Surface: "telegram",
+        OriginatingChannel: "telegram" as const,
+        OriginatingTo: "group:original",
+        MessageThreadId: threadId,
+      };
+      await runPrepared({
+        agentId: "main",
+        sessionKey: "agent:main:telegram:group:original:thread:17",
+        ctx: { ...createInboundBody("Continue the command"), ...route },
+        sessionCtx: { ...createSessionBody("Continue the command"), ...route },
+        opts: { [REPLY_OPERATION_RUN_STATE]: { backgroundTurn: { trigger: "background" } } },
+      });
+      expect(requireRunReplyAgentCall().followupRun.originatingThreadId).toBe(threadId);
+    },
+  );
+
   it("uses transport thread metadata for followup originatingThreadId", async () => {
     await runPrepared({
       ctx: {
@@ -4505,6 +4592,44 @@ describe("runPreparedReply media-only handling", () => {
     const call = requireRunReplyAgentCall();
     expect(call.commandBody).toContain("System: [t] Model switched.");
     expect(call.followupRun.run.extraSystemPrompt ?? "").not.toContain("Runtime System Events");
+  });
+
+  it("keeps other routed events outside a prepared background prompt", async () => {
+    const actualSystemEvents = await vi.importActual<typeof import("./session-system-events.js")>(
+      "./session-system-events.js",
+    );
+    vi.mocked(drainFormattedSystemEvents).mockImplementation(
+      actualSystemEvents.drainFormattedSystemEvents,
+    );
+    const sessionKey = "agent:main:main";
+    enqueueSystemEvent("second route private content", {
+      sessionKey,
+      deliveryContext: { channel: "slack", to: "second-route" },
+    });
+    await runPrepared({
+      agentId: "main",
+      sessionKey,
+      ctx: {
+        ...createInboundBody("first route selected event"),
+        OriginatingChannel: "slack",
+        OriginatingTo: "first-route",
+      },
+      sessionCtx: {
+        ...createSessionBody("first route selected event"),
+        OriginatingChannel: "slack",
+        OriginatingTo: "first-route",
+      },
+      opts: { [REPLY_OPERATION_RUN_STATE]: { backgroundTurn: { trigger: "background" } } },
+      provider: "",
+      model: "",
+      resolvedThinkLevel: "off",
+    });
+    expect(requireRunReplyAgentCall().followupRun.prompt).not.toContain(
+      "second route private content",
+    );
+    expect(peekSystemEventEntries(sessionKey).map((event) => event.text)).toEqual([
+      "second route private content",
+    ]);
   });
 
   it("includes route system events in a thread-scoped turn", async () => {

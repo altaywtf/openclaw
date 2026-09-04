@@ -11,7 +11,7 @@ import {
   upsertSessionEntryCore,
 } from "../config/sessions/session-accessor.js";
 import type { RestartSentinelPayload } from "../infra/restart-sentinel.js";
-import { resolveSystemEventOptionsOwnerAgentId } from "../infra/system-event-ownership.js";
+import { resolveSystemEventOwnerAgentId } from "../infra/system-event-ownership.js";
 import { onInternalSessionTranscriptUpdate } from "../sessions/transcript-events.js";
 import {
   createOpenClawTestState,
@@ -3251,7 +3251,7 @@ describe("scheduleRestartSentinelWake", () => {
     );
     const eventOptions = mocks.enqueueSystemEvent.mock.calls[0]?.[1];
     expect(eventOptions).toMatchObject({ sessionKey, deliveryContext: context });
-    expect(resolveSystemEventOptionsOwnerAgentId(eventOptions as object)).toBe("ops");
+    expect(resolveSystemEventOwnerAgentId(eventOptions as object)).toBe("ops");
     expect(mocks.requestHeartbeat).toHaveBeenCalledWith({
       source: "restart-sentinel",
       intent: "immediate",
@@ -3291,7 +3291,7 @@ describe("scheduleRestartSentinelWake", () => {
     });
     expect(mocks.deliverOutboundPayloads).not.toHaveBeenCalled();
     const eventOptions = mocks.enqueueSystemEvent.mock.calls[0]?.[1];
-    expect(resolveSystemEventOptionsOwnerAgentId(eventOptions as object)).toBe("ops");
+    expect(resolveSystemEventOwnerAgentId(eventOptions as object)).toBe("ops");
     expect(eventOptions).not.toHaveProperty("deliveryContext");
   });
 
@@ -3310,7 +3310,7 @@ describe("scheduleRestartSentinelWake", () => {
 
     const eventOptions = mocks.enqueueSystemEvent.mock.calls[0]?.[1];
     expect(eventOptions).toMatchObject({ sessionKey: "global" });
-    expect(resolveSystemEventOptionsOwnerAgentId(eventOptions as object)).toBe("ops");
+    expect(resolveSystemEventOwnerAgentId(eventOptions as object)).toBe("ops");
     expect(mocks.requestHeartbeat).toHaveBeenCalledWith({
       source: "restart-sentinel",
       intent: "immediate",

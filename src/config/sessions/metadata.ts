@@ -100,7 +100,7 @@ export function deriveSessionOrigin(
   ctx: MsgContext,
   opts?: { skipSystemEventOrigin?: boolean },
 ): SessionOrigin | undefined {
-  if (opts?.skipSystemEventOrigin && ctx.InternalTurnSource !== undefined) {
+  if (opts?.skipSystemEventOrigin) {
     return undefined;
   }
   const label = normalizeOptionalString(resolveConversationLabel(ctx));

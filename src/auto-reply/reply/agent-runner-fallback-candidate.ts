@@ -30,6 +30,7 @@ import {
   resolveModelFallbackOptions,
   resolveRunFastModeForFallbackCandidate,
 } from "./agent-runner-utils.js";
+import { resolveBackgroundTurn } from "./reply-operation-run-state.js";
 import { beginReplyOperationFinalizationWork } from "./reply-run-finalization-lease.js";
 import {
   bindSourceReplyDeliveryRuntime,
@@ -75,9 +76,12 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
     offAnnounced: false,
     resetAnnounced: false,
   };
-  const bootstrapContextRunKind = turn.opts?.isHeartbeat
-    ? ("heartbeat" as const)
-    : ("default" as const);
+  const bootstrapContextRunKind =
+    resolveBackgroundTurn(turn.opts)?.trigger === "cron"
+      ? ("cron" as const)
+      : turn.opts?.isHeartbeat
+        ? ("heartbeat" as const)
+        : ("default" as const);
   let githubPublicationAvailability: Promise<boolean> | undefined;
 
   params.timing.logMilestoneIfSlow({

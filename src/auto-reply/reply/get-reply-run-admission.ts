@@ -45,6 +45,7 @@ import { buildReplyPromptEnvelope } from "./prompt-prelude.js";
 import { resolveActiveRunQueueAction } from "./queue-policy.js";
 import { resolveQueueSettings } from "./queue/settings-runtime.js";
 import { getExistingFollowupQueue } from "./queue/state.js";
+import { resolveBackgroundTurn } from "./reply-operation-run-state.js";
 import {
   REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
   interruptReplyRunTarget,
@@ -142,7 +143,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
       : undefined;
   const drainedSystemEventBlocks: string[] = [];
   const drainSystemEventBlocks = async () => {
-    if (useFastReplyRuntime) {
+    if (useFastReplyRuntime || resolveBackgroundTurn(opts)) {
       return;
     }
     const routeSystemEventSessionKey = normalizeOptionalString(getReplySystemEventSessionKey(opts));

@@ -1,13 +1,26 @@
 // Tests routeReply delivery evidence and editable message identity.
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import type { ChannelPlugin } from "../../channels/plugins/types.public.js";
-import { OutboundDeliveryError } from "../../infra/outbound/deliver-types.js";
+import { loadSessionEntry, replaceSessionEntry } from "../../config/sessions/session-accessor.js";
+import type { InternalSessionEntry } from "../../config/sessions/types.js";
+import {
+  OutboundDeliveryError,
+  PlatformMessageNotDispatchedError,
+} from "../../infra/outbound/deliver-types.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
+import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
 import {
   createChannelTestPluginBase,
   createTestRegistry,
 } from "../../test-utils/channel-plugins.js";
+import { buildCaptionedFinalTextFallback } from "../../tts/captioned-final.js";
+import * as dispatchRuntime from "../dispatch.js";
 import { getReplyPayloadMetadata, setReplyPayloadMetadata } from "../reply-payload.js";
+import { dispatchBackgroundTurn } from "./background-turn.js";
+import { attachReplyDispatchUndeliveredFallback } from "./reply-dispatcher.js";
+import { REPLY_OPERATION_RUN_STATE } from "./reply-operation-run-state.js";
 
 const mocks = vi.hoisted(() => ({
   deliverOutboundPayloads: vi.fn(),
@@ -38,6 +51,7 @@ function createChannelPlugin(id: ChannelPlugin["id"], label: string): ChannelPlu
 }
 
 describe("routeReply delivery result", () => {
+  const tempDirs = useAutoCleanupTempDirTracker(afterEach);
   beforeEach(() => {
     setActivePluginRegistry(
       createTestRegistry([
@@ -60,6 +74,161 @@ describe("routeReply delivery result", () => {
   afterEach(() => {
     setActivePluginRegistry(createTestRegistry());
   });
+
+  it.each([
+    {
+      outcome: "channel_transform",
+      fallback: true,
+      calls: 0,
+      count: "deliveredNotVisible",
+      visible: false,
+    },
+    { outcome: "invisible", fallback: true, calls: 2, count: "delivered", visible: true },
+    { outcome: "not-dispatched", fallback: true, calls: 2, count: "delivered", visible: true },
+    {
+      outcome: "not-dispatched",
+      fallback: false,
+      calls: 1,
+      count: "failedBeforeSend",
+      visible: false,
+    },
+    { outcome: "unknown", fallback: true, calls: 1, count: "failedAfterSend", visible: true },
+    { outcome: "no-identity", fallback: true, calls: 1, count: "failedAfterSend", visible: true },
+    { outcome: "partial", fallback: true, calls: 1, count: "delivered", visible: true },
+  ] as const)(
+    "settles background $outcome with caption fallback=$fallback",
+    async ({ outcome, fallback, calls, count, visible }) => {
+      const custody =
+        outcome === "partial"
+          ? {
+              sessionKey: "agent:main:background-delivery",
+              storePath: path.join(tempDirs.make("partial-background-delivery-"), "sessions.json"),
+              sessionId: "partial-session",
+              intentId: "partial-intent",
+              deliveryId: "partial-delivery",
+            }
+          : undefined;
+      if (custody) {
+        await replaceSessionEntry(custody, {
+          sessionId: custody.sessionId,
+          updatedAt: Date.now(),
+          pendingFinalDelivery: {
+            kind: "replayable",
+            text: "voice caption",
+            createdAt: Date.now(),
+            intentId: custody.intentId,
+            deliveries: [{ id: custody.deliveryId, state: "prepared" }],
+          },
+        });
+      }
+      const plugin = createChannelPlugin("telegram", "Telegram");
+      if (outcome === "channel_transform") {
+        plugin.messaging = {
+          transformReplyPayload: ({ payload }) => (payload.mediaUrl ? null : payload),
+        };
+        setActivePluginRegistry(
+          createTestRegistry([{ pluginId: "telegram", plugin, source: "test" }]),
+        );
+      }
+      mocks.deliverOutboundPayloads.mockResolvedValue([
+        { channel: "telegram", messageId: "caption-sent" },
+      ]);
+      const notDispatched = new PlatformMessageNotDispatchedError("before platform dispatch", {
+        cause: new Error("offline"),
+      });
+      if (outcome === "invisible") {
+        mocks.deliverOutboundPayloads.mockResolvedValueOnce([]);
+      } else if (outcome === "no-identity") {
+        mocks.deliverOutboundPayloads.mockImplementationOnce(
+          async ({
+            onPayloadDeliveryOutcome,
+          }: {
+            onPayloadDeliveryOutcome?: (outcome: unknown) => void;
+          }) => {
+            onPayloadDeliveryOutcome?.({
+              index: 0,
+              status: "suppressed",
+              reason: "adapter_returned_no_identity",
+            });
+            return [];
+          },
+        );
+      } else if (outcome === "not-dispatched") {
+        mocks.deliverOutboundPayloads.mockRejectedValueOnce(notDispatched);
+      } else if (outcome === "unknown") {
+        mocks.deliverOutboundPayloads.mockRejectedValueOnce(new Error("transport outcome unknown"));
+      } else if (outcome === "partial") {
+        mocks.deliverOutboundPayloads.mockRejectedValueOnce(
+          new OutboundDeliveryError("later payload failed", {
+            cause: notDispatched,
+            results: [{ channel: "telegram", messageId: "already-sent" }],
+            stage: "platform_send",
+          }),
+        );
+      }
+      const dispatch = dispatchRuntime.dispatchInboundMessageWithRoutedChannelDispatcher;
+      const spy = vi
+        .spyOn(dispatchRuntime, "dispatchInboundMessageWithRoutedChannelDispatcher")
+        .mockImplementation((params) =>
+          dispatch({
+            ...params,
+            dispatchReplyFromConfig: async ({ dispatcher, replyOptions }) => {
+              const state = replyOptions?.[REPLY_OPERATION_RUN_STATE];
+              if (state) {
+                state.agentTurn = "ok";
+              }
+              replyOptions?.onAgentRunStart?.("background-delivery-run");
+              const payload = {
+                text: "voice caption",
+                mediaUrl: "https://example.com/voice.opus",
+                audioAsVoice: true,
+              };
+              if (custody) {
+                setReplyPayloadMetadata(payload, { pendingFinalDeliveryCompletion: custody });
+              }
+              if (fallback) {
+                attachReplyDispatchUndeliveredFallback(
+                  payload,
+                  buildCaptionedFinalTextFallback(payload),
+                );
+              }
+              dispatcher.sendFinalReply(payload);
+              return { queuedFinal: true, counts: { tool: 0, block: 0, final: 1 } };
+            },
+          }),
+        );
+      try {
+        const result = await dispatchBackgroundTurn({
+          cfg: custody ? { session: { store: custody.storePath } } : {},
+          agentId: "main",
+          sessionKey: "agent:main:background-delivery",
+          prompt: "Continue",
+          source: { kind: "internal_system", sourceTool: "exec" },
+          deliveryContext: { channel: "telegram", to: "original" },
+          policy: { trigger: "background" },
+        });
+        expect(result).toMatchObject({
+          status: "settled",
+          execution: "ok",
+          executionStarted: true,
+          delivery: { counts: { final: { [count]: 1 } }, anyVisibleDelivered: visible },
+        });
+        expect(mocks.deliverOutboundPayloads).toHaveBeenCalledTimes(calls);
+        if (custody) {
+          expect(result).toMatchObject({ error: expect.stringContaining("later payload failed") });
+          closeOpenClawAgentDatabasesForTest();
+          expect(
+            (loadSessionEntry(custody) as InternalSessionEntry)?.pendingFinalDelivery?.deliveries,
+          ).toEqual([{ id: custody.deliveryId, state: "delivered" }]);
+        }
+      } finally {
+        spy.mockRestore();
+        if (custody) {
+          closeOpenClawAgentDatabasesForTest();
+        }
+      }
+    },
+  );
 
   it.each([
     "cancelled_by_message_sending_hook",

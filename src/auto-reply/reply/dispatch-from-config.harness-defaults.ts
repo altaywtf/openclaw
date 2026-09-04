@@ -26,6 +26,8 @@ import {
   loadSessionStoreEntry,
   resolveSessionStorePathCore,
 } from "./dispatch-from-config.runtime.js";
+import type { InternalGetReplyOptions } from "./get-reply.types.js";
+import { resolveBackgroundTurn } from "./reply-operation-run-state.js";
 
 type HarnessSourceVisibleRepliesDefault = "automatic" | "message_tool";
 
@@ -98,8 +100,12 @@ function resolveHarnessDefaultParentSessionKey(params: {
 }
 
 export function resolveTurnModelOverride(
-  replyOptions: { isHeartbeat?: boolean; heartbeatModelOverride?: string } | undefined,
+  replyOptions: InternalGetReplyOptions | undefined,
 ): string | undefined {
+  const backgroundTurn = resolveBackgroundTurn(replyOptions);
+  if (backgroundTurn) {
+    return normalizeOptionalString(backgroundTurn.model);
+  }
   if (replyOptions?.isHeartbeat !== true) {
     return undefined;
   }

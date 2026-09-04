@@ -6,38 +6,14 @@ import {
   isHeartbeatAcknowledgementText,
 } from "../auto-reply/heartbeat.js";
 import { HEARTBEAT_TOKEN, SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
+import {
+  MAX_SYSTEM_EVENT_PROMPT_CHARS,
+  STRUCTURED_EXEC_COMPLETION_EVENT_RE,
+  parseStructuredExecCompletionEvent,
+  formatExecEventPromptText,
+} from "./system-event-prompt.js";
 
-const MAX_EXEC_EVENT_PROMPT_CHARS = 8_000;
 export const HEARTBEAT_DELIVERY_CONTEXT_KEY_PREFIX = "heartbeat-delivery:";
-const STRUCTURED_EXEC_COMPLETION_EVENT_RE =
-  /^exec (completed|failed) \(([a-z0-9_-]{1,64}), (code -?\d+|signal [^)]+)\)(?: :: ([\s\S]*))?$/i;
-
-type StructuredExecCompletionEvent = {
-  raw: string;
-  action: string;
-  id: string;
-  result: string;
-  output: string;
-  succeeded: boolean;
-};
-
-function parseStructuredExecCompletionEvent(evt: string): StructuredExecCompletionEvent | null {
-  const trimmed = evt.trim();
-  const match = STRUCTURED_EXEC_COMPLETION_EVENT_RE.exec(trimmed);
-  if (!match) {
-    return null;
-  }
-  const action = match[1] ?? "";
-  const result = match[3] ?? "";
-  return {
-    raw: trimmed,
-    action,
-    id: match[2] ?? "",
-    result,
-    output: (match[4] ?? "").trim(),
-    succeeded: action.toLowerCase() === "completed" && result.toLowerCase() === "code 0",
-  };
-}
 
 export function isRelayableExecCompletionEvent(evt: string): boolean {
   const parsed = parseStructuredExecCompletionEvent(evt);
@@ -48,31 +24,6 @@ export function isRelayableExecCompletionEvent(evt: string): boolean {
     return true;
   }
   return !parsed.succeeded;
-}
-
-function formatExecEventPromptText(pendingEvents: string[]): {
-  text: string;
-  hasMissingOutputFailure: boolean;
-} {
-  let hasMissingOutputFailure = false;
-  const lines = pendingEvents.flatMap((event) => {
-    const parsed = parseStructuredExecCompletionEvent(event);
-    if (!parsed) {
-      const trimmed = event.trim();
-      return trimmed ? [trimmed] : [];
-    }
-    if (parsed.output) {
-      return [parsed.raw];
-    }
-    if (parsed.succeeded) {
-      return [];
-    }
-    hasMissingOutputFailure = true;
-    return [
-      `Exec ${parsed.action} (${parsed.id}, ${parsed.result}) without captured stdout/stderr.`,
-    ];
-  });
-  return { text: lines.join("\n").trim(), hasMissingOutputFailure };
 }
 
 // Build a dynamic prompt for cron events by embedding the actual event content.
@@ -118,8 +69,8 @@ export function buildExecEventPrompt(
   const useHeartbeatResponseTool = opts?.useHeartbeatResponseTool ?? false;
   const { text: rawEventText, hasMissingOutputFailure } = formatExecEventPromptText(pendingEvents);
   const eventText =
-    rawEventText.length > MAX_EXEC_EVENT_PROMPT_CHARS
-      ? `${truncateUtf16Safe(rawEventText, MAX_EXEC_EVENT_PROMPT_CHARS)}\n\n[truncated]`
+    rawEventText.length > MAX_SYSTEM_EVENT_PROMPT_CHARS
+      ? `${truncateUtf16Safe(rawEventText, MAX_SYSTEM_EVENT_PROMPT_CHARS)}\n\n[truncated]`
       : rawEventText;
   if (!eventText) {
     const completionInstruction = useHeartbeatResponseTool

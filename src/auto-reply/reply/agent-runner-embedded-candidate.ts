@@ -30,6 +30,7 @@ import {
 import type { AgentFallbackCandidateCommonParams } from "./agent-runner-fallback-cycle.types.js";
 import { buildEmbeddedRunExecutionParams } from "./agent-runner-utils.js";
 import { resolveReplyOperationTerminationFields } from "./reply-operation-abort.js";
+import { resolveBackgroundTurn } from "./reply-operation-run-state.js";
 import { markReplyOperationGlobalLaneWaitProgress } from "./reply-run-registry.js";
 import {
   bindSourceReplyDeliveryRuntime,
@@ -105,6 +106,7 @@ export async function runEmbeddedFallbackCandidate(
   const messageActionTurnCapability =
     isTrustedMessageActionTurnIngress(turn.sessionCtx.Provider) &&
     !turn.isHeartbeat &&
+    !resolveBackgroundTurn(turn.opts) &&
     embeddedContext.agentId &&
     messageActionCapabilitySessionKey &&
     embeddedContext.messageProvider &&
@@ -164,7 +166,8 @@ export async function runEmbeddedFallbackCandidate(
         messageActionTurnCapability,
         lifecycleGeneration: params.getLifecycleGeneration(),
         allowGatewaySubagentBinding: true,
-        trigger: turn.isHeartbeat ? "heartbeat" : "user",
+        trigger:
+          resolveBackgroundTurn(turn.opts)?.trigger ?? (turn.isHeartbeat ? "heartbeat" : "user"),
         cronCreatorAuthorityCapability: turn.opts?.cronCreatorAuthorityCapability,
         cronCreatorAuthorityUnavailableReason:
           turn.opts?.turnAdoptionLifecycle?.cronCreatorAuthorityUnavailable,
@@ -200,7 +203,9 @@ export async function runEmbeddedFallbackCandidate(
         forceMessageTool: turn.followupRun.run.sourceReplyDeliveryMode === "message_tool_only",
         // Heartbeat ambient routes are delivery context, never implicit message recipients.
         // Omit false so subagent sessions keep their downstream default.
-        ...(turn.isHeartbeat ? { requireExplicitMessageTarget: true } : {}),
+        ...(turn.isHeartbeat || resolveBackgroundTurn(turn.opts)
+          ? { requireExplicitMessageTarget: true }
+          : {}),
         silentReplyPromptMode: turn.followupRun.run.silentReplyPromptMode,
         suppressNextUserMessagePersistence: params.suppressQueuedUserPersistenceForCandidate,
         onUserMessagePersisted: params.notifyUserMessagePersisted,

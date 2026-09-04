@@ -41,6 +41,7 @@ import {
 } from "./get-reply-run-helpers.js";
 import { hasInboundAudio } from "./inbound-media.js";
 import { resolveOriginMessageProvider } from "./origin-routing.js";
+import { resolveBackgroundTurn } from "./reply-operation-run-state.js";
 import { resolveReplyToMode } from "./reply-threading.js";
 import { resolveRoutedDeliveryThreadId } from "./routed-delivery-thread.js";
 import {
@@ -154,7 +155,9 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
   const runHasAutoFallbackProvenance =
     runHasSessionModelOverride &&
     hasSessionAutoModelFallbackProvenance(preparedSessionState.sessionEntry);
-  const originatingThreadId = resolveRoutedDeliveryThreadId({ ctx, sessionKey });
+  const originatingThreadId = resolveBackgroundTurn(opts)
+    ? (ctx.MessageThreadId ?? ctx.TransportThreadId)
+    : resolveRoutedDeliveryThreadId({ ctx, sessionKey });
   const currentTurnImages = await traceRunPhase("reply.resolve_current_turn_images", () =>
     resolveCurrentTurnImages({
       ctx,
@@ -187,9 +190,12 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
       AccountId: ctx.AccountId ?? sessionCtx.AccountId,
       InputProvenance: ctx.InputProvenance ?? sessionCtx.InputProvenance,
       InternalTurnSource: ctx.InternalTurnSource ?? sessionCtx.InternalTurnSource,
-      ChatType: ctx.ChatType ?? sessionCtx.ChatType,
+      ChatType:
+        ctx.ChatType ??
+        sessionCtx.ChatType ??
+        (resolveBackgroundTurn(opts) ? promptSessionCtx.ChatType : undefined),
     },
-    entry: preparedSessionState.sessionEntry,
+    entry: resolveBackgroundTurn(opts) ? undefined : preparedSessionState.sessionEntry,
   });
   const messageProvider = resolveOriginMessageProvider({
     originatingChannel: replyRoute.channel,
@@ -401,6 +407,12 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
     run: {
       agentId,
       agentDir,
+      jobId: resolveBackgroundTurn(opts)?.jobId,
+      scheduledToolPolicy: resolveBackgroundTurn(opts)?.scheduledToolPolicy,
+      modelFallbacksOverride: resolveBackgroundTurn(opts)?.fallbacks,
+      scheduledRuntimeAuthority: resolveBackgroundTurn(opts)?.scheduledRuntimeAuthority,
+      scheduledRuntimeAuthorityRecoveryRequired:
+        resolveBackgroundTurn(opts)?.scheduledRuntimeAuthorityRecoveryRequired,
       sessionId: preparedSessionState.sessionId,
       sessionKey,
       runtimePolicySessionKey,

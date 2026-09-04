@@ -55,6 +55,7 @@ import { finalizeInboundContext, isFinalizedInboundContext } from "./inbound-con
 import { hasInboundAudio } from "./inbound-media.js";
 import { bindReplyDispatcherConversationContext } from "./reply-dispatcher.js";
 import {
+  resolveBackgroundTurn,
   resolveReplyOperationRunState,
   type ReplyOperationRunState,
 } from "./reply-operation-run-state.js";
@@ -361,14 +362,17 @@ export async function gatherDispatchRequest(
   });
   const shouldEmitVerboseProgress = verboseProgress.shouldEmit;
   const shouldEmitFullVerboseProgress = verboseProgress.shouldEmitFull;
-  const replyRoute = resolveEffectiveReplyRoute({ ctx, entry: sessionStoreEntry.entry });
+  const replyRoute = resolveEffectiveReplyRoute({
+    ctx,
+    entry: resolveBackgroundTurn(params.replyOptions) ? undefined : sessionStoreEntry.entry,
+  });
   // Restore route thread context only from the active turn or the thread-scoped session key.
   // Do not read thread ids from the normalised session store here: `origin.threadId` can be
   // folded back into lastThreadId/deliveryContext during store normalisation and resurrect a
   // stale route after thread delivery was intentionally cleared.
   const routeThreadId = resolveRoutedDeliveryThreadId({
     ctx,
-    sessionKey: acpDispatchSessionKey,
+    sessionKey: resolveBackgroundTurn(params.replyOptions) ? undefined : acpDispatchSessionKey,
   });
   // Inherited sessions_send routes carry thread ids only when the stored route
   // proves the thread came from an explicit target, not session normalization.

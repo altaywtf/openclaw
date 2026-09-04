@@ -22,6 +22,7 @@ import { createTestUserTurnTranscriptTarget } from "../../sessions/user-turn-tra
 import type { TemplateContext } from "../templating.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
 import type { buildEmbeddedRunExecutionParams } from "./agent-runner-utils.js";
+import type { InternalGetReplyOptions } from "./get-reply.types.js";
 import type { FollowupRun } from "./queue.js";
 import type { ReplyOperation } from "./reply-run-registry.js";
 import type { TypingSignaler } from "./typing-mode.js";
@@ -616,7 +617,7 @@ export function makeTestSessionStorePath(): string {
 
 export function createMinimalRunAgentTurnParams(overrides?: {
   followupRun?: FollowupRun;
-  opts?: GetReplyOptions;
+  opts?: InternalGetReplyOptions;
   replyOperation?: ReplyOperation;
   sessionCtx?: TemplateContext;
   typingSignals?: TypingSignaler;

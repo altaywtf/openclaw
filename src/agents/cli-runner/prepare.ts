@@ -825,8 +825,12 @@ export async function prepareCliRunContext(
   const requireExplicitMessageTarget =
     params.requireExplicitMessageTarget ?? isSubagentSessionKey(params.sessionKey);
   const hasCliSessionBindingFacts = bindingFacts !== undefined;
+  // Per-turn background restrictions must not replace the session-stable binding policy.
   const bindingRequireExplicitMessageTarget =
-    bindingFacts?.requireExplicitMessageTarget ?? requireExplicitMessageTarget;
+    bindingFacts?.requireExplicitMessageTarget ??
+    (hasCliSessionBindingFacts
+      ? isSubagentSessionKey(params.sessionKey)
+      : requireExplicitMessageTarget);
   const bindingSourceReplyDeliveryMode = hasCliSessionBindingFacts
     ? bindingFacts.sourceReplyDeliveryMode
     : params.sourceReplyDeliveryMode;

@@ -38,6 +38,8 @@ import {
   type SessionWorkAdmissionLease,
 } from "../../sessions/session-lifecycle-admission.js";
 import type { OpenClawAgentDatabaseClaim } from "../../state/openclaw-agent-db-identity.js";
+import type { InternalGetReplyOptions } from "./get-reply.types.js";
+import { resolveBackgroundTurn } from "./reply-operation-run-state.js";
 import {
   createReplyOperation,
   expireStaleReplyOperation,
@@ -613,6 +615,10 @@ export async function admitReplyTurn(
 }
 
 /** Resolves the default turn kind from reply options. */
-export function resolveReplyTurnKind(opts?: { isHeartbeat?: boolean }): ReplyTurnKind {
-  return opts?.isHeartbeat === true ? "heartbeat" : "visible";
+export function resolveReplyTurnKind(opts?: InternalGetReplyOptions): ReplyTurnKind {
+  return resolveBackgroundTurn(opts)
+    ? "queued_followup"
+    : opts?.isHeartbeat === true
+      ? "heartbeat"
+      : "visible";
 }

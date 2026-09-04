@@ -5,6 +5,7 @@ import { normalizeChatType } from "../../channels/chat-type.js";
 import { updateAmbientTranscriptWatermark } from "../../config/sessions/ambient-transcript-watermark.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import { isImageMediaFact, type MediaFact } from "../../media/media-facts.js";
+import { channelRouteTargetsMatchExact } from "../../plugin-sdk/channel-route.js";
 import type { UserTurnInput } from "../../sessions/user-turn-transcript.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import type { SilentReplyConversationType } from "../../shared/silent-reply-policy.js";
@@ -16,10 +17,12 @@ import { resolveCommandTurnTargetSessionKey } from "../command-turn-context.js";
 import type { MsgContext, TemplateContext } from "../templating.js";
 import type { ElevatedLevel } from "../thinking.js";
 import type { ExecOverrides } from "./get-reply-run.types.js";
+import type { InternalGetReplyOptions } from "./get-reply.types.js";
 import {
   resolvePersistedPromptProvider,
   resolvePersistedPromptSurface,
 } from "./prompt-session-context.js";
+import { resolveBackgroundTurn } from "./reply-operation-run-state.js";
 
 const EPOCH_MILLISECONDS_THRESHOLD = 1_000_000_000_000;
 
@@ -183,9 +186,12 @@ export function resolvePromptSessionContextForSystemEvent(params: {
   sessionEntry?: SessionEntry;
   ctx?: Pick<MsgContext, "InternalTurnSource">;
   isHeartbeat?: boolean;
+  opts?: InternalGetReplyOptions;
 }): TemplateContext {
   const { sessionCtx, sessionEntry } = params;
+  const backgroundTurn = resolveBackgroundTurn(params.opts);
   const isSystemEvent =
+    Boolean(backgroundTurn) ||
     params.isHeartbeat === true ||
     params.ctx?.InternalTurnSource !== undefined ||
     sessionCtx.InternalTurnSource !== undefined;
@@ -195,6 +201,21 @@ export function resolvePromptSessionContextForSystemEvent(params: {
 
   const origin = sessionDeliveryOrigin(sessionEntry);
   const deliveryContext = deliveryContextFromSession(sessionEntry);
+  // A shared session may remember a different conversation since this event was captured.
+  if (
+    backgroundTurn &&
+    !channelRouteTargetsMatchExact({
+      left: {
+        channel: sessionCtx.OriginatingChannel ?? sessionCtx.Provider,
+        to: sessionCtx.OriginatingTo,
+        accountId: sessionCtx.AccountId,
+        threadId: sessionCtx.MessageThreadId,
+      },
+      right: deliveryContext,
+    })
+  ) {
+    return sessionCtx;
+  }
   const persistedChatType =
     normalizeChatType(sessionEntry.chatType) ?? normalizeChatType(origin?.chatType);
   const liveChatType = normalizeChatType(sessionCtx.ChatType);
@@ -226,14 +247,18 @@ export function resolvePromptSessionContextForSystemEvent(params: {
     changed = true;
   };
 
-  setIfChanged("Provider", nextProvider);
-  setIfChanged("Surface", nextSurface);
   setIfMissing("ChatType", persistedChatType);
   if (effectiveChatType === "group" || effectiveChatType === "channel") {
     setIfMissing("GroupSubject", normalizeOptionalString(sessionEntry.subject));
     setIfMissing("GroupChannel", normalizeOptionalString(sessionEntry.groupChannel));
     setIfMissing("GroupSpace", normalizeOptionalString(sessionEntry.space));
   }
+  // Matching conversation facts may be reused; absent captured route fields stay absent.
+  if (backgroundTurn) {
+    return changed ? next : sessionCtx;
+  }
+  setIfChanged("Provider", nextProvider);
+  setIfChanged("Surface", nextSurface);
   setIfMissing("OriginatingChannel", persistedProvider);
   setIfMissing("OriginatingTo", normalizeOptionalString(deliveryContext?.to ?? origin?.to));
   setIfMissing(

@@ -240,6 +240,10 @@ export type FollowupRun = {
     /** Trusted authority facts that must survive queueing and steering admission. */
     trustedInternalHandoff?: TrustedSubagentCompletionHandoff;
     scheduledToolPolicy?: ScheduledToolPolicyContext;
+    modelFallbacksOverride?: string[];
+    jobId?: string;
+    scheduledRuntimeAuthority?: RunEmbeddedAgentParams["scheduledRuntimeAuthority"];
+    scheduledRuntimeAuthorityRecoveryRequired?: boolean;
     runtimePluginToolGrant?: RuntimePluginToolGrant;
     extraSystemPrompt?: string;
     sourceReplyDeliveryMode?: SourceReplyDeliveryMode;

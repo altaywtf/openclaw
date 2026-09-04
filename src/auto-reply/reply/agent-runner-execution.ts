@@ -77,6 +77,7 @@ import type { FollowupRun } from "./queue.js";
 import type { ReplyMediaContext } from "./reply-media-paths.js";
 import { createReplyMediaContext } from "./reply-media-paths.runtime.js";
 import { resolveReplyOperationAbortReason } from "./reply-operation-abort.js";
+import { resolveBackgroundTurn } from "./reply-operation-run-state.js";
 import {
   markReplyOperationExecutionStarted,
   retainReplyOperationUntilComplete,
@@ -195,7 +196,8 @@ async function executeAgentTurnInternalLoop(
         params.followupRun.run.messageProvider ??
         params.sessionCtx.Surface ??
         params.sessionCtx.Provider,
-      trigger: params.isHeartbeat ? "heartbeat" : "user",
+      trigger:
+        resolveBackgroundTurn(params.opts)?.trigger ?? (params.isHeartbeat ? "heartbeat" : "user"),
     });
   }
   let replyMediaContext: ReplyMediaContext;

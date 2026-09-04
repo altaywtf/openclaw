@@ -66,7 +66,14 @@ import type { BlockReplyFlushContext } from "../types.js";
 import type { AuthProfileFailurePolicy } from "./auth-profile-failure-policy.types.js";
 export type { ClientToolDefinition } from "../../command/shared-types.js";
 
-export type EmbeddedRunTrigger = "cron" | "heartbeat" | "manual" | "memory" | "overflow" | "user";
+export type EmbeddedRunTrigger =
+  | "background"
+  | "cron"
+  | "heartbeat"
+  | "manual"
+  | "memory"
+  | "overflow"
+  | "user";
 
 export type ResolvedToolPromptFinalizer = (params: {
   prompt: string;

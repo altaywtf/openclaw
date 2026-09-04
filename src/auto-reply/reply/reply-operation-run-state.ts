@@ -1,4 +1,5 @@
 import { resolveAgentTurnExecutionStatus } from "./agent-runner-execution-status.js";
+import type { BackgroundTurnParams, BackgroundTurnPolicy } from "./background-turn.types.js";
 import { isReplyOperationSuperseded } from "./reply-operation-abort.js";
 import type { ReplyOperation } from "./reply-run-registry.js";
 
@@ -17,6 +18,7 @@ type ReplyOperationAdmissionSnapshot =
     };
 
 export type ReplyOperationRunState = {
+  backgroundTurn?: BackgroundTurnPolicy & Pick<BackgroundTurnParams, "claim">;
   admission?: ReplyOperationAdmissionSnapshot;
   messageInjectionAborted?: true;
   agentTurn?: ReturnType<typeof resolveAgentTurnExecutionStatus>;
@@ -35,6 +37,10 @@ export function resolveReplyOperationRunState(
   options: object | undefined,
 ): ReplyOperationRunState | undefined {
   return (options as ReplyOptionsWithOperationRunState | undefined)?.[REPLY_OPERATION_RUN_STATE];
+}
+
+export function resolveBackgroundTurn(options: object | undefined) {
+  return resolveReplyOperationRunState(options)?.backgroundTurn;
 }
 
 export function recordReplyOperationAgentTurn(

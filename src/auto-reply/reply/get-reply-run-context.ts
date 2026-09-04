@@ -45,6 +45,7 @@ import {
   resolveInboundUserContextPromptJoiner,
 } from "./inbound-meta.js";
 import { buildReplyPromptEnvelopeBase } from "./prompt-prelude.js";
+import { resolveBackgroundTurn } from "./reply-operation-run-state.js";
 import { resolveRuntimePolicySessionKey } from "./runtime-policy-session-key.js";
 import {
   resolveBareResetBootstrapFileAccess,
@@ -106,6 +107,7 @@ export async function prepareReplyRunContext(params: RunPreparedReplyParams) {
       attributes: traceAttributes,
     });
   const promptSessionCtx = resolvePromptSessionContextForSystemEvent({
+    opts,
     sessionCtx,
     sessionEntry,
     ctx,
@@ -229,11 +231,9 @@ export async function prepareReplyRunContext(params: RunPreparedReplyParams) {
     !isDirectedTurn &&
     (isAmbientRoomEvent || silentReplySettings.policy === "allow");
   // Heartbeats retain the embedded runner's trigger-owned optional default.
-  const terminalReplyExpectation = isHeartbeat
-    ? undefined
-    : isAmbientRoomEvent
-      ? "optional"
-      : "required";
+  const terminalReplyExpectation =
+    resolveBackgroundTurn(opts)?.terminalReplyExpectation ??
+    (isHeartbeat ? undefined : isAmbientRoomEvent ? "optional" : "required");
   const groupSystemPrompt = normalizeOptionalString(promptSessionCtx.GroupSystemPrompt) ?? "";
   const inboundMetaPrompt = buildInboundMetaSystemPrompt(
     isNewSession ? sessionCtx : { ...sessionCtx, ThreadStarterBody: undefined },

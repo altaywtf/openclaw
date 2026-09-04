@@ -116,6 +116,10 @@ import { resolveEffectiveResetTargetSessionKey } from "./acp-reset-target.js";
 import { readBeforeResetMessages } from "./commands-reset-hooks.js";
 import { resolveConversationBindingContextFromMessage } from "./conversation-binding-input.js";
 import { normalizeInboundTextNewlines } from "./inbound-text.js";
+import {
+  resolveBackgroundTurn,
+  type ReplyOptionsWithOperationRunState,
+} from "./reply-operation-run-state.js";
 import { replyRunRegistry } from "./reply-run-registry.js";
 import { resolveRuntimePolicySessionKey } from "./runtime-policy-session-key.js";
 import {
@@ -215,6 +219,7 @@ export type SessionInitResult = {
 };
 
 type InitSessionStateParams = {
+  opts?: ReplyOptionsWithOperationRunState;
   cfg: OpenClawConfig;
   commandAuthorized: boolean;
   ctx: FinalizedRuntimeMsgContext;
@@ -302,12 +307,13 @@ function resolveBoundConversationSessionKey(params: {
 }
 
 function resolveInitSessionStateAttemptContext(
-  params: Pick<InitSessionStateParams, "cfg" | "ctx">,
+  params: Pick<InitSessionStateParams, "cfg" | "ctx" | "opts">,
   options?: { touchConversationBinding?: boolean },
 ): InitSessionStateAttemptContext {
   const { cfg, ctx } = params;
   // Automated system events must not reset sessions or retarget conversation bindings.
-  const isSystemEvent = ctx.InternalTurnSource !== undefined;
+  const isSystemEvent =
+    ctx.InternalTurnSource !== undefined || Boolean(resolveBackgroundTurn(params.opts));
   const conversationBindingContext = isSystemEvent
     ? null
     : resolveSessionConversationBindingContext(cfg, ctx);
@@ -353,7 +359,7 @@ type ReplySessionPreprocessingState = {
 
 /** Resolves durable ownership before utility preprocessing can invoke another model. */
 export function resolveReplySessionPreprocessingState(
-  params: Pick<InitSessionStateParams, "cfg" | "ctx">,
+  params: Pick<InitSessionStateParams, "cfg" | "ctx" | "opts">,
 ): ReplySessionPreprocessingState {
   const attemptContext = resolveInitSessionStateAttemptContext(params, {
     touchConversationBinding: false,
@@ -893,13 +899,18 @@ async function initSessionStateAttemptLocked(
     : (ctx.MessageThreadId ??
       ctx.TransportThreadId ??
       (preservePersistedThread ? baseDeliveryContext?.threadId : undefined));
+  const preserveSystemEventThread = isThread || Boolean(resolveBackgroundTurn(params.opts));
   const delivery = isSystemEvent
     ? normalizeSessionDeliveryState({
-        route: isThread ? baseDeliveryRoute : stripThreadFromSessionRoute(baseDeliveryRoute),
-        context: isThread
+        route: preserveSystemEventThread
+          ? baseDeliveryRoute
+          : stripThreadFromSessionRoute(baseDeliveryRoute),
+        context: preserveSystemEventThread
           ? baseDeliveryContext
           : stripThreadIdFromDeliveryContext(baseDeliveryContext),
-        origin: isThread ? baseDeliveryOrigin : stripThreadIdFromOrigin(baseDeliveryOrigin),
+        origin: preserveSystemEventThread
+          ? baseDeliveryOrigin
+          : stripThreadIdFromOrigin(baseDeliveryOrigin),
       })
     : normalizeSessionDeliveryState({
         context: {
@@ -957,7 +968,7 @@ async function initSessionStateAttemptLocked(
   if (metaPatch) {
     sessionEntry = { ...sessionEntry, ...metaPatch };
   }
-  if (isSystemEvent && !isThread) {
+  if (isSystemEvent && !preserveSystemEventThread) {
     sessionEntry = {
       ...sessionEntry,
       delivery: normalizeSessionDeliveryState({

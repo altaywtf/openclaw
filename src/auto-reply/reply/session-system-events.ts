@@ -15,7 +15,10 @@ import {
   isHeartbeatDeliveryAwarenessEvent,
 } from "../../infra/heartbeat-events-filter.js";
 // Records system-level session events for restarts, forks, and resets.
-import { selectAgentSystemEvents } from "../../infra/system-event-ownership.js";
+import {
+  resolveSystemEventTurn,
+  selectAgentSystemEvents,
+} from "../../infra/system-event-ownership.js";
 import {
   consumeSelectedSystemEventEntries,
   peekSystemEventEntries,
@@ -36,6 +39,7 @@ function selectGenericSystemEvents(
   // awareness stays queued for the next ordinary target turn.
   return events.filter(
     (event) =>
+      !resolveSystemEventTurn(event) &&
       !isExecCompletionEvent(event.text) &&
       !(
         options?.suppressHeartbeatOwnedEvents === true &&

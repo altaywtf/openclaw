@@ -37,6 +37,7 @@ import { shouldBridgeCliPreambleEvents } from "./get-reply.types.js";
 import { hasInboundAudio } from "./inbound-media.js";
 import { resolveOriginMessageProvider } from "./origin-routing.js";
 import { resolveReplyOperationTerminationFields } from "./reply-operation-abort.js";
+import { resolveBackgroundTurn } from "./reply-operation-run-state.js";
 
 export async function runCliFallbackCandidate(
   params: AgentFallbackCandidateCommonParams & {
@@ -322,7 +323,9 @@ export async function runCliFallbackCandidate(
             runtimePolicySessionKey:
               turn.followupRun.run.runtimePolicySessionKey ?? turn.runtimePolicySessionKey,
             agentId: turn.followupRun.run.agentId,
-            trigger: turn.isHeartbeat ? "heartbeat" : "user",
+            trigger:
+              resolveBackgroundTurn(turn.opts)?.trigger ??
+              (turn.isHeartbeat ? "heartbeat" : "user"),
             sessionFile: turn.followupRun.run.sessionFile,
             workspaceDir: turn.followupRun.run.workspaceDir,
             cwd: turn.followupRun.run.cwd,
@@ -344,6 +347,8 @@ export async function runCliFallbackCandidate(
             currentInboundEventKind: turn.followupRun.currentInboundEventKind,
             currentInboundContext: turn.followupRun.currentInboundContext,
             inputProvenance: turn.followupRun.run.inputProvenance,
+            jobId: turn.followupRun.run.jobId,
+            scheduledToolPolicy: turn.followupRun.run.scheduledToolPolicy,
             // Candidate zero is the primary attempt; later candidates are
             // fallbacks. Carry the runner-owned fact instead of inferring from
             // this shared dispatch path, or primary CLI runs lose delegation.
@@ -378,7 +383,9 @@ export async function runCliFallbackCandidate(
             sourceReplyDeliveryMode: turn.followupRun.run.sourceReplyDeliveryMode,
             taskSuggestionDeliveryMode: turn.followupRun.run.taskSuggestionDeliveryMode,
             // Heartbeat ambient routes are never implicit message recipients.
-            ...(turn.isHeartbeat ? { requireExplicitMessageTarget: true } : {}),
+            ...(turn.isHeartbeat || resolveBackgroundTurn(turn.opts)
+              ? { requireExplicitMessageTarget: true }
+              : {}),
             silentReplyPromptMode: turn.followupRun.run.silentReplyPromptMode,
             allowEmptyAssistantReplyAsSilent: turn.followupRun.run.allowEmptyAssistantReplyAsSilent,
             extraSystemPromptStatic: turn.followupRun.run.extraSystemPromptStatic,
@@ -474,7 +481,8 @@ export async function runCliFallbackCandidate(
       {
         lifecycleGeneration: params.lifecycleGeneration,
         abortSignal: params.runAbortSignal,
-        trigger: turn.isHeartbeat ? "heartbeat" : "user",
+        trigger:
+          resolveBackgroundTurn(turn.opts)?.trigger ?? (turn.isHeartbeat ? "heartbeat" : "user"),
         inputProvenance: turn.followupRun.run.inputProvenance,
       },
     ),

@@ -37,6 +37,7 @@ export function resolveModelFallbackOptions(
     modelOverrideSource: run.modelOverrideSource,
     hasAutoFallbackProvenance: run.hasAutoFallbackProvenance === true,
     modelSelectionLocked: run.modelSelectionLocked,
+    modelFallbacksOverride: run.modelFallbacksOverride,
   });
   return {
     cfg: config,
@@ -127,6 +128,7 @@ export async function buildEmbeddedRunBaseParams(params: {
     modelOverrideSource: params.run.modelOverrideSource,
     hasAutoFallbackProvenance: params.run.hasAutoFallbackProvenance === true,
     modelSelectionLocked: params.run.modelSelectionLocked,
+    modelFallbacksOverride: params.run.modelFallbacksOverride,
   });
   const modelFallbacksOverride = modelFallbackOverrideFromAvailability(modelFallbackAvailability);
   const enforceFinalTag = resolveEnforceFinalTagWithResolver(
@@ -150,6 +152,9 @@ export async function buildEmbeddedRunBaseParams(params: {
     inputProvenance: params.run.inputProvenance,
     trustedInternalHandoff: params.run.trustedInternalHandoff,
     scheduledToolPolicy: params.run.scheduledToolPolicy,
+    jobId: params.run.jobId,
+    scheduledRuntimeAuthority: params.run.scheduledRuntimeAuthority,
+    scheduledRuntimeAuthorityRecoveryRequired: params.run.scheduledRuntimeAuthorityRecoveryRequired,
     runtimePluginToolGrant: params.run.runtimePluginToolGrant,
     senderIsOwner: params.run.senderIsOwner,
     conversationToolPolicy: params.run.conversationToolPolicy,
