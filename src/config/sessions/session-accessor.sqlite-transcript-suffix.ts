@@ -22,6 +22,10 @@ import {
   scheduleTranscriptProjectionReconcile,
 } from "./session-accessor.sqlite-transcript-store.js";
 import {
+  prepareIncrementalSuffixIdempotencyMutation,
+  type IncrementalSuffixIdempotencyMutation,
+} from "./session-accessor.sqlite-transcript-suffix-idempotency.js";
+import {
   markSessionTranscriptIndexDirtyInTransaction,
   replaceSessionTranscriptIndexSuffixInTransaction,
   sessionTranscriptIndexNeedsReconcile,
@@ -86,6 +90,8 @@ export type SqliteTranscriptSuffixMutationPlan = {
     projectionWasHealthy: boolean;
     removedMessageIds: readonly string[];
     retainedActiveCount: number;
+    suffixIdentityKeys: readonly (readonly [string, string | null])[];
+    replacementByIdempotencyKey: readonly (readonly [string, string])[];
   };
   next: readonly TranscriptEvent[];
   nextCreatedAt: readonly number[];
@@ -188,6 +194,7 @@ function prepareReconciledIncrementalSuffixMutation(params: {
   database: OpenClawAgentDatabase;
   expectedMutationAt: number | null;
   expectedRows: readonly SqliteTranscriptStorageRow[];
+  idempotencyMutation: IncrementalSuffixIdempotencyMutation;
   next: readonly TranscriptEvent[];
   nextCreatedAt: readonly number[];
   resolved: ResolvedTranscriptScope;
@@ -201,6 +208,7 @@ function prepareReconciledIncrementalSuffixMutation(params: {
       projectionWasHealthy: false,
       removedMessageIds: [],
       retainedActiveCount: 0,
+      ...params.idempotencyMutation,
     },
     next: params.next,
     nextCreatedAt: params.nextCreatedAt,
@@ -221,6 +229,7 @@ function prepareIncrementalTranscriptSuffixMutation(
   expectedEvents: readonly TranscriptEvent[],
   nextEvents: readonly TranscriptEvent[],
   persistedPrefixLength: number,
+  expectedMutationAt?: number | null,
 ): SqliteTranscriptSuffixMutationPlan {
   const expectedTail = expectedEvents
     .slice(persistedPrefixLength)
@@ -256,10 +265,15 @@ function prepareIncrementalTranscriptSuffixMutation(
     );
   }
 
-  const expectedMutationAt = readTranscriptMutationStateInTransaction(
+  const currentMutationAt = readTranscriptMutationStateInTransaction(
     database,
     resolved.sessionId,
   ).updatedAt;
+  if (expectedMutationAt !== undefined && currentMutationAt !== expectedMutationAt) {
+    throw new Error(
+      `SQLite transcript changed while preparing suffix removal for ${resolved.sessionId}`,
+    );
+  }
   const db = getSessionKysely(database.db);
   const storedTail = executeSqliteQuerySync(
     database.db,
@@ -299,6 +313,13 @@ function prepareIncrementalTranscriptSuffixMutation(
       Date.now()
     );
   });
+  const idempotencyMutation = prepareIncrementalSuffixIdempotencyMutation({
+    database,
+    expectedRows,
+    next,
+    resolved,
+    startSeq,
+  });
   const projectionWasHealthy = !sessionTranscriptIndexNeedsReconcile(
     database.db,
     resolved.sessionId,
@@ -306,8 +327,9 @@ function prepareIncrementalTranscriptSuffixMutation(
   if (!projectionWasHealthy) {
     return prepareReconciledIncrementalSuffixMutation({
       database,
-      expectedMutationAt,
+      expectedMutationAt: currentMutationAt,
       expectedRows,
+      idempotencyMutation,
       next,
       nextCreatedAt,
       resolved,
@@ -346,8 +368,9 @@ function prepareIncrementalTranscriptSuffixMutation(
     // fenced raw mutation instead of treating later active descendants as part of the mutation.
     return prepareReconciledIncrementalSuffixMutation({
       database,
-      expectedMutationAt,
+      expectedMutationAt: currentMutationAt,
       expectedRows,
+      idempotencyMutation,
       next,
       nextCreatedAt,
       resolved,
@@ -419,14 +442,15 @@ function prepareIncrementalTranscriptSuffixMutation(
     });
   }
   const addedMessages = activeRows.filter((row) => row.messagePosition !== null).length;
-  verifyIncrementalPlanningFence(database, resolved, expectedMutationAt);
+  verifyIncrementalPlanningFence(database, resolved, currentMutationAt);
   return {
     expectedRows,
     incremental: {
-      expectedMutationAt,
+      expectedMutationAt: currentMutationAt,
       projectionWasHealthy,
       removedMessageIds,
       retainedActiveCount,
+      ...idempotencyMutation,
     },
     next,
     nextCreatedAt,
@@ -448,6 +472,7 @@ export function prepareSqliteTranscriptSuffixMutation(
   expectedEvents: readonly TranscriptEvent[],
   nextEvents: readonly TranscriptEvent[],
   persistedPrefixLength = 0,
+  expectedMutationAt?: number | null,
 ): SqliteTranscriptSuffixMutationPlan {
   if (persistedPrefixLength > 0) {
     return prepareIncrementalTranscriptSuffixMutation(
@@ -456,6 +481,7 @@ export function prepareSqliteTranscriptSuffixMutation(
       expectedEvents,
       nextEvents,
       persistedPrefixLength,
+      expectedMutationAt,
     );
   }
   return prepareFullTranscriptSuffixMutation(database, resolved, expectedEvents, nextEvents);
@@ -512,14 +538,15 @@ export function replaceSqliteTranscriptSuffixInTransaction(
     plan.incremental?.projectionWasHealthy !== false &&
     !sessionTranscriptIndexNeedsReconcile(database.db, resolved.sessionId);
   const suffixIdentityKeys = new Map(
-    executeSqliteQuerySync(
-      database.db,
-      db
-        .selectFrom("transcript_event_identities")
-        .select(["event_id", "message_idempotency_key"])
-        .where("session_id", "=", resolved.sessionId)
-        .where("seq", ">=", plan.startSeq),
-    ).rows.map((row) => [row.event_id, row.message_idempotency_key]),
+    plan.incremental?.suffixIdentityKeys ??
+      executeSqliteQuerySync(
+        database.db,
+        db
+          .selectFrom("transcript_event_identities")
+          .select(["event_id", "message_idempotency_key"])
+          .where("session_id", "=", resolved.sessionId)
+          .where("seq", ">=", plan.startSeq),
+      ).rows.map((row) => [row.event_id, row.message_idempotency_key] as const),
   );
   const insertEvents = plan.incremental ? plan.next : plan.next.slice(plan.prefixLength);
   const insertCreatedAt = plan.incremental
@@ -567,8 +594,10 @@ export function replaceSqliteTranscriptSuffixInTransaction(
       (key): key is string => key !== null && !retainedIdempotencyKeys.has(key),
     ),
   );
-  const replacementByIdempotencyKey = new Map<string, string>();
-  if (removedIdempotencyKeys.size > 0) {
+  const replacementByIdempotencyKey = plan.incremental
+    ? new Map(plan.incremental.replacementByIdempotencyKey)
+    : new Map<string, string>();
+  if (!plan.incremental && removedIdempotencyKeys.size > 0) {
     const unownedPrefixRows = executeSqliteQuerySync(
       database.db,
       db

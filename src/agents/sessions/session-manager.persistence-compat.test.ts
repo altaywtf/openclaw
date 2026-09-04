@@ -318,6 +318,92 @@ describe("SessionManager persistence compatibility", () => {
     ).toEqual([scope.sessionId, "base", "temporary", "concurrent"]);
   });
 
+  it("retains the append transaction fence when another write starts after commit", async () => {
+    const dir = tempDirs.make("openclaw-session-manager-append-fence-");
+    const scope = {
+      agentId: "main",
+      sessionId: "sqlite-append-fence-session",
+      sessionKey: "agent:main:dashboard:sqlite-append-fence",
+      storePath: path.join(dir, "sessions.json"),
+    };
+    await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 1 });
+    await appendTranscriptMessage(scope, {
+      cwd: dir,
+      eventId: "base",
+      message: { role: "user", content: "question" },
+    });
+    const manager = SessionManager.open(scope, dir);
+    const temporaryId = manager.appendMessage(buildAssistantMessage("temporary"));
+    const afterAppend = await loadTranscriptEvents(scope);
+    const base = afterAppend[1];
+    if (!base || typeof base !== "object") {
+      throw new Error("Expected persisted base transcript event");
+    }
+    expect(
+      replaceTranscriptEventsSync(scope, [
+        afterAppend[0],
+        { ...base, message: { role: "user", content: "rewritten question" } },
+        afterAppend[2],
+      ]),
+    ).toBe(true);
+
+    expect(() => manager.removeTrailingEntries((entry) => entry.id === temporaryId)).toThrow(
+      "SQLite transcript changed while preparing suffix removal",
+    );
+    expect(await loadTranscriptEvents(scope)).toMatchObject([
+      { type: "session" },
+      { id: "base", message: { role: "user", content: "rewritten question" } },
+      { id: temporaryId },
+    ]);
+  });
+
+  it("rejects suffix removal after a concurrent retained-prefix rewrite", async () => {
+    const dir = tempDirs.make("openclaw-session-manager-prefix-concurrent-");
+    const scope = {
+      agentId: "main",
+      sessionId: "sqlite-remove-prefix-concurrent-session",
+      sessionKey: "agent:main:dashboard:sqlite-remove-prefix-concurrent",
+      storePath: path.join(dir, "sessions.json"),
+    };
+    await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 1 });
+    await appendTranscriptMessage(scope, {
+      cwd: dir,
+      eventId: "base",
+      message: { role: "user", content: "question" },
+    });
+    await appendTranscriptMessage(scope, {
+      cwd: dir,
+      eventId: "temporary",
+      message: buildAssistantMessage("temporary"),
+    });
+    const manager = SessionManager.open(scope, dir);
+    const current = await loadTranscriptEvents(scope);
+    const base = current[1];
+    if (!base || typeof base !== "object") {
+      throw new Error("Expected persisted base transcript event");
+    }
+    expect(
+      replaceTranscriptEventsSync(scope, [
+        current[0],
+        { ...base, message: { role: "user", content: "rewritten question" } },
+        current[2],
+      ]),
+    ).toBe(true);
+
+    expect(() => manager.removeTrailingEntries((entry) => entry.id === "temporary")).toThrow(
+      "SQLite transcript changed while preparing suffix removal",
+    );
+    expect(manager.buildSessionContext().messages).toMatchObject([
+      { role: "user", content: "question" },
+      { role: "assistant", content: [{ type: "text", text: "temporary" }] },
+    ]);
+    expect(await loadTranscriptEvents(scope)).toMatchObject([
+      { type: "session" },
+      { id: "base", message: { role: "user", content: "rewritten question" } },
+      { id: "temporary" },
+    ]);
+  });
+
   it("keeps file fixture factories off the production SessionManager class", () => {
     expect(SessionManager).not.toHaveProperty("create");
     expect(SessionManager).not.toHaveProperty("openFile");

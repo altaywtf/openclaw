@@ -160,6 +160,7 @@ export class SessionManagerPersistence extends SessionManagerCore {
     this.appendParentId = replacementParentId;
     const persistenceTarget = this.persistenceTarget;
     if (persistenceTarget) {
+      let committedMutationAt: number | null | undefined;
       try {
         if (
           !replaceTranscriptSuffixEventsSync(
@@ -167,6 +168,10 @@ export class SessionManagerPersistence extends SessionManagerCore {
             expectedPersistedEntries,
             this.getPersistedFileEntries(),
             persistedPrefixLength,
+            this.transcriptMutationAt,
+            (mutationAt) => {
+              committedMutationAt = mutationAt;
+            },
           )
         ) {
           throw new Error(`SQLite session changed before trimming ${this.sessionId}`);
@@ -181,6 +186,7 @@ export class SessionManagerPersistence extends SessionManagerCore {
         this.pendingDeliberateAppend = originalState.pendingDeliberateAppend;
         throw error;
       }
+      this.transcriptMutationAt = committedMutationAt;
     }
     return removedEntries.length;
   }
@@ -240,34 +246,49 @@ export class SessionManagerPersistence extends SessionManagerCore {
       if (!header || header.type !== "session") {
         throw new Error("Session transcript header was not persisted");
       }
+      let committedMutationAt: number | null | undefined;
       requireTranscriptEventAppend(
-        appendTranscriptEventSync(scope, header),
+        appendTranscriptEventSync(scope, header, {
+          captureMutationAtInTransaction: (mutationAt) => {
+            committedMutationAt = mutationAt;
+          },
+        }),
         "Session transcript header was not persisted",
       );
+      this.transcriptMutationAt = committedMutationAt;
       this.persistenceHeaderPending = false;
     }
     const leafEntry = parseOpaqueLeafEntry(entry);
     if (leafEntry) {
+      let committedMutationAt: number | null | undefined;
       requireTranscriptEventAppend(
-        appendTranscriptEventSync(scope, entry),
+        appendTranscriptEventSync(scope, entry, {
+          captureMutationAtInTransaction: (mutationAt) => {
+            committedMutationAt = mutationAt;
+          },
+        }),
         `Session transcript leaf control was not persisted: ${leafEntry.id}`,
       );
+      this.transcriptMutationAt = committedMutationAt;
       return undefined;
     }
     if (!isIndexedSessionEntry(entry)) {
       return undefined;
     }
     if (entry.type !== "message") {
+      let committedMutationAt: number | null | undefined;
       requireTranscriptEventAppend(
-        appendTranscriptEventSync(
-          scope,
-          entry,
-          options?.appendIntent === "active-branch"
+        appendTranscriptEventSync(scope, entry, {
+          ...(options?.appendIntent === "active-branch"
             ? { appendIntent: options.appendIntent }
-            : undefined,
-        ),
+            : {}),
+          captureMutationAtInTransaction: (mutationAt) => {
+            committedMutationAt = mutationAt;
+          },
+        }),
         `Session transcript entry was not persisted: ${entry.id}`,
       );
+      this.transcriptMutationAt = committedMutationAt;
       return undefined;
     }
     const appendOptions = copyCodeModeSourceAppendOptions(options, {
@@ -289,6 +310,9 @@ export class SessionManagerPersistence extends SessionManagerCore {
     const result = outcome.value;
     if (!result) {
       throw new Error(`Session transcript message was not persisted: ${entry.id}`);
+    }
+    if (result.appended) {
+      this.transcriptMutationAt = result.transcriptMutationAt;
     }
     // Carry the canonical storage bytes even when adopting a context-excluded row.
     entry.message = result.message;

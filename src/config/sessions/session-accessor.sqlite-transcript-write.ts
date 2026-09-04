@@ -44,7 +44,10 @@ import {
   readCommittedTranscriptMessageSequence,
   rememberCommittedTranscriptMessageSequencesInTransaction,
 } from "./session-accessor.sqlite-transcript-sequences.js";
-import { readTranscriptGenerationInTransaction } from "./session-accessor.sqlite-transcript-state.js";
+import {
+  readTranscriptGenerationInTransaction,
+  readTranscriptMutationStateInTransaction,
+} from "./session-accessor.sqlite-transcript-state.js";
 import {
   appendTranscriptEventInTransaction,
   replaceSqliteTranscriptEventsInTransaction,
@@ -189,6 +192,8 @@ export function replaceTranscriptSuffixEventsSync(
   expectedEvents: readonly TranscriptEvent[],
   nextEvents: readonly TranscriptEvent[],
   prefixLength = 0,
+  expectedMutationAt?: number | null,
+  captureMutationAtInTransaction?: (mutationAt: number | null) => void,
 ): boolean {
   const fencedScope = withOwnedSessionTranscriptWriterFence(scope);
   const resolved = resolveSqliteTranscriptScope(fencedScope);
@@ -200,6 +205,7 @@ export function replaceTranscriptSuffixEventsSync(
     expectedEvents,
     nextEvents,
     prefixLength,
+    expectedMutationAt,
   );
   let replaced = false;
   runOpenClawAgentWriteTransaction((database) => {
@@ -209,6 +215,9 @@ export function replaceTranscriptSuffixEventsSync(
       return;
     }
     replaceSqliteTranscriptSuffixInTransaction(database, resolved, plan);
+    captureMutationAtInTransaction?.(
+      readTranscriptMutationStateInTransaction(database, resolved.sessionId).updatedAt,
+    );
     replaced = true;
   }, toDatabaseOptions(resolved));
   if (fencedScope.expectedWriterRunId !== undefined && !replaced) {
@@ -320,13 +329,17 @@ export function appendTranscriptEventSync(
       result = err(refusal);
       return;
     }
-    result = ok(
-      appendTranscriptEventInTransaction(
-        database,
-        resolved,
-        resolveTranscriptEventAppendParent(database, resolved.sessionId, event, options),
-      ),
+    const appended = appendTranscriptEventInTransaction(
+      database,
+      resolved,
+      resolveTranscriptEventAppendParent(database, resolved.sessionId, event, options),
     );
+    if (appended) {
+      options.captureMutationAtInTransaction?.(
+        readTranscriptMutationStateInTransaction(database, resolved.sessionId).updatedAt,
+      );
+    }
+    result = ok(appended);
   }, toDatabaseOptions(resolved));
   if (fencedScope.expectedWriterRunId !== undefined && !result.ok) {
     throw new SessionTranscriptWriterClaimReboundError(result.error);
@@ -403,7 +416,18 @@ export function appendTranscriptMessageSync<TMessage>(
       result = err(refusal);
       return;
     }
-    result = ok(appendTranscriptMessageInTransaction(database, resolved, options));
+    const appendResult = appendTranscriptMessageInTransaction(database, resolved, options);
+    result = ok(
+      appendResult?.appended
+        ? {
+            ...appendResult,
+            transcriptMutationAt: readTranscriptMutationStateInTransaction(
+              database,
+              resolved.sessionId,
+            ).updatedAt,
+          }
+        : appendResult,
+    );
     // Synchronous message preparation can revoke the owner. Roll back before COMMIT.
     assertOwnedTranscriptWriteCommit(fencedScope);
   }, toDatabaseOptions(resolved));

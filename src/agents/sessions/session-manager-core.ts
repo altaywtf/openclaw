@@ -1,5 +1,5 @@
 import {
-  loadTranscriptEventsSync,
+  inspectTranscriptEventsSync,
   replaceTranscriptEventsSync,
   type SessionTranscriptRuntimeTarget,
 } from "../../config/sessions/session-accessor.js";
@@ -30,7 +30,11 @@ export type SessionManagerPersistenceTarget = SessionTranscriptRuntimeTarget;
 export type SessionManagerBoundedContextLimits = { maxBytes: number; maxEvents: number };
 export type SessionManagerBoundedContext = Pick<
   SessionTranscriptBoundedActiveContext,
-  "activeLeafEntryId" | "opaqueParents" | "firstKeptRanges" | "boundaryCount"
+  | "activeLeafEntryId"
+  | "opaqueParents"
+  | "firstKeptRanges"
+  | "boundaryCount"
+  | "transcriptMutationAt"
 > & { limits: SessionManagerBoundedContextLimits };
 
 export class SessionManagerCore {
@@ -55,18 +59,21 @@ export class SessionManagerCore {
   protected boundedContextLimits: SessionManagerBoundedContextLimits | undefined;
   protected boundedContextIncomplete = false;
   protected persistedBoundaryCount: number | undefined;
+  protected transcriptMutationAt: number | null | undefined;
 
   constructor(
     cwd: string,
     persistenceTarget?: SessionManagerPersistenceTarget,
     loadedEntries?: FileEntry[],
     boundedContext?: SessionManagerBoundedContext,
+    transcriptMutationAt?: number | null,
   ) {
     this.cwd = cwd;
     this.persistenceTarget = persistenceTarget;
     this.boundedContextLimits = boundedContext?.limits;
     this.boundedContextIncomplete = boundedContext !== undefined;
     this.persistedBoundaryCount = boundedContext?.boundaryCount;
+    this.transcriptMutationAt = boundedContext?.transcriptMutationAt ?? transcriptMutationAt;
     if (persistenceTarget || loadedEntries) {
       this.setLoadedSessionTarget(persistenceTarget, loadedEntries ?? [], boundedContext);
     } else {
@@ -78,9 +85,12 @@ export class SessionManagerCore {
     const bounded = this.boundedContextLimits
       ? readSessionTranscriptBoundedActiveContextCore(target, this.boundedContextLimits)
       : undefined;
-    const entries = (bounded?.events ?? loadTranscriptEventsSync(target)) as FileEntry[];
+    const inspected = bounded ? undefined : inspectTranscriptEventsSync(target);
+    const entries = (bounded?.events ?? inspected?.events ?? []) as FileEntry[];
     this.boundedContextIncomplete = bounded !== undefined;
     this.persistedBoundaryCount = bounded?.boundaryCount;
+    this.transcriptMutationAt =
+      bounded?.transcriptMutationAt ?? inspected?.snapshot.transcriptUpdatedAt;
     const header = entries.find(
       (entry) => typeof entry === "object" && entry !== null && entry.type === "session",
     );

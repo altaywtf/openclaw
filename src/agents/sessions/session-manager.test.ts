@@ -945,6 +945,21 @@ describe("SessionManager.open", () => {
       expect.objectContaining({ id: user.messageId, type: "message" }),
       expect.objectContaining({ id: assistant.messageId, type: "message" }),
     ]);
+
+    expect(sessionManager.removeTrailingEntries((entry) => entry.id === assistant.messageId)).toBe(
+      1,
+    );
+    await expect(
+      loadTranscriptEvents({
+        agentId: "main",
+        sessionId: branchedSessionId,
+        sessionKey,
+        storePath,
+      }),
+    ).resolves.toEqual([
+      expect.objectContaining({ id: branchedSessionId, type: "session" }),
+      expect.objectContaining({ id: user.messageId, type: "message" }),
+    ]);
   });
 
   it("rejects a queued branch when lifecycle ownership changes before persistence", async () => {

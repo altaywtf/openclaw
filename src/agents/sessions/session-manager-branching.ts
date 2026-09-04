@@ -1,5 +1,6 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import {
+  inspectTranscriptEventsSync,
   loadSessionEntry,
   replaceSessionEntrySync,
   replaceTranscriptEventsSync,
@@ -201,6 +202,8 @@ export class SessionManagerBranching extends SessionManagerEntries {
       throw error;
     }
     this.persistenceTarget = nextTarget;
+    this.transcriptMutationAt =
+      inspectTranscriptEventsSync(nextTarget).snapshot.transcriptUpdatedAt;
     this.persistenceHeaderPending = false;
     return newSessionId;
   }

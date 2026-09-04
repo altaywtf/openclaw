@@ -822,6 +822,65 @@ describe("SQLite exact transcript suffix replacement", () => {
     }, duplicateKeyEvents);
   });
 
+  it("promotes a keyed owner from a long prefix without scanning it in the write transaction", async () => {
+    const prefix = Array.from({ length: SYNC_REBUILD_MAX_ROWS + 1 }, (_value, index) => ({
+      type: "message" as const,
+      id: `keyed-prefix-${index}`,
+      parentId: index === 0 ? "root" : `keyed-prefix-${index - 1}`,
+      message: {
+        role: "assistant" as const,
+        content: `prefix ${index}`,
+        ...(index === 0 ? { idempotencyKey: " retry " } : {}),
+      },
+    }));
+    const owner = {
+      type: "message" as const,
+      id: "keyed-suffix-owner",
+      parentId: prefix.at(-1)?.id ?? "root",
+      message: { role: "assistant" as const, content: "owner", idempotencyKey: "retry" },
+    };
+    const duplicateKeyEvents = [rewriteEvents[0], ...prefix, owner];
+    const duplicateId = prefix[0]!.id;
+    await withRewriteFixture(({ db, scope }) => {
+      db.prepare(
+        "UPDATE transcript_event_identities SET message_idempotency_key = NULL WHERE session_id = ? AND event_id = ?",
+      ).run(scope.sessionId, duplicateId);
+      db.prepare(
+        "UPDATE transcript_event_identities SET message_idempotency_key = ? WHERE session_id = ? AND event_id = ?",
+      ).run("retry", scope.sessionId, owner.id);
+      const plan = prepareSqliteTranscriptSuffixMutation(
+        openOpenClawAgentDatabase(scope),
+        scope,
+        duplicateKeyEvents,
+        duplicateKeyEvents.slice(0, -1),
+        duplicateKeyEvents.length - 1,
+      );
+      const work = trackSqliteStatementExecutions(db, ["prefixJsonScan"], (statement) => {
+        const sql = statement.toLowerCase();
+        return sql.includes("json_extract") ||
+          (sql.includes("event_json") && sql.includes("identity.seq") && sql.includes("<"))
+          ? "prefixJsonScan"
+          : null;
+      });
+      try {
+        runOpenClawAgentWriteTransaction((database) => {
+          replaceSqliteTranscriptSuffixInTransaction(database, scope, plan);
+        }, scope);
+      } finally {
+        work.restore();
+      }
+
+      expect(work.counts.prefixJsonScan).toBe(0);
+      expect(
+        db
+          .prepare(
+            "SELECT event_id, message_idempotency_key FROM transcript_event_identities WHERE session_id = ? AND event_id = ?",
+          )
+          .get(scope.sessionId, duplicateId),
+      ).toEqual({ event_id: duplicateId, message_idempotency_key: "retry" });
+    }, duplicateKeyEvents);
+  });
+
   it("preserves generation while updating raw, identity, active, and FTS rows", async () => {
     await withRewriteFixture(({ db, snapshot, scope }) => {
       const before = snapshot();
