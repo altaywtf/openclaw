@@ -332,10 +332,14 @@ describe("node worker Git transfers", () => {
           changed ? "changed on gateway\n" : "tracked from gateway\n",
         );
         if (process.platform !== "win32") {
-          expect((await fs.stat(path.join(workspaceDir, "tracked.txt"))).mode & 0o777).toBe(
-            changed ? 0o755 : 0o644,
-          );
-          expect((await fs.stat(path.join(workspaceDir, "script.sh"))).mode & 0o777).toBe(0o755);
+          const trackedMode = (await fs.stat(path.join(workspaceDir, "tracked.txt"))).mode;
+          if (changed) {
+            expect(trackedMode & 0o777).toBe(0o755);
+          } else {
+            // Git checkout preserves executable bits; other permissions follow the host umask.
+            expect(trackedMode & 0o111).toBe(0);
+          }
+          expect((await fs.stat(path.join(workspaceDir, "script.sh"))).mode & 0o111).not.toBe(0);
         }
         await expect(fs.readlink(path.join(workspaceDir, "tracked-link"))).resolves.toBe(
           changed ? "script.sh" : "tracked.txt",

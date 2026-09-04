@@ -292,6 +292,10 @@ describe("openclaw test state", () => {
       expect(state.env.OPENCLAW_HOME).toBe(state.home);
       expect(state.env.OPENCLAW_STATE_DIR).toBe(state.stateDir);
       expect(state.env.OPENCLAW_CONFIG_PATH).toBe(state.configPath);
+      if (process.platform !== "win32") {
+        expect((await fs.stat(state.home)).mode & 0o777).toBe(0o700);
+        expect((await fs.stat(state.stateDir)).mode & 0o777).toBe(0o700);
+      }
       expect(process.env.HOME).toBe(state.home);
       expect(process.env.OPENCLAW_HOME).toBe(state.home);
       expect(JSON.parse(await fs.readFile(state.configPath, "utf8"))).toStrictEqual({});
@@ -323,6 +327,9 @@ describe("openclaw test state", () => {
         expect(process.env.OPENCLAW_STATE_DIR).toBe(state.stateDir);
         expect(process.env.OPENCLAW_CONFIG_PATH).toBe(state.configPath);
         expect(state.env.HOME).toBe(previousHome);
+        if (process.platform !== "win32") {
+          expect((await fs.stat(state.stateDir)).mode & 0o777).toBe(0o700);
+        }
         await expectPathMissing(state.configPath);
       },
     );
