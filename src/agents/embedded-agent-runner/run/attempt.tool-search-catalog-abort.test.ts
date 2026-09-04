@@ -12,6 +12,9 @@ import { wrapToolWithBeforeToolCallHook } from "../../agent-tools.before-tool-ca
 import type { createOpenClawCodingTools } from "../../agent-tools.js";
 import { Agent, type AgentTool } from "../../runtime/index.js";
 import { getInternalToolExecutionPreparer } from "../../runtime/internal-hooks.js";
+import { SessionManager } from "../../sessions/session-manager.js";
+import { TOOL_EXECUTION_GATED_MESSAGE } from "../../tool-policy-shared.js";
+import { isToolResultError, readToolResultDetails } from "../../tool-result-error.js";
 import type { ToolSearchCatalogRef } from "../../tool-search.js";
 import { createAgentsWaitTool } from "../../tools/agents-wait-tool.js";
 import { createSessionsSpawnTool } from "../../tools/sessions-spawn-tool.js";
@@ -89,7 +92,8 @@ describe("runEmbeddedAttempt tool-search catalog cleanup", () => {
     },
   ])(
     "does not enter the original preparer or action through denied $mode",
-    async ({ toolName, code }) => {
+    async ({ mode, toolName, code }) => {
+      const sessionManager = SessionManager.inMemory();
       const execute = vi.fn(async () => ({ content: [], details: {} }));
       const prepare = vi.fn(async (args: unknown) => args);
       const native =
@@ -102,7 +106,7 @@ describe("runEmbeddedAttempt tool-search catalog cleanup", () => {
       expect(getInternalToolExecutionPreparer(source)).toBeDefined();
       hoisted.createOpenClawCodingToolsMock.mockReturnValue([source]);
       const observed: AssistantMessage["content"][] = [];
-      const outcomes: Array<{ toolName: string; isError: boolean }> = [];
+      const outcomes: Array<{ toolName: string; isError: boolean; result: unknown }> = [];
       await createContextEngineAttemptRunner({
         contextEngine: createContextEngineBootstrapAndAssemble(),
         sessionKey: "agent:main:main",
@@ -119,6 +123,9 @@ describe("runEmbeddedAttempt tool-search catalog cleanup", () => {
           let turn = 0;
           const agent = new Agent({
             initialState: { model: options.model, tools: allTools },
+            afterToolCall: async ({ result, isError }) => ({
+              isError: isError || isToolResultError(result),
+            }),
             streamFn: () => {
               const content: AssistantMessage["content"] =
                 turn++ === 0
@@ -185,15 +192,31 @@ describe("runEmbeddedAttempt tool-search catalog cleanup", () => {
           return session;
         },
         attemptOverrides: {
+          sessionManager,
           disableTools: false,
           toolExecutionAllow: ["read"],
           config: { tools: { codeMode: Boolean(code), toolSearch: false } },
         },
       });
       expect(observed.length).toBeGreaterThanOrEqual(1);
-      expect(outcomes).toContainEqual(
-        expect.objectContaining({ toolName: code ? "exec" : toolName, isError: true }),
-      );
+      const denied = outcomes.find((outcome) => outcome.toolName === (code ? "exec" : toolName));
+      expect(denied).toMatchObject({ isError: true });
+      if (code) {
+        const withheldSwarm = mode === "joined Code Mode";
+        const details = readToolResultDetails(denied?.result);
+        expect(details).toMatchObject({
+          status: "failed",
+          failurePhase: withheldSwarm ? "guest" : "bridge",
+          bridgeDispatchStarted: !withheldSwarm,
+        });
+        expect(details?.error).toContain(
+          withheldSwarm ? "ReferenceError: agents is not defined" : TOOL_EXECUTION_GATED_MESSAGE,
+        );
+      } else {
+        expect(denied?.result).toMatchObject({
+          content: [{ type: "text", text: expect.stringContaining(TOOL_EXECUTION_GATED_MESSAGE) }],
+        });
+      }
       expect(prepare).not.toHaveBeenCalled();
       expect(execute).not.toHaveBeenCalled();
     },
