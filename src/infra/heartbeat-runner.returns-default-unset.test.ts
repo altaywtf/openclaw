@@ -1141,45 +1141,6 @@ describe("runHeartbeatOnce", () => {
     }
   });
 
-  it.each([undefined, "+15555550166", "+15555550177"])(
-    "delivers once per owner and retains successful recipients when %s fails",
-    async (failedOwner) => {
-      const tmpDir = await createCaseDir("hb-all-owners");
-      const storePath = path.join(tmpDir, "sessions.json");
-      const owners = ["+15555550166", "+15555550177"];
-      const cfg: OpenClawConfig = {
-        agents: { defaults: { workspace: tmpDir, heartbeat: { every: "5m" } } },
-        commands: { ownerAllowFrom: [...owners, "whatsapp:+15555550166"] },
-        channels: { whatsapp: { allowFrom: owners } },
-        session: { store: storePath },
-      };
-      const replySpy = vi.fn().mockResolvedValue({ text: "Owner alert" });
-      let fail = true;
-      const delivered: string[] = [];
-      const sendWhatsApp = vi.fn(async (to: string) => {
-        if (fail && to === failedOwner) {
-          throw new Error("delivery unavailable");
-        }
-        delivered.push(to);
-        return { messageId: "m1", toJid: "jid" };
-      });
-      const run = (nowMs: number) =>
-        runHeartbeatOnce({
-          cfg,
-          deps: createHeartbeatDeps(sendWhatsApp, { nowMs, getReplyFromConfig: replySpy }),
-        });
-      await run(1);
-      expect(sendWhatsApp.mock.calls.map(([to]) => to)).toEqual(owners);
-      expect(delivered).toEqual(owners.filter((owner) => owner !== failedOwner));
-      fail = false;
-      await run(2);
-      await run(3);
-      expect(delivered.toSorted()).toEqual(owners);
-      expect(sendWhatsApp).toHaveBeenCalledTimes(failedOwner ? 3 : 2);
-      expect(replySpy).toHaveBeenCalledTimes(3);
-    },
-  );
-
   it("persists implicit first-alert state when an isolated heartbeat starts without a base row", async () => {
     const tmpDir = await createCaseDir("hb-owner-preamble");
     const storePath = path.join(tmpDir, "sessions.json");

@@ -73,7 +73,7 @@ Example config:
 ## Defaults
 
 - Interval: `30m`. Applying Anthropic provider defaults bumps this to `1h` when the resolved auth mode is OAuth/token (including Claude CLI reuse), but only while `heartbeat.every` is unset. Set `agents.defaults.heartbeat.every` or per-agent `agents.entries.*.heartbeat.every`; use `0m` to disable recurring cadence.
-- Delivery target: `owner`. OpenClaw uses concrete `commands.ownerAllowFrom` entries, then channel `allowFrom`, and never sends this route to a group. Without a resolvable owner DM, ambient polls skip with `reason=no-route`. Set `target: "last"` to follow the most recent conversation, including groups, or `target: "none"` for internal-only runs.
+- Delivery target: `owner`. OpenClaw uses the first concrete `commands.ownerAllowFrom` entry, then channel `allowFrom`, and never sends this route to a group. Without a resolvable owner DM, ambient polls skip with `reason=no-route`. Set `target: "last"` to follow the most recent conversation, including groups, or `target: "none"` for internal-only runs.
 - Prompt body (configurable via `agents.defaults.heartbeat.prompt`): `Follow the heartbeat monitor scratch context when provided. Recurring tasks are automations; create or change their schedules with the automations tool, not heartbeat scratch. Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply NO_REPLY.`
 - Timeout: unset heartbeat turns use `agents.defaults.timeoutSeconds` when set. Otherwise, they use the heartbeat cadence capped at 600 seconds. Set `agents.defaults.heartbeat.timeoutSeconds` or per-agent `agents.entries.*.heartbeat.timeoutSeconds` for longer heartbeat work.
 - The heartbeat prompt is sent **verbatim** as the scheduled user message. Heartbeat runs use the same system prompt as ordinary agent turns; there is no heartbeat-specific system-prompt section.
@@ -265,7 +265,7 @@ Use `accountId` to target a specific account on multi-account channels like Tele
 
 </ParamField>
 <ParamField path="target" type="string">
-- `owner` (default): deliver to every resolvable operator DM on the selected messaging channel, using `commands.ownerAllowFrom` before channel `allowFrom`. Duplicate destinations receive one copy. This route never resolves to a group or channel.
+- `owner` (default): deliver to the first resolvable operator DM from `commands.ownerAllowFrom`, then channel `allowFrom`. This route never resolves to a group or channel.
 - `last`: explicitly follow the last used external conversation, including groups and channels.
 - explicit channel: any configured channel or plugin id, for example `discord`, `matrix`, `telegram`, or `whatsapp`.
 - `none`: run the heartbeat for internal state only; **do not deliver** externally.
@@ -312,13 +312,12 @@ Heartbeat configuration is strict: only the fields listed above are accepted. Ac
   <Accordion title="Session and target routing">
     - Heartbeats run in the agent's main session by default (`agent:<id>:main`), or `global` when `session.scope = "global"`. Set `session` to override to a specific channel session (Discord/WhatsApp/etc.).
     - `session` only affects the run context; delivery is controlled by `target` and `to`.
-    - The default `owner` target keeps the existing channel preference and sends to each configured owner on that channel. It reuses the exact account/thread only when the session's last route is a direct chat to that owner.
+    - The default `owner` target chooses an explicitly configured owner identity. It reuses the exact account/thread only when the session's last route is a direct chat to that owner.
     - A wake that carries a channel and recipient uses that named origin before owner discovery. This event destination can be a group because it is explicit, not inferred.
     - To deliver to a specific channel/recipient, set a channel `target` plus `to`. `target: "last"` is an explicit opt-in to the last external conversation, including groups.
     - Heartbeat deliveries allow direct/DM targets by default. Set `directPolicy: "block"` to suppress direct-target sends while still running the heartbeat turn.
     - Scheduled heartbeats are skipped and retried later when the main queue or automation work is busy, any reply or embedded run for the same agent is active, or the resolved target session has active or queued work. Immediate and manual wakes bypass only the broad same-agent active-run precheck.
     - If `owner` has no concrete, DM-capable owner or configured channel, the poll is skipped as `reason=no-route` before the agent runs. Explicit `last` also skips when the session has no external route.
-    - Repeated text alerts keep the existing 24-hour suppression window. If one owner delivery fails, confirmed recipients are still suppressed on a later identical alert; no additional reminder rounds are scheduled.
     - The first alert delivered by the implicit `owner` default explains periodic checks and how to choose `target: "none"`. Later alerts omit that line.
 
   </Accordion>

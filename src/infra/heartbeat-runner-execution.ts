@@ -93,7 +93,7 @@ import {
 } from "./heartbeat-wake.js";
 import type { OutboundSendDeps } from "./outbound/deliver.js";
 import {
-  resolveHeartbeatDeliveryTargetsWithSessionRoute,
+  resolveHeartbeatDeliveryTargetWithSessionRoute,
   resolveHeartbeatSenderContext,
 } from "./outbound/targets.js";
 
@@ -390,7 +390,7 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
   // sending the full conversation history (~100K tokens) to the LLM.
   // Delivery routing still uses the main session entry (lastChannel, lastTo).
   const useIsolatedSession = heartbeat?.isolatedSession === true;
-  const deliveries = await resolveHeartbeatDeliveryTargetsWithSessionRoute({
+  const delivery = await resolveHeartbeatDeliveryTargetWithSessionRoute({
     cfg,
     agentId,
     entry,
@@ -402,7 +402,6 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
     // to stale channels/threads because that base-session event context remains queued.
     turnSource: useIsolatedSession ? undefined : preflight.turnSourceDeliveryContext,
   });
-  const delivery = deliveries.find((target) => target.channel !== "none") ?? deliveries[0];
   // Routeless ambient polls are pure model burn, but only they may skip:
   // triggered wakes (hook/manual/cron/exec), polls with queued events, and
   // scheduled-task wakes must still run to process their payloads even when
@@ -574,7 +573,6 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
     ...preflight.session,
     previousUpdatedAt,
     delivery,
-    deliveries,
     visibility,
     sender,
     replyPrefix,

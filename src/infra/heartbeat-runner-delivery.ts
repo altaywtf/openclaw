@@ -287,7 +287,7 @@ export async function finalizeHeartbeatOutcome(params: {
   outboundIdentity: ReturnType<typeof resolveAgentOutboundIdentity>;
 }): Promise<HeartbeatRunResult> {
   const { cfg, agentId, scheduledTasks, startedAt, wakeSource } = params.wake;
-  const { delivery, deliveries, previousUpdatedAt } = params.prepared;
+  const { delivery, previousUpdatedAt } = params.prepared;
   const { runSessionKey, sessionKey, storePath, visibility } = params.prepared;
   // Delivery markers belong to the policy session, not a rotating isolated run or recipient.
   const stateKey = params.prepared.outboundPolicySessionKey ?? sessionKey;
@@ -362,43 +362,27 @@ export async function finalizeHeartbeatOutcome(params: {
       deliver:
         failureChannel !== "none" && failureTarget
           ? async () => {
-              const sends = await Promise.allSettled(
-                deliveries.map(async (target) => {
-                  if (target.channel === "none" || !target.to) {
-                    throw new Error(target.reason ?? "no-target");
-                  }
-                  const send = await sendDurableMessageBatchCore({
-                    cfg,
-                    channel: target.channel,
-                    to: target.to,
-                    accountId: target.accountId,
-                    session: params.outboundSession,
-                    identity: params.outboundIdentity,
-                    threadId: target.threadId,
-                    payloads: [
-                      copyReplyPayloadMetadata(failureReplyPayload ?? {}, {
-                        ...failureReplyPayload,
-                        text: outcome.normalized.text || undefined,
-                      }),
-                    ],
-                    deps: params.opts.deps,
-                    silent: outcome.normalized.silent,
-                  });
-                  if (send.status === "failed" || send.status === "partial_failed") {
-                    throw send.error;
-                  }
-                  return send.status;
-                }),
-              );
-              const failed = sends.find((result) => result.status === "rejected");
-              if (failed?.status === "rejected") {
-                throw failed.reason;
+              const send = await sendDurableMessageBatchCore({
+                cfg,
+                channel: failureChannel,
+                to: failureTarget,
+                accountId: delivery.accountId,
+                session: params.outboundSession,
+                identity: params.outboundIdentity,
+                threadId: delivery.threadId,
+                payloads: [
+                  copyReplyPayloadMetadata(failureReplyPayload ?? {}, {
+                    ...failureReplyPayload,
+                    text: outcome.normalized.text || undefined,
+                  }),
+                ],
+                deps: params.opts.deps,
+                silent: outcome.normalized.silent,
+              });
+              if (send.status === "failed" || send.status === "partial_failed") {
+                throw send.error;
               }
-              return sends.every(
-                (result) => result.status === "fulfilled" && result.value === "sent",
-              )
-                ? "sent"
-                : "suppressed";
+              return send.status === "sent" ? "sent" : "suppressed";
             }
           : undefined,
       clearSatisfiedPendingFinalDelivery: failureReplyPayload
@@ -463,18 +447,7 @@ export async function finalizeHeartbeatOutcome(params: {
     prevHeartbeatAt <= startedAt &&
     startedAt - prevHeartbeatAt < 24 * 60 * 60 * 1000;
 
-  const recipientKey = (target: typeof delivery) =>
-    JSON.stringify([target.channel, target.accountId ?? "", target.to, target.threadId ?? ""]);
-  const confirmedRecipients = new Set(isDuplicateMain ? stateEntry?.lastHeartbeatRecipients : []);
-  const pendingDeliveries = isDuplicateMain
-    ? deliveries.filter(
-        (target) =>
-          stateEntry?.lastHeartbeatRecipients !== undefined &&
-          !confirmedRecipients.has(recipientKey(target)),
-      )
-    : deliveries;
-
-  if (!pendingDeliveries.length) {
+  if (isDuplicateMain) {
     await restoreHeartbeatUpdatedAt({ storePath, sessionKey, updatedAt: previousUpdatedAt });
     await clearSatisfiedPendingFinalDelivery(params.wake, params.prepared);
     return finish({
@@ -542,82 +515,65 @@ export async function finalizeHeartbeatOutcome(params: {
     }
   }
 
-  let visibleSendSucceeded = false;
-  let suppressionReason: string | undefined;
-  let deliveryError: Error | undefined;
-  for (const target of pendingDeliveries) {
-    try {
-      if (target.channel === "none" || !target.to) {
-        throw new Error(target.reason ?? "no-target");
-      }
-      const targetProjection = resolveHeartbeatTargetProjection({
-        agentId,
-        storePath,
-        runSessionKey,
-        targetSessionKey: target.targetSessionKey,
-        startedAt,
-      });
-      const send = await sendDurableMessageBatchCore({
-        cfg,
-        channel: target.channel,
-        to: target.to,
-        accountId: target.accountId,
-        session: params.outboundSession,
-        identity: params.outboundIdentity,
-        threadId: target.threadId,
-        payloads: [
-          copyReplyPayloadMetadata(replyPayload ?? {}, {
-            ...replyPayload,
-            text: deliveryText,
-            mediaUrls,
-          }),
-        ],
-        deps: params.opts.deps,
-        silent: normalized.silent,
-        onDeliveredPayload: targetProjection
-          ? (payload) => queueHeartbeatTargetAwareness({ projection: targetProjection, payload })
-          : undefined,
-      });
-      if (send.status === "failed" || send.status === "partial_failed") {
-        throw send.error;
-      }
-      if (send.status !== "sent") {
-        suppressionReason = send.reason;
-        recordUnconfirmedAlert(send.reason);
-        continue;
-      }
-      visibleSendSucceeded = true;
-      confirmedRecipients.add(recipientKey(target));
-      if (deliveryText.trim()) {
-        // Keep successes on the existing policy row even if a later owner fails.
-        // This is the ordinary heartbeat dedupe window, not a retry queue.
-        await patchSessionEntryCore(
-          { storePath, sessionKey: stateKey },
-          () => ({
-            lastHeartbeatText: normalized.text,
-            lastHeartbeatSentAt: isDuplicateMain ? prevHeartbeatAt : startedAt,
-            lastHeartbeatRecipients: [...confirmedRecipients],
-          }),
-          {
-            fallbackEntry: mergeSessionEntry(undefined, { updatedAt: startedAt }),
-            preserveActivity: true,
-          },
-        );
-      }
-    } catch (error) {
-      recordUnconfirmedAlert(formatErrorMessage(error));
-      deliveryError = error instanceof Error ? error : new Error(formatErrorMessage(error));
-    }
+  const targetProjection = resolveHeartbeatTargetProjection({
+    agentId,
+    storePath,
+    runSessionKey,
+    targetSessionKey: delivery.targetSessionKey,
+    startedAt,
+  });
+  const send = await sendDurableMessageBatchCore({
+    cfg,
+    channel: delivery.channel,
+    to: delivery.to,
+    accountId: deliveryAccountId,
+    session: params.outboundSession,
+    identity: params.outboundIdentity,
+    threadId: delivery.threadId,
+    payloads: [
+      copyReplyPayloadMetadata(replyPayload ?? {}, {
+        ...replyPayload,
+        text: deliveryText,
+        mediaUrls,
+      }),
+    ],
+    deps: params.opts.deps,
+    silent: normalized.silent,
+    onDeliveredPayload: targetProjection
+      ? (payload) => queueHeartbeatTargetAwareness({ projection: targetProjection, payload })
+      : undefined,
+  }).catch((error: unknown) => {
+    recordUnconfirmedAlert(formatErrorMessage(error));
+    throw error;
+  });
+  if (send.status !== "sent") {
+    recordUnconfirmedAlert("reason" in send ? send.reason : formatErrorMessage(send.error));
   }
-  if (deliveryError !== undefined) {
-    throw deliveryError;
+  if (send.status === "failed" || send.status === "partial_failed") {
+    throw send.error;
   }
-  const allDelivered = suppressionReason === undefined && visibleSendSucceeded;
-  if (allDelivered) {
-    await clearSatisfiedPendingFinalDelivery(params.wake, {
-      ...params.prepared,
-      sessionKey: stateKey,
-    });
+  const visibleSendSucceeded = send.status === "sent";
+  if (visibleSendSucceeded) {
+    const hasHeartbeatText = Boolean(deliveryText.trim());
+    const fallbackEntry = mergeSessionEntry(undefined, { updatedAt: startedAt });
+    await patchSessionEntryCore(
+      { storePath, sessionKey: stateKey },
+      (current) => {
+        // Visible structured-only sends satisfy their own pending final too;
+        // preserve old text dedupe markers and another run's recovery state.
+        const ownsPendingFinalDelivery = heartbeatRunOwnsPendingFinalDelivery(current, startedAt);
+        if (!hasHeartbeatText && !ownsPendingFinalDelivery) {
+          return null;
+        }
+        return {
+          ...(hasHeartbeatText
+            ? { lastHeartbeatText: normalized.text, lastHeartbeatSentAt: startedAt }
+            : {}),
+          ...(ownsPendingFinalDelivery ? CLEARED_PENDING_FINAL_DELIVERY_FIELDS : {}),
+        };
+      },
+      { fallbackEntry, preserveActivity: true },
+    );
   }
 
   const eventStatus = visibleSendSucceeded ? "sent" : "skipped";
@@ -627,14 +583,14 @@ export async function finalizeHeartbeatOutcome(params: {
     {
       status: eventStatus,
       to: delivery.to,
-      ...(!visibleSendSucceeded ? { reason: suppressionReason } : {}),
+      ...(!visibleSendSucceeded ? { reason: send.reason } : {}),
       preview: truncateHeartbeatPreview(deliveryText),
       hasMedia: mediaUrls.length > 0,
       channel: delivery.channel,
       ...(normalized.silent === true ? { silent: true } : {}),
       indicatorType: visibility.useIndicator ? resolveIndicatorType(eventStatus) : undefined,
     },
-    allDelivered,
+    visibleSendSucceeded,
   );
 }
 

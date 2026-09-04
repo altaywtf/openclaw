@@ -308,6 +308,7 @@ async function resolveSlackOutboundSessionRoute(params: {
   agentId: string;
   accountId?: string | null;
   target: string;
+  deliveryPurpose?: "heartbeat-owner";
   replyToId?: string | null;
   threadId?: string | number | null;
   currentSessionKey?: string | null;
@@ -318,7 +319,12 @@ async function resolveSlackOutboundSessionRoute(params: {
   }
   const apiTargetId = canonicalizeSlackApiTargetId(parsed.kind, parsed.id, params.target);
   const isDm = parsed.kind === "user";
-  if (isDm && !parsed.teamId && /^[UW][A-Z0-9]{8,}$/.test(apiTargetId)) {
+  if (
+    params.deliveryPurpose === "heartbeat-owner" &&
+    isDm &&
+    !parsed.teamId &&
+    /^[UW][A-Z0-9]{8,}$/.test(apiTargetId)
+  ) {
     const teamId = await resolveSlackEnterpriseUserTeamId({
       cfg: params.cfg,
       accountId: params.accountId,

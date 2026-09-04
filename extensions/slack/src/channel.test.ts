@@ -787,33 +787,45 @@ describe("slackPlugin status", () => {
     });
   });
 
-  it("resolves an Enterprise owner's bare user target to one workspace-qualified DM", async () => {
-    const installation = registerSlackInstallationState("default", "enterprise");
-    usersInfoMock.mockResolvedValue({
-      ok: true,
-      user: { id: "U12345678", enterprise_user: { teams: ["T22222222", "T11111111"] } },
-    });
-    authTeamsListMock.mockResolvedValue({
-      ok: true,
-      teams: [{ id: "T22222222" }, { id: "T11111111" }],
-    });
-    try {
-      const route = await slackPlugin.messaging!.resolveOutboundSessionRoute!({
-        cfg: { channels: { slack: { botToken: "sending-fixture" } } },
-        agentId: "main",
-        target: "user:u12345678",
+  it.each(["heartbeat-owner", undefined] as const)(
+    "limits Enterprise workspace discovery to owner heartbeats: %s",
+    async (deliveryPurpose) => {
+      const installation = registerSlackInstallationState("default", "enterprise");
+      usersInfoMock.mockResolvedValue({
+        ok: true,
+        user: { id: "U12345678", enterprise_user: { teams: ["T22222222", "T11111111"] } },
       });
-      expectRecordFields(route, "Enterprise Slack owner DM route", {
-        baseSessionKey: "agent:main:main:account:default:team:t11111111",
-        to: "team:T11111111:user:U12345678",
-        recipientSessionExact: true,
+      authTeamsListMock.mockResolvedValue({
+        ok: true,
+        teams: [{ id: "T22222222" }, { id: "T11111111" }],
       });
-      expect(usersInfoMock).toHaveBeenCalledExactlyOnceWith({ user: "U12345678" });
-      expect(conversationsOpenMock).not.toHaveBeenCalled();
-    } finally {
-      installation.release();
-    }
-  });
+      try {
+        const route = await slackPlugin.messaging!.resolveOutboundSessionRoute!({
+          cfg: { channels: { slack: { botToken: "sending-fixture" } } },
+          agentId: "main",
+          target: "user:u12345678",
+          deliveryPurpose,
+        });
+        if (!deliveryPurpose) {
+          expectRecordFields(route, "Detached Enterprise Slack DM route", {
+            to: "user:u12345678",
+          });
+          expect(usersInfoMock).not.toHaveBeenCalled();
+          expect(authTeamsListMock).not.toHaveBeenCalled();
+          return;
+        }
+        expectRecordFields(route, "Enterprise Slack owner DM route", {
+          baseSessionKey: "agent:main:main:account:default:team:t11111111",
+          to: "team:T11111111:user:U12345678",
+          recipientSessionExact: true,
+        });
+        expect(usersInfoMock).toHaveBeenCalledExactlyOnceWith({ user: "U12345678" });
+        expect(conversationsOpenMock).not.toHaveBeenCalled();
+      } finally {
+        installation.release();
+      }
+    },
+  );
 
   it("preserves an explicit Enterprise user workspace without discovery", async () => {
     const installation = registerSlackInstallationState("default", "enterprise");

@@ -46,7 +46,7 @@ export async function resolveSlackEnterpriseUserTeamId(params: {
   });
   // One user gets one DM, even when the app and user share several workspaces.
   // Stable ordering keeps the chosen route independent of Slack page ordering.
-  const teamId = installedTeamIds.filter((id) => memberTeamIds.has(id)).sort()[0];
+  const teamId = installedTeamIds.filter((id) => memberTeamIds.has(id)).toSorted()[0];
   if (!teamId) {
     throw new Error(
       "unsupported_enterprise_slack_delivery: recipient shares no verified installed workspace",

@@ -303,8 +303,6 @@ type SessionEntryCore = SessionRestartRecoveryState &
     lastHeartbeatText?: string;
     /** Timestamp (ms) when lastHeartbeatText was delivered. */
     lastHeartbeatSentAt?: number;
-    /** Recipients confirmed for lastHeartbeatText; absent on pre-fanout records. */
-    lastHeartbeatRecipients?: string[];
     /**
      * Base session key for heartbeat-created isolated sessions.
      * When present, `<base>:heartbeat` is a synthetic isolated session rather than
