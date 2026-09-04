@@ -65,7 +65,7 @@ export async function profileProcess(readOutput, until) {
               const frame = nodes.get(cursor).callFrame;
               stack.push({
                 function: frame.functionName,
-                source: sanitize(frame.url),
+                source: sanitize(frame.url.startsWith("file:") ? decodeURI(frame.url) : frame.url),
                 line: frame.lineNumber + 1,
               });
             }

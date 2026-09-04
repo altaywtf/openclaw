@@ -95,15 +95,23 @@ async function makeState(name) {
 
 function start(env, args, application = entry) {
   const inspect = diagnoseStartup && args[0] === "gateway";
-  const child = spawn(
-    process.execPath,
-    [...(inspect ? ["--inspect=127.0.0.1:0"] : []), application, ...args],
-    {
-      env,
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    },
-  );
+  const capture = startProcess(env, process.execPath, [
+    ...(inspect ? ["--inspect=127.0.0.1:0"] : []),
+    application,
+    ...args,
+  ]);
+  if (inspect) {
+    observeProfile("Gateway", () => capture.text);
+  }
+  return capture;
+}
+
+function startProcess(env, executable, args) {
+  const child = spawn(executable, args, {
+    env,
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
+  });
   const capture = { child, text: "", stdout: "" };
   captures.push(capture);
   children.add(child);
@@ -121,9 +129,6 @@ function start(env, args, application = entry) {
       child.once("close", resolve);
     }),
   );
-  if (inspect) {
-    observeProfile("Gateway", () => capture.text);
-  }
   return capture;
 }
 
@@ -143,7 +148,10 @@ async function stop(child) {
 }
 
 async function command(env, args, application = entry) {
-  const capture = start(env, args, application);
+  return await completeCommand(start(env, args, application));
+}
+
+async function completeCommand(capture) {
   const timer = setTimeout(() => void stop(capture.child), 60_000);
   const code = await new Promise((resolve, reject) => {
     capture.child.once("error", reject);
@@ -151,6 +159,48 @@ async function command(env, args, application = entry) {
   });
   clearTimeout(timer);
   return { ...capture, code };
+}
+
+async function initializeWindowsFixture(env, label) {
+  const systemRoot = Object.entries(baseEnv).find(
+    ([key]) => key.toLowerCase() === "systemroot",
+  )?.[1];
+  assert.ok(systemRoot, "Native Windows SystemRoot is required");
+  const powershell = path.join(
+    systemRoot,
+    "System32",
+    "WindowsPowerShell",
+    "v1.0",
+    "powershell.exe",
+  );
+  // The measured startup path pays cold PowerShell/C# initialization. Prepare
+  // those OS components without changing OpenClaw state or its security checks.
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    '$process = Get-CimInstance Win32_Process -Filter "ProcessId = $PID"',
+    "if ($null -eq $process.CreationDate) { throw 'Native process query did not complete' }",
+    "Add-Type -TypeDefinition 'public static class MetadataProofPreflight { public static int Ready() { return 1; } }' -Language CSharp",
+    "if ([MetadataProofPreflight]::Ready() -ne 1) { throw 'Native compiler initialization failed' }",
+    "$null = New-Object System.Security.AccessControl.DirectorySecurity",
+    "[Console]::Out.Write('native fixture initialized')",
+  ].join("; ");
+  const startedAt = Date.now();
+  const initialized = await completeCommand(
+    startProcess(env, powershell, [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-EncodedCommand",
+      Buffer.from(script, "utf16le").toString("base64"),
+    ]),
+  );
+  assert.equal(initialized.code, 0, sanitize(initialized.text));
+  assert.equal(initialized.stdout.trim(), "native fixture initialized");
+  report.stages.push({
+    phase: "native fixture initialization",
+    fixture: label,
+    elapsedMs: Date.now() - startedAt,
+  });
 }
 
 async function until(read, predicate, label) {
@@ -249,6 +299,7 @@ async function completeTui(session) {
   await until(session.screen, (text) => text.includes("gateway connected"), "TUI connected");
   session.terminal.write("/gateway-status\r");
   await until(session.screen, (text) => text.includes("Gateway status"), "TUI status response");
+  report.stages.push({ phase, completedTuiStatus: true, milestones: session.milestones });
   await stopTui(session);
 }
 
@@ -431,6 +482,11 @@ async function wireControls() {
 }
 
 async function runScenario() {
+  if (requireGreen) {
+    phase = "native fixture initialization";
+    await initializeWindowsFixture(admin, "approver");
+    await initializeWindowsFixture(device, "device");
+  }
   phase = "gateway startup";
   const gateway = start(admin, ["gateway", "run", "--allow-unconfigured"]);
   await ready(gateway);
@@ -497,6 +553,7 @@ async function runScenario() {
     "Node Host approval request",
   );
   const nodeRequest = rows.pending.find((row) => row.deviceId === deviceId);
+  assert.equal(nodeRequest.role, "node");
   report.stages.push({ phase, approval: projected(nodeRequest), sameDevice: true });
   await approve(nodeRequest.requestId);
   await stop(node.child);
@@ -533,7 +590,13 @@ async function runScenario() {
     '{"bins":["node"]}',
     "--json",
   ];
-  assert.notEqual((await command(admin, invokeArgs)).code, 0);
+  const unapprovedInvoke = await command(admin, invokeArgs);
+  assert.notEqual(unapprovedInvoke.code, 0);
+  report.stages.push({
+    phase: "unapproved Node Host command",
+    exitCode: unapprovedInvoke.code,
+    output: sanitize(unapprovedInvoke.text),
+  });
   json(await command(admin, ["nodes", "approve", nodeSurface.requestId, "--json"]));
   await stop(node.child);
   node = start(device, [
@@ -663,6 +726,7 @@ async function runScenario() {
 
     phase = "legacy package startup";
     const legacyEnv = await makeState("legacy-upgrade");
+    await initializeWindowsFixture(legacyEnv, "legacy upgrade");
     delete legacyEnv.OPENCLAW_GATEWAY_TOKEN;
     const legacyConfig = {
       gateway: {
@@ -776,6 +840,7 @@ async function runScenario() {
     report.legacy.completedAlternatingSequence = true;
     report.legacy.gateway = sanitize(upgradedGateway.text);
     await stop(upgradedGateway.child);
+    report.outcome = "full-acceptance-completed";
   }
 }
 

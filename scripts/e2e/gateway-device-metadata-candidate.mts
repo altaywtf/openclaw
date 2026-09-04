@@ -12,6 +12,7 @@ const candidateSha = "e081101d616dd7d13b7dac37e167a268c161067d";
 const baselineSha = "a33604ea1ecab8212865cd225e17511cc0b69cb3";
 const harnessRoot = process.cwd();
 const diagnoseStartup = process.argv.includes("--diagnose-startup");
+const acceptanceOnly = process.argv.includes("--acceptance-only");
 const root = await fs.mkdtemp(path.join(os.tmpdir(), "metadata-candidate-"));
 const candidate = path.join(root, "candidate");
 const baseline = path.join(root, "baseline");
@@ -68,7 +69,7 @@ async function checkout(sha: string, destination: string) {
   );
 }
 
-if (!diagnoseStartup) {
+if (!diagnoseStartup && !acceptanceOnly) {
   console.log(`[metadata-proof] prepare baseline ${baselineSha}`);
   await checkout(baselineSha, baseline);
   const regression = "src/gateway/server/ws-connection/connect-device-metadata.test.ts";
@@ -87,7 +88,7 @@ if (!diagnoseStartup) {
 console.log(`[metadata-proof] prepare exact candidate ${candidateSha}`);
 await checkout(candidateSha, candidate);
 assert.equal(await pnpm(["build:docker"], candidate), 0);
-if (!diagnoseStartup) {
+if (!diagnoseStartup && !acceptanceOnly) {
   assert.equal(await run(process.execPath, ["scripts/run-vitest.mjs", ...tests], candidate), 0);
 }
 assert.equal(await run("git", ["diff", "--exit-code", candidateSha], candidate), 0);
