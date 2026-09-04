@@ -111,8 +111,7 @@ function renderSidebarOwnerFilter(params: {
     ? t("sessionsView.specificOwnerSelected", { name: selectedName })
     : t("sessionsView.specificOwnerAvailable", { count: String(owners.length) });
   const details = selectedOwner
-    ? html`${renderSessionOwnerAvatar(selectedOwner)}
-        <span class="sidebar-session-owner-selection__name">${selectedName}</span>`
+    ? renderSessionOwnerAvatar(selectedOwner)
     : html`<span class="sidebar-session-owner-count">${owners.length}</span>`;
   return html`
     <div class="session-menu__separator" role="separator"></div>

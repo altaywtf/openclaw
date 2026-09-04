@@ -59,10 +59,7 @@ wa-dropdown-item.sidebar-session-owner-submenu::part(submenu-icon) {
 .session-menu__shortcut.sidebar-session-owner-selection {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
   min-width: 0;
-  width: auto;
-  max-width: 96px;
   margin-inline-end: -2px;
   font-family: inherit;
 }
@@ -70,15 +67,4 @@ wa-dropdown-item.sidebar-session-owner-submenu::part(submenu-icon) {
 .sidebar-session-owner-selection .viewer-avatar {
   flex: 0 0 auto;
   border-color: var(--bg-elevated);
-}
-
-.sidebar-session-owner-selection__name {
-  display: block;
-  flex: 1 1 auto;
-  max-width: 72px;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: var(--control-ui-text-xs);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
