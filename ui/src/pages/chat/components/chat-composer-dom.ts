@@ -27,8 +27,9 @@ export function focusChatComposer(root: ParentNode): HTMLElement | null {
     return null;
   }
   const editor = getChatComposerEditor(root);
-  editor?.focus({ preventScroll: true });
-  return editor;
+  const target = editor ?? (source?.ariaHidden === "true" ? null : source);
+  target?.focus({ preventScroll: true });
+  return target;
 }
 
 type ComposerTextareaResizeObserverState = {

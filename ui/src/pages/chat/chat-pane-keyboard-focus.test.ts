@@ -46,6 +46,32 @@ describe("chat pane keyboard focus", () => {
     }
   });
 
+  it("keeps the shared plain-text composer focus path", () => {
+    const { pane } = createTestChatPane({
+      client: createGatewayBrowserClientFixture(),
+      sessions: createSessionCapabilityFixture(),
+    });
+    pane.active = true;
+    pane.presented = true;
+    const composer = document.createElement("div");
+    composer.className = "agent-chat__composer-combobox";
+    const textarea = composer.appendChild(document.createElement("textarea"));
+    pane.append(composer);
+    const focus = vi.spyOn(textarea, "focus");
+    const button = document.body.appendChild(document.createElement("button"));
+    button.addEventListener("keydown", (event) => pane.handleDocumentKeydown(event));
+
+    try {
+      button.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "x", bubbles: true, composed: true }),
+      );
+
+      expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+    } finally {
+      button.remove();
+    }
+  });
+
   it("distinguishes an open disclosure from an open overlay", () => {
     const { pane } = createTestChatPane({
       client: createGatewayBrowserClientFixture(),
