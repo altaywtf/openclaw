@@ -41,6 +41,7 @@ import {
   appendWorkspaceMountArgs,
   filterBindsConflictingWithProtectedMounts,
   formatReadOnlyWorkspaceSkillMountHashState,
+  prepareWorkspaceSkillMountpoints,
   resolveReadOnlyWorkspaceSkillMounts,
   resolveProtectedSkillMountContainerPaths,
   SANDBOX_MOUNT_FORMAT_VERSION,
@@ -668,6 +669,13 @@ async function ensureSandboxContainerLifecycle(
         running = false;
       }
     }
+  }
+  if (!hasContainer || !running) {
+    await prepareWorkspaceSkillMountpoints(
+      params.workspaceDir,
+      params.cfg.docker.workdir,
+      readOnlyWorkspaceSkillMounts,
+    );
   }
   if (!hasContainer) {
     await createSandboxContainer({

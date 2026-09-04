@@ -5,6 +5,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { ensureDirectoryWithinRoot } from "../../infra/fs-safe-advanced.js";
 import { isPathInside } from "../../infra/path-guards.js";
 import { splitSandboxBindSpec } from "./bind-spec.js";
 import { SANDBOX_AGENT_WORKSPACE_MOUNT } from "./constants.js";
@@ -20,6 +21,30 @@ export type ReadOnlyWorkspaceSkillMount = {
   hostPath: string;
   containerPath: string;
 };
+
+/** Keep managed overlay mountpoints removable by the workspace's host owner. */
+export async function prepareWorkspaceSkillMountpoints(
+  workspaceDir: string,
+  workdir: string,
+  mounts: readonly ReadOnlyWorkspaceSkillMount[],
+): Promise<void> {
+  if (mounts.length === 0) {
+    return;
+  }
+  const rootDir = await fs.promises.realpath(workspaceDir);
+  for (const mount of mounts) {
+    // Rootful engines create missing nested mountpoints as root. Prepare them
+    // as the gateway user without following workspace-controlled symlinks.
+    const result = await ensureDirectoryWithinRoot({
+      rootDir,
+      requestedPath: path.posix.relative(workdir, mount.containerPath),
+      scopeLabel: "sandbox workspace skill mountpoints",
+    });
+    if (!result.ok) {
+      throw new Error(result.error);
+    }
+  }
+}
 
 function formatManagedWorkspaceBind(params: {
   hostPath: string;

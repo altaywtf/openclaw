@@ -64,6 +64,7 @@ import {
   appendWorkspaceMountArgs,
   filterBindsConflictingWithProtectedMounts,
   formatReadOnlyWorkspaceSkillMountHashState,
+  prepareWorkspaceSkillMountpoints,
   resolveReadOnlyWorkspaceSkillMounts,
   resolveProtectedSkillMountContainerPaths,
   SANDBOX_MOUNT_FORMAT_VERSION,
@@ -373,6 +374,13 @@ async function ensureSandboxBrowserContainer(
     }
   }
 
+  if (!hasContainer || !running) {
+    await prepareWorkspaceSkillMountpoints(
+      params.workspaceDir,
+      params.cfg.docker.workdir,
+      readOnlyWorkspaceSkillMounts,
+    );
+  }
   if (!hasContainer) {
     if (noVncEnabled) {
       noVncPassword = generateNoVncPassword();
@@ -520,6 +528,11 @@ async function ensureSandboxBrowserContainer(
       ? async () => {
           const currentState = await dockerContainerState(containerName);
           if (currentState.exists && !currentState.running) {
+            await prepareWorkspaceSkillMountpoints(
+              params.workspaceDir,
+              params.cfg.docker.workdir,
+              readOnlyWorkspaceSkillMounts,
+            );
             await execDocker(["start", containerName]);
           }
           const ok = await waitForSandboxCdp({

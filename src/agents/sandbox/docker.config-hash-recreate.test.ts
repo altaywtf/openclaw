@@ -10,16 +10,14 @@ import {
   SANDBOX_DOCKER_EXPLICIT_ENV_POLICY_EPOCH,
 } from "./config-hash.js";
 import { SANDBOX_DOCKER_CREATE_ARGS_EPOCH } from "./constants.js";
+import {
+  createSandboxConfig,
+  spawnContainerProcess,
+  type ContainerSpawnCall as SpawnCall,
+} from "./container-lifecycle.test-support.js";
 import { collectDockerFlagValues } from "./test-args.js";
 import type { SandboxConfig } from "./types.js";
 import { SANDBOX_MOUNT_FORMAT_VERSION } from "./workspace-mounts.js";
-
-type SpawnCall = {
-  command: string;
-  args: string[];
-  globalArgs: string[];
-  envFileContents?: string;
-};
 
 const spawnState = vi.hoisted(() => ({
   calls: [] as SpawnCall[],
@@ -30,6 +28,7 @@ const spawnState = vi.hoisted(() => ({
   podmanInfo: "true\tfalse\t\t5.0.0\n",
   podmanConnections: "[]\n",
   podmanMachines: "[]\n",
+  beforeStart: undefined as (() => void) | undefined,
 }));
 
 const registryMocks = vi.hoisted(() => ({
@@ -76,90 +75,7 @@ vi.mock("../../runtime.js", () => ({
 }));
 
 async function spawnDockerProcess(commandAndArgs: string[]) {
-  const [command = "", ...rawArgs] = commandAndArgs;
-  const globalArgs: string[] = [];
-  let args = rawArgs;
-  if (command === "podman") {
-    while (args[0] === "--url" || args[0] === "--identity") {
-      globalArgs.push(...args.slice(0, 2));
-      args = args.slice(2);
-    }
-  }
-  // The tests assert docker CLI arguments without requiring Docker; this mock
-  // implements only the inspect/create/start/rm calls used by ensureSandboxContainer.
-  const envFileIndex = args.indexOf("--env-file");
-  const envFile = envFileIndex === -1 ? undefined : args[envFileIndex + 1];
-  const call: SpawnCall = { command, args, globalArgs };
-  if (args[0] === "create" && envFile) {
-    call.envFileContents = fs.readFileSync(envFile, "utf8");
-  }
-  spawnState.calls.push(call);
-
-  let code = 0;
-  let stdout = "";
-  let stderr = "";
-  if (command !== "docker" && command !== "podman") {
-    code = 1;
-    stderr = `unexpected command: ${command}`;
-  } else if (args[0] === "inspect" && args[1] === "-f" && args[2] === "{{.State.Running}}") {
-    if (spawnState.inspectError) {
-      code = 125;
-      stderr = spawnState.inspectError;
-    } else if (!spawnState.containerExists) {
-      code = 1;
-      stderr = "No such object";
-    } else {
-      stdout = spawnState.inspectRunning ? "true\n" : "false\n";
-    }
-  } else if (
-    args[0] === "inspect" &&
-    args[1] === "-f" &&
-    args[2]?.includes('index .Config.Labels "openclaw.configHash"')
-  ) {
-    if (!spawnState.containerExists) {
-      code = 1;
-      stderr = "No such object";
-    } else {
-      stdout = `${spawnState.labelHash}\n`;
-    }
-  } else if (command === "podman" && args[0] === "info") {
-    stdout = spawnState.podmanInfo;
-  } else if (command === "podman" && args[0] === "system") {
-    stdout = spawnState.podmanConnections;
-  } else if (command === "podman" && args[0] === "machine") {
-    stdout = spawnState.podmanMachines;
-  } else if (args[0] === "rm" && args[1] === "-f") {
-    spawnState.containerExists = false;
-    spawnState.inspectRunning = false;
-  } else if (args[0] === "image" && args[1] === "inspect") {
-    code = 0;
-  } else if (args[0] === "create") {
-    if (spawnState.containerExists) {
-      code = 1;
-      stderr = "container name is already in use";
-    } else {
-      spawnState.containerExists = true;
-      spawnState.inspectRunning = false;
-      spawnState.labelHash =
-        args
-          .find((arg) => arg.startsWith("openclaw.configHash="))
-          ?.slice("openclaw.configHash=".length) ?? "";
-    }
-  } else if (args[0] === "start") {
-    spawnState.inspectRunning = true;
-  } else if (args[0] === "exec") {
-    code = 0;
-  } else {
-    code = 1;
-    stderr = `unexpected docker args: ${args.join(" ")}`;
-  }
-  return {
-    failed: code !== 0,
-    isCanceled: false,
-    exitCode: code,
-    stdout: Buffer.from(stdout),
-    stderr: Buffer.from(stderr),
-  };
+  return await spawnContainerProcess(spawnState, commandAndArgs);
 }
 
 vi.mock("../../process/exec.js", async (importOriginal) => ({
@@ -185,58 +101,6 @@ beforeAll(async () => {
   ({ ensureSandboxContainer, resolveDockerEnvPolicyEpoch, PODMAN_SANDBOX_ENGINE } =
     await import("./docker.js"));
 });
-
-function createSandboxConfig(
-  dns: string[],
-  binds?: string[],
-  workspaceAccess: "rw" | "ro" | "none" = "rw",
-  env: Record<string, string> = { LANG: "C.UTF-8" },
-): SandboxConfig {
-  return {
-    mode: "all",
-    backend: "docker",
-    scope: "shared",
-    workspaceAccess,
-    workspaceRoot: "~/.openclaw/sandboxes",
-    dockerTmpfsSource: "default",
-    docker: {
-      image: "openclaw-sandbox:test",
-      containerPrefix: "oc-test-",
-      workdir: "/workspace",
-      readOnlyRoot: true,
-      tmpfs: ["/tmp", "/var/tmp", "/run"],
-      network: "none",
-      capDrop: ["ALL"],
-      env,
-      dns,
-      extraHosts: ["host.docker.internal:host-gateway"],
-      binds: binds ?? ["/tmp/workspace:/workspace:rw"],
-      dangerouslyAllowReservedContainerTargets: true,
-    },
-    ssh: {
-      command: "ssh",
-      workspaceRoot: "/tmp/openclaw-sandboxes",
-      strictHostKeyChecking: true,
-      updateHostKeys: true,
-    },
-    browser: {
-      enabled: false,
-      image: "openclaw-browser:test",
-      containerPrefix: "oc-browser-",
-      network: "openclaw-sandbox-browser",
-      cdpPort: 9222,
-      vncPort: 5900,
-      noVncPort: 6080,
-      headless: true,
-      noVncEnabled: false,
-      allowHostControl: false,
-      autoStart: false,
-      autoStartTimeoutMs: 5000,
-    },
-    tools: { allow: [], deny: [] },
-    prune: { idleHours: 24, maxAgeDays: 7 },
-  };
-}
 
 async function ensureSandboxCreateCallForTest(params: {
   cfg: SandboxConfig;
@@ -272,6 +136,7 @@ describe("ensureSandboxContainer config-hash recreation", () => {
     spawnState.podmanInfo = "true\tfalse\t\t5.0.0\n";
     spawnState.podmanConnections = "[]\n";
     spawnState.podmanMachines = "[]\n";
+    spawnState.beforeStart = undefined;
     registryMocks.readRegistryEntry.mockClear();
     registryMocks.removeRegistryEntry.mockClear();
     registryMocks.removeRegistryEntry.mockResolvedValue(undefined);
@@ -304,6 +169,95 @@ describe("ensureSandboxContainer config-hash recreation", () => {
     expect(spawnState.calls.filter((call) => call.args[0] === "start")).toHaveLength(1);
     expect(registryMocks.updateRegistry).toHaveBeenCalledTimes(2);
   });
+
+  it.each(["docker", "podman"] as const)(
+    "prepares user-owned managed skill mountpoints before %s creation and restart",
+    async (backend) => {
+      const workspaceDir = fs.realpathSync(tempDirs.make("openclaw-docker-mounts-"));
+      const skillsWorkspaceDir = fs.realpathSync(tempDirs.make("openclaw-docker-skills-"));
+      fs.mkdirSync(path.join(skillsWorkspaceDir, "skills"));
+      const cfg = createSandboxConfig([], []);
+      cfg.backend = backend;
+      const params = {
+        scopeKey: "shared",
+        workspaceDir,
+        agentWorkspaceDir: workspaceDir,
+        skillsWorkspaceDir,
+        cfg,
+        ...(backend === "podman" ? { engine: PODMAN_SANDBOX_ENGINE } : {}),
+      };
+      spawnState.containerExists = false;
+      registryMocks.readRegistryEntry.mockResolvedValue(null);
+      spawnState.beforeStart = () => {
+        for (const relative of [
+          ".openclaw",
+          ".openclaw/sandbox-skills",
+          ".openclaw/sandbox-skills/skills",
+        ]) {
+          const stat = fs.lstatSync(path.join(workspaceDir, relative));
+          expect(stat.isDirectory()).toBe(true);
+          expect(stat.uid).toBe(fs.statSync(workspaceDir).uid);
+        }
+      };
+
+      await ensureSandboxContainer(params);
+      const createCall = spawnState.calls.find((call) => call.args[0] === "create");
+      expect(createCall?.args).toContain(
+        `${path.join(skillsWorkspaceDir, "skills")}:/workspace/.openclaw/sandbox-skills/skills:ro,z`,
+      );
+      fs.rmSync(path.join(workspaceDir, ".openclaw"), { recursive: true });
+      spawnState.inspectRunning = false;
+      await ensureSandboxContainer(params);
+      expect(spawnState.calls.filter((call) => call.args[0] === "create")).toHaveLength(1);
+      expect(spawnState.calls.filter((call) => call.args[0] === "start")).toHaveLength(2);
+      fs.rmSync(workspaceDir, { recursive: true });
+      expect(fs.existsSync(workspaceDir)).toBe(false);
+      expect(fs.statSync(path.join(skillsWorkspaceDir, "skills")).isDirectory()).toBe(true);
+    },
+  );
+
+  it.each([
+    [".openclaw", "symlink"],
+    [".openclaw/sandbox-skills", "symlink"],
+    [".openclaw/sandbox-skills/skills", "symlink"],
+    [".openclaw/sandbox-skills/skills", "in-root symlink"],
+    [".openclaw/sandbox-skills/skills", "file"],
+  ] as const)(
+    "rejects managed mountpoint %s occupied by a %s before container creation",
+    async (relative, kind) => {
+      const workspaceDir = fs.realpathSync(tempDirs.make("openclaw-docker-mounts-"));
+      const skillsWorkspaceDir = fs.realpathSync(tempDirs.make("openclaw-docker-skills-"));
+      const outsideDir = fs.realpathSync(tempDirs.make("openclaw-docker-outside-"));
+      fs.mkdirSync(path.join(skillsWorkspaceDir, "skills"));
+      fs.writeFileSync(path.join(outsideDir, "witness"), "unchanged");
+      const target = path.join(workspaceDir, relative);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      if (kind !== "file") {
+        const linkDir = kind === "in-root symlink" ? path.join(workspaceDir, "other") : outsideDir;
+        fs.mkdirSync(linkDir, { recursive: true });
+        fs.symlinkSync(linkDir, target, process.platform === "win32" ? "junction" : "dir");
+      } else {
+        fs.writeFileSync(target, "preserve");
+      }
+      spawnState.containerExists = false;
+      registryMocks.readRegistryEntry.mockResolvedValue(null);
+
+      await expect(
+        ensureSandboxContainer({
+          scopeKey: "shared",
+          workspaceDir,
+          agentWorkspaceDir: workspaceDir,
+          skillsWorkspaceDir,
+          cfg: createSandboxConfig([], []),
+        }),
+      ).rejects.toThrow();
+      expect(
+        spawnState.calls.some((call) => call.args[0] === "create" || call.args[0] === "start"),
+      ).toBe(false);
+      expect(fs.readdirSync(outsideDir)).toEqual(["witness"]);
+      expect(fs.readFileSync(path.join(outsideDir, "witness"), "utf8")).toBe("unchanged");
+    },
+  );
 
   it("uses the canonical non-shared scope for Docker names, labels, and registry identity", async () => {
     const workspaceDir = tempDirs.make("openclaw-docker-mounts-");
