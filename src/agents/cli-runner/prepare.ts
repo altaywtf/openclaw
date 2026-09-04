@@ -97,6 +97,7 @@ import { resolveContextWindowInfo } from "../context-window-guard.js";
 import { resolveContextTokensForModel } from "../context.js";
 import { resolveConversationCapabilityProfile } from "../conversation-capability-profile.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../defaults.js";
+import { waitForDeferredTurnMaintenanceForSession } from "../embedded-agent-runner/context-engine-maintenance.js";
 import {
   resolvePromptBuildHookResult,
   prependSystemPromptAddition,
@@ -153,7 +154,7 @@ import {
   buildCliSessionHistoryPrompt,
   hasCliSessionTranscript,
   loadCliSessionHistoryMessages,
-  loadCliSessionReseedMessages,
+  loadCliSessionPromptContext,
   resolveAutoCliSessionReseedHistoryChars,
 } from "./session-history.js";
 import type {
@@ -551,6 +552,11 @@ export async function prepareCliRunContext(
         sessionKey: suppliedSessionKey,
       }),
     };
+  }
+  // Every prompt/history read must observe prior deferred rewrites. Caller-owned
+  // memory remains independent of durable work sharing its correlation key.
+  if (!params.isolatedCompletion && !isControlOperation && !params.sessionManager) {
+    await waitForDeferredTurnMaintenanceForSession(params.sessionKey ?? params.sessionId);
   }
   const cwd = params.cwd ? resolveUserPath(params.cwd) : workspaceDir;
   const cwdHash = hashCliSessionText(cwd);
@@ -1895,8 +1901,21 @@ export async function prepareCliRunContext(
         }) ?? builtSystemPrompt)
       : builtSystemPrompt;
     let systemPrompt = transformedSystemPrompt;
+    const allowRawTranscriptReseed =
+      backendResolved.config.reseedFromRawTranscriptWhenUncompacted === true;
+    const rawTranscriptReseedReason = reusableCliSessionId ? "session-expired" : invalidatedReason;
+    const sessionPromptContext =
+      skipsTurnPreparation || params.isolatedCompletion
+        ? undefined
+        : await loadCliSessionPromptContext({
+            sessionManager: params.sessionManager,
+            sessionTarget: params.sessionTarget,
+            allowRawTranscriptReseed,
+            rawTranscriptReseedReason,
+          });
     const finalizedTranscriptPrompt =
-      params.finalizePromptForResolvedTools && params.transcriptPrompt === undefined
+      (params.finalizePromptForResolvedTools || sessionPromptContext?.durableContext) &&
+      params.transcriptPrompt === undefined
         ? params.prompt
         : params.transcriptPrompt;
     let promptContext: CliBackendPromptContext | undefined;
@@ -1914,6 +1933,7 @@ export async function prepareCliRunContext(
       try {
         const hookResult = promptBuildHookResult;
         const prependContext = [
+          sessionPromptContext?.durableContext,
           hookResult?.prependContext,
           authorizedPromptBuildResult?.prependContext,
         ]
@@ -1987,9 +2007,6 @@ export async function prepareCliRunContext(
         promptForHooks = renderCurrentPrompt(promptForHooks, preferResumableText);
       }
     }
-    const allowRawTranscriptReseed =
-      backendResolved.config.reseedFromRawTranscriptWhenUncompacted === true;
-    const rawTranscriptReseedReason = reusableCliSessionId ? "session-expired" : invalidatedReason;
     // Node placement keeps this: the history prompt is built from the
     // gateway-side OpenClaw transcript, so a fresh remote CLI session still
     // receives prior conversation context via stdin.
@@ -1997,12 +2014,7 @@ export async function prepareCliRunContext(
       !skipsTurnPreparation && (!reusableCliSessionId || allowRawTranscriptReseed);
     const openClawHistoryPrompt = shouldPrepareOpenClawHistoryPrompt
       ? buildCliSessionHistoryPrompt({
-          messages: await loadCliSessionReseedMessages({
-            sessionManager: params.sessionManager,
-            sessionTarget: params.sessionTarget,
-            allowRawTranscriptReseed,
-            rawTranscriptReseedReason,
-          }),
+          messages: sessionPromptContext?.reseedMessages ?? [],
           prompt: historyPromptCurrentTurn,
           maxHistoryChars: autoReseedHistoryChars,
         })

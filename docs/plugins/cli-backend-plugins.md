@@ -269,7 +269,9 @@ backend owns a vendor-supported SDK for the installed CLI. The transport
 receives the exact prepared command, arguments, environment, prompt, session,
 and tool availability; it yields the backend's existing structured stream
 records. Optional `promptContext.prependContext` and `promptContext.appendContext`
-are private prompt-build additions, separate from the ordinary `prompt`. Transport
+are private prompt-build additions and bounded saved session notes, separate from
+the ordinary `prompt`. Saved notes are quoted reference data and may repeat on
+resumed turns; they do not assert that a native turn previously consumed them. Transport
 them through the native SDK's private context mechanism; never record them as
 operator-authored input. OpenClaw's policy and observation hooks still receive the
 complete logical prompt. Native tool actions must use the provided, run-bound
