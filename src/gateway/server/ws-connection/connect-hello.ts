@@ -21,6 +21,7 @@ import {
   listControlUiPluginTabs,
   listControlUiPluginWidgetKinds,
 } from "../../control-ui-plugin-tabs.js";
+import { resolveControlUiIdentityUrl } from "../../control-ui-shared.js";
 import {
   broadcastSetupHandoffDeliveryUncertain,
   broadcastSetupHandoffCompletion,
@@ -112,6 +113,12 @@ export async function sendGatewayHello(
     revisionProjector: buildRequestContext().configRevisionProjector,
   });
   const cachedHealth = getHealthCache();
+  if (role === "operator") {
+    const identityUrl = resolveControlUiIdentityUrl(context.configSnapshot, resolvedAuth);
+    if (identityUrl) {
+      snapshot.controlUiIdentityUrl = identityUrl;
+    }
+  }
   if (cachedHealth) {
     snapshot.health = cachedHealth;
     snapshot.stateVersion.health = getHealthVersion();
