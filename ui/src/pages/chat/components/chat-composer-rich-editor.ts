@@ -73,7 +73,8 @@ class ListMarkerWidget extends WidgetType {
 }
 
 function markerIsBeingEdited(state: EditorState, from: number, to: number) {
-  return state.selection.ranges.some((range) => range.head >= from && range.head <= to);
+  // Syntax ranges are half-open: a caret after a marker is already in rich-text mode.
+  return state.selection.ranges.some((range) => range.head >= from && range.head < to);
 }
 
 function buildRichDecorations(state: EditorState): RichDecorations {

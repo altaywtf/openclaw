@@ -4023,12 +4023,24 @@ describe("chat composer render invalidation", () => {
     expect(onRequestUpdate).not.toHaveBeenCalled();
     expect(chatThread.buildCachedChatItems).not.toHaveBeenCalled();
     expect(
-      requireElement(container, ".agent-chat__composer-editor .cm-content", "composer editor").dir,
+      (
+        requireElement(
+          container,
+          ".agent-chat__composer-editor .cm-content",
+          "composer editor",
+        ) as HTMLElement
+      ).dir,
     ).toBe("rtl");
 
     render(renderChat(props), container);
     expect(
-      requireElement(container, ".agent-chat__composer-editor .cm-content", "composer editor").dir,
+      (
+        requireElement(
+          container,
+          ".agent-chat__composer-editor .cm-content",
+          "composer editor",
+        ) as HTMLElement
+      ).dir,
     ).toBe("rtl");
   });
 

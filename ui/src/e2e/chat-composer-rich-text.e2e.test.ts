@@ -27,6 +27,15 @@ suite.define(() => {
       await expect
         .poll(() => page.locator(".agent-chat__composer-markdown-preview").count())
         .toBe(0);
+      await editor.fill(">");
+
+      await expect.poll(() => page.locator(".cm-line.chat-composer-rich-quote").count()).toBe(1);
+      await expect.poll(() => editor.textContent()).toBe("");
+      await expect.poll(() => source.inputValue()).toBe(">");
+      await editor.press("Backspace");
+      await expect.poll(() => source.inputValue()).toBe("");
+      await expect.poll(() => page.locator(".cm-line.chat-composer-rich-quote").count()).toBe(0);
+
       await editor.fill(draft);
 
       await expect
