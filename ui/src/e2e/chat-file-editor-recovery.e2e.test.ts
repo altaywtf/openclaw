@@ -104,10 +104,9 @@ suite.define(() => {
         );
         expect(await page.evaluate(() => window.editorInitAttempts)).toBe(1);
         await page.locator(".lazy-view-error").getByRole("button", { name: /Retry/iu }).click();
-        await page.locator(".cm-content").waitFor();
-        expect(await page.locator(".cm-content").textContent()).toContain(
-          "Synthetic notes.txt content",
-        );
+        const editor = page.locator(".sidebar-file-view .cm-content");
+        await editor.waitFor();
+        expect(await editor.textContent()).toContain("Synthetic notes.txt content");
         expect(await page.evaluate(() => window.editorInitAttempts)).toBe(2);
       },
     );
@@ -166,10 +165,9 @@ suite.define(() => {
         await failure.getByRole("button", { name: "Reload", exact: true }).click();
         await navigation;
         await page.locator('a.markdown-file-link[data-file-path="notes.txt"]').click();
-        await page.locator(".cm-content").waitFor();
-        expect(await page.locator(".cm-content").textContent()).toContain(
-          "Synthetic notes.txt content",
-        );
+        const editor = page.locator(".sidebar-file-view .cm-content");
+        await editor.waitFor();
+        expect(await editor.textContent()).toContain("Synthetic notes.txt content");
         expect(chunkRequests).toBe(2);
         expect(documentProbes).toBe(2);
         expect(errors).toEqual([]);
@@ -221,7 +219,7 @@ suite.define(() => {
             await page.getByRole("button", { name: /raw text/iu, exact: true }).click();
           } else if (selection === "file") {
             await page.locator('a.markdown-file-link[data-file-path="other.txt"]').click();
-            await page.locator(".cm-content").waitFor();
+            await page.locator(".sidebar-file-view .cm-content").waitFor();
           } else {
             await page.getByRole("button", { name: "Close Review", exact: true }).click();
           }
@@ -239,7 +237,7 @@ suite.define(() => {
               "Synthetic notes.txt content",
             );
           } else if (selection === "file") {
-            expect(await page.locator(".cm-content").textContent()).toContain(
+            expect(await page.locator(".sidebar-file-view .cm-content").textContent()).toContain(
               "Synthetic other.txt content",
             );
           } else {

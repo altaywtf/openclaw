@@ -130,7 +130,8 @@ suite.define(() => {
           page.on("pageerror", (error) => pageErrors.push(error.message));
           await page.goto(controlUiSessionUrl(suite.server.baseUrl, "main"));
           const pane = page.locator('openclaw-chat-pane[aria-hidden="false"]');
-          const composer = pane.locator(".agent-chat__composer-combobox textarea");
+          const composer = pane.locator(".agent-chat__composer-editor .cm-content");
+          const source = pane.locator(".agent-chat__composer-combobox textarea");
           await pane.getByText("Ready for the held Enter check.", { exact: true }).waitFor();
           await gateway.waitForRequest("chat.startup");
           const initialText = "Finish the initial synthetic turn.";
@@ -204,7 +205,7 @@ suite.define(() => {
           await expect
             .poll(() => pane.getByRole("button", { name: "Send message" }).isEnabled())
             .toBe(true);
-          expect(await composer.inputValue()).toBe(followUpText);
+          expect(await source.inputValue()).toBe(followUpText);
           expect(await pane.locator(".chat-attachment-thumb").count()).toBe(attachment ? 1 : 0);
           expect(await pane.locator(".chat-queue__item").count()).toBe(0);
           await composer.click();
@@ -249,7 +250,7 @@ suite.define(() => {
             ]);
             expect(await gateway.getRequests("chat.history")).toHaveLength(historyBefore + 1);
             expect(await gateway.getRequests("chat.send")).toHaveLength(1);
-            expect(await composer.inputValue()).toBe(followUpText);
+            expect(await source.inputValue()).toBe(followUpText);
             expect(await pane.locator(".chat-attachment-thumb").count()).toBe(attachment ? 1 : 0);
 
             const sendsBefore = (await gateway.getRequests("chat.send")).length;
@@ -389,7 +390,8 @@ suite.define(() => {
         const text = "offline attachment draft";
         const contents = "offline attachment contents";
         await page.goto(controlUiSessionUrl(suite.server.baseUrl, sessionKey));
-        const composer = page.locator(".agent-chat__composer-combobox textarea");
+        const composer = page.locator(".agent-chat__composer-editor .cm-content");
+        const source = page.locator(".agent-chat__composer-combobox textarea");
         await composer.waitFor();
 
         await gateway.setOnline(false);
@@ -405,7 +407,7 @@ suite.define(() => {
 
         await page.reload();
         await gateway.setOnline(true);
-        await expect.poll(() => composer.inputValue()).toBe(text);
+        await expect.poll(() => source.inputValue()).toBe(text);
         await expect.poll(() => page.locator(".chat-attachment-thumb").count()).toBe(1);
         const artifactDir = process.env.OPENCLAW_UI_E2E_ARTIFACT_DIR?.trim();
         if (artifactDir) {
@@ -567,7 +569,8 @@ suite.define(() => {
         });
 
         await page.goto(`${suite.server.baseUrl}chat`);
-        const composer = page.locator(".agent-chat__composer-combobox textarea");
+        const composer = page.locator(".agent-chat__composer-editor .cm-content");
+        const source = page.locator(".agent-chat__composer-combobox textarea");
         await composer.fill("Send both files");
         await page.locator(".agent-chat__file-input").setInputFiles([
           { name: "first.txt", mimeType: "text/plain", buffer: Buffer.alloc(200, 0x61) },
@@ -587,7 +590,7 @@ suite.define(() => {
         expect(outcome).toBe("rejected");
         expect(await gateway.getRequests("chat.send")).toHaveLength(0);
         await expect.poll(() => page.locator(".chat-attachment-thumb").count()).toBe(2);
-        await expect.poll(() => composer.inputValue()).toBe("Send both files");
+        await expect.poll(() => source.inputValue()).toBe("Send both files");
 
         const artifactDir = process.env.OPENCLAW_UI_E2E_ARTIFACT_DIR?.trim();
         if (artifactDir) {
@@ -618,7 +621,7 @@ suite.define(() => {
         const gateway = await installMockGateway(page);
 
         await page.goto(`${suite.server.baseUrl}chat`);
-        const composer = page.locator(".agent-chat__composer-combobox textarea");
+        const composer = page.locator(".agent-chat__composer-editor .cm-content");
         const send = page.getByRole("button", { name: "Send message" });
         await composer.fill("Include the image that is still loading");
         await pastePng(composer);

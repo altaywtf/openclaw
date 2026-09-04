@@ -78,13 +78,14 @@ suite.define(() => {
           .locator(".chat-group.assistant .chat-text")
           .getByText(baselineText, { exact: true });
         await baseline.waitFor();
-        const composer = page.locator(".agent-chat__composer-combobox textarea");
+        const composer = page.locator(".agent-chat__composer-editor .cm-content");
+        const source = page.locator(".agent-chat__composer-combobox textarea");
         await composer.fill("/pa");
         await gateway.waitForRequest("commands.list");
         const pairOption = page.getByRole("option").filter({ hasText: "/pair" });
         await pairOption.waitFor();
         await pairOption.click();
-        await expect.poll(() => composer.inputValue()).toBe("/pair ");
+        await expect.poll(() => source.inputValue()).toBe("/pair ");
         await page.getByRole("button", { name: "Send message" }).click();
 
         const dialog = page.getByRole("dialog", { name: "Pair a device" });

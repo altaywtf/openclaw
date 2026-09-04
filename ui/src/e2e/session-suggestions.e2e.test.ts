@@ -100,12 +100,13 @@ suite.define(() => {
     });
 
     await page.goto(controlUiSessionUrl(suite.server.baseUrl, sessionKey));
-    const composer = page.locator(".agent-chat__composer-combobox textarea");
+    const composer = page.locator(".agent-chat__composer-editor .cm-content");
+    const composerSource = page.locator(".agent-chat__composer-combobox textarea");
     const modelTrigger = page.locator(".chat-controls__model-trigger");
     const typingRow = page.locator('[data-virtual-row-key="presence:typing"]');
     const typingIndicator = typingRow.locator(".agent-chat__typing-indicator");
     await gateway.waitForRequest("session.suggestions.list");
-    await expect(composer).toBeEnabled();
+    await expect(composerSource).toBeEnabled();
     await modelTrigger.waitFor();
     const idleModelBox = await modelTrigger.boundingBox();
     if (idleModelBox === null) {
@@ -190,8 +191,9 @@ suite.define(() => {
 
     await page.goto(controlUiSessionUrl(suite.server.baseUrl, sessionKey));
     await gateway.waitForRequest("session.suggestions.list");
-    const composer = page.locator(".agent-chat__composer-combobox textarea");
-    await expect(composer).toBeEnabled();
+    const composer = page.locator(".agent-chat__composer-editor .cm-content");
+    const composerSource = page.locator(".agent-chat__composer-combobox textarea");
+    await expect(composerSource).toBeEnabled();
     await composer.fill("Keep this /sta");
     await gateway.waitForRequest("commands.list");
     await expect(page.getByRole("option", { name: /\/status/u })).toHaveCount(0);
@@ -312,13 +314,14 @@ suite.define(() => {
     ]);
     await page.getByRole("button", { name: "Edit Alice's suggestion" }).click();
     await gateway.waitForRequest("session.suggestions.resolve");
-    const composer = page.locator(".agent-chat__composer-combobox textarea");
-    await expect(composer).toHaveValue("Please edit this first");
+    const composer = page.locator(".agent-chat__composer-editor .cm-content");
+    const source = page.locator(".agent-chat__composer-combobox textarea");
+    await expect(source).toHaveValue("Please edit this first");
     await composer.fill("A newer owner draft");
     await gateway.resolveDeferred("session.suggestions.resolve", {
       suggestion: { ...suggestion, state: "accepted" },
     });
-    await expect(composer).toHaveValue("A newer owner draft");
+    await expect(source).toHaveValue("A newer owner draft");
     await screenshot(page, "owner-edit.png");
     await context.close();
   });

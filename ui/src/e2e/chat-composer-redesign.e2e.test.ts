@@ -369,7 +369,7 @@ suite.define(() => {
       const contextUsage = composer.locator(".context-ring");
       const permission = composer.locator('[data-chat-permission-select="true"]');
       const permissionIcon = permission.locator(".chat-controls__permission-icon svg");
-      const textarea = composer.locator("textarea");
+      const textarea = composer.locator(".agent-chat__composer-editor .cm-content");
       const attach = composer.locator(
         'button.agent-chat__input-btn--attach[aria-label="Add attachment"]',
       );

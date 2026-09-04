@@ -42,11 +42,14 @@ suite.define(() => {
       });
       await installTalkBrowserFixtures(page);
       await page.goto(`${suite.server.baseUrl}chat`);
-      const textarea = page.locator(".agent-chat__composer-combobox textarea");
-      await textarea.fill("ship it");
-      await textarea.evaluate(
-        (element: HTMLTextAreaElement, selection) =>
-          element.setSelectionRange(selection.start, selection.end),
+      const editor = page.locator(".agent-chat__composer-editor .cm-content");
+      const source = page.locator(".agent-chat__composer-combobox textarea");
+      await editor.fill("ship it");
+      await source.evaluate(
+        (element: HTMLTextAreaElement, selection) => {
+          element.setSelectionRange(selection.start, selection.end);
+          element.dispatchEvent(new Event("select", { bubbles: true }));
+        },
         { start, end },
       );
       await page.getByRole("button", { name: "Start voice input" }).hover();
@@ -59,7 +62,7 @@ suite.define(() => {
         type: "partial",
         text: "please",
       });
-      await expect.poll(() => textarea.inputValue()).toBe(expected);
+      await expect.poll(() => source.inputValue()).toBe(expected);
       if (cancel) {
         await page.getByRole("button", { name: "Collapse sidebar", exact: true }).click();
         await page.keyboard.press("Escape");
@@ -68,14 +71,14 @@ suite.define(() => {
       }
       await gateway.waitForRequest("talk.session.close");
       const committedDraft = cancel ? "ship it" : expected;
-      expect(await textarea.inputValue()).toBe(committedDraft);
+      expect(await source.inputValue()).toBe(committedDraft);
       expect(await gateway.getRequests("chat.send")).toHaveLength(0);
       await captureComposerProof(
         suite,
         page,
         `dictation-${name.replaceAll(" ", "-")}-committed.png`,
       );
-      expect(await textarea.inputValue()).toBe(committedDraft);
+      expect(await source.inputValue()).toBe(committedDraft);
     });
   });
 
@@ -108,9 +111,13 @@ suite.define(() => {
       });
       await installTalkBrowserFixtures(page);
       await page.goto(`${suite.server.baseUrl}chat`);
-      const textarea = page.locator(".agent-chat__composer-combobox textarea");
-      await textarea.fill("ship it");
-      await textarea.evaluate((element: HTMLTextAreaElement) => element.setSelectionRange(5, 5));
+      const editor = page.locator(".agent-chat__composer-editor .cm-content");
+      const source = page.locator(".agent-chat__composer-combobox textarea");
+      await editor.fill("ship it");
+      await source.evaluate((element: HTMLTextAreaElement) => {
+        element.setSelectionRange(5, 5);
+        element.dispatchEvent(new Event("select", { bubbles: true }));
+      });
 
       await page.getByRole("button", { name: "Start voice input" }).hover();
       await page.mouse.down();
@@ -120,7 +127,7 @@ suite.define(() => {
       await page.getByRole("button", { name: "Stop and keep text" }).click();
       await gateway.waitForRequest("talk.session.close");
       if (editedDraft) {
-        await textarea.fill(editedDraft);
+        await editor.fill(editedDraft);
       }
 
       await gateway.emitGatewayEvent("talk.event", {
@@ -148,7 +155,7 @@ suite.define(() => {
       });
       await captureComposerProof(suite, page, "dictation-late-finals.png");
 
-      await expect.poll(() => textarea.inputValue()).toBe(expected);
+      await expect.poll(() => source.inputValue()).toBe(expected);
       expect(await gateway.getRequests("chat.send")).toHaveLength(0);
     });
   });

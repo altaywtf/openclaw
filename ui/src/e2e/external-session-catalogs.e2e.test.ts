@@ -221,7 +221,9 @@ suite.define(() => {
         const activePane = page.locator(
           "openclaw-chat-pane.chat-pane-cache__pane--active:not([inert])",
         );
-        const composer = () => activePane.locator(".agent-chat__composer-combobox > textarea");
+        const composer = () => activePane.locator(".agent-chat__composer-editor .cm-content");
+        const composerSource = () =>
+          activePane.locator(".agent-chat__composer-combobox > textarea");
         const navigate = async (agentId: string, catalog = true) => {
           await page.evaluate(
             ({ agentId: routeAgentId, search: routeSearch }) => {
@@ -311,11 +313,11 @@ suite.define(() => {
         await navigate("main");
         await activePane.getByText("main native transcript", { exact: true }).waitFor();
         await assertOwner("main");
-        expect(await composer().inputValue()).toBe("");
+        expect(await composerSource().inputValue()).toBe("");
         await composer().fill("main retained draft");
         await navigate("other");
         await assertOwner("other");
-        expect(await composer().inputValue()).toBe("other retained draft");
+        expect(await composerSource().inputValue()).toBe("other retained draft");
         expect(
           await page
             .locator("openclaw-chat-pane")
@@ -327,7 +329,7 @@ suite.define(() => {
         await sidebar.getByText("other native thread", { exact: true }).click();
         await waitForControlUiRoute(page, { routeId: "chat", pathname: "/chat/other", search });
         await assertOwner("other");
-        expect(await composer().inputValue()).toBe("other retained draft");
+        expect(await composerSource().inputValue()).toBe("other retained draft");
         expect(await gateway.getRequests("sessions.catalog.read")).toHaveLength(readsBeforeReturn);
 
         await activePane.getByRole("button", { name: "Open split view" }).click();

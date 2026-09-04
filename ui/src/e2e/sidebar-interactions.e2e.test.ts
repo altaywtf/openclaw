@@ -196,8 +196,15 @@ suite.define(() => {
         const textarea = document.querySelector<HTMLTextAreaElement>(
           ".agent-chat__composer-combobox > textarea",
         );
+        const editor = document.querySelector<HTMLElement>(
+          ".agent-chat__composer-editor .cm-content",
+        );
         const input = textarea?.closest<HTMLElement>(".agent-chat__input");
-        if (!textarea || !input?.classList.contains("agent-chat__input--prefill-attention")) {
+        if (
+          !textarea ||
+          !editor ||
+          !input?.classList.contains("agent-chat__input--prefill-attention")
+        ) {
           return;
         }
         const style = getComputedStyle(input);
@@ -206,7 +213,7 @@ suite.define(() => {
           background: style.backgroundColor,
           boxShadow: style.boxShadow,
           duration: style.animationDuration,
-          focused: textarea === document.activeElement,
+          focused: editor === document.activeElement,
           name: style.animationName,
           value: textarea.value,
         });
@@ -229,6 +236,7 @@ suite.define(() => {
         .click();
 
       const textarea = page.locator(".agent-chat__composer-combobox > textarea");
+      const editor = page.locator(".agent-chat__composer-editor .cm-content");
       const input = textarea.locator("xpath=ancestor::*[contains(@class, 'agent-chat__input')][1]");
       let cueStyle = { background: "", boxShadow: "", duration: "", name: "" };
       await expect
@@ -245,9 +253,12 @@ suite.define(() => {
         .toEqual({ active: true, focused: true, value: "What can you do?" });
       await expect
         .poll(() =>
-          textarea.evaluate((element: HTMLTextAreaElement) => ({
+          editor.evaluate((element) => ({
             focused: element === document.activeElement,
-            value: element.value,
+            value:
+              document.querySelector<HTMLTextAreaElement>(
+                ".agent-chat__composer-combobox > textarea",
+              )?.value ?? "",
           })),
         )
         .toEqual({ focused: true, value: "What can you do?" });

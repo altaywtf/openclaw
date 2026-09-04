@@ -84,7 +84,8 @@ suite.define(() => {
 
         await page.goto(`${suite.server.baseUrl}chat`);
         await gateway.waitForRequest("chat.startup");
-        const composer = page.locator(".agent-chat__composer-combobox textarea");
+        const composer = page.locator(".agent-chat__composer-editor .cm-content");
+        const source = page.locator(".agent-chat__composer-combobox textarea");
         await composer.fill("Review this with $auto");
 
         const picker = page.getByRole("listbox", { name: "Skill references" });
@@ -100,13 +101,13 @@ suite.define(() => {
           });
         }
         await composer.press("Enter");
-        await expect.poll(() => composer.inputValue()).toBe("Review this with $autoreview ");
+        await expect.poll(() => source.inputValue()).toBe("Review this with $autoreview ");
 
-        await composer.fill(`${await composer.inputValue()}and $technical`);
+        await composer.fill(`${await source.inputValue()}and $technical`);
         await expect.poll(() => picker.getByRole("option").count()).toBe(1);
         await composer.press("Tab");
         await expect
-          .poll(() => composer.inputValue())
+          .poll(() => source.inputValue())
           .toBe("Review this with $autoreview and $technical_documentation ");
 
         if (artifactDir) {
@@ -129,7 +130,7 @@ suite.define(() => {
         await slashPicker.waitFor({ state: "visible" });
         await expect.poll(() => slashPicker.getByRole("option").count()).toBe(1);
         await composer.press("Enter");
-        await expect.poll(() => composer.inputValue()).toBe("Review this with $autoreview ");
+        await expect.poll(() => source.inputValue()).toBe("Review this with $autoreview ");
 
         await composer.fill("/");
         await page.getByRole("listbox", { name: "Slash commands" }).waitFor({ state: "visible" });
@@ -146,7 +147,7 @@ suite.define(() => {
           })
           .toEqual({ first: "/status", last: "/status_report" });
         await composer.press("Tab");
-        await expect.poll(() => composer.inputValue()).toBe("/status");
+        await expect.poll(() => source.inputValue()).toBe("/status");
       },
     );
   });

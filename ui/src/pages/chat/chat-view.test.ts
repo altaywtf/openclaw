@@ -69,6 +69,27 @@ import {
   workspaceResultConflictFromTranscript,
 } from "./workspace-conflict.ts";
 
+const richEditorMode = vi.hoisted(() => ({ useActual: false }));
+
+vi.mock("./components/chat-composer-rich-editor.ts", async (importOriginal) => {
+  type RichEditorModule = typeof import("./components/chat-composer-rich-editor.ts");
+  const actual = await importOriginal<RichEditorModule>();
+  const mock =
+    (await import("./chat-composer-rich-editor.test-support.ts")) as unknown as RichEditorModule;
+  const selected = () => (richEditorMode.useActual ? actual : mock);
+  return {
+    setChatComposerRichEditorHost: (
+      ...args: Parameters<RichEditorModule["setChatComposerRichEditorHost"]>
+    ) => selected().setChatComposerRichEditorHost(...args),
+    setChatComposerRichEditorSource: (
+      ...args: Parameters<RichEditorModule["setChatComposerRichEditorSource"]>
+    ) => selected().setChatComposerRichEditorSource(...args),
+    updateChatComposerRichEditor: (
+      ...args: Parameters<RichEditorModule["updateChatComposerRichEditor"]>
+    ) => selected().updateChatComposerRichEditor(...args),
+  };
+});
+
 const registeredAttachmentPayloads = new Map<
   string,
   ReturnType<typeof registerStoredChatAttachmentPayload>
@@ -2623,6 +2644,8 @@ describe("chat composer workbench", () => {
 afterEach(() => {
   releaseChatAttachmentPayloads([...registeredAttachmentPayloads.values()]);
   registeredAttachmentPayloads.clear();
+  resetChatComposerState();
+  richEditorMode.useActual = false;
   vi.useRealTimers();
   buildChatItemsMock.mockClear();
   renderMessageGroupMock.mockClear();
@@ -3995,6 +4018,7 @@ describe("chat voice controls", () => {
 
 describe("chat composer render invalidation", () => {
   it("keeps steady ordinary edits and direction changes local", () => {
+    richEditorMode.useActual = true;
     const container = document.createElement("div");
     let draft = "a";
     const onDraftChange = vi.fn((next: string) => {
@@ -4239,6 +4263,7 @@ describe("chat composer IME composition", () => {
   });
 
   it("does not force textarea resize during IME composition", () => {
+    richEditorMode.useActual = true;
     const container = renderChatView({});
     const textarea = getComposerTextarea(container);
 
@@ -4266,6 +4291,7 @@ describe("chat composer IME composition", () => {
 
 describe("chat composer sizing", () => {
   it("keeps a bottom-anchored transcript pinned when rich formatting changes layout", () => {
+    richEditorMode.useActual = true;
     const container = renderChatView({});
     const textarea = getComposerTextarea(container);
     const thread = requireElement(container, ".chat-thread", "chat thread") as HTMLElement;
@@ -4288,6 +4314,7 @@ describe("chat composer sizing", () => {
   });
 
   it("renders restored drafts in the rich editor", async () => {
+    richEditorMode.useActual = true;
     const container = renderChatView({ draft: "A restored long draft" });
     document.body.append(container);
 
@@ -5012,6 +5039,7 @@ describe("chat slash menu accessibility", () => {
   });
 
   it("formats Markdown inside the editor while preserving the source draft", () => {
+    richEditorMode.useActual = true;
     const draft =
       "> A quoted note\n\n**Bold direction** with `inline code`\n\n- First task\n- Second task";
     const { container } = createReactiveDraftHarness();
@@ -5510,6 +5538,7 @@ describe("chat slash menu accessibility", () => {
   });
 
   it("preserves local draft input across unrelated rerenders", () => {
+    richEditorMode.useActual = true;
     const onDraftChange = vi.fn();
     const container = document.createElement("div");
 

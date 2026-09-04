@@ -79,12 +79,21 @@ async function resolveClipboard(page: Page, failed = false): Promise<void> {
 
 async function selectBubbleText(bubble: Locator): Promise<void> {
   await bubble.locator(".chat-text").evaluate((element) => {
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
     const range = document.createRange();
     range.selectNodeContents(element);
     const selection = window.getSelection();
     selection?.removeAllRanges();
     selection?.addRange(range);
   });
+  await bubble.page().evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        requestAnimationFrame(() => resolve());
+      }),
+  );
   await bubble.click({ button: "right" });
   // Context-menu dismissal listeners install on the next animation frame.
   await bubble.page().evaluate(
@@ -315,7 +324,7 @@ suite.define(() => {
         if (dismissal === "Escape") {
           await page.keyboard.press("Escape");
         } else if (dismissal === "outside click") {
-          await page.locator(".agent-chat__composer-combobox textarea").click();
+          await page.locator(".agent-chat__composer-editor .cm-content").click();
         } else if (dismissal === "replacement") {
           await selectBubbleText(bubble);
         } else if (dismissal === "navigation") {
@@ -500,7 +509,7 @@ suite.define(() => {
         await message.hover();
         const copy = message.getByRole("button", { name: "Copy as markdown", exact: true });
         await copy.click();
-        await page.locator(".agent-chat__composer-combobox textarea").focus();
+        await page.locator(".agent-chat__composer-editor .cm-content").focus();
         await page.mouse.move(0, 0);
         const feedback = message.getByRole("status").filter({ hasText: "Copy failed" });
         await feedback.waitFor({ state: "visible" });

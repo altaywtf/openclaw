@@ -80,7 +80,7 @@ describeControlUiE2e("Control UI chat file links", () => {
       await gateway.resolveDeferred("sessions.files.get");
       await page.locator(".sidebar-file-view").waitFor({ state: "visible" });
       await expect
-        .poll(() => page.locator(".cm-content").textContent())
+        .poll(() => page.locator(".sidebar-file-view .cm-content").textContent())
         .toContain("export const loaded = true;");
       await page.screenshot({ path: path.join(artifactDir, "latency-file-loaded.png") });
     } finally {
@@ -288,7 +288,7 @@ describeControlUiE2e("Control UI chat file links", () => {
 
       await openPreview("notes.txt");
       await page.locator(".sidebar-file-view").waitFor({ state: "visible" });
-      expect(await page.locator(".cm-content").textContent()).toContain(
+      expect(await page.locator(".sidebar-file-view .cm-content").textContent()).toContain(
         "Exact-head workspace preview proof.",
       );
       await page.screenshot({ path: path.join(artifactDir, "04-text-preview.png") });

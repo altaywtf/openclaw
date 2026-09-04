@@ -20,6 +20,10 @@ const people: UsersMentionableResult = {
   truncated: false,
 };
 const controllers: NewSessionComposerTextareaController[] = [];
+const waitForMentionTimer = (milliseconds: number) =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
 
 afterEach(async () => {
   controllers.splice(0).forEach((controller) => controller.disconnect());
@@ -31,7 +35,6 @@ function composerFixture(
   initial = "",
   initialMentions: readonly HumanMention[] = [],
 ) {
-  vi.useFakeTimers();
   const container = document.createElement("div");
   document.body.append(container);
   const client = new GatewayBrowserClient({ url: "ws://gateway.test" });
@@ -162,20 +165,20 @@ describe.each(["chat", "new-session"] as const)("%s human mentions", (kind) => {
       }),
     );
     view.edit("@", { data: "@" });
-    await vi.advanceTimersByTimeAsync(50);
+    await waitForMentionTimer(50);
     view.emitEvent("sessions.changed");
     view.edit("@A", { data: "A" });
-    await vi.advanceTimersByTimeAsync(50);
+    await waitForMentionTimer(50);
     view.emitEvent("presence");
     view.edit("@Al", { data: "l" });
-    await vi.advanceTimersByTimeAsync(150);
+    await waitForMentionTimer(150);
     expect(view.request).toHaveBeenCalledExactlyOnceWith("users.mentionable", {
       ...(kind === "chat" ? { sessionKey: "agent:main:chat" } : { agentId: "main" }),
       query: "Al",
     });
     view.emitEvent("sessions.changed");
     resolve(people);
-    await vi.advanceTimersByTimeAsync(0);
+    await waitForMentionTimer(0);
     expect(view.container.querySelectorAll('[role="option"]')).toHaveLength(2);
     view.emitEvent("presence");
     expect(view.key("Enter").defaultPrevented).toBe(true);
@@ -189,7 +192,7 @@ describe.each(["chat", "new-session"] as const)("%s human mentions", (kind) => {
   it("selects an offline same-name profile before Enter can send", async () => {
     const view = composerFixture(kind);
     view.edit("@Al", { data: "@Al" });
-    await vi.advanceTimersByTimeAsync(150);
+    await waitForMentionTimer(150);
     expect(view.container.querySelectorAll('[role="option"]')).toHaveLength(2);
     expect(view.container.textContent).toContain("Offline");
     view.key("ArrowDown");
@@ -233,7 +236,7 @@ describe.each(["chat", "new-session"] as const)("%s human mentions", (kind) => {
     async (text) => {
       const view = composerFixture(kind);
       view.edit(text);
-      await vi.advanceTimersByTimeAsync(150);
+      await waitForMentionTimer(150);
       expect(view.request).not.toHaveBeenCalled();
       expect(view.value().mentions).toEqual([]);
     },
@@ -242,7 +245,7 @@ describe.each(["chat", "new-session"] as const)("%s human mentions", (kind) => {
   it("lets Escape close the picker without aborting and ignores composition Enter", async () => {
     const view = composerFixture(kind);
     view.edit("@");
-    await vi.advanceTimersByTimeAsync(150);
+    await waitForMentionTimer(150);
     view.key("Enter", { isComposing: true });
     expect(view.value().mentions).toEqual([]);
     view.key("Escape");
@@ -260,10 +263,10 @@ describe.each(["chat", "new-session"] as const)("%s human mentions", (kind) => {
       }),
     );
     view.edit("@");
-    await vi.advanceTimersByTimeAsync(150);
+    await waitForMentionTimer(150);
     view.replaceOwner();
     resolve(people);
-    await vi.advanceTimersByTimeAsync(0);
+    await waitForMentionTimer(0);
     expect(view.container.querySelector('[role="listbox"]')).toBeNull();
   });
 });

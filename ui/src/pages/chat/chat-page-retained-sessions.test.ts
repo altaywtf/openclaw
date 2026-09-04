@@ -335,10 +335,16 @@ describe("chat page retained sessions", () => {
       const combobox = document.createElement("div");
       combobox.className = "agent-chat__composer-combobox";
       const textarea = document.createElement("textarea");
-      combobox.append(textarea);
+      const editor = document.createElement("div");
+      editor.className = "agent-chat__composer-editor";
+      const content = document.createElement("div");
+      content.className = "cm-content";
+      content.tabIndex = 0;
+      editor.append(content);
+      combobox.append(textarea, editor);
       pane.append(combobox);
       vi.advanceTimersByTime(250);
-      expect(document.activeElement).toBe(textarea);
+      expect(document.activeElement).toBe(content);
 
       const replacementPane = document.createElement("openclaw-chat-pane") as RenderedPane;
       replacementPane.active = true;
@@ -346,12 +352,18 @@ describe("chat page retained sessions", () => {
       const replacementCombobox = document.createElement("div");
       replacementCombobox.className = "agent-chat__composer-combobox";
       const replacementTextarea = document.createElement("textarea");
-      replacementCombobox.append(replacementTextarea);
+      const replacementEditor = document.createElement("div");
+      replacementEditor.className = "agent-chat__composer-editor";
+      const replacementContent = document.createElement("div");
+      replacementContent.className = "cm-content";
+      replacementContent.tabIndex = 0;
+      replacementEditor.append(replacementContent);
+      replacementCombobox.append(replacementTextarea, replacementEditor);
       replacementPane.append(replacementCombobox);
       pane.replaceWith(replacementPane);
 
       vi.advanceTimersByTime(250);
-      expect(document.activeElement).toBe(replacementTextarea);
+      expect(document.activeElement).toBe(replacementContent);
 
       const userTarget = document.createElement("button");
       document.body.append(userTarget);

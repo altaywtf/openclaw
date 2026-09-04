@@ -31,6 +31,11 @@ import { reduceChatSessionProjection } from "./history-merge.ts";
 import { applySessionMessagePayload } from "./session-message-apply.ts";
 import { cacheChatSessionSnapshot, readChatSessionSnapshot } from "./session-message-cache.ts";
 
+vi.mock(
+  "./components/chat-composer-rich-editor.ts",
+  async () => import("./chat-composer-rich-editor.test-support.ts"),
+);
+
 describe("chat pane native history pagination", () => {
   it("passes only a proven profile viewer identity to transcript rendering", () => {
     const { pane, context } = createRefreshChatPane();

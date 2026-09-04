@@ -272,7 +272,7 @@ suite.define(() => {
               '.sidebar-recent-session[data-session-key="agent:main:session-10"]',
             );
             const menu = row.getByRole("button", { name: "Open session menu" });
-            const composer = page.locator(".agent-chat__composer-combobox textarea");
+            const composer = page.locator(".agent-chat__composer-editor .cm-content");
             const card = page.locator(".community-invite-card");
             await expect.poll(() => card.count()).toBe(0);
             if (interaction === "touch") {

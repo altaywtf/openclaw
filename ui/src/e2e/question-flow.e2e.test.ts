@@ -349,7 +349,7 @@ suite.define(() => {
       });
 
       const editor = composer.locator(".agent-chat__composer-editor .cm-content");
-      await editor.evaluate((element) => {
+      await editor.evaluate(() => {
         const focusSink = document.createElement("button");
         focusSink.tabIndex = -1;
         document.body.append(focusSink);
@@ -393,7 +393,8 @@ suite.define(() => {
 
   it("restores the composer and its draft from an authoritative answer without a resolution event", async () => {
     const { gateway, page } = await openQuestionPage();
-    const composer = page.locator(".agent-chat__composer-combobox textarea");
+    const composer = page.locator(".agent-chat__composer-editor .cm-content");
+    const source = page.locator(".agent-chat__composer-combobox textarea");
     await composer.fill("Keep this release note draft");
     const request = questionRecord("question-deploy-target", [
       {
@@ -463,7 +464,7 @@ suite.define(() => {
 
     await panel.locator(".chat-question-panel__collapse").click();
     await composer.waitFor();
-    await expect.poll(() => composer.inputValue()).toBe("Keep this release note draft");
+    await expect.poll(() => source.inputValue()).toBe("Keep this release note draft");
     await expect
       .poll(() => composer.evaluate((element) => document.activeElement === element))
       .toBe(true);
@@ -495,7 +496,7 @@ suite.define(() => {
       .poll(() => summary.getByText("Staging (Recommended)", { exact: true }).count())
       .toBe(1);
     await composer.waitFor();
-    await expect.poll(() => composer.inputValue()).toBe("Keep this release note draft");
+    await expect.poll(() => source.inputValue()).toBe("Keep this release note draft");
     await expect
       .poll(() => composer.evaluate((element) => document.activeElement === element))
       .toBe(true);

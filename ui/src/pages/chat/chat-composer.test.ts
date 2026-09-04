@@ -17,6 +17,11 @@ import {
 import { renderChatComposer } from "./components/chat-composer.ts";
 import * as realtimeTalkInput from "./realtime-talk-input.ts";
 
+vi.mock(
+  "./components/chat-composer-rich-editor.ts",
+  async () => import("./chat-composer-rich-editor.test-support.ts"),
+);
+
 const discoverRealtimeTalkInputsMock = vi.fn();
 const openMicrophoneMock = vi.fn();
 

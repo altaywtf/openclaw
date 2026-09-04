@@ -5,6 +5,7 @@ import {
   Compartment,
   EditorSelection,
   EditorState,
+  Prec,
   StateField,
   type Range,
 } from "@codemirror/state";
@@ -220,7 +221,7 @@ function copyEditorSelectionToSource(view: EditorView, source: HTMLTextAreaEleme
   source.selectionEnd = range.to;
 }
 
-export function createChatComposerRichEditor(params: {
+function createChatComposerRichEditor(params: {
   parent: HTMLElement;
   source: HTMLTextAreaElement;
   options: ChatComposerRichEditorOptions;
@@ -263,52 +264,54 @@ export function createChatComposerRichEditor(params: {
       EditorView.lineWrapping,
       editable.of([EditorState.readOnly.of(!lastEditable), EditorView.editable.of(lastEditable)]),
       placeholderText.of(placeholder(options.placeholder)),
-      EditorView.domEventHandlers({
-        keydown(event, view) {
-          syncSource(view);
-          options.onKeyDown(event, params.source);
-          return event.defaultPrevented;
-        },
-        beforeinput(event, view) {
-          syncSource(view);
-          pendingInput = {
-            data: event.data,
-            inputType: event.inputType,
-            isComposing: event.isComposing,
-          };
-          options.onBeforeInput(event, params.source);
-          return event.defaultPrevented;
-        },
-        compositionstart(event, view) {
-          syncSource(view);
-          options.onCompositionStart(event, params.source);
-          return false;
-        },
-        compositionend(event, view) {
-          syncSource(view);
-          options.onCompositionEnd(event, params.source);
-          return false;
-        },
-        focus(_event, view) {
-          syncSource(view);
-          options.onSelect(params.source);
-          return false;
-        },
-        blur(event, view) {
-          syncSource(view);
-          options.onBlur(event, params.source);
-          if (params.source.value !== view.state.sliceDoc()) {
-            view.dispatch({
-              changes: { from: 0, to: view.state.doc.length, insert: params.source.value },
-            });
-          }
-          return false;
-        },
-        paste(event) {
-          options.onPaste(event);
-          return event.defaultPrevented;
-        },
-      }),
+      Prec.highest(
+        EditorView.domEventHandlers({
+          keydown(event, view) {
+            syncSource(view);
+            options.onKeyDown(event, params.source);
+            return event.defaultPrevented;
+          },
+          beforeinput(event, view) {
+            syncSource(view);
+            pendingInput = {
+              data: event.data,
+              inputType: event.inputType,
+              isComposing: event.isComposing,
+            };
+            options.onBeforeInput(event, params.source);
+            return event.defaultPrevented;
+          },
+          compositionstart(event, view) {
+            syncSource(view);
+            options.onCompositionStart(event, params.source);
+            return false;
+          },
+          compositionend(event, view) {
+            syncSource(view);
+            options.onCompositionEnd(event, params.source);
+            return false;
+          },
+          focus(_event, view) {
+            syncSource(view);
+            options.onSelect(params.source);
+            return false;
+          },
+          blur(event, view) {
+            syncSource(view);
+            options.onBlur(event, params.source);
+            if (params.source.value !== view.state.sliceDoc()) {
+              view.dispatch({
+                changes: { from: 0, to: view.state.doc.length, insert: params.source.value },
+              });
+            }
+            return false;
+          },
+          paste(event) {
+            options.onPaste(event);
+            return event.defaultPrevented;
+          },
+        }),
+      ),
       EditorView.updateListener.of((update) => {
         syncSource(update.view);
         if (update.docChanged && !applyingDraft) {

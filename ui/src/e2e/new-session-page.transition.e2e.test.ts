@@ -435,7 +435,7 @@ suite.define(() => {
         .poll(() =>
           page.evaluate(
             () =>
-              document.activeElement?.matches(".agent-chat__composer-combobox textarea") === true,
+              document.activeElement?.matches(".agent-chat__composer-editor .cm-content") === true,
           ),
         )
         .toBe(true);

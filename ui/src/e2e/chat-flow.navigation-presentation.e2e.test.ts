@@ -552,13 +552,14 @@ suite.define(() => {
       await page.goto(`${suite.server.baseUrl}chat`);
       await page.getByText("Type whenever you are ready.").click();
 
-      const composer = page.locator(".agent-chat__composer-combobox textarea");
+      const composer = page.locator(".agent-chat__composer-editor .cm-content");
+      const source = page.locator(".agent-chat__composer-combobox textarea");
       await expect
         .poll(() => composer.evaluate((element) => element === document.activeElement))
         .toBe(false);
 
       await page.keyboard.type("first character preserved");
-      expect(await composer.inputValue()).toBe("first character preserved");
+      expect(await source.inputValue()).toBe("first character preserved");
       await expect
         .poll(() => composer.evaluate((element) => element === document.activeElement))
         .toBe(true);
@@ -572,7 +573,7 @@ suite.define(() => {
       await page.keyboard.type("session search");
 
       expect(await paletteInput.inputValue()).toBe("session search");
-      expect(await composer.inputValue()).toBe("first character preserved");
+      expect(await source.inputValue()).toBe("first character preserved");
     } finally {
       await suite.closeBrowserContext(context);
     }
@@ -650,7 +651,8 @@ suite.define(() => {
       await page.goto(`${suite.server.baseUrl}chat`);
 
       await page.getByText("History renders before sessions finish.").waitFor({ timeout: 10_000 });
-      const composer = page.locator(".agent-chat__composer-combobox textarea");
+      const composer = page.locator(".agent-chat__composer-editor .cm-content");
+      const source = page.locator(".agent-chat__composer-combobox textarea");
       await composer.waitFor({ state: "visible", timeout: 10_000 });
 
       // The chat boot hydrates the sidebar session list; that request stays
@@ -658,7 +660,7 @@ suite.define(() => {
       await gateway.waitForRequest("sessions.list");
 
       await composer.fill("draft while sessions load");
-      expect(await composer.inputValue()).toBe("draft while sessions load");
+      expect(await source.inputValue()).toBe("draft while sessions load");
       await composer.fill("");
 
       // The background hydrate must not take the shared sessions loading

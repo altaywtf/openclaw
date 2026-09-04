@@ -118,7 +118,7 @@ export function consumeComposerInputIntent(state: ChatComposerState, key: string
   return true;
 }
 
-export function clearPendingClearedSubmittedDraft(state: ChatComposerState, key: string): void {
+function clearPendingClearedSubmittedDraft(state: ChatComposerState, key: string): void {
   if (state.pendingClearedSubmittedDraft?.key === key) {
     state.pendingClearedSubmittedDraft = null;
   }

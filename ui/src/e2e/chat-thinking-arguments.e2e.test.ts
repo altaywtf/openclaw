@@ -24,7 +24,8 @@ suite.define(() => {
 
       await page.goto(`${suite.server.baseUrl}chat`);
       await gateway.waitForRequest("chat.startup");
-      const composer = page.locator(".agent-chat__composer-combobox textarea");
+      const composer = page.locator(".agent-chat__composer-editor .cm-content");
+      const source = page.locator(".agent-chat__composer-combobox textarea");
       await composer.waitFor({ state: "visible" });
       await expect.poll(() => composer.isEnabled()).toBe(true);
 
@@ -33,7 +34,7 @@ suite.define(() => {
 
       const request = await gateway.waitForRequest("chat.send");
       expect((request.params as { message?: unknown }).message).toBe("/elevated full");
-      await expect.poll(() => composer.inputValue()).toBe("Keep this ");
+      await expect.poll(() => source.inputValue()).toBe("Keep this ");
     });
   });
 
@@ -45,7 +46,8 @@ suite.define(() => {
 
       await page.goto(`${suite.server.baseUrl}chat`);
       await gateway.waitForRequest("chat.startup");
-      const composer = page.locator(".agent-chat__composer-combobox textarea");
+      const composer = page.locator(".agent-chat__composer-editor .cm-content");
+      const source = page.locator(".agent-chat__composer-combobox textarea");
       await composer.waitFor({ state: "visible" });
       await expect.poll(() => composer.isEnabled()).toBe(true);
 
@@ -56,7 +58,7 @@ suite.define(() => {
 
       const request = await gateway.waitForRequest("chat.send");
       expect((request.params as { message?: unknown }).message).toBe("/exec host=gateway");
-      await expect.poll(() => composer.inputValue()).toBe("Keep this ");
+      await expect.poll(() => source.inputValue()).toBe("Keep this ");
     });
   });
 
@@ -115,7 +117,8 @@ suite.define(() => {
 
         await page.goto(`${suite.server.baseUrl}chat`);
         await gateway.waitForRequest("chat.startup");
-        const composer = page.locator(".agent-chat__composer-combobox textarea");
+        const composer = page.locator(".agent-chat__composer-editor .cm-content");
+        const source = page.locator(".agent-chat__composer-combobox textarea");
         await composer.waitFor({ state: "visible" });
         await expect.poll(() => composer.isEnabled()).toBe(true);
 
@@ -124,7 +127,7 @@ suite.define(() => {
 
         const picker = page.locator(".slash-menu[role='listbox']");
         await picker.waitFor({ state: "visible" });
-        await expect.poll(() => composer.inputValue()).toBe("/think ");
+        await expect.poll(() => source.inputValue()).toBe("/think ");
         await expect
           .poll(() => picker.getByRole("option").locator(".slash-menu-name").allTextContents())
           .toEqual(["default", "off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
@@ -148,7 +151,7 @@ suite.define(() => {
 
         await composer.press("ArrowUp");
         await composer.press("Tab");
-        await expect.poll(() => composer.inputValue()).toBe("/think ultra");
+        await expect.poll(() => source.inputValue()).toBe("/think ultra");
         await composer.press("Enter");
         const patchRequest = await gateway.waitForRequest("sessions.patch");
         expect(patchRequest.params).toMatchObject({
