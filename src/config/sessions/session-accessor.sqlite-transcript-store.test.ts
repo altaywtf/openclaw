@@ -508,6 +508,39 @@ describe("SQLite exact transcript suffix replacement", () => {
     });
   });
 
+  it("validates only the unchanged projection prefix for same-length suffix replacement", async () => {
+    await withRewriteFixture(({ db, snapshot, scope }) => {
+      const replacementEvents = [
+        rewriteEvents[0],
+        { ...rewriteEvents[1], message: { role: "user", content: "updated question" } },
+        { ...rewriteEvents[2], message: { role: "assistant", content: "updated answer" } },
+      ] as const;
+
+      replaceTranscriptSuffixForTest(scope, rewriteEvents, replacementEvents);
+
+      const result = snapshot();
+      expect(result).toMatchObject({
+        raw: [
+          expect.objectContaining({ seq: 0 }),
+          expect.objectContaining({ seq: 1 }),
+          expect.objectContaining({ seq: 2 }),
+        ],
+        active: [
+          expect.objectContaining({ event_seq: 0 }),
+          expect.objectContaining({ event_seq: 1 }),
+          expect.objectContaining({ event_seq: 2 }),
+        ],
+      });
+      expect(result.search).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ message_id: "user", text: "updated question" }),
+          expect.objectContaining({ message_id: "answer", text: "updated answer" }),
+        ]),
+      );
+      expect(sessionTranscriptIndexNeedsReconcile(db, scope.sessionId)).toBe(false);
+    });
+  });
+
   it("preserves the established idempotency owner across retained suffix rows", async () => {
     const duplicateKeyEvents = [
       rewriteEvents[0],
