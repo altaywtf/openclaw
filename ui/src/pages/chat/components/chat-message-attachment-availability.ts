@@ -66,7 +66,8 @@ export function resolveAssistantAttachmentAvailability(
     );
   }
   const normalizedAuthToken = authToken?.trim() ?? "";
-  const cacheKey = `${connectionEpoch}::${resourceBasePath ?? ""}::${normalizedAuthToken}::${source}`;
+  const connectionScope = connectionEpoch === 0 ? "" : `${connectionEpoch}::`;
+  const cacheKey = `${connectionScope}${resourceBasePath ?? ""}::${normalizedAuthToken}::${source}`;
   const resource = observeChatMediaResource<AssistantAttachmentAvailability>(
     "assistant-attachment",
     cacheKey,
@@ -251,7 +252,8 @@ export function retryAssistantAttachmentAvailability(
     return;
   }
   const normalizedAuthToken = authToken?.trim() ?? "";
-  const cacheKey = `${connectionEpoch}::${resourceBasePath ?? ""}::${normalizedAuthToken}::${source}`;
+  const connectionScope = connectionEpoch === 0 ? "" : `${connectionEpoch}::`;
+  const cacheKey = `${connectionScope}${resourceBasePath ?? ""}::${normalizedAuthToken}::${source}`;
   const resource = observeChatMediaResource<AssistantAttachmentAvailability>(
     "assistant-attachment",
     cacheKey,
