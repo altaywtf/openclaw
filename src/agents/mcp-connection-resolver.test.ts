@@ -249,12 +249,18 @@ describe("mcp connection resolver helpers", () => {
 
     try {
       // Model catalog provisioning is independent of plugin-owned MCP revocation.
-      // Keep both Gateway refresh calls observable without starting provider discovery.
+      // Keep Gateway refresh and background warmup observable without provider discovery.
       const refreshPreparedModelRuntimeSnapshots = vi
         .spyOn(await import("./prepared-model-runtime.js"), "refreshPreparedModelRuntimeSnapshots")
         .mockResolvedValue(undefined);
       const refreshContextWindowCache = vi
         .spyOn(await import("./context.js"), "refreshContextWindowCache")
+        .mockResolvedValue(undefined);
+      const warmCurrentProviderAuthStateOffMainThread = vi
+        .spyOn(
+          await import("./model-provider-auth.js"),
+          "warmCurrentProviderAuthStateOffMainThread",
+        )
         .mockResolvedValue(undefined);
       const previous = createMcpProofPluginRegistry();
       previous.apiFor("startup-mail").registerMcpServerConnectionResolver({
@@ -277,6 +283,8 @@ describe("mcp connection resolver helpers", () => {
       }
       const sessionId = "gateway-plugin-disable-mcp-proof";
       const previousRuntime = await getOrCreateSessionMcpRuntime({
+        // Only configured MCP servers belong to this registry fixture.
+        manifestRegistry: { plugins: [] },
         sessionId,
         sessionKey: "agent:test:gateway-plugin-disable-mcp-proof",
         workspaceDir: process.cwd(),
@@ -391,6 +399,9 @@ describe("mcp connection resolver helpers", () => {
         catalogMode: "static",
       });
       expect(refreshContextWindowCache).toHaveBeenCalledWith(nextConfig);
+      expect(warmCurrentProviderAuthStateOffMainThread).toHaveBeenCalledWith(nextConfig, {
+        isCancelled: expect.any(Function),
+      });
       expect(requestRecoveryRestart).not.toHaveBeenCalled();
       expect(isPluginRegistryRetired(previous.registry)).toBe(true);
       expect(peekSessionMcpRuntime({ sessionId })).toBeUndefined();
@@ -419,6 +430,7 @@ describe("mcp connection resolver helpers", () => {
 
       const nextSessionId = "gateway-plugin-disable-brand-new-mcp-proof";
       const nextRuntime = await getOrCreateSessionMcpRuntime({
+        manifestRegistry: { plugins: [] },
         sessionId: nextSessionId,
         sessionKey: "agent:test:gateway-plugin-disable-brand-new-mcp-proof",
         workspaceDir: process.cwd(),

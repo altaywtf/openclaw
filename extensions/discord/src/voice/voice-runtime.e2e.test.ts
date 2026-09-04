@@ -846,9 +846,12 @@ defineDiscordVoiceTests(
       resolveConnect();
       await connect;
 
-      expect((session as unknown as { lifecycle: { status: string } }).lifecycle.status).toBe(
-        "stopped",
-      );
+      expect(realtimeSessionMock.close).toHaveBeenCalled();
+      expect(() =>
+        session.beginSpeakerTurn({ senderIsOwner: false, speakerLabel: "Late speaker" }, "u-late"),
+      ).toThrow("Discord realtime voice session is closed");
+      await expect(session.connect()).rejects.toThrow("Discord realtime voice session is closed");
+      expect(realtimeSessionMock.connect).toHaveBeenCalledOnce();
     });
 
     it("provider reset fences transcript, tool, playback, and consult completions", async () => {
