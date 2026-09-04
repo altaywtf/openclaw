@@ -17,6 +17,7 @@ const entry = path.resolve(process.argv[2] ?? "openclaw.mjs");
 const diagnoseStartup = process.argv[3] === "--diagnose-startup";
 const legacyEntry = diagnoseStartup ? undefined : process.argv[3];
 const requireGreen = legacyEntry !== undefined;
+const legacyOnly = process.argv[4] === "--legacy-only";
 const root = await fs.mkdtemp(path.join(os.tmpdir(), "gateway-metadata-proof-"));
 const token = randomBytes(32).toString("hex");
 const report = { platform: process.platform, stages: [], outcome: "incomplete" };
@@ -304,19 +305,29 @@ async function completeTui(session) {
 }
 
 async function ready(gateway) {
+  const startedAt = Date.now();
+  const trace = { phase, probes: [] };
+  (report.readiness ??= []).push(trace);
   await until(
     async () => {
       if (gateway.child.exitCode !== null) {
         throw new Error(`Gateway exited: ${sanitize(gateway.text)}`);
       }
-      try {
-        const response = await fetch(`http://127.0.0.1:${port}/readyz`, {
-          signal: AbortSignal.timeout(1000),
-        });
-        return response.ok && (await response.json()).ready === true;
-      } catch {
-        return false;
-      }
+      const probes = await Promise.all(
+        ["/readyz", "/startupz"].map(async (endpoint) => {
+          try {
+            const response = await fetch(`http://127.0.0.1:${port}${endpoint}`, {
+              signal: AbortSignal.timeout(1000),
+            });
+            return { endpoint, status: response.status, body: await response.json() };
+          } catch (error) {
+            return { endpoint, error: sanitize(String(error)) };
+          }
+        }),
+      );
+      trace.probes.push({ elapsedMs: Date.now() - startedAt, probes });
+      const readiness = probes[0];
+      return readiness.status === 200 && readiness.body?.ready === true;
     },
     (value) => value,
     "Gateway readyz",
@@ -482,6 +493,11 @@ async function wireControls() {
 }
 
 async function runScenario() {
+  if (legacyOnly) {
+    assert.ok(requireGreen);
+    await runLegacyUpgrade();
+    return;
+  }
   if (requireGreen) {
     phase = "native fixture initialization";
     await initializeWindowsFixture(admin, "approver");
@@ -723,125 +739,128 @@ async function runScenario() {
     await wireControls();
     report.gateway = sanitize(gateway.text);
     await stop(gateway.child);
-
-    phase = "legacy package startup";
-    const legacyEnv = await makeState("legacy-upgrade");
-    await initializeWindowsFixture(legacyEnv, "legacy upgrade");
-    delete legacyEnv.OPENCLAW_GATEWAY_TOKEN;
-    const legacyConfig = {
-      gateway: {
-        mode: "local",
-        bind: "loopback",
-        port,
-        auth: { mode: "token" },
-        controlUi: { enabled: false },
-      },
-      plugins: { allow: [] },
-    };
-    await fs.writeFile(legacyEnv.OPENCLAW_CONFIG_PATH, JSON.stringify(legacyConfig));
-    const oldGateway = start(legacyEnv, ["gateway", "run", "--allow-unconfigured"], legacyEntry);
-    await ready(oldGateway);
-    const oldVersion = await command(legacyEnv, ["--version"], legacyEntry);
-    assert.equal(oldVersion.code, 0);
-    assert.ok(oldVersion.stdout.includes("2026.8.1-beta.2"));
-    const oldDevices = json(await command(legacyEnv, ["devices", "list", "--json"], legacyEntry));
-    assert.equal(oldDevices.paired.length, 1);
-    const oldDevice = oldDevices.paired[0];
-    assert.equal(oldDevice.platform, "win32");
-    assert.equal(oldDevice.deviceFamily, undefined);
-    report.legacy = { version: oldVersion.stdout.trim(), before: projected(oldDevice) };
-    await stop(oldGateway.child);
-
-    phase = "legacy state upgraded to candidate";
-    legacyConfig.gateway.auth.token = token;
-    legacyConfig.gateway.nodes = { pairing: { autoApproveLocal: false, sshVerify: false } };
-    legacyEnv.OPENCLAW_GATEWAY_TOKEN = token;
-    await fs.writeFile(legacyEnv.OPENCLAW_CONFIG_PATH, JSON.stringify(legacyConfig));
-    const upgradedGateway = start(legacyEnv, ["gateway", "run", "--allow-unconfigured"]);
-    await ready(upgradedGateway);
-    const upgradeRows = json(await list(legacyEnv));
-    const upgradedDevice = upgradeRows.paired.find((row) => row.deviceId === oldDevice.deviceId);
-    assert.ok(upgradedDevice);
-    report.legacy.beforeTui = projected(upgradedDevice);
-    await completeTui(startTui(legacyEnv));
-    assert.equal(json(await list(legacyEnv)).pending.length, 0);
-    report.legacy.sameIdentityTuiStatusCompleted = true;
-
-    phase = "legacy identity node role approval";
-    const legacyNodeArgs = [
-      "node",
-      "run",
-      "--host",
-      "127.0.0.1",
-      "--port",
-      String(port),
-      "--display-name",
-      "Legacy metadata proof node",
-    ];
-    let legacyNode = start(legacyEnv, legacyNodeArgs);
-    const legacyPending = await until(
-      async () => json(await list(legacyEnv)),
-      (value) => value.pending.some((row) => row.deviceId === oldDevice.deviceId),
-      "legacy node role request",
-    );
-    const legacyRequest = legacyPending.pending.find((row) => row.deviceId === oldDevice.deviceId);
-    assert.equal(legacyRequest.role, "node");
-    json(await command(legacyEnv, ["devices", "approve", legacyRequest.requestId, "--json"]));
-    await stop(legacyNode.child);
-    legacyNode = start(legacyEnv, legacyNodeArgs);
-    await until(
-      async () => legacyNode.text,
-      (text) => text.includes("node host gateway connected:"),
-      "legacy node connected",
-    );
-    const legacySurfaces = await until(
-      async () => json(await command(legacyEnv, ["nodes", "pending", "--json"])),
-      (value) => value.some((row) => row.nodeId === oldDevice.deviceId),
-      "legacy node command approval",
-    );
-    const legacySurface = legacySurfaces.find((row) => row.nodeId === oldDevice.deviceId);
-    json(await command(legacyEnv, ["nodes", "approve", legacySurface.requestId, "--json"]));
-    await stop(legacyNode.child);
-    legacyNode = start(legacyEnv, legacyNodeArgs);
-    await until(
-      async () => legacyNode.text,
-      (text) => text.includes("node host gateway connected:"),
-      "approved legacy node connected",
-    );
-    const legacyInvokeArgs = [
-      "nodes",
-      "invoke",
-      "--node",
-      oldDevice.deviceId,
-      "--command",
-      "system.which",
-      "--params",
-      '{"bins":["node"]}',
-      "--json",
-    ];
-    const legacyInvocation = json(await command(legacyEnv, legacyInvokeArgs));
-    assert.equal(legacyInvocation.ok, true);
-    assert.equal(typeof legacyInvocation.payload.bins.node, "string");
-    await stop(legacyNode.child);
-    json(await list(legacyEnv));
-    await completeTui(startTui(legacyEnv));
-    legacyNode = start(legacyEnv, legacyNodeArgs);
-    await until(
-      async () => legacyNode.text,
-      (text) => text.includes("node host gateway connected:"),
-      "legacy node reconnect",
-    );
-    assert.equal(json(await command(legacyEnv, legacyInvokeArgs)).ok, true);
-    await stop(legacyNode.child);
-    json(await list(legacyEnv));
-    await completeTui(startTui(legacyEnv));
-    assert.equal(json(await list(legacyEnv)).pending.length, 0);
-    assert.equal(upgradedGateway.text.includes("reason=metadata-upgrade"), false);
-    report.legacy.completedAlternatingSequence = true;
-    report.legacy.gateway = sanitize(upgradedGateway.text);
-    await stop(upgradedGateway.child);
-    report.outcome = "full-acceptance-completed";
+    await runLegacyUpgrade();
   }
+}
+
+async function runLegacyUpgrade() {
+  phase = "legacy package startup";
+  const legacyEnv = await makeState("legacy-upgrade");
+  await initializeWindowsFixture(legacyEnv, "legacy upgrade");
+  delete legacyEnv.OPENCLAW_GATEWAY_TOKEN;
+  const legacyConfig = {
+    gateway: {
+      mode: "local",
+      bind: "loopback",
+      port,
+      auth: { mode: "token" },
+      controlUi: { enabled: false },
+    },
+    plugins: { allow: [] },
+  };
+  await fs.writeFile(legacyEnv.OPENCLAW_CONFIG_PATH, JSON.stringify(legacyConfig));
+  const oldGateway = start(legacyEnv, ["gateway", "run", "--allow-unconfigured"], legacyEntry);
+  await ready(oldGateway);
+  const oldVersion = await command(legacyEnv, ["--version"], legacyEntry);
+  assert.equal(oldVersion.code, 0);
+  assert.ok(oldVersion.stdout.includes("2026.9.1"));
+  const oldDevices = json(await command(legacyEnv, ["devices", "list", "--json"], legacyEntry));
+  assert.equal(oldDevices.paired.length, 1);
+  const oldDevice = oldDevices.paired[0];
+  assert.equal(oldDevice.platform, "win32");
+  assert.equal(oldDevice.deviceFamily, undefined);
+  report.legacy = { version: oldVersion.stdout.trim(), before: projected(oldDevice) };
+  await stop(oldGateway.child);
+
+  phase = "legacy state upgraded to candidate";
+  legacyConfig.gateway.auth.token = token;
+  legacyConfig.gateway.nodes = { pairing: { autoApproveLocal: false, sshVerify: false } };
+  legacyEnv.OPENCLAW_GATEWAY_TOKEN = token;
+  await fs.writeFile(legacyEnv.OPENCLAW_CONFIG_PATH, JSON.stringify(legacyConfig));
+  const upgradedGateway = start(legacyEnv, ["gateway", "run", "--allow-unconfigured"]);
+  await ready(upgradedGateway);
+  const upgradeRows = json(await list(legacyEnv));
+  const upgradedDevice = upgradeRows.paired.find((row) => row.deviceId === oldDevice.deviceId);
+  assert.ok(upgradedDevice);
+  report.legacy.beforeTui = projected(upgradedDevice);
+  await completeTui(startTui(legacyEnv));
+  assert.equal(json(await list(legacyEnv)).pending.length, 0);
+  report.legacy.sameIdentityTuiStatusCompleted = true;
+
+  phase = "legacy identity node role approval";
+  const legacyNodeArgs = [
+    "node",
+    "run",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    String(port),
+    "--display-name",
+    "Legacy metadata proof node",
+  ];
+  let legacyNode = start(legacyEnv, legacyNodeArgs);
+  const legacyPending = await until(
+    async () => json(await list(legacyEnv)),
+    (value) => value.pending.some((row) => row.deviceId === oldDevice.deviceId),
+    "legacy node role request",
+  );
+  const legacyRequest = legacyPending.pending.find((row) => row.deviceId === oldDevice.deviceId);
+  assert.equal(legacyRequest.role, "node");
+  json(await command(legacyEnv, ["devices", "approve", legacyRequest.requestId, "--json"]));
+  await stop(legacyNode.child);
+  legacyNode = start(legacyEnv, legacyNodeArgs);
+  await until(
+    async () => legacyNode.text,
+    (text) => text.includes("node host gateway connected:"),
+    "legacy node connected",
+  );
+  const legacySurfaces = await until(
+    async () => json(await command(legacyEnv, ["nodes", "pending", "--json"])),
+    (value) => value.some((row) => row.nodeId === oldDevice.deviceId),
+    "legacy node command approval",
+  );
+  const legacySurface = legacySurfaces.find((row) => row.nodeId === oldDevice.deviceId);
+  json(await command(legacyEnv, ["nodes", "approve", legacySurface.requestId, "--json"]));
+  await stop(legacyNode.child);
+  legacyNode = start(legacyEnv, legacyNodeArgs);
+  await until(
+    async () => legacyNode.text,
+    (text) => text.includes("node host gateway connected:"),
+    "approved legacy node connected",
+  );
+  const legacyInvokeArgs = [
+    "nodes",
+    "invoke",
+    "--node",
+    oldDevice.deviceId,
+    "--command",
+    "system.which",
+    "--params",
+    '{"bins":["node"]}',
+    "--json",
+  ];
+  const legacyInvocation = json(await command(legacyEnv, legacyInvokeArgs));
+  assert.equal(legacyInvocation.ok, true);
+  assert.equal(typeof legacyInvocation.payload.bins.node, "string");
+  await stop(legacyNode.child);
+  json(await list(legacyEnv));
+  await completeTui(startTui(legacyEnv));
+  legacyNode = start(legacyEnv, legacyNodeArgs);
+  await until(
+    async () => legacyNode.text,
+    (text) => text.includes("node host gateway connected:"),
+    "legacy node reconnect",
+  );
+  assert.equal(json(await command(legacyEnv, legacyInvokeArgs)).ok, true);
+  await stop(legacyNode.child);
+  json(await list(legacyEnv));
+  await completeTui(startTui(legacyEnv));
+  assert.equal(json(await list(legacyEnv)).pending.length, 0);
+  assert.equal(upgradedGateway.text.includes("reason=metadata-upgrade"), false);
+  report.legacy.completedAlternatingSequence = true;
+  report.legacy.gateway = sanitize(upgradedGateway.text);
+  await stop(upgradedGateway.child);
+  report.outcome = legacyOnly ? "stable-upgrade-acceptance-completed" : "full-acceptance-completed";
 }
 
 try {

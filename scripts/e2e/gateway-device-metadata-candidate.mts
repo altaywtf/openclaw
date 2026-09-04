@@ -12,7 +12,8 @@ const candidateSha = "e081101d616dd7d13b7dac37e167a268c161067d";
 const baselineSha = "a33604ea1ecab8212865cd225e17511cc0b69cb3";
 const harnessRoot = process.cwd();
 const diagnoseStartup = process.argv.includes("--diagnose-startup");
-const acceptanceOnly = process.argv.includes("--acceptance-only");
+const legacyOnly = process.argv.includes("--legacy-only");
+const acceptanceOnly = legacyOnly || process.argv.includes("--acceptance-only");
 const root = await fs.mkdtemp(path.join(os.tmpdir(), "metadata-candidate-"));
 const candidate = path.join(root, "candidate");
 const baseline = path.join(root, "baseline");
@@ -97,7 +98,7 @@ if (!diagnoseStartup) {
   await fs.mkdir(legacy);
   await fs.writeFile(path.join(legacy, "package.json"), JSON.stringify({ private: true }));
   const npm = resolveNpmRunner({
-    npmArgs: ["install", "--no-audit", "--no-fund", "openclaw@2026.8.1-beta.2"],
+    npmArgs: ["install", "--no-audit", "--no-fund", "openclaw@2026.9.1"],
   });
   assert.equal(await run(npm.command, npm.args, legacy, npm), 0);
 }
@@ -112,6 +113,7 @@ assert.equal(
       diagnoseStartup
         ? "--diagnose-startup"
         : path.join(legacy, "node_modules/openclaw/openclaw.mjs"),
+      ...(legacyOnly ? ["--legacy-only"] : []),
     ],
     harnessRoot,
   ),
