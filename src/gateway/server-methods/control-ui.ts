@@ -232,13 +232,14 @@ export function createControlUiHandlers(
         }
       };
       try {
-        if (!connId) {
+        if (!client || !connId) {
           throw clientUnavailable;
         }
         assertActive();
         const result = await loadMedia(parsed.source, context, {
           agentId: session?.agentId,
           connId,
+          client,
           sessionKey: session?.sessionKey,
           assertActive,
         });

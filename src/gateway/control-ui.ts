@@ -108,6 +108,7 @@ const CONTROL_UI_ASSISTANT_MEDIA_TICKET_TTL_MS = 5 * 60 * 1000;
 const CONTROL_UI_ASSETS_MISSING_MESSAGE =
   "Control UI assets not found. Build them with `pnpm ui:build` (auto-installs UI deps), or run `pnpm ui:dev` during development.";
 const controlUiAssistantMediaTicketSecret = randomBytes(32);
+const assistantMediaClientKeys = new WeakMap<object, string>();
 
 type ControlUiRequestOptions = {
   basePath?: string;
@@ -275,11 +276,18 @@ type AssistantMediaCapability = AssistantMediaAvailability & {
   mediaTicketExpiresAt?: string;
 };
 
+type AssistantMediaAuthority = {
+  agentId?: string;
+  sessionKey?: string;
+  assertActive?: () => void;
+} & ({ connId: string; client: object } | { connId?: undefined; client?: undefined });
+
 type AssistantMediaTicketPayload = {
   scope: typeof CONTROL_UI_ASSISTANT_MEDIA_TICKET_SCOPE;
   source: string;
   agentId?: string;
   connId?: string;
+  connInstance?: string;
   sessionKey?: string;
   exp: number;
 };
@@ -290,9 +298,20 @@ function signAssistantMediaTicketPayload(encodedPayload: string): string {
     .digest("base64url");
 }
 
+function assistantMediaClientKey(client: object): string {
+  // Only issuance creates bindings. A copied/reused connId cannot transfer this
+  // process-local capability to a different client object; weak keys follow its lifetime.
+  let key = assistantMediaClientKeys.get(client);
+  if (!key) {
+    key = randomBytes(16).toString("base64url");
+    assistantMediaClientKeys.set(client, key);
+  }
+  return key;
+}
+
 function createAssistantMediaTicket(
   source: string,
-  authority?: { agentId?: string; connId?: string; sessionKey?: string },
+  authority?: AssistantMediaAuthority,
   nowMs = Date.now(),
 ) {
   const now = asDateTimestampMs(nowMs);
@@ -307,7 +326,9 @@ function createAssistantMediaTicket(
     scope: CONTROL_UI_ASSISTANT_MEDIA_TICKET_SCOPE,
     source,
     ...(authority?.agentId ? { agentId: authority.agentId } : {}),
-    ...(authority?.connId ? { connId: authority.connId } : {}),
+    ...(authority?.connId
+      ? { connId: authority.connId, connInstance: assistantMediaClientKey(authority.client) }
+      : {}),
     ...(authority?.sessionKey ? { sessionKey: authority.sessionKey } : {}),
     exp,
   };
@@ -349,6 +370,8 @@ function verifyAssistantMediaTicket(
       payload.source !== source ||
       (payload.agentId !== undefined && typeof payload.agentId !== "string") ||
       (payload.connId !== undefined && typeof payload.connId !== "string") ||
+      (payload.connInstance !== undefined && typeof payload.connInstance !== "string") ||
+      (payload.connId === undefined) !== (payload.connInstance === undefined) ||
       (payload.sessionKey !== undefined && typeof payload.sessionKey !== "string") ||
       typeof payload.exp !== "number" ||
       !Number.isFinite(payload.exp) ||
@@ -361,6 +384,7 @@ function verifyAssistantMediaTicket(
       source,
       ...(payload.agentId ? { agentId: payload.agentId } : {}),
       ...(payload.connId ? { connId: payload.connId } : {}),
+      ...(payload.connInstance ? { connInstance: payload.connInstance } : {}),
       ...(payload.sessionKey ? { sessionKey: payload.sessionKey } : {}),
       exp: payload.exp,
     };
@@ -417,7 +441,7 @@ function classifyAssistantMediaError(err: unknown): AssistantMediaAvailability {
 async function resolveAssistantMediaCapability(
   source: string,
   localRoots: readonly string[],
-  authority?: { agentId?: string; connId?: string; sessionKey?: string; assertActive?: () => void },
+  authority?: AssistantMediaAuthority,
 ): Promise<AssistantMediaCapability> {
   const assertActive = authority?.assertActive;
   try {
@@ -489,7 +513,7 @@ async function resolveAssistantMediaCapability(
 export async function resolveControlUiAssistantMedia(
   source: string,
   config: OpenClawConfig,
-  authority: { agentId?: string; connId: string; sessionKey?: string; assertActive: () => void },
+  authority: AssistantMediaAuthority & { connId: string; assertActive: () => void },
 ): Promise<AssistantMediaGetResult> {
   const normalizedSource = normalizeAssistantMediaSource(source);
   if (!normalizedSource) {
@@ -535,7 +559,11 @@ function resolveAssistantMediaTicketAuthority(
     return { agentId: ticket?.agentId ?? opts?.agentId };
   }
   const client = [...(opts?.clients ?? [])].find(
-    (candidate) => candidate.connId === ticket.connId && !candidate.invalidatedReason,
+    (candidate) =>
+      candidate.connId === ticket.connId &&
+      !candidate.invalidatedReason &&
+      ticket.connInstance !== undefined &&
+      assistantMediaClientKeys.get(candidate) === ticket.connInstance,
   );
   if (!client) {
     return null;

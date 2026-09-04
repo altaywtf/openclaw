@@ -84,6 +84,7 @@ describe("assistant.media.get", () => {
     expect(loadMedia).toHaveBeenCalledWith("/tmp/browser-shot.png", context, {
       agentId: "main",
       connId: "control-ui-client",
+      client,
       sessionKey: "agent:main:main",
       assertActive: expect.any(Function),
     });
@@ -129,6 +130,7 @@ describe("assistant.media.get", () => {
     expect(loadMedia).toHaveBeenCalledWith("/tmp/research/output.png", context, {
       agentId: "research",
       connId: "control-ui-client",
+      client,
       sessionKey: "agent:research:main",
       assertActive: expect.any(Function),
     });

@@ -1097,6 +1097,63 @@ describe("handleControlUiHttpRequest", () => {
     }
   });
 
+  it("binds a media ticket to its minting client even when a replacement reuses the connection ID", async () => {
+    await withAllowedAssistantMediaRoot({
+      prefix: "ui-media-client-instance-",
+      fn: async (tmpRoot) => {
+        const filePath = path.join(tmpRoot, "photo.png");
+        await fs.writeFile(filePath, REAL_PNG);
+        const config: OpenClawConfig = {};
+        // SAFETY: this route reads only connection identity/invalidation; no socket is used.
+        const original = { connId: "shared-connection-id" } as GatewayWsClient;
+        const replacement = { ...original };
+        const clients = new Set([original]);
+        const mint = async (client: typeof original) => {
+          const authority = {
+            agentId: "main",
+            connId: client.connId,
+            client,
+            assertActive: () => {},
+          };
+          const result = await resolveControlUiAssistantMedia(filePath, config, authority);
+          expect(result.available).toBe(true);
+          const ticket = result.available ? result.mediaTicket : "";
+          return `/__openclaw__/assistant-media?source=${encodeURIComponent(filePath)}&mediaTicket=${encodeURIComponent(ticket)}`;
+        };
+        const originalUrl = await mint(original);
+        const intact = await runAssistantMediaRequest({
+          url: originalUrl,
+          method: "GET",
+          config,
+          clients,
+        });
+        expect(intact.res.statusCode).toBe(200);
+        clients.delete(original);
+        clients.add(replacement);
+        // Give the replacement its own valid capability too: mere registration
+        // under the reused ID must not resurrect the original client's ticket.
+        const replacementUrl = await mint(replacement);
+        openLocalFileSafelyMock.mockClear();
+        const revoked = await runAssistantMediaRequest({
+          url: originalUrl,
+          method: "GET",
+          config,
+          clients,
+        });
+        expect(revoked.res.statusCode).toBe(401);
+        expect(revoked.end).toHaveBeenCalledWith("Unauthorized");
+        expect(openLocalFileSafelyMock).not.toHaveBeenCalled();
+        const current = await runAssistantMediaRequest({
+          url: replacementUrl,
+          method: "GET",
+          config,
+          clients,
+        });
+        expect(current.res.statusCode).toBe(200);
+      },
+    });
+  });
+
   it.each([
     {
       revocation: "the minting connection is invalidated",
@@ -1137,6 +1194,7 @@ describe("handleControlUiHttpRequest", () => {
           const minted = await resolveControlUiAssistantMedia(filePath, config, {
             agentId: "main",
             connId: "ticket-race-conn",
+            client,
             assertActive: () => {},
             ...(sessionKey ? { sessionKey } : {}),
           });
@@ -1218,6 +1276,7 @@ describe("handleControlUiHttpRequest", () => {
           const minted = await resolveControlUiAssistantMedia(filePath, config, {
             agentId: "main",
             connId: client.connId,
+            client,
             assertActive: () => {},
           });
           expect(minted.available).toBe(true);

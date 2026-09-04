@@ -76,7 +76,6 @@ export function resolveAssistantAttachmentAvailability(
     "assistant-attachment",
     cacheKey,
     onRequestUpdate,
-    source,
   );
   const cached = resource.value;
   let refreshingAvailability: Extract<
@@ -216,7 +215,6 @@ export function retryAssistantAttachmentAvailability(
     "assistant-attachment",
     cacheKey,
     onRequestUpdate,
-    source,
   );
   resource.abortController?.abort();
   resource.abortController = undefined;
