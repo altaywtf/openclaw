@@ -1,6 +1,7 @@
 // Vitest UI package config tests validate UI package test project settings.
 import { globSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildVitestRunPlans } from "../scripts/test-projects.test-support.mts";
 import uiConfig from "../ui/vitest.config.ts";
@@ -105,8 +106,11 @@ describe("ui package vitest config", () => {
     const tmp = path.join(root, "tmp");
     mkdirSync(home);
     mkdirSync(tmp);
+    const fixture = fileURLToPath(
+      new URL("./fixtures/vitest-browser-project-root.mjs", import.meta.url),
+    );
     const result = await runVitestShutdownCommand({
-      args: ["test/fixtures/vitest-browser-project-root.mjs", reportPath],
+      args: [fixture, reportPath],
       signal,
       timeoutMs: DEFAULT_VITEST_TEST_TIMEOUT_MS,
       env: {
