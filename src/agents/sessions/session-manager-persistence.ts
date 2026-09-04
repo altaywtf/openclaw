@@ -14,7 +14,7 @@ import {
 import { copyCodeModeSourceAppendOptions } from "../transcript-code-mode-source.js";
 import { isIndexedSessionEntry, parseOpaqueLeafEntry } from "./session-manager-codec.js";
 import { SessionManagerCore } from "./session-manager-core.js";
-import type { AppendPersistenceOptions, SessionEntry } from "./session-manager-types.js";
+import type { AppendPersistenceOptions, FileEntry, SessionEntry } from "./session-manager-types.js";
 
 type PersistRecordResult =
   | undefined
@@ -43,19 +43,24 @@ export class SessionManagerPersistence extends SessionManagerCore {
     predicate: (entry: SessionEntry) => boolean,
     options?: { preserveTrailing?: (entry: SessionEntry) => boolean },
   ): number {
-    this.ensureCompletePersistedHistory();
-    const expectedPersistedEntries = this.getPersistedFileEntries();
-    const originalState = {
-      appendMode: this.appendMode,
-      appendParentId: this.appendParentId,
-      fileEntries: this.fileEntries.slice(),
-      leafId: this.leafId,
-      opaqueFileEntries: this.opaqueFileEntries.map((entry) => ({ ...entry })),
-      pendingDeliberateAppend: this.pendingDeliberateAppend,
-    };
-    let preservedStart = this.fileEntries.length;
+    // Prepare on a detached tree so failed persistence leaves live readers and retries unchanged.
+    const prepared = new SessionManagerPersistence(
+      this.cwd,
+      this.persistenceTarget,
+      this.fileEntries,
+      undefined,
+      this.transcriptMutationAt,
+    );
+    prepared.opaqueFileEntries = this.opaqueFileEntries.map((entry) => ({ ...entry }));
+    prepared.buildIndex();
+    prepared.boundedContextLimits = this.boundedContextLimits;
+    prepared.boundedContextIncomplete = this.boundedContextIncomplete;
+    prepared.persistedBoundaryCount = this.persistedBoundaryCount;
+    prepared.ensureCompletePersistedHistory();
+    const expectedPersistedEntries = prepared.getPersistedFileEntries();
+    let preservedStart = prepared.fileEntries.length;
     while (preservedStart > 1) {
-      const entry = this.fileEntries[preservedStart - 1];
+      const entry = prepared.fileEntries[preservedStart - 1];
       if (!isIndexedSessionEntry(entry) || !options?.preserveTrailing?.(entry)) {
         break;
       }
@@ -64,7 +69,7 @@ export class SessionManagerPersistence extends SessionManagerCore {
 
     let removeStart = preservedStart;
     while (removeStart > 1) {
-      const entry = this.fileEntries[removeStart - 1];
+      const entry = prepared.fileEntries[removeStart - 1];
       if (!isIndexedSessionEntry(entry) || !predicate(entry)) {
         break;
       }
@@ -75,22 +80,21 @@ export class SessionManagerPersistence extends SessionManagerCore {
     }
 
     const shiftOpaqueIndexesAfterRemoval = (start: number, count: number): void => {
-      for (const opaqueEntry of this.opaqueFileEntries) {
+      for (const opaqueEntry of prepared.opaqueFileEntries) {
         const removedBeforeOpaque = Math.max(0, Math.min(count, opaqueEntry.index - start));
         opaqueEntry.index -= removedBeforeOpaque;
       }
     };
     const removedCount = preservedStart - removeStart;
     const persistedPrefixLength =
-      removeStart +
-      originalState.opaqueFileEntries.filter((entry) => entry.index < removeStart).length;
+      removeStart + prepared.opaqueFileEntries.filter((entry) => entry.index < removeStart).length;
     shiftOpaqueIndexesAfterRemoval(removeStart, removedCount);
-    const removedEntries = this.fileEntries.splice(removeStart, removedCount) as SessionEntry[];
+    const removedEntries = prepared.fileEntries.splice(removeStart, removedCount) as SessionEntry[];
     const removedParentById = new Map(
       removedEntries.map((entry) => [entry.id, entry.parentId] as const),
     );
-    for (let index = removeStart; index < this.fileEntries.length;) {
-      const entry = this.fileEntries[index];
+    for (let index = removeStart; index < prepared.fileEntries.length;) {
+      const entry = prepared.fileEntries[index];
       if (
         isIndexedSessionEntry(entry) &&
         entry.type === "label" &&
@@ -98,7 +102,7 @@ export class SessionManagerPersistence extends SessionManagerCore {
       ) {
         removedParentById.set(entry.id, entry.parentId);
         shiftOpaqueIndexesAfterRemoval(index, 1);
-        this.fileEntries.splice(index, 1);
+        prepared.fileEntries.splice(index, 1);
         continue;
       }
       index += 1;
@@ -114,14 +118,14 @@ export class SessionManagerPersistence extends SessionManagerCore {
       return currentId;
     };
     const replacementParentId = resolveRetainedParentId(removedEntries[0]?.parentId ?? null);
-    this.fileEntries = this.fileEntries.map((entry) => {
+    prepared.fileEntries = prepared.fileEntries.map((entry) => {
       if (!isIndexedSessionEntry(entry)) {
         return entry;
       }
       const parentId = resolveRetainedParentId(entry.parentId);
       return parentId === entry.parentId ? entry : ({ ...entry, parentId } as SessionEntry);
     });
-    this.opaqueFileEntries = this.opaqueFileEntries.map((opaqueEntry) => {
+    prepared.opaqueFileEntries = prepared.opaqueFileEntries.map((opaqueEntry) => {
       if (!isRecord(opaqueEntry.record)) {
         return opaqueEntry;
       }
@@ -154,40 +158,32 @@ export class SessionManagerPersistence extends SessionManagerCore {
       };
     });
 
-    this.clampOpaqueFileEntryIndexes();
-    this.buildIndex();
-    this.leafId = this.resolveCanonicalParentId(replacementParentId);
-    this.appendParentId = replacementParentId;
-    const persistenceTarget = this.persistenceTarget;
-    if (persistenceTarget) {
-      let committedMutationAt: number | null | undefined;
-      try {
-        if (
-          !replaceTranscriptSuffixEventsSync(
-            persistenceTarget,
-            expectedPersistedEntries,
-            this.getPersistedFileEntries(),
-            persistedPrefixLength,
-            this.transcriptMutationAt,
-            (mutationAt) => {
-              committedMutationAt = mutationAt;
-            },
-          )
-        ) {
-          throw new Error(`SQLite session changed before trimming ${this.sessionId}`);
-        }
-      } catch (error) {
-        this.fileEntries = originalState.fileEntries;
-        this.opaqueFileEntries = originalState.opaqueFileEntries;
-        this.buildIndex();
-        this.leafId = originalState.leafId;
-        this.appendParentId = originalState.appendParentId;
-        this.appendMode = originalState.appendMode;
-        this.pendingDeliberateAppend = originalState.pendingDeliberateAppend;
-        throw error;
-      }
-      this.transcriptMutationAt = committedMutationAt;
+    prepared.clampOpaqueFileEntryIndexes();
+    prepared.buildIndex();
+    prepared.leafId = prepared.resolveCanonicalParentId(replacementParentId);
+    prepared.appendParentId = replacementParentId;
+    const events = prepared.getPersistedFileEntries(prepared.appendParentId, prepared.appendMode);
+    let committedMutationAt: number | null | undefined;
+    if (
+      this.persistenceTarget &&
+      !replaceTranscriptSuffixEventsSync(
+        this.persistenceTarget,
+        expectedPersistedEntries,
+        events,
+        persistedPrefixLength,
+        prepared.transcriptMutationAt,
+        (mutationAt) => {
+          committedMutationAt = mutationAt;
+        },
+      )
+    ) {
+      throw new Error(`SQLite session changed before trimming ${this.sessionId}`);
     }
+    // SAFETY: The reload codec partitions opaque records from canonical entries.
+    this.setLoadedSessionTarget(this.persistenceTarget, events as FileEntry[]);
+    this.boundedContextIncomplete = false;
+    this.persistedBoundaryCount = undefined;
+    this.transcriptMutationAt = committedMutationAt;
     return removedEntries.length;
   }
 

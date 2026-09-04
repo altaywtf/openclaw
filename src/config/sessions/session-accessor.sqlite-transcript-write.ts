@@ -1,5 +1,4 @@
 import { err, ok, type Result } from "@openclaw/normalization-core/result";
-import { redactIdentifier } from "../../logging/redact-identifier.js";
 import {
   openOpenClawAgentDatabase,
   resolveOpenClawAgentSqlitePath,
@@ -57,6 +56,10 @@ import {
   prepareSqliteTranscriptSuffixMutation,
   replaceSqliteTranscriptSuffixInTransaction,
 } from "./session-accessor.sqlite-transcript-suffix.js";
+import {
+  assertLockedTranscriptWriteAllowed,
+  resolveTranscriptAppendRefusal,
+} from "./session-accessor.sqlite-transcript-write-guard.js";
 import type {
   SessionTranscriptRuntimeTarget,
   SessionTranscriptWriteTransactionContext,
@@ -494,60 +497,6 @@ export function appendTranscriptMessageSync<TMessage>(
     throw new SessionTranscriptWriterClaimReboundError(result.error);
   }
   return result;
-}
-
-function resolveTranscriptAppendRefusal(
-  entry: InternalSessionEntry | undefined,
-  resolved: ResolvedTranscriptScope,
-  scope: SessionTranscriptWriteScope,
-): TranscriptAppendRefusal | undefined {
-  if (
-    entry &&
-    entry.sessionId === resolved.sessionId &&
-    (scope.expectedLifecycleRevision === undefined ||
-      entry.lifecycleRevision === scope.expectedLifecycleRevision) &&
-    (scope.expectedWriterRunId === undefined ||
-      entry.activeWriterRunId === scope.expectedWriterRunId)
-  ) {
-    return undefined;
-  }
-  const identity = {
-    agentIdHash: redactIdentifier(resolved.agentId),
-    expectedSessionIdHash: redactIdentifier(resolved.sessionId),
-    sessionKeyHash: redactIdentifier(resolved.sessionKey),
-  };
-  if (!entry) {
-    return { ...identity, code: "session-entry-missing" };
-  }
-  return {
-    ...identity,
-    actualSessionIdHash: redactIdentifier(entry.sessionId),
-    code: "session-rebound",
-  };
-}
-
-function assertLockedTranscriptWriteAllowed(
-  database: OpenClawAgentDatabase,
-  resolved: ResolvedTranscriptScope,
-  scope: SessionTranscriptWriteScope,
-): void {
-  const fencedScope = {
-    ...scope,
-    sessionId: resolved.sessionId,
-    sessionKey: resolved.sessionKey,
-  };
-  assertOwnedTranscriptWriteCommit(fencedScope);
-  if (
-    fencedScope.expectedLifecycleRevision === undefined &&
-    fencedScope.expectedWriterRunId === undefined
-  ) {
-    return;
-  }
-  const fresh = readSessionEntryRow(database, resolved.sessionKey);
-  const refusal = resolveTranscriptAppendRefusal(fresh?.entry, resolved, fencedScope);
-  if (refusal) {
-    throw new SessionTranscriptWriterClaimReboundError(refusal);
-  }
 }
 
 /** Runs read/append transcript work under one SQLite writer-queue critical section. */
