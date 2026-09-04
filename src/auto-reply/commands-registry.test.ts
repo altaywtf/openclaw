@@ -1,6 +1,9 @@
 /** Tests command registry definitions, native specs, aliases, and argument menus. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { listProviderChannelLoginChoices } from "../plugins/provider-login-options.js";
+import {
+  formatProviderLoginChoiceRef,
+  listProviderChannelLoginChoices,
+} from "../plugins/provider-login-options.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
 import { createChannelTestPluginBase, createTestRegistry } from "../test-utils/channel-plugins.js";
 import {
@@ -240,7 +243,7 @@ describe("commands registry", () => {
         : [],
     ).toEqual(
       listProviderChannelLoginChoices().map((choice) => ({
-        value: choice.command,
+        value: formatProviderLoginChoiceRef(choice),
         label: choice.label,
       })),
     );

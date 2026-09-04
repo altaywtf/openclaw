@@ -7,6 +7,7 @@ import {
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { clearPluginCommands, registerPluginCommand } from "openclaw/plugin-sdk/plugin-runtime";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { telegramBotInfoForTest } from "./bot.create-telegram-bot.test-support.js";
 
 const retainNativeCatalog = vi.hoisted(() => vi.fn());
 
@@ -193,6 +194,72 @@ describe("registerTelegramNativeCommands real plugin registry", () => {
 
     expectLastDeliveredReplyText("paired:now");
     expect(sendMessage).not.toHaveBeenCalledWith(123, "Command not found.");
+  });
+
+  it("delivers core login choices and resolves a selected choice without reopening the menu", async () => {
+    const { bot, commandHandlers, sendMessage } = createCommandBot();
+    const cfg: OpenClawConfig = {
+      commands: { native: true, ownerAllowFrom: ["200"] },
+      agents: { list: [{ id: "main" }] },
+    };
+    const dispatchCallback = registerTelegramNativeCommands({
+      ...createNativeCommandTestParams(cfg),
+      bot,
+    });
+    const handler = requireCommandHandler(commandHandlers, "login");
+    await handler(createPrivateCommandContext({ match: "ollama", userId: 200 }));
+
+    expect(deliverReplies).toHaveBeenCalledWith(
+      expect.objectContaining({
+        replies: [
+          expect.objectContaining({
+            presentationTextMode: "fallback",
+            presentation: {
+              blocks: [
+                { type: "text", text: "Choose how to connect:" },
+                {
+                  type: "buttons",
+                  buttons: [
+                    {
+                      label: "Ollama Cloud",
+                      action: { type: "command", command: "/login ollama/ollama-cloud" },
+                    },
+                    {
+                      label: "Ollama server",
+                      action: { type: "command", command: "/login ollama/ollama" },
+                    },
+                  ],
+                },
+              ],
+            },
+          }),
+        ],
+      }),
+    );
+    if (!dispatchCallback) {
+      throw new Error("Expected a native command callback dispatcher");
+    }
+    await dispatchCallback({
+      commandText: "/login ollama/ollama-cloud",
+      botUser: telegramBotInfoForTest,
+      callbackQuery: {
+        id: "connection-choice",
+        chat_instance: "connection-choice-chat",
+        data: "tgcmd:/login ollama/ollama-cloud",
+        from: { id: 200, is_bot: false, first_name: "Owner" },
+        message: {
+          message_id: 10,
+          date: Math.floor(Date.now() / 1000),
+          chat: { id: 100, type: "private", first_name: "Owner" },
+        },
+      },
+    });
+    expect(deliverReplies).toHaveBeenCalledOnce();
+    expect(sendMessage).toHaveBeenCalledWith(
+      expect.any(Number),
+      expect.stringContaining("Ollama Cloud needs secure input"),
+      expect.any(Object),
+    );
   });
 
   it("keeps a custom menu description while registering the same-name plugin handler", async () => {

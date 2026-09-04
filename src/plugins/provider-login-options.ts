@@ -161,6 +161,12 @@ function normalizeLoginInput(value: string | undefined): string {
   return normalizeLowercaseStringOrEmpty(value ?? "").replace(/_/gu, "-");
 }
 
+export function formatProviderLoginChoiceRef(
+  choice: Pick<ProviderChannelLoginChoice, "pluginId" | "choiceId">,
+): string {
+  return `${encodeURIComponent(choice.pluginId)}/${encodeURIComponent(choice.choiceId)}`;
+}
+
 function channelLoginChoiceKey(
   choice: Pick<ProviderChannelLoginChoice, "pluginId" | "choiceId" | "providerId" | "methodId">,
 ): string {
@@ -262,10 +268,28 @@ export function resolveProviderChannelLoginChoice(
     const defaults = metadata.filter((choice) => choice.channelLogin?.default === true);
     return defaults.length > 0 ? select(defaults) : { status: "unsupported", choices };
   }
+  const qualifiedChoices = metadata.filter(
+    (choice) => normalizeLoginInput(formatProviderLoginChoiceRef(choice)) === normalized,
+  );
+  // A stale qualified choice must not fall through to another plugin's alias.
+  if (normalized.includes("/")) {
+    return qualifiedChoices.length > 0
+      ? select(qualifiedChoices)
+      : { status: "unsupported", choices };
+  }
+  const groupChoices = metadata.filter(
+    (choice) => normalizeLoginInput(choice.groupId) === normalized,
+  );
   const exactChoices = metadata.filter(
     (choice) => normalizeLoginInput(choice.choiceId) === normalized,
   );
-  if (exactChoices.length > 0) {
+  if (
+    exactChoices.length > 0 &&
+    (groupChoices.length <= 1 ||
+      exactChoices.some(
+        (choice) => choice.channelLogin !== undefined || isProviderLoginChoiceStartable(choice),
+      ))
+  ) {
     return select(exactChoices);
   }
   const providerOrGroup = metadata.filter(

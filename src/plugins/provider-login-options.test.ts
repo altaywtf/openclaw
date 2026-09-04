@@ -31,6 +31,7 @@ function choice(params: {
   guided?: "auth" | "secret" | "setup";
   channelLogin?: boolean;
   onboardingScopes?: string[];
+  groupId?: string;
 }) {
   const guided = params.guided ?? "auth";
   return {
@@ -38,6 +39,7 @@ function choice(params: {
     method: params.method,
     choiceId: params.choiceId,
     choiceLabel: params.choiceId,
+    ...(params.groupId ? { groupId: params.groupId } : {}),
     ...(guided === "secret"
       ? { appGuidedSecret: true }
       : guided === "auth"
@@ -80,7 +82,7 @@ describe("provider channel login choices", () => {
       .map((entry) => entry.choiceId);
     const missingLoginChoices = visibleChoices
       .filter((entry) => {
-        const resolution = resolveProviderChannelLoginChoice(entry.choiceId);
+        const resolution = resolveProviderChannelLoginChoice(`${entry.pluginId}/${entry.choiceId}`);
         return resolution.status !== "resolved" || resolution.choice.choiceId !== entry.choiceId;
       })
       .map((entry) => entry.choiceId);
@@ -166,6 +168,30 @@ describe("provider channel login choices", () => {
     });
   });
 
+  it("keeps an explicit login method ahead of a colliding family name", () => {
+    const snapshot = metadataSnapshot([
+      choice({
+        provider: "alpha",
+        method: "browser",
+        choiceId: "alpha",
+        groupId: "alpha",
+        channelLogin: false,
+      }),
+      choice({
+        provider: "alpha",
+        method: "device",
+        choiceId: "alpha-device",
+        groupId: "alpha",
+      }),
+    ]);
+    expect(
+      resolveProviderChannelLoginChoice("alpha", { metadataSnapshot: snapshot }),
+    ).toMatchObject({
+      status: "resolved",
+      choice: { choiceId: "alpha", methodId: "browser", mode: "sign-in" },
+    });
+  });
+
   it("resolves manifest-declared provider setup without treating it as login", () => {
     const snapshot = metadataSnapshot([
       choice({
@@ -184,6 +210,46 @@ describe("provider channel login choices", () => {
       choice: expect.objectContaining({ mode: "setup", providerId: "self-hosted" }),
     });
   });
+
+  it.each(["alpha", "beta"])(
+    "offers the whole %s connection family before a colliding setup choice",
+    (family) => {
+      const snapshot = metadataSnapshot([
+        choice({
+          provider: family,
+          method: "local",
+          choiceId: family,
+          groupId: family,
+          guided: "setup",
+          channelLogin: false,
+        }),
+        choice({
+          provider: `${family}-cloud`,
+          method: "api-key",
+          choiceId: `${family}-cloud`,
+          groupId: family,
+          guided: "secret",
+          channelLogin: false,
+        }),
+      ]);
+      const resolution = resolveProviderChannelLoginChoice(family, {
+        metadataSnapshot: snapshot,
+      });
+
+      expect(resolution.status).toBe("ambiguous");
+      if (resolution.status !== "ambiguous") {
+        throw new Error("Expected a connection choice");
+      }
+      expect(resolution.choices.map((entry) => entry.mode)).toEqual(["setup", "secret"]);
+      for (const offered of resolution.choices) {
+        expect(
+          resolveProviderChannelLoginChoice(`${offered.pluginId}/${offered.choiceId}`, {
+            metadataSnapshot: snapshot,
+          }),
+        ).toEqual({ status: "resolved", choice: offered });
+      }
+    },
+  );
 
   it("excludes image-only manifest choices from Control UI and chat login surfaces", () => {
     const snapshot = metadataSnapshot([
@@ -235,7 +301,12 @@ describe("provider channel login choices", () => {
             id: "beta-auth",
             origin: "bundled",
             providerAuthChoices: [
-              choice({ provider: "beta", method: "device", choiceId: "shared-login" }),
+              choice({
+                provider: "beta",
+                method: "device",
+                choiceId: "shared-login",
+                aliases: ["alpha-auth/shared-login"],
+              }),
             ],
           },
         ],
@@ -251,6 +322,19 @@ describe("provider channel login choices", () => {
         expect.objectContaining({ pluginId: "beta-auth", providerId: "beta" }),
       ],
     });
+    for (const pluginId of ["alpha-auth", "beta-auth"]) {
+      expect(
+        resolveProviderChannelLoginChoice(`${pluginId}/shared-login`, {
+          metadataSnapshot: snapshot,
+        }),
+      ).toMatchObject({ status: "resolved", choice: { pluginId } });
+    }
+    expect(
+      resolveProviderChannelLoginChoice("alpha-auth/shared-login", {
+        config: { plugins: { entries: { "alpha-auth": { enabled: false } } } },
+        metadataSnapshot: snapshot,
+      }),
+    ).toMatchObject({ status: "unsupported" });
   });
 
   it.each([

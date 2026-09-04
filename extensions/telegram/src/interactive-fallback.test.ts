@@ -491,4 +491,68 @@ describe("canonicalizeTelegramPresentationPayload", () => {
     expect(result.text).toBe("Plain fallback body");
     expect(result.presentation).toBeUndefined();
   });
+
+  it.each([false, true])(
+    "does not repeat command fallbacks beside native buttons (rich: %s)",
+    (richTables) => {
+      const result = canonicalizeTelegramPresentationPayload(
+        {
+          text: "Choose a connection:\nServer: `/login demo/server`",
+          presentationTextMode: "fallback",
+          presentation: {
+            blocks: [
+              { type: "text", text: "Choose a connection:" },
+              {
+                type: "buttons",
+                buttons: [
+                  {
+                    label: "Server",
+                    action: { type: "command", command: "/login demo/server" },
+                  },
+                ],
+              },
+            ],
+          },
+        },
+        { richTables },
+      );
+
+      expect(result.text).toBe("Choose a connection:");
+      expect(result.channelData?.telegram).toEqual({
+        buttons: [[{ text: "Server", callback_data: "tgcmd:/login demo/server" }]],
+      });
+    },
+  );
+
+  it.each([false, true])(
+    "keeps an oversized command actionable beside a native button (rich: %s)",
+    (richTables) => {
+      const longCommand = `/login ${"provider".repeat(10)}/choice`;
+      const result = canonicalizeTelegramPresentationPayload(
+        {
+          text: `Choose:\nShort: \`/login demo/server\`\nLong: \`${longCommand}\``,
+          presentationTextMode: "fallback",
+          presentation: {
+            blocks: [
+              { type: "text", text: "Choose:" },
+              {
+                type: "buttons",
+                buttons: [
+                  { label: "Short", action: { type: "command", command: "/login demo/server" } },
+                  { label: "Long", action: { type: "command", command: longCommand } },
+                ],
+              },
+            ],
+          },
+        },
+        { richTables },
+      );
+
+      expect(result.text).toContain(longCommand);
+      expect(result.text).not.toContain("/login demo/server");
+      expect(result.channelData?.telegram).toEqual({
+        buttons: [[{ text: "Short", callback_data: "tgcmd:/login demo/server" }]],
+      });
+    },
+  );
 });

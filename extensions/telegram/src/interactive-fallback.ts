@@ -259,13 +259,14 @@ export function canonicalizeTelegramPresentationPayload(
   const hasFallback =
     fallbackText.length > 0 &&
     (currentText === fallbackText || currentText.endsWith(`\n\n${fallbackText}`));
-  // presentationTextMode "fallback" marks payload.text as the authored plain
-  // rendering of the same presentation: rich accounts replace it with the
-  // native block rendering, plain accounts keep it and drop the generic flatten.
+  // Native controls replace their text fallback; retaining both repeats each choice.
+  // Text-only rendering keeps the producer's complete authored fallback.
   const text = textIsFallback
-    ? richTables
-      ? fallbackText || currentText
-      : currentText || fallbackText
+    ? nativeControlBlocks.length > 0
+      ? fallbackText
+      : richTables
+        ? fallbackText || currentText
+        : currentText || fallbackText
     : hasFallback
       ? currentText
       : [currentText, fallbackText].filter(Boolean).join("\n\n");

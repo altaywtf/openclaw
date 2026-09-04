@@ -7,7 +7,7 @@ import type { SessionEntry } from "../../config/sessions/types.js";
 import {
   decideProviderLoginSessionAdoption,
   createProviderLoginFlowRegistry,
-  formatProviderLoginChoices,
+  buildProviderLoginChoicesReply,
   formatProviderLoginCommand,
   formatProviderLoginComplete,
   formatProviderLoginControlUiHandoff,
@@ -312,15 +312,9 @@ export const handleLoginCommand: CommandHandler = async (params, allowTextComman
     workspaceDir: params.workspaceDir,
   });
   if (resolution.status !== "resolved") {
-    const available = formatProviderLoginChoices(resolution.choices);
     return {
       shouldContinue: false,
-      reply: {
-        text:
-          resolution.status === "ambiguous"
-            ? `Choose one provider login: ${available}.`
-            : `Unsupported login provider. Available provider access commands: ${available}.`,
-      },
+      reply: buildProviderLoginChoicesReply(resolution),
     };
   }
 

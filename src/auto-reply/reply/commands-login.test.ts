@@ -3,6 +3,10 @@ import type { ModelsAuthLoginFlowOptions } from "../../commands/models/auth.js";
 import type { SessionEntryUpdateOptions } from "../../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import {
+  formatProviderLoginChoiceRef,
+  listProviderChannelLoginChoices,
+} from "../../plugins/provider-login-options.js";
 import { buildBuiltinChatCommands } from "../commands-registry.shared.js";
 import type { HandleCommandsParams } from "./commands-types.js";
 import { buildCommandTestParams } from "./commands.test-harness.js";
@@ -221,11 +225,45 @@ describe("handleLoginCommand", () => {
   it("lists exact choices when a provider family has multiple channel logins", async () => {
     const result = await handleLoginCommand(buildLoginParams("/login minimax"), true);
 
-    expect(result?.reply?.text).toBe(
-      "Choose one provider login: `/login minimax-cn-oauth`, `/login minimax-global-oauth`.",
+    expect(result?.reply?.text).toContain("Choose how to connect:");
+    expect(result?.reply?.text).toContain("/login minimax/minimax-cn-oauth");
+    expect(result?.reply?.text).toContain("/login minimax/minimax-global-oauth");
+    expect(result?.reply?.presentation?.blocks).toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: "buttons" })]),
     );
     expect(runModelsAuthLoginFlowMock).not.toHaveBeenCalled();
   });
+
+  it.each(["discord", "slack", "telegram", "signal", "webchat"])(
+    "shares Ollama connection choices and selection handling on %s",
+    async (surface) => {
+      const overrides = {
+        ctx: { Provider: surface, Surface: surface, OriginatingChannel: surface },
+        command: { channel: surface, channelId: surface },
+      };
+      const result = await handleLoginCommand(buildLoginParams("/login ollama", overrides), true);
+      const buttons =
+        result?.reply?.presentation?.blocks.flatMap((block) =>
+          block.type === "buttons" ? block.buttons : [],
+        ) ?? [];
+
+      expect(buttons.map((button) => button.label)).toEqual(["Ollama Cloud", "Ollama server"]);
+      expect(result?.reply?.presentationTextMode).toBe("fallback");
+      for (const button of buttons) {
+        if (button.action?.type !== "command") {
+          throw new Error("Expected a portable command action");
+        }
+        expect(result?.reply?.text).toContain(button.action.command);
+        const selected = await handleLoginCommand(
+          buildLoginParams(button.action.command, overrides),
+          true,
+        );
+        expect(selected?.reply?.text).toContain(`choose “${button.label}”`);
+        expect(selected?.reply?.presentation).toBeUndefined();
+      }
+      expect(runModelsAuthLoginFlowMock).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(["web", "discord", "slack"] as const)(
     "supports /login codex on the %s command surface",
@@ -759,13 +797,10 @@ describe("handleLoginCommand", () => {
     const text = result?.reply?.text ?? "";
     expect(result?.shouldContinue).toBe(false);
     expect(text).toMatch(/^Unsupported login provider\. Available provider access commands:/u);
-    for (const command of [
-      "/login codex",
-      "/login xai",
-      "/login minimax-global-oauth",
-      "/login minimax-cn-oauth",
-    ]) {
-      expect(text).toContain(command);
+    for (const choice of listProviderChannelLoginChoices().filter(
+      (entry) => entry.mode === "chat",
+    )) {
+      expect(text).toContain(`/login ${formatProviderLoginChoiceRef(choice)}`);
     }
     expect(text).toContain("more in Control UI → Models");
     expect(text.length).toBeLessThan(1_000);

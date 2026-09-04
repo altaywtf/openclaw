@@ -4,6 +4,7 @@ import type {
   ModelsAuthLoginFlowResult,
 } from "../commands/models/auth.js";
 import {
+  buildProviderLoginChoicesReply,
   decideProviderLoginSessionAdoption,
   formatProviderLoginComplete,
   type ProviderChannelLoginChoice,
@@ -98,6 +99,30 @@ describe("provider channel login runtime", () => {
     ).toBe(
       "xAI (Grok) login complete. Your credential is saved, but this Gateway could not refresh its model catalog. Restart the Gateway, then use /models.",
     );
+  });
+
+  it("keeps native buttons and text fallback bound to the same exact choice", () => {
+    const reply = buildProviderLoginChoicesReply({
+      status: "ambiguous",
+      choices: [choice],
+    });
+    expect(reply.presentationTextMode).toBe("fallback");
+    expect(reply.presentation?.blocks).toContainEqual({
+      type: "buttons",
+      buttons: [
+        {
+          label: choice.label,
+          action: { type: "command", command: "/login xai/xai-oauth" },
+        },
+      ],
+    });
+    expect(reply.text).toContain(`${choice.label}: \`/login xai/xai-oauth\``);
+  });
+
+  it("gives a visible setup instruction when no connections are available", () => {
+    expect(buildProviderLoginChoicesReply({ status: "unsupported", choices: [] })).toEqual({
+      text: "No provider connections are available. Enable a provider plugin in Control UI → Models.",
+    });
   });
 
   it("keeps model-access failure ahead of a later refresh failure", () => {

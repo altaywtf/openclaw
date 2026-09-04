@@ -1,4 +1,7 @@
-import { listProviderChannelLoginChoices } from "../plugins/provider-login-options.js";
+import {
+  formatProviderLoginChoiceRef,
+  listProviderChannelLoginChoices,
+} from "../plugins/provider-login-options.js";
 /** Built-in command registry data for auto-reply commands. */
 import { buildBuiltinChatCommands } from "./commands-registry.shared.js";
 import type { ChatCommandDefinition } from "./commands-registry.types.js";
@@ -12,7 +15,7 @@ export function getChatCommands(): ChatCommandDefinition[] {
     listThinkingLevels,
     listProviderLoginChoices: () =>
       listProviderChannelLoginChoices().map((choice) => ({
-        value: choice.command,
+        value: formatProviderLoginChoiceRef(choice),
         label: choice.label,
       })),
   }));

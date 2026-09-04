@@ -4,11 +4,14 @@ import type {
   ModelsAuthLoginFlowResult,
 } from "../commands/models/auth.js";
 import {
+  formatProviderLoginChoiceRef,
   resolveProviderChannelLoginChoice,
   type ProviderChannelLoginChoice,
+  type ProviderChannelLoginResolution,
 } from "../plugins/provider-login-options.js";
 import { createLazyRuntimeMethodBinder, createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import type { OpenClawConfig } from "./config-contracts.js";
+import type { ReplyPayload } from "./reply-payload.js";
 import type { RuntimeEnv } from "./runtime-env.js";
 
 export type {
@@ -309,13 +312,44 @@ export function formatProviderLoginControlUiHandoff(choice: ProviderChannelLogin
     : `${choice.label} needs provider sign-in. Open Control UI → Models → Connect, then choose “${choice.label}” under Sign in.`;
 }
 
-export function formatProviderLoginChoices(choices: ProviderChannelLoginChoice[]): string {
-  const visible = choices
+export function buildProviderLoginChoicesReply(
+  resolution: Exclude<ProviderChannelLoginResolution, { status: "resolved" }>,
+): ReplyPayload {
+  const visible = resolution.choices
     .toSorted((a, b) => Number(b.mode === "chat") - Number(a.mode === "chat"))
     .slice(0, 8);
-  const commands = visible.map((choice) => `\`${formatProviderLoginCommand(choice)}\``).join(", ");
-  const remaining = choices.length - visible.length;
-  return remaining > 0 ? `${commands}, and ${remaining} more in Control UI → Models` : commands;
+  if (visible.length === 0) {
+    return {
+      text: "No provider connections are available. Enable a provider plugin in Control UI → Models.",
+    };
+  }
+  const heading =
+    resolution.status === "ambiguous"
+      ? "Choose how to connect:"
+      : "Unsupported login provider. Available provider access commands:";
+  const buttons = visible.map((choice) => ({
+    label: choice.label,
+    action: { type: "command" as const, command: `/login ${formatProviderLoginChoiceRef(choice)}` },
+  }));
+  const remaining = resolution.choices.length - visible.length;
+  const more = remaining > 0 ? `${remaining} more in Control UI → Models.` : undefined;
+  return {
+    text: [
+      heading,
+      ...buttons.map((button) => `${button.label}: \`${button.action.command}\``),
+      more,
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    presentationTextMode: "fallback",
+    presentation: {
+      blocks: [
+        { type: "text", text: heading },
+        { type: "buttons", buttons },
+        ...(more ? [{ type: "context" as const, text: more }] : []),
+      ],
+    },
+  };
 }
 
 export { resolveProviderChannelLoginChoice };

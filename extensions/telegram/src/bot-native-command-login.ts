@@ -3,7 +3,7 @@ import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import {
   decideProviderLoginSessionAdoption,
   createProviderLoginFlowRegistry,
-  formatProviderLoginChoices,
+  buildProviderLoginChoicesReply,
   formatProviderLoginCommand,
   formatProviderLoginComplete,
   formatProviderLoginControlUiHandoff,
@@ -117,13 +117,15 @@ export async function executeTelegramLoginCommand(params: {
     { config: dispatch.runtimeCfg },
   );
   if (resolution.status !== "resolved") {
-    const available = formatProviderLoginChoices(resolution.choices);
-    await sendLoginMessage(
-      resolution.status === "ambiguous"
-        ? `Choose one provider login: ${available}.`
-        : `Unsupported login provider. Available provider access commands: ${available}.`,
-    );
-    return false;
+    const { deliverReplies } = await dispatch.loadDeliveryRuntime();
+    const result = await deliverReplies({
+      replies: [buildProviderLoginChoicesReply(resolution)],
+      ...dispatch.buildDeliveryBaseOptions({
+        sessionKeyForInternalHooks: dispatch.targetSessionKey,
+        policySessionKey: dispatch.targetSessionKey,
+      }),
+    });
+    return result.delivered;
   }
   const loginChoice = resolution.choice;
   if (dispatch.isGroup) {

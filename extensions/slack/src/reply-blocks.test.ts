@@ -4,7 +4,11 @@ import {
 } from "openclaw/plugin-sdk/interactive-runtime";
 import { describe, expect, it } from "vitest";
 import { renderSlackMessagePresentationFallbackText } from "./presentation-fallback.js";
-import { resolveSlackReplyBlockResolution } from "./reply-blocks.js";
+import {
+  resolveSlackReplyBlockResolution,
+  resolveSlackReplyDeliveryMessages,
+  resolveSlackReplyRenderPlan,
+} from "./reply-blocks.js";
 
 describe("renderSlackMessagePresentationFallbackText", () => {
   it("includes complete portable table data in Slack accessibility text", () => {
@@ -357,6 +361,141 @@ describe("renderSlackMessagePresentationFallbackText", () => {
       type: "section",
       text: { type: "mrkdwn", text: "<@U123> literal", verbatim: true },
     });
+  });
+
+  it.each([false, true])(
+    "preserves authored fallback once when heading and command choices degrade to text (materialize=%s)",
+    (materializeAuthoredText) => {
+      const presentation = {
+        blocks: [
+          { type: "text", text: "Choose a connection." },
+          {
+            type: "buttons",
+            buttons: [
+              {
+                label: "Server",
+                action: { type: "command", command: "/connect service%2Fplugin/server" },
+              },
+              {
+                label: "Cloud",
+                action: { type: "command", command: "/connect service%2Fplugin/cloud" },
+              },
+            ],
+          },
+        ],
+      } satisfies MessagePresentation;
+      const text = [
+        "Choose a connection.",
+        "",
+        "1. Server: `/connect service%2Fplugin/server`",
+        "2. Cloud: `/connect service%2Fplugin/cloud`",
+      ].join("\n");
+      const payload = { text, presentation, presentationTextMode: "fallback" as const };
+      const resolution = resolveSlackReplyBlockResolution(payload, { materializeAuthoredText });
+      const messages = resolveSlackReplyDeliveryMessages({ ...resolution, text });
+
+      expect(messages).toEqual([{ text, textIsSlackPlainText: true }]);
+      expect(resolveSlackReplyRenderPlan(payload)).toEqual({ mode: "single", text });
+    },
+  );
+
+  it("preserves the exact authored fallback when no native presentation remains", () => {
+    const text = "Run the repair with `/repair workspace/project`.";
+    const payload = {
+      text,
+      presentationTextMode: "fallback" as const,
+      presentation: {
+        blocks: [
+          {
+            type: "buttons" as const,
+            buttons: [
+              {
+                label: "Repair",
+                action: { type: "command" as const, command: "/repair workspace/project" },
+              },
+            ],
+          },
+        ],
+      },
+    };
+    const resolution = resolveSlackReplyBlockResolution(payload, {
+      materializeAuthoredText: true,
+    });
+
+    expect(resolveSlackReplyDeliveryMessages({ ...resolution, text })).toEqual([
+      { text, textIsSlackPlainText: true },
+    ]);
+    expect(resolveSlackReplyRenderPlan(payload)).toEqual({ mode: "single", text });
+  });
+
+  it("keeps authored fallback out of native delivery and preview text", () => {
+    const presentation = {
+      blocks: [
+        {
+          type: "table",
+          caption: "Connection",
+          headers: ["Mode"],
+          rows: [["Server"]],
+        },
+        {
+          type: "buttons",
+          buttons: [{ label: "Help", action: { type: "url", url: "https://example.com/help" } }],
+        },
+      ],
+    } satisfies MessagePresentation;
+    const payload = {
+      text: "Mode: Server\nHelp: https://example.com/help",
+      presentationTextMode: "fallback" as const,
+      presentation,
+    };
+    const resolution = resolveSlackReplyBlockResolution(payload, {
+      materializeAuthoredText: true,
+    });
+    const messages = resolveSlackReplyDeliveryMessages({ ...resolution, text: payload.text });
+    const preview = resolveSlackReplyRenderPlan(payload);
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.blocks?.map((block) => block.type)).toEqual(["data_table", "actions"]);
+    expect(preview.mode).toBe("single");
+    if (preview.mode !== "single") {
+      throw new Error("Expected one native presentation message");
+    }
+    expect(preview.blocks).toEqual(messages[0]?.blocks);
+    expect(preview.text).toBe(messages[0]?.text);
+    expect(preview.text).not.toContain(payload.text);
+  });
+
+  it.each([false, true])("preserves a command beside a native link (same row: %s)", (sameRow) => {
+    const link = {
+      label: "Help",
+      action: { type: "url" as const, url: "https://example.com/help" },
+    };
+    const command = {
+      label: "Connect",
+      action: { type: "command" as const, command: "/login demo/connection" },
+    };
+    const presentation: MessagePresentation = {
+      blocks: sameRow
+        ? [{ type: "buttons", buttons: [link, command] }]
+        : [
+            { type: "buttons", buttons: [link] },
+            { type: "buttons", buttons: [command] },
+          ],
+    };
+    const text = `Help: ${link.action.url}\nConnect: \`${command.action.command}\``;
+    const payload = { text, presentationTextMode: "fallback" as const, presentation };
+    const messages = resolveSlackReplyDeliveryMessages({
+      ...resolveSlackReplyBlockResolution(payload, { materializeAuthoredText: true }),
+      text,
+    });
+
+    expect(messages.map((message) => message.text).join("\n")).toContain(command.action.command);
+    expect(JSON.stringify(messages)).toContain(link.action.url);
+    expect(resolveSlackReplyRenderPlan(payload)).toMatchObject(
+      sameRow
+        ? { mode: "single", text }
+        : { mode: "split", fallbackText: expect.stringContaining(command.action.command) },
+    );
   });
 
   it("recognizes authored text already represented by native chart data", () => {
