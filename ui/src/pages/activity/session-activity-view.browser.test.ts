@@ -1,6 +1,7 @@
 import { render } from "lit";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
+import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import { SessionActivityController } from "./session-activity-controller.ts";
@@ -110,7 +111,7 @@ it.each([
         (button) => button.textContent?.trim() === "Retry",
       )!;
       expect(retryButton).toBeTruthy();
-      const pending = Promise.withResolvers<NonNullable<typeof props.result>>();
+      const pending = createDeferred<NonNullable<typeof props.result>>();
       request.mockReturnValueOnce(pending.promise);
       retryButton.click();
       expect(controller.loading).toBe(true);
@@ -122,7 +123,7 @@ it.each([
       expect(retryButton.disabled).toBe(false);
       expect(container.querySelector('[role="alert"]')?.textContent).toContain("Retry failed");
       expect(Math.abs(retained.getBoundingClientRect().top - retainedTop)).toBeLessThan(1);
-      const recovered = Promise.withResolvers<NonNullable<typeof props.result>>();
+      const recovered = createDeferred<NonNullable<typeof props.result>>();
       request.mockReturnValueOnce(recovered.promise);
       retryButton.click();
       expect(controller.retrying).toBe(true);
