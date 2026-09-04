@@ -3,6 +3,8 @@ import {
   GATEWAY_SERVER_CAPS,
   type HelloOk,
 } from "../../../../packages/gateway-protocol/src/index.js";
+import type { OpenClawConfig } from "../../../config/types.openclaw.js";
+import { resolveGatewayAuth } from "../../auth-resolve.js";
 
 // Hello update-scope tests cover authenticated role/scope and recovery ownership projection.
 
@@ -153,6 +155,67 @@ describe("sendGatewayHello update detail scope", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
+
+  it.each([
+    { mode: "trusted-proxy", tailscale: "off", expected: true },
+    { mode: "token", tailscale: "serve", expected: true },
+    { mode: "password", tailscale: "serve", allowTailscale: true, expected: true },
+    { mode: "password", tailscale: "serve", expected: false },
+    { mode: "token", tailscale: "serve", allowTailscale: false, expected: false },
+    { mode: "token", tailscale: "off", expected: false },
+    { mode: "password", tailscale: "funnel", allowTailscale: true, expected: false },
+    { mode: "none", tailscale: "off", expected: false },
+  ] as const)(
+    "advertises the personal dashboard for resolved $mode auth with $tailscale",
+    async ({ mode, tailscale, expected, ...options }) => {
+      const config: OpenClawConfig = {
+        gateway: {
+          publicOrigin: "https://team.example.test",
+          auth: {
+            mode,
+            ...("allowTailscale" in options ? { allowTailscale: options.allowTailscale } : {}),
+          },
+          tailscale: { mode: tailscale },
+          controlUi: { basePath: " /team/ " },
+        },
+      };
+      const context = makeContext("operator", ["operator.read"]);
+      context.configSnapshot = config;
+      const state = {
+        ...makeState("operator", ["operator.read"]),
+        resolvedAuth: resolveGatewayAuth({
+          authConfig: config.gateway?.auth,
+          tailscaleMode: tailscale,
+          env: {},
+        }),
+      };
+      await sendGatewayHello(context as never, state as never, {});
+      expect(helloSnapshot(context)?.controlUiIdentityUrl).toBe(
+        expected ? "https://team.example.test/team/" : undefined,
+      );
+    },
+  );
+
+  it.each([
+    { role: "node", origin: "https://team.example.test", enabled: true },
+    { role: "operator", origin: undefined, enabled: true },
+    { role: "operator", origin: "http://127.0.0.1:18789", enabled: true },
+    { role: "operator", origin: "https://team.example.test", enabled: false },
+  ] as const)(
+    "does not advertise unavailable browser identity ($role, $origin, $enabled)",
+    async (testCase) => {
+      const context = makeContext(testCase.role, ["operator.read"]);
+      context.configSnapshot = {
+        gateway: { publicOrigin: testCase.origin, controlUi: { enabled: testCase.enabled } },
+      };
+      const state = {
+        ...makeState(testCase.role, ["operator.read"]),
+        resolvedAuth: { mode: "trusted-proxy", allowTailscale: false },
+      };
+      await sendGatewayHello(context as never, state as never, {});
+      expect(helloSnapshot(context)).not.toHaveProperty("controlUiIdentityUrl");
+    },
+  );
 
   it.each([
     { label: "pairing-only operator", role: "operator" as const, scopes: ["operator.pairing"] },
