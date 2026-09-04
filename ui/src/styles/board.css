@@ -330,6 +330,15 @@ openclaw-board-widget-cell {
   width: 100%;
 }
 
+.board-widget__body > openclaw-board-widget-commenter {
+  inset: 0;
+  position: absolute;
+}
+
+.board-widget__body--card > openclaw-board-widget-commenter {
+  inset: var(--widget-frame-inset);
+}
+
 .board-widget__comment-overlay {
   cursor: crosshair;
   inset: 0;

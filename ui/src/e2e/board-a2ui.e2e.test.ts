@@ -162,7 +162,7 @@ describeControlUiE2e("Control UI dashboard A2UI", () => {
     await controlUi?.close();
   });
 
-  it("comments on a specific shared Canvas HTML element from Board chat", async () => {
+  it("comments on a specific shared Canvas HTML element from the Dashboard side panel", async () => {
     const recordProof = process.env.OPENCLAW_UI_E2E_RECORD === "1";
     const proofDir = recordProof ? createControlUiE2eArtifactDir("canvas-element-commenter") : "";
     const context = await browser.newContext({
@@ -209,6 +209,12 @@ describeControlUiE2e("Control UI dashboard A2UI", () => {
     await expect
       .poll(() => page.locator(".board-widget__comment-label").textContent())
       .toContain("#edge-target");
+    const edgeHighlightBounds = await page
+      .locator(".board-widget__comment-highlight")
+      .boundingBox();
+    expect(edgeHighlightBounds).not.toBeNull();
+    expect(Math.abs(edgeHighlightBounds!.x - edgeBounds!.x)).toBeLessThan(2);
+    expect(Math.abs(edgeHighlightBounds!.y - edgeBounds!.y)).toBeLessThan(2);
     if (recordProof) {
       await page.screenshot({ path: path.join(proofDir, "annotating.png") });
       await page.waitForTimeout(600);
