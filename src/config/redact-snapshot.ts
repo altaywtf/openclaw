@@ -639,11 +639,11 @@ function restoreRedactedValue(
     }
 
     const hintPaths = [path, wildcardPath];
+    // Match redaction: explicit false disables name guessing, not URL credential protection.
     const canRestore =
-      !isExplicitlyNonSensitivePath(context.hints, hintPaths) &&
-      (isSensitivePath(path) ||
-        hasSensitiveUrlHintPath(context.hints, hintPaths) ||
-        isSensitiveUrlConfigPath(path));
+      (!isExplicitlyNonSensitivePath(context.hints, hintPaths) && isSensitivePath(path)) ||
+      hasSensitiveUrlHintPath(context.hints, hintPaths) ||
+      isSensitiveUrlConfigPath(path);
     if (value === REDACTED_SENTINEL && canRestore) {
       result[key] = restoreOriginalValueOrThrow(orig, key, path, context);
     } else if (typeof value === "object" && value !== null) {

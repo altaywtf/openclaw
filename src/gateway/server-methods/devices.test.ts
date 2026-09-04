@@ -8,6 +8,7 @@ import {
   resetDiagnosticEventsForTest,
   type DiagnosticSecurityEvent,
 } from "../../infra/diagnostic-events.js";
+import { createDeferredCore } from "../../shared/deferred.js";
 import { drainNodePendingWork, enqueueNodePendingWork } from "../node-pending-work.js";
 import {
   captureNodeWakeLifecycle,
@@ -19,6 +20,7 @@ import {
   getNodeWakeStateSnapshot,
   resetNodeWakeStateForTest,
 } from "../node-wake-state.test-support.js";
+import { registerGatewayPolicyResponse } from "../server/ws-policy-close.js";
 import { bindDeviceWorkerReconciliation } from "../worker-environments/device-provider.js";
 import { deviceHandlers } from "./devices.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
@@ -350,6 +352,105 @@ describe("deviceHandlers", () => {
     expect(reconcileActive).toHaveBeenCalledWith("environment-1");
     expect(order).toEqual(["environment", "placement", "respond"]);
   });
+
+  it.each(["device.pair.remove", "device.token.revoke"])(
+    "reconciles removed workers when the requester is revoked during %s",
+    async (method) => {
+      const entered = createDeferredCore();
+      const release = createDeferredCore();
+      const mutation =
+        method === "device.pair.remove" ? removePairedDeviceMock : revokeDeviceTokenMock;
+      mutation.mockImplementationOnce(async () => {
+        entered.resolve();
+        await release.promise;
+        return method === "device.pair.remove"
+          ? { deviceId: "device-1" }
+          : { ok: true, entry: { role: "node", revokedAtMs: 456 } };
+      });
+      const opts = createOptions(
+        method,
+        { deviceId: "device-1", ...(method === "device.token.revoke" ? { role: "node" } : {}) },
+        { client: createClient(["operator.admin"], "admin-device") },
+      );
+      const client = Object.assign(expectDefined(opts.client, "requester"), {
+        socket: { close: vi.fn() },
+      });
+      const response = registerGatewayPolicyResponse(method, client, opts.respond);
+      const workerEnvironmentService = {};
+      const reconcileDevice = vi.fn(async () => ["environment-1"]);
+      const reconcileActive = vi.fn(async () => {});
+      bindDeviceWorkerReconciliation(workerEnvironmentService, reconcileDevice);
+      Object.assign(opts.context, {
+        workerEnvironmentService,
+        workerPlacementDispatchService: { reconcileActive },
+      });
+      const removal = expectDefined(deviceHandlers[method], method)(opts);
+      try {
+        await entered.promise;
+        client.invalidated = true;
+        release.resolve();
+        await expect(removal).rejects.toThrow("client authorization is no longer active");
+        expect(reconcileDevice).toHaveBeenCalledWith("device-1");
+        expect(reconcileActive).toHaveBeenCalledWith("environment-1");
+        expect(opts.context.invalidateClientsForDevice).toHaveBeenCalled();
+        expect(opts.context.disconnectClientsForDevice).toHaveBeenCalled();
+        expect(opts.respond).not.toHaveBeenCalled();
+      } finally {
+        release.resolve();
+        await Promise.resolve(removal).catch(() => {});
+        response?.finish();
+      }
+    },
+  );
+
+  it.each(["device.pair.remove", "device.token.revoke"])(
+    "tears down revoked clients when worker cleanup fails in %s",
+    async (method) => {
+      removePairedDeviceMock.mockResolvedValue({ deviceId: "device-1" });
+      revokeDeviceTokenMock.mockResolvedValue({
+        ok: true,
+        entry: { role: "node", revokedAtMs: 456 },
+      });
+      const opts = createOptions(
+        method,
+        { deviceId: "device-1", ...(method === "device.token.revoke" ? { role: "node" } : {}) },
+        { client: createClient(["operator.admin"], "admin-device") },
+      );
+      const updateSurface = vi.spyOn(opts.context.nodeRegistry, "updateSurface");
+      const workerEnvironmentService = {};
+      const entered = createDeferredCore();
+      const release = createDeferredCore();
+      const failure = new Error("worker credential write failed");
+      bindDeviceWorkerReconciliation(workerEnvironmentService, async () => {
+        entered.resolve();
+        await release.promise;
+        throw failure;
+      });
+      Object.assign(opts.context, { workerEnvironmentService });
+      const mutation = expectDefined(deviceHandlers[method], method)(opts);
+      try {
+        await entered.promise;
+        // Authority must end while cleanup is still pending on another owner.
+        expect(opts.context.invalidateClientsForDevice).toHaveBeenCalledWith("device-1", {
+          reason: method === "device.pair.remove" ? "device-pair-removed" : "device-token-revoked",
+          ...(method === "device.token.revoke" ? { role: "node" } : {}),
+        });
+        expect(opts.context.disconnectClientsForDevice).not.toHaveBeenCalled();
+        release.resolve();
+        await expect(mutation).rejects.toThrow(failure);
+        expect(opts.context.disconnectClientsForDevice).toHaveBeenCalled();
+        expect(updateSurface).toHaveBeenCalledWith("device-1", {
+          caps: [],
+          commands: [],
+          permissions: undefined,
+        });
+        expect(opts.respond).not.toHaveBeenCalled();
+      } finally {
+        release.resolve();
+        await Promise.resolve(mutation).catch(() => {});
+      }
+    },
+  );
 
   it("does not disconnect clients when device removal fails", async () => {
     removePairedDeviceMock.mockResolvedValue(null);

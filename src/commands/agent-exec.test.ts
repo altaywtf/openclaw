@@ -383,8 +383,12 @@ describe("agent exec command composition", () => {
                 },
               ]);
               await Promise.resolve();
-              if (outcome === "revoked") claim.current = false;
-              if (outcome === "replaced") owner = { current: true };
+              if (outcome === "revoked") {
+                claim.current = false;
+              }
+              if (outcome === "replaced") {
+                owner = { current: true };
+              }
               await tool!.execute!("source-call", {});
               return successResult();
             } finally {

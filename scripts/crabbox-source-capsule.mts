@@ -431,16 +431,18 @@ export function prepareCrabboxSourceCapsule(options: {
     function selectSource() {
       let planValue: unknown;
       try {
-        planValue = JSON.parse(
-          execFileSync(options.syncPlan.command, options.syncPlan.args, {
-            cwd: directory,
-            env: selectionEnv,
-            windowsVerbatimArguments: options.syncPlan.windowsVerbatimArguments,
-            encoding: "utf8",
-            maxBuffer: 64 * 1024 * 1024,
-            stdio: ["ignore", "pipe", "pipe"],
-          }),
-        );
+        const result = spawnSync(options.syncPlan.command, options.syncPlan.args, {
+          cwd: directory,
+          env: selectionEnv,
+          windowsVerbatimArguments: options.syncPlan.windowsVerbatimArguments,
+          encoding: "utf8",
+          maxBuffer: 64 * 1024 * 1024,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        if (result.error || result.status !== 0) {
+          throw new Error("Crabbox sync-plan failed");
+        }
+        planValue = JSON.parse(result.stdout);
       } catch {
         throw new Error(
           "source capsule requires a successful Crabbox sync-plan; inspect source exclusions before retrying",

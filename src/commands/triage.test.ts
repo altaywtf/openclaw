@@ -144,7 +144,9 @@ describe("triageCommand", () => {
         {
           signal: controller.signal,
           assertCurrent: () => {
-            if (!current) throw new Error("repair claim lost");
+            if (!current) {
+              throw new Error("repair claim lost");
+            }
           },
           failure: {
             kind: "update",

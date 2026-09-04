@@ -139,14 +139,7 @@ function emitNodeRoleRemovalSecurityEvent(params: {
 async function removePairedDeviceBackedNode(params: {
   nodeId: string;
   client: GatewayClient | null;
-  context: Pick<
-    GatewayRequestContext,
-    | "disconnectClientsForDevice"
-    | "invalidateClientsForDevice"
-    | "logGateway"
-    | "workerEnvironmentService"
-    | "workerPlacementDispatchService"
-  >;
+  context: Pick<GatewayRequestContext, "invalidateClientsForDevice" | "logGateway">;
 }): Promise<
   | {
       status: "removed";
@@ -210,7 +203,6 @@ async function removePairedDeviceBackedNode(params: {
     role: "node",
     reason: "device-pair-removed",
   });
-  await reconcileRevokedDeviceWorker(params.context, removed.deviceId);
   return {
     status: "removed",
     nodeId: removed.deviceId,
@@ -376,7 +368,7 @@ export const nodePairingHandlers: GatewayRequestHandlers = {
     });
   },
   // Remove a node pairing (CLI: `openclaw nodes remove`). This revokes the
-  // device's `node` role in devices/paired.json, which drops the approved node
+  // device's `node` role in the paired-device store, which drops the approved node
   // surface with it, and disconnects the device's node-role sessions: a
   // mixed-role device keeps its row and only loses the `node` role, a
   // node-only device row is deleted. Authz mirrors device.pair.remove:
@@ -400,6 +392,7 @@ export const nodePairingHandlers: GatewayRequestHandlers = {
       }
       try {
         clearRemovedNodeRuntimeState({ nodeId: deviceBacked.nodeId, context });
+        await reconcileRevokedDeviceWorker(context, deviceBacked.nodeId);
         broadcastRemovedNodePairing({ nodeId: deviceBacked.nodeId, context });
         respond(true, { nodeId: deviceBacked.nodeId }, undefined);
       } finally {

@@ -2,7 +2,10 @@
 
 import { describe, expect, it } from "vitest";
 import type { PluginManifestRecord } from "../plugins/manifest-registry.js";
+import { createPluginManifestRecordFixture } from "../plugins/plugin-metadata.test-support.js";
 import { collectChannelSchemaMetadataWithOwnership } from "./channel-config-metadata.js";
+import { REDACTED_SENTINEL, redactConfigObject, restoreRedactedValues } from "./redact-snapshot.js";
+import { buildConfigSchemaCore } from "./schema.js";
 
 function createChannelSchemaRegistry(
   channelId: string,
@@ -30,6 +33,105 @@ function createChannelSchemaRegistry(
 }
 
 describe("collectChannelSchemaMetadataWithOwnership", () => {
+  it.each(
+    ["core", "plus", undefined].flatMap((selected) =>
+      [false, true].map((reverse) => ({ selected, reverse })),
+    ),
+  )(
+    "preserves every owner's sensitivity with $selected selected and reverse=$reverse",
+    ({ selected, reverse }) => {
+      const schema = {
+        type: "object",
+        properties: { core: { type: "string" }, plus: { type: "string" } },
+      };
+      const registry = {
+        diagnostics: [],
+        plugins: ["core", "plus"].map((id) =>
+          createPluginManifestRecordFixture({
+            id,
+            origin: "global",
+            channels: ["proofchat"],
+            channelConfigs: {
+              proofchat: {
+                schema,
+                label: id,
+                uiHints: {
+                  [id]: { sensitive: true, label: id },
+                  [id === "core" ? "plus" : "core"]: {
+                    sensitive: false,
+                    label: "selected presentation",
+                  },
+                  [id === "core" ? " .endpoint " : "endpoint"]: {
+                    sensitive: false,
+                    tags: id === "core" ? ["url-secret", "inactive-tag"] : ["selected-tag"],
+                    label: id,
+                  },
+                  [`accounts.*.${id}`]: { sensitive: true },
+                  [`entries[].${id}`]: { sensitive: true },
+                  [id === "core" ? " .shared " : "shared"]: { sensitive: id === "core", label: id },
+                },
+              },
+            },
+          }),
+        ),
+      };
+      if (reverse) {
+        registry.plugins.reverse();
+      }
+      const before = structuredClone(registry);
+      const owner = selected ?? registry.plugins.at(-1)?.id;
+      const channels = collectChannelSchemaMetadataWithOwnership(
+        registry,
+        selected ? new Set([selected]) : undefined,
+      );
+      expect(channels[0]).toMatchObject({ label: owner, schemaPluginId: owner });
+      expect(channels[0]?.configSchema?.properties).toMatchObject(schema.properties);
+      const { uiHints } = buildConfigSchemaCore({ channels });
+      expect(uiHints["channels.proofchat.endpoint"]?.label).toBe(owner);
+      expect(uiHints["channels.proofchat.endpoint"]?.tags).toContain("url-secret");
+      if (owner === "plus") {
+        expect(uiHints["channels.proofchat.endpoint"]?.tags).toContain("selected-tag");
+        expect(uiHints["channels.proofchat.endpoint"]?.tags).not.toContain("inactive-tag");
+      }
+      const credentials = { core: "synthetic-core", plus: "synthetic-plus" };
+      const config = {
+        channels: {
+          proofchat: {
+            ...credentials,
+            endpoint: "https://synthetic.invalid/callback?token=synthetic-query",
+            shared: "synthetic-shared",
+            accounts: { work: credentials },
+            entries: [credentials],
+            visible: "public-setting",
+          },
+        },
+      };
+      const redactedCredentials = { core: REDACTED_SENTINEL, plus: REDACTED_SENTINEL };
+      const redacted = redactConfigObject(config, uiHints);
+      expect(redacted).toEqual({
+        channels: {
+          proofchat: {
+            ...redactedCredentials,
+            endpoint: REDACTED_SENTINEL,
+            shared: REDACTED_SENTINEL,
+            accounts: { work: redactedCredentials },
+            entries: [redactedCredentials],
+            visible: "public-setting",
+          },
+        },
+      });
+      const safeUrlConfig = {
+        channels: { proofchat: { endpoint: "https://synthetic.invalid/public" } },
+      };
+      expect(redactConfigObject(safeUrlConfig, uiHints)).toEqual(safeUrlConfig);
+      expect(restoreRedactedValues(redacted, config, uiHints)).toEqual({
+        ok: true,
+        result: config,
+      });
+      expect(registry).toEqual(before);
+    },
+  );
+
   // Non-bundled channel schemas are cloned and recursively walked here, before any validator
   // runs, so this producer is where a deeply nested manifest has to be contained; otherwise
   // config validation dies with a raw RangeError instead of reporting an issue. "feishu" takes

@@ -158,7 +158,9 @@ test("terminal clear preserves exact authority until its outer owner closes", ()
 test.each(["parent", "approval"])("exact %s cleanup does not consult a revoked source", (kind) => {
   let current = true;
   const assertSourceCurrent = vi.fn(() => {
-    if (!current) throw new Error("source retired");
+    if (!current) {
+      throw new Error("source retired");
+    }
   });
   const parent = claimAgentRunDelegatedAuthority(
     { instanceId: "source-cleanup-instance", runId: "source-cleanup-run" },
@@ -172,7 +174,9 @@ test.each(["parent", "approval"])("exact %s cleanup does not consult a revoked s
   assertSourceCurrent.mockClear();
   expect(releaseAgentRunDelegatedAuthority(authority)).toBe(true);
   expect(assertSourceCurrent).not.toHaveBeenCalled();
-  if (kind === "approval") expect(releaseAgentRunDelegatedAuthority(parent)).toBe(true);
+  if (kind === "approval") {
+    expect(releaseAgentRunDelegatedAuthority(parent)).toBe(true);
+  }
   expect(getAgentRunContext("source-cleanup-run")).toBeUndefined();
 });
 
@@ -191,7 +195,9 @@ test.each(["replacement", "restart"])(
     );
     let successor: typeof first | undefined;
     duringCheck = () => {
-      if (outcome === "restart") rotateAgentEventLifecycleGeneration();
+      if (outcome === "restart") {
+        rotateAgentEventLifecycleGeneration();
+      }
       successor = claimAgentRunDelegatedAuthority({
         instanceId: "source-next",
         runId: "source-run",
@@ -214,7 +220,9 @@ test.each(
     const instance = { instanceId: "bound-instance", runId: "bound-run" };
     let current = true;
     const assertSourceCurrent = () => {
-      if (!current) throw new Error("source retired");
+      if (!current) {
+        throw new Error("source retired");
+      }
     };
     const authority = claimAgentRunDelegatedAuthority(instance, assertSourceCurrent);
     const replacement = vi.fn();

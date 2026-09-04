@@ -34,12 +34,15 @@ describe("readWindowsProcessStartTimeSync", () => {
     expect(spawnSyncMock.mock.calls[1]?.[0]).toBe(getWindowsWmicExePath());
   });
 
-  it("uses the supplied native environment and Windows key precedence for both queries", () => {
+  it("projects supplied native context with Windows key precedence for both queries", () => {
     const env = {
       SYSTEMROOT: "D:\\Native",
       SystemRoot: "E:\\Ignored",
       WINDIR: "F:\\Ignored",
       PATH: "native-path",
+      PSModuleAnalysisCachePath: "D:\\NativeCache",
+      DIAGNOSTIC_NEUTRAL_CANARY: "synthetic",
+      NODE_OPTIONS: "--synthetic-injection-must-not-be-inherited",
     };
     spawnSyncMock.mockReturnValueOnce({ status: 1, stdout: "" }).mockReturnValueOnce({
       status: 0,
@@ -53,9 +56,16 @@ describe("readWindowsProcessStartTimeSync", () => {
     );
     expect(spawnSyncMock.mock.calls[1]?.[0]).toBe("D:\\Native\\System32\\wbem\\wmic.exe");
     for (const call of spawnSyncMock.mock.calls) {
-      expect(call[2].env).toBe(env);
+      expect(call[2].env).toEqual({
+        SYSTEMROOT: "D:\\Native",
+        WINDIR: "F:\\Ignored",
+        PATH: "native-path",
+        PSModuleAnalysisCachePath: "D:\\NativeCache",
+      });
       expect(call[2].timeout).toBeLessThanOrEqual(1000);
     }
+    expect(env.SystemRoot).toBe("E:\\Ignored");
+    expect(env.DIAGNOSTIC_NEUTRAL_CANARY).toBe("synthetic");
   });
 
   it("does not start WMIC once PowerShell has spent the whole budget", () => {

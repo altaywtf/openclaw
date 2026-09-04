@@ -10,6 +10,8 @@ import {
   setRuntimeConfigSnapshot,
 } from "../config/runtime-snapshot.js";
 import { resetPluginStateStoreForTests } from "../plugin-state/plugin-state-store.js";
+import { installTemporaryCurrentPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-snapshot.js";
+import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { listSystemAgentAuditEntriesForTests } from "./audit.test-support.js";
@@ -379,6 +381,70 @@ describe("system agent operations", () => {
     expect(lines.join("\n")).toContain('"headers": "<redacted>"');
     expect(lines.join("\n")).not.toContain(authorization);
   });
+
+  it.each(["core", "plus"])(
+    "keeps retained channel credentials out of config-get with %s selected",
+    async (owner) => {
+      const config = {
+        plugins: {
+          entries: { core: { enabled: owner === "core" }, plus: { enabled: owner === "plus" } },
+        },
+        channels: {
+          proofchat: { core: "synthetic-core", plus: "synthetic-plus", visible: "public-setting" },
+        },
+      };
+      mockConfig.setConfig(config);
+      setRuntimeConfigSnapshot(config, config);
+      const metadata = createPluginMetadataSnapshotFixture({
+        plugins: ["core", "plus"].map((id) => ({
+          id,
+          origin: "config",
+          channels: ["proofchat"],
+          channelConfigs: {
+            proofchat: {
+              schema: {
+                type: "object",
+                properties: {
+                  core: { type: "string" },
+                  plus: { type: "string" },
+                  visible: { type: "string" },
+                },
+              },
+              uiHints: { [id]: { sensitive: true } },
+            },
+          },
+        })),
+      });
+      const lease = installTemporaryCurrentPluginMetadataSnapshot(metadata, {
+        config,
+        compatibleConfigs: [config],
+      });
+      const { runtime, lines } = createSystemAgentTestRuntime();
+      try {
+        await executeSystemAgentOperation(
+          { kind: "config-get", path: "channels.proofchat" },
+          runtime,
+        );
+        await executeSystemAgentOperation(
+          { kind: "config-get", path: "channels.proofchat.core" },
+          runtime,
+        );
+        await executeSystemAgentOperation(
+          { kind: "config-get", path: "channels.proofchat.plus" },
+          runtime,
+        );
+        const output = lines.join("\n");
+        expect(output).not.toContain("synthetic-core");
+        expect(output).not.toContain("synthetic-plus");
+        expect(output).toContain('"visible": "public-setting"');
+        expect(output).toContain('channels.proofchat.core = "<redacted>"');
+        expect(output).toContain('channels.proofchat.plus = "<redacted>"');
+      } finally {
+        lease.release();
+        clearRuntimeConfigSnapshot();
+      }
+    },
+  );
 
   it("keeps sensitive channel callback URLs out of model-visible config reads", async () => {
     const callbackUrl = "https://gateway.example/webhook/synology?access_token=callback-secret";

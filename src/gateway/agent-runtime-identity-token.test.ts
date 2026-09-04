@@ -167,7 +167,9 @@ describe("agent runtime identity token", () => {
         },
         operationalRunInstance: admissionOwner.createOperationalRunInstanceRef("source-token"),
         assertSourceCurrent: () => {
-          if (!current) throw new Error("source closed");
+          if (!current) {
+            throw new Error("source closed");
+          }
         },
       });
       try {

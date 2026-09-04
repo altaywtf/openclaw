@@ -732,36 +732,63 @@ describe("nodeHandlers node.pair.remove", () => {
     await expect(loadApnsRegistration(nodeId)).resolves.toBeNull();
   });
 
-  it("reconciles device worker authority before reporting node-role removal", async () => {
-    const state = await createState("node-remove-worker-reconcile");
-    const nodeId = "worker-node-remove";
-    await pairAndroidNodeDevice(state.stateDir, nodeId);
-    const { opts } = createOptions({ nodeId });
-    const order: string[] = [];
-    const workerEnvironmentService = {};
-    bindDeviceWorkerReconciliation(workerEnvironmentService, async () => {
-      order.push("environment");
-      return ["environment-1"];
-    });
-    const reconcileActive = vi.fn(async () => {
-      order.push("placement");
-    });
-    Object.assign(opts.context, {
-      workerEnvironmentService,
-      workerPlacementDispatchService: { reconcileActive },
-    });
-    vi.mocked(opts.respond).mockImplementation(() => {
-      order.push("respond");
-    });
+  it.each(["success", "failure"])(
+    "completes node-role teardown after worker cleanup %s",
+    async (cleanup) => {
+      const state = await createState("node-remove-worker-reconcile");
+      const nodeId = "worker-node-remove";
+      await pairAndroidNodeDevice(state.stateDir, nodeId);
+      await seedNodeWakeState(nodeId);
+      const wakeLifecycle = captureNodeWakeLifecycle(nodeId);
+      const { opts } = createOptions({ nodeId });
+      const order: string[] = [];
+      const workerEnvironmentService = {};
+      bindDeviceWorkerReconciliation(workerEnvironmentService, async () => {
+        order.push("environment");
+        if (cleanup === "failure") {
+          throw new Error("worker credential write failed");
+        }
+        return ["environment-1"];
+      });
+      const reconcileActive = vi.fn(async () => {
+        order.push("placement");
+      });
+      Object.assign(opts.context, {
+        workerEnvironmentService,
+        workerPlacementDispatchService: { reconcileActive },
+      });
+      vi.mocked(opts.respond).mockImplementation(() => {
+        order.push("respond");
+      });
 
-    await expectDefined(
-      nodeHandlers["node.pair.remove"],
-      'nodeHandlers["node.pair.remove"] test invariant',
-    )(opts);
+      await expectDefined(
+        nodeHandlers["node.pair.remove"],
+        'nodeHandlers["node.pair.remove"] test invariant',
+      )(opts);
 
-    expect(reconcileActive).toHaveBeenCalledWith("environment-1");
-    expect(order).toEqual(["environment", "placement", "respond"]);
-  });
+      expect(wakeLifecycle.aborted).toBe(true);
+      expect(opts.context.disconnectClientsForDevice).toHaveBeenCalledWith(nodeId, {
+        role: "node",
+      });
+      expect(Object.hasOwn(await readPaired(state.stateDir), nodeId)).toBe(false);
+      if (cleanup === "failure") {
+        expect(reconcileActive).not.toHaveBeenCalled();
+        expect(order).toEqual(["environment", "respond"]);
+        expect(opts.respond).toHaveBeenCalledWith(
+          false,
+          undefined,
+          expect.objectContaining({
+            code: "UNAVAILABLE",
+            message: expect.stringContaining("worker credential write failed"),
+          }),
+        );
+      } else {
+        expect(reconcileActive).toHaveBeenCalledWith("environment-1");
+        expect(order).toEqual(["environment", "placement", "respond"]);
+        expect(opts.respond).toHaveBeenCalledWith(true, { nodeId }, undefined);
+      }
+    },
+  );
 
   it("preserves an APNs registration created after node-role removal commits", async () => {
     const state = await createState("node-remove-apns-registration-race");

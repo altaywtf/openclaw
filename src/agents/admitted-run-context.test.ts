@@ -327,7 +327,9 @@ describe("prepared run admission", () => {
         facts: { ...admissionFacts, runId: "native-source-lease" },
         operationalRunInstance: createOperationalRunInstanceRef("native-source-lease"),
         assertSourceCurrent: () => {
-          if (!current) throw new Error("source claim lost");
+          if (!current) {
+            throw new Error("source claim lost");
+          }
         },
       });
       const admitted = await prepared.admit(runtime.kind);

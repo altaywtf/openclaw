@@ -64,9 +64,7 @@ const mocks = vi.hoisted(() => ({
   child: vi.fn<typeof import("../../process/exec.js").runCommandWithTimeout>(),
   health: vi.fn<typeof import("../daemon-cli/restart-health.js").waitForGatewayHealthyRestart>(),
   doctor: vi.fn(),
-  configSnapshot: vi.fn(async (): Promise<void> => {
-    throw new Error("Unexpected config snapshot during preserved activation");
-  }),
+  configSnapshot: vi.fn<() => Promise<void>>(),
   error: vi.fn(),
   exit: vi.fn(),
   log: vi.fn(),
@@ -255,6 +253,9 @@ beforeEach(async () => {
     };
   });
   mocks.health.mockImplementation(async ({ port }) => readyRecoveryHealth(port, mocks.running));
+  mocks.configSnapshot
+    .mockReset()
+    .mockRejectedValue(new Error("Unexpected config snapshot during preserved activation"));
 });
 afterEach(async () => {
   envSnapshot.restore();

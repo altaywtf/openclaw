@@ -1,6 +1,7 @@
 // Native Node callers load this source closure without a TypeScript import resolver.
 import childProcess from "node:child_process";
 import fsSync from "node:fs";
+import { resolveDiagnosticProcessEnv } from "../infra/process-env.ts";
 import { readWindowsProcessStartTimeSync } from "../infra/windows-process-start.ts";
 
 const PROCESS_START_TIMEOUT_MS = 1000;
@@ -67,7 +68,7 @@ function getDarwinProcessStartTime(pid: number, env: NodeJS.ProcessEnv): number 
     const startedAt = childProcess
       .execFileSync("/bin/ps", ["-o", "lstart=", "-p", String(pid)], {
         encoding: "utf8",
-        env: { ...env, LC_ALL: "C", TZ: "UTC" },
+        env: { ...resolveDiagnosticProcessEnv(env), LC_ALL: "C", TZ: "UTC" },
         stdio: ["ignore", "pipe", "ignore"],
         timeout: PROCESS_START_TIMEOUT_MS,
         killSignal: "SIGKILL",
