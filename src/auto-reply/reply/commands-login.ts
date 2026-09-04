@@ -245,18 +245,23 @@ async function runChannelProviderLogin(params: {
     };
   }
 
+  const commandSignal = params.commandParams.opts?.abortSignal;
+  const flowSignal = commandSignal
+    ? AbortSignal.any([reservation.record.signal, commandSignal])
+    : reservation.record.signal;
   try {
     const loginResult = await runProviderChannelLoginFlow({
       choice: params.choice,
       agentId: params.agentId,
       config: params.commandParams.cfg,
       runtime: params.runtime ?? defaultRuntime,
-      signal: reservation.record.signal,
+      signal: flowSignal,
       sendMessage: async (text) => await emitLoginMessage(params.commandParams, text),
       sendReply,
       unsupportedPromptMessage:
         "This provider needs input that chat cannot collect. Open Control UI → Models and choose Sign in.",
     });
+    flowSignal.throwIfAborted();
     const nextProfileId = loginResult.profiles.find(
       (profile) =>
         normalizeSurface(profile.provider) === normalizeSurface(params.choice.providerId),

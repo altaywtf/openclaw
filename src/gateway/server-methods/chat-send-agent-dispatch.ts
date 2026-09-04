@@ -23,7 +23,7 @@ import { chatRunBelongsToSelectedAgent } from "../chat-run-owner.js";
 import type { ChatRunTiming } from "../server-chat-state.js";
 import { tryResolveSessionCompatibilityOwnerAgentId } from "../session-request-agent.js";
 import { buildAbortedChatSendPayload } from "./chat-abort-authorization.js";
-import { broadcastChatError, broadcastChatFinal } from "./chat-broadcast.js";
+import { broadcastChatDelta, broadcastChatError, broadcastChatFinal } from "./chat-broadcast.js";
 import type { RestartSafeChatTerminalState } from "./chat-restart-recovery.js";
 import type { AdmittedChatSend } from "./chat-send-admission.js";
 import type { prepareChatSendAttachments } from "./chat-send-attachments.js";
@@ -171,6 +171,8 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
     accountId,
     prepareAssistantTranscriptMessage: params.prepareAssistantTranscriptMessage,
     isAgentRunStarted: () => agentRunStarted,
+    onCommandBlock: (text) =>
+      broadcastChatDelta({ context, runId: clientRunId, sessionKey, agentId, text }),
     isRunCurrent: () =>
       !activeRunAbort.controller.signal.aborted &&
       context.chatAbortControllers.get(clientRunId) === activeRunAbort.entry,

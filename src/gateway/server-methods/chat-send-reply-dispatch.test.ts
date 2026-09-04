@@ -60,11 +60,57 @@ describe("buildTranscriptReplyText", () => {
 });
 
 describe("createChatSendReplyDispatch", () => {
+  it("previews command blocks before completion without replaying agent or stale output", async () => {
+    let current = true;
+    let agentStarted = false;
+    const preview = vi.fn();
+    const dispatch = createChatSendReplyDispatch({
+      accountId: undefined,
+      isAgentRunStarted: () => agentStarted,
+      isRunCurrent: () => current,
+      onCommandBlock: preview,
+      logGateway: { warn: vi.fn() } as never,
+      session: {
+        agentId: "main",
+        backingSessionId: undefined,
+        cfg: {},
+        clientRunId: "command-run",
+        sessionKey: "agent:main:main",
+        sessionLoadOptions: undefined,
+      },
+      userTurnRecorder: { markBlocked: vi.fn() },
+    });
+    const dispatcher = createReplyDispatcher(dispatch.dispatcherOptions);
+    dispatcher.sendBlockReply({ text: "Open https://provider.example/login" });
+    await dispatcher.waitForIdle();
+    expect(preview).toHaveBeenLastCalledWith("Open https://provider.example/login");
+    dispatcher.sendBlockReply({ text: "Waiting for approval." });
+    await dispatcher.waitForIdle();
+    expect(preview).toHaveBeenLastCalledWith(
+      "Open https://provider.example/login\n\nWaiting for approval.",
+    );
+    current = false;
+    dispatcher.sendBlockReply({ text: "stale" });
+    await dispatcher.waitForIdle();
+    current = true;
+    agentStarted = true;
+    dispatcher.sendBlockReply({ text: "agent reply" });
+    dispatcher.sendFinalReply({ text: "done" });
+    dispatcher.markComplete();
+    await dispatcher.waitForIdle();
+    expect(preview).toHaveBeenCalledTimes(2);
+    expect(dispatch.deliveredReplies.at(-1)).toEqual({
+      kind: "final",
+      payload: { text: "done" },
+    });
+  });
+
   it("owns assistant media before transcript publication only during its live dispatch", async () => {
     let current = true;
     const dispatch = createChatSendReplyDispatch({
       accountId: undefined,
       isAgentRunStarted: () => true,
+      onCommandBlock: vi.fn(),
       isRunCurrent: () => current,
       logGateway: { warn: vi.fn() } as never,
       session: {
@@ -118,6 +164,7 @@ describe("createChatSendReplyDispatch", () => {
     const dispatch = createChatSendReplyDispatch({
       accountId: undefined,
       isAgentRunStarted: () => false,
+      onCommandBlock: vi.fn(),
       logGateway: { warn: vi.fn() } as never,
       session: {
         agentId: "main",
@@ -164,6 +211,7 @@ describe("createChatSendReplyDispatch", () => {
     const dispatch = createChatSendReplyDispatch({
       accountId: undefined,
       isAgentRunStarted: () => true,
+      onCommandBlock: vi.fn(),
       logGateway: { warn: vi.fn() } as never,
       session: {
         agentId: "main",
@@ -209,6 +257,7 @@ describe("createChatSendReplyDispatch", () => {
         finalizedInsideAdmission = insideAdmission;
         throw new Error("finalizer failed");
       },
+      onCommandBlock: vi.fn(),
       logGateway: { warn } as never,
       session: {
         agentId: "main",

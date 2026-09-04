@@ -176,6 +176,21 @@ describe("handleLoginCommand", () => {
     );
   });
 
+  it("cancels pending provider login with the initiating chat turn", async () => {
+    const controller = new AbortController();
+    const options = { ...blockReplyOpts(), abortSignal: controller.signal };
+    let providerSignal: AbortSignal | undefined;
+    runModelsAuthLoginFlowMock.mockImplementationOnce(async (flow: ModelsAuthLoginFlowOptions) => {
+      providerSignal = flow.signal;
+      controller.abort(new Error("chat cancelled"));
+      await flow.prompter.note("Do not deliver this stale sign-in link.");
+      return { profiles: [], providerId: "openai", methodId: "device-code" };
+    });
+    await handleLoginCommand(buildLoginParams("/login codex", { opts: options }), true);
+    expect(providerSignal?.aborted).toBe(true);
+    expect(options.onBlockReply).not.toHaveBeenCalled();
+  });
+
   it("keeps the bare provider menu owner-only", async () => {
     const result = await handleLoginCommand(
       buildLoginParams("/login", {

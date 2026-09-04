@@ -36,6 +36,7 @@ import {
   hasAssistantDisplayMediaContent,
   isMediaBearingPayload,
   replaceAssistantContentTextBlocks,
+  sanitizeAssistantDisplayText,
 } from "./chat-assistant-content.js";
 import { isSourceReplyTranscriptMirrorPayload } from "./chat-broadcast.js";
 import { normalizeWebchatReplyMediaPathsForDisplay } from "./chat-reply-media.js";
@@ -107,6 +108,7 @@ export function buildTranscriptReplyText(payloads: ReplyPayload[]): string {
 export function createChatSendReplyDispatch(params: {
   accountId: string | undefined;
   isAgentRunStarted: () => boolean;
+  onCommandBlock: (text: string) => void;
   isRunCurrent?: () => boolean;
   getReplyDispatchRun?: () => ReplyDispatchRun | undefined;
   prepareAssistantTranscriptMessage?: PrepareAssistantTranscriptMessage;
@@ -425,6 +427,22 @@ export function createChatSendReplyDispatch(params: {
       }
       switch (info.kind) {
         case "block":
+          deliveredReplies.push({ payload, kind: info.kind });
+          if (!isAgentRunStarted() && params.isRunCurrent?.()) {
+            const text = combineNonStreamingReplyParts(
+              deliveredReplies.flatMap((entry) => {
+                if (entry.kind !== "block" || entry.payload.isReasoning === true) {
+                  return [];
+                }
+                const visible = sanitizeAssistantDisplayText(entry.payload.text);
+                return visible && !isSuppressedControlReplyText(visible) ? [visible] : [];
+              }),
+            );
+            if (text) {
+              params.onCommandBlock(text);
+            }
+          }
+          break;
         case "final":
           deliveredReplies.push({ payload, kind: info.kind });
           break;

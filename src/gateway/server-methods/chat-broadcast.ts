@@ -96,28 +96,40 @@ type ChatTerminal =
   | { state: "final" | "aborted"; message?: Record<string, unknown>; stopReason?: string }
   | { state: "error"; errorMessage?: string; stopReason?: string; errorKind?: "timeout" };
 
-export function broadcastChatTerminal(params: ChatBroadcastParams & ChatTerminal): void {
+type ChatFrame = ChatTerminal | { state: "delta"; text: string };
+
+function broadcastChatFrame(params: ChatBroadcastParams & ChatFrame): void {
   const seq = nextChatSeq(params.context, params.runId);
   const payloadAgentId = parseAgentSessionKey(params.sessionKey) ? undefined : params.agentId;
-  const terminal =
-    params.state !== "error"
+  const frame =
+    params.state === "delta"
       ? {
           state: params.state,
-          message: projectChatDisplayMessage(params.message),
-          ...(params.stopReason ? { stopReason: params.stopReason } : {}),
+          deltaText: params.text,
+          replace: true,
+          message: projectChatDisplayMessage({
+            role: "assistant",
+            content: [{ type: "text", text: params.text }],
+          }),
         }
-      : {
-          state: params.state,
-          errorMessage: params.errorMessage,
-          ...(params.stopReason ? { stopReason: params.stopReason } : {}),
-          ...(params.errorKind ? { errorKind: params.errorKind } : {}),
-        };
+      : params.state !== "error"
+        ? {
+            state: params.state,
+            message: projectChatDisplayMessage(params.message),
+            ...(params.stopReason ? { stopReason: params.stopReason } : {}),
+          }
+        : {
+            state: params.state,
+            errorMessage: params.errorMessage,
+            ...(params.stopReason ? { stopReason: params.stopReason } : {}),
+            ...(params.errorKind ? { errorKind: params.errorKind } : {}),
+          };
   const payload = {
     runId: params.runId,
     sessionKey: params.sessionKey,
     ...(payloadAgentId ? { agentId: payloadAgentId } : {}),
     seq,
-    ...terminal,
+    ...frame,
   };
   params.context.broadcast("chat", payload, {
     sessionKeys: resolveChatSessionKeys({
@@ -133,6 +145,14 @@ export function broadcastChatTerminal(params: ChatBroadcastParams & ChatTerminal
     event: "chat",
     payload,
   });
+}
+
+export function broadcastChatDelta(params: ChatBroadcastParams & { text: string }): void {
+  broadcastChatFrame({ ...params, state: "delta" });
+}
+
+export function broadcastChatTerminal(params: ChatBroadcastParams & ChatTerminal): void {
+  broadcastChatFrame(params);
   params.context.agentRunSeq.delete(params.runId);
 }
 
