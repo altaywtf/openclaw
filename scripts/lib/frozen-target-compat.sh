@@ -38,6 +38,30 @@ openclaw_frozen_target_session_repair_mode() {
   fi
 }
 
+openclaw_resolve_frozen_plugin_harness_capabilities() {
+  local source_root="${1:?missing selected source root}" authorization_status=0
+
+  export OPENCLAW_FROZEN_TARGET_PLUGIN_UNINSTALL_MODE="current"
+
+  openclaw_frozen_target_omissions_authorized || authorization_status=$?
+  [ "$authorization_status" -eq 1 ] && return 0
+  [ "$authorization_status" -eq 0 ] || return "$authorization_status"
+
+  if [ "$(git -C "$source_root" rev-parse HEAD 2>/dev/null)" != "$OPENCLAW_SELECTED_SHA" ]; then
+    echo "selected source checkout does not match OPENCLAW_SELECTED_SHA" >&2
+    return 2
+  fi
+
+  # The old plugin sweep asserted removal but predated the canonical disabled
+  # marker. Only that selected, packaged assertion dialect may relax the marker.
+  if git -C "$source_root" show "$OPENCLAW_SELECTED_SHA:scripts/e2e/lib/plugins/assertions.mjs" 2>/dev/null |
+    grep -Fq 'function assertPluginTgzRemoved()' &&
+    ! git -C "$source_root" show "$OPENCLAW_SELECTED_SHA:scripts/e2e/lib/plugins/assertions.mjs" 2>/dev/null |
+      grep -Fq 'function assertPluginUninstallConfigState('; then
+    export OPENCLAW_FROZEN_TARGET_PLUGIN_UNINSTALL_MODE="legacy"
+  fi
+}
+
 openclaw_resolve_frozen_upgrade_survivor_capabilities() {
   local source_root="${1:?missing selected source root}" authorization_status=0
 

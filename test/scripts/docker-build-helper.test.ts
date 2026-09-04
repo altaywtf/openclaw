@@ -7972,18 +7972,29 @@ done
     ]);
   });
 
-  it("forwards frozen-target omission authorization into the plugins container", () => {
+  it("forwards the selected-source-derived plugin profile into the plugins container", () => {
     const root = tempDirs.make("openclaw-plugins-docker-env-");
     const binDir = join(root, "bin");
     const dockerLog = join(root, "docker.log");
     writeExecutables(binDir, {
       docker: `#!/bin/bash
 printf '%s\\n' "$*" >>"$OPENCLAW_TEST_DOCKER_LOG"
-printf 'selected=%s tooling=%s\\n' "$OPENCLAW_SELECTED_SHA" "$OPENCLAW_TOOLING_SHA" >>"$OPENCLAW_TEST_DOCKER_LOG"
+printf 'profile=%s\\n' "$OPENCLAW_FROZEN_TARGET_PLUGIN_UNINSTALL_MODE" >>"$OPENCLAW_TEST_DOCKER_LOG"
 exit 0
 `,
     });
-    const selectedSha = "a".repeat(40);
+    const sourceRoot = join(root, "source");
+    const assertionsPath = join(sourceRoot, "scripts", "e2e", "lib", "plugins", "assertions.mjs");
+    mkdirSync(dirname(assertionsPath), { recursive: true });
+    writeFileSync(assertionsPath, "function assertPluginTgzRemoved() {}\\n");
+    execFileSync("git", ["init", "-q", sourceRoot]);
+    execFileSync("git", ["-C", sourceRoot, "config", "user.email", "test@example.invalid"]);
+    execFileSync("git", ["-C", sourceRoot, "config", "user.name", "OpenClaw Test"]);
+    execFileSync("git", ["-C", sourceRoot, "add", "-A"]);
+    execFileSync("git", ["-C", sourceRoot, "commit", "-qm", "legacy-plugin-profile"]);
+    const selectedSha = execFileSync("git", ["-C", sourceRoot, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+    }).trim();
 
     const result = spawnSync("bash", [PLUGINS_DOCKER_E2E_PATH], {
       cwd: process.cwd(),
@@ -7993,6 +8004,7 @@ exit 0
         PATH: `${binDir}:${process.env.PATH}`,
         OPENCLAW_ALLOW_FROZEN_TARGET_SCENARIO_OMISSIONS: "1",
         OPENCLAW_DOCKER_E2E_DISABLE_RESOURCE_LIMITS: "1",
+        OPENCLAW_DOCKER_E2E_REPO_ROOT: sourceRoot,
         OPENCLAW_DOCKER_E2E_SELECTED_SHA: selectedSha,
         OPENCLAW_SKIP_DOCKER_BUILD: "1",
         OPENCLAW_TEST_DOCKER_LOG: dockerLog,
@@ -8003,9 +8015,10 @@ exit 0
     const run = readFileSync(dockerLog, "utf8")
       .split("\n")
       .find((line) => line.startsWith("run "));
-    expect(run).toContain("-e OPENCLAW_ALLOW_FROZEN_TARGET_SCENARIO_OMISSIONS");
-    expect(run).toContain("-e OPENCLAW_SELECTED_SHA");
-    expect(run).toContain("-e OPENCLAW_TOOLING_SHA");
-    expect(readFileSync(dockerLog, "utf8")).toContain(`selected=${selectedSha} tooling=`);
+    expect(run).toContain("-e OPENCLAW_FROZEN_TARGET_PLUGIN_UNINSTALL_MODE=legacy");
+    expect(run).not.toContain("OPENCLAW_ALLOW_FROZEN_TARGET_SCENARIO_OMISSIONS");
+    expect(run).not.toContain("OPENCLAW_SELECTED_SHA");
+    expect(run).not.toContain("OPENCLAW_TOOLING_SHA");
+    expect(readFileSync(dockerLog, "utf8")).toContain("profile=legacy");
   });
 });
