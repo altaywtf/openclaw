@@ -18,6 +18,7 @@ import {
   canonicalizeTranscriptEventMedia,
   insertTranscriptRowsWithoutProjectionInTransaction,
   readEventTimestamp,
+  readMessageIdempotencyKey,
   scheduleTranscriptProjectionReconcile,
 } from "./session-accessor.sqlite-transcript-store.js";
 import {
@@ -560,6 +561,60 @@ export function replaceSqliteTranscriptSuffixInTransaction(
     }),
     retainedIdempotencyKeys,
   );
+
+  const removedIdempotencyKeys = new Set(
+    [...suffixIdentityKeys.values()].filter(
+      (key): key is string => key !== null && !retainedIdempotencyKeys.has(key),
+    ),
+  );
+  const replacementByIdempotencyKey = new Map<string, string>();
+  if (removedIdempotencyKeys.size > 0) {
+    const unownedPrefixRows = executeSqliteQuerySync(
+      database.db,
+      db
+        .selectFrom("transcript_event_identities as identity")
+        .innerJoin("transcript_events as event", (join) =>
+          join
+            .onRef("event.session_id", "=", "identity.session_id")
+            .onRef("event.seq", "=", "identity.seq"),
+        )
+        .select(["event.event_json", "identity.event_id"])
+        .where("identity.session_id", "=", resolved.sessionId)
+        .where("identity.seq", "<", plan.startSeq)
+        .where("identity.message_idempotency_key", "is", null)
+        .orderBy("identity.seq", "desc"),
+    ).rows;
+    for (const row of unownedPrefixRows) {
+      // SAFETY: persisted transcript rows are JSON objects written by the canonical event store.
+      const event = JSON.parse(row.event_json) as { message?: unknown };
+      const key = readMessageIdempotencyKey(event.message);
+      if (key && removedIdempotencyKeys.has(key) && !replacementByIdempotencyKey.has(key)) {
+        replacementByIdempotencyKey.set(key, row.event_id);
+      }
+    }
+  }
+  for (const key of removedIdempotencyKeys) {
+    const currentOwner = executeSqliteQueryTakeFirstSync(
+      database.db,
+      db
+        .selectFrom("transcript_event_identities")
+        .select("event_id")
+        .where("session_id", "=", resolved.sessionId)
+        .where("message_idempotency_key", "=", key)
+        .limit(1),
+    );
+    const replacementEventId = replacementByIdempotencyKey.get(key);
+    if (!currentOwner && replacementEventId) {
+      executeSqliteQuerySync(
+        database.db,
+        db
+          .updateTable("transcript_event_identities")
+          .set({ message_idempotency_key: key })
+          .where("session_id", "=", resolved.sessionId)
+          .where("event_id", "=", replacementEventId),
+      );
+    }
+  }
 
   if (projectionIsHealthy) {
     replaceSessionTranscriptIndexSuffixInTransaction(database.db, resolved.sessionId, {

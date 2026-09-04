@@ -786,6 +786,42 @@ describe("SQLite exact transcript suffix replacement", () => {
     }, duplicateKeyEvents);
   });
 
+  it("promotes an unchanged-prefix duplicate when its suffix owner is removed", async () => {
+    const duplicateKeyEvents = [
+      rewriteEvents[0],
+      {
+        type: "message",
+        id: "duplicate",
+        parentId: "root",
+        message: { role: "assistant", content: "duplicate", idempotencyKey: "retry" },
+      },
+      {
+        type: "message",
+        id: "owner",
+        parentId: "duplicate",
+        message: { role: "assistant", content: "owner", idempotencyKey: "retry" },
+      },
+    ] as const;
+    await withRewriteFixture(({ db, scope }) => {
+      db.prepare(
+        "UPDATE transcript_event_identities SET message_idempotency_key = NULL WHERE session_id = ? AND event_id = ?",
+      ).run(scope.sessionId, "duplicate");
+      db.prepare(
+        "UPDATE transcript_event_identities SET message_idempotency_key = ? WHERE session_id = ? AND event_id = ?",
+      ).run("retry", scope.sessionId, "owner");
+
+      replaceTranscriptSuffixForTest(scope, duplicateKeyEvents, duplicateKeyEvents.slice(0, -1), 2);
+
+      expect(
+        db
+          .prepare(
+            "SELECT event_id, message_idempotency_key FROM transcript_event_identities WHERE session_id = ? AND event_id = ?",
+          )
+          .get(scope.sessionId, "duplicate"),
+      ).toEqual({ event_id: "duplicate", message_idempotency_key: "retry" });
+    }, duplicateKeyEvents);
+  });
+
   it("preserves generation while updating raw, identity, active, and FTS rows", async () => {
     await withRewriteFixture(({ db, snapshot, scope }) => {
       const before = snapshot();
