@@ -365,6 +365,7 @@ export function parseRegistryNpmSpec(spec: string) {
         mkdirSync(path.join(root, "src", "plugins"), { recursive: true });
         mkdirSync(path.join(root, "src", "agents"), { recursive: true });
         mkdirSync(path.join(root, "scripts", "e2e"), { recursive: true });
+        mkdirSync(path.join(root, "scripts", "e2e", "lib", "plugins"), { recursive: true });
         writeFileSync(
           path.join(root, "src", "infra", "exec-approvals.ts"),
           'const EXEC_APPROVALS_FILE = "exec-approvals.json";\n',
@@ -385,6 +386,10 @@ export function parseRegistryNpmSpec(spec: string) {
         writeFileSync(
           path.join(root, "scripts", "e2e", "agent-bundle-mcp-tools-docker-client.ts"),
           "\n",
+        );
+        writeFileSync(
+          path.join(root, "scripts", "e2e", "lib", "plugins", "assertions.mjs"),
+          "function assertPluginTgzRemoved() {}\n",
         );
         mkdirSync(path.join(root, "src", "config"), { recursive: true });
         mkdirSync(path.join(root, "src", "commands"), { recursive: true });
@@ -427,6 +432,11 @@ export function parseRegistryNpmSpec(spec: string) {
           path.join(root, "src", "agents", "code-mode-namespaces.ts"),
           'const reserved = ["ALL_TOOLS", "catalog"];\n',
         );
+        mkdirSync(path.join(root, "scripts", "e2e", "lib", "plugins"), { recursive: true });
+        writeFileSync(
+          path.join(root, "scripts", "e2e", "lib", "plugins", "assertions.mjs"),
+          "function assertPluginUninstallConfigState() {}\n",
+        );
       }
       execFileSync("git", ["init", "-q", root]);
       execFileSync("git", ["-C", root, "config", "user.email", "test@example.invalid"]);
@@ -453,7 +463,8 @@ export function parseRegistryNpmSpec(spec: string) {
             'set -euo pipefail; source "$1"',
             'openclaw_resolve_frozen_upgrade_survivor_capabilities "$2"',
             'openclaw_resolve_frozen_core_harness_capabilities "$2"',
-            'printf "%s|%s|%s|%s|%s|%s|%s|%s|%s\\n" "$OPENCLAW_UPGRADE_SURVIVOR_EXEC_APPROVALS_MODE" "$OPENCLAW_UPGRADE_SURVIVOR_CLAWHUB_REQUEST_DIALECT" "$OPENCLAW_UPGRADE_SURVIVOR_SESSION_REPAIR_MODE" "$OPENCLAW_FROZEN_TARGET_ONBOARD_CASES" "$OPENCLAW_FROZEN_TARGET_ONBOARD_SESSION_MEMORY_HOOK_MODE" "$OPENCLAW_FROZEN_TARGET_AGENT_BUNDLE_MCP_MODE" "$OPENCLAW_FROZEN_TARGET_MCP_CODE_MODE_CATALOG_MODE" "$OPENCLAW_FROZEN_TARGET_MCP_MEMORY_CONFIG_MODE" "$OPENCLAW_FROZEN_TARGET_SESSION_REPAIR_MODE"',
+            'openclaw_resolve_frozen_plugin_harness_capabilities "$2"',
+            'printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\\n" "$OPENCLAW_UPGRADE_SURVIVOR_EXEC_APPROVALS_MODE" "$OPENCLAW_UPGRADE_SURVIVOR_CLAWHUB_REQUEST_DIALECT" "$OPENCLAW_UPGRADE_SURVIVOR_SESSION_REPAIR_MODE" "$OPENCLAW_FROZEN_TARGET_ONBOARD_CASES" "$OPENCLAW_FROZEN_TARGET_ONBOARD_SESSION_MEMORY_HOOK_MODE" "$OPENCLAW_FROZEN_TARGET_AGENT_BUNDLE_MCP_MODE" "$OPENCLAW_FROZEN_TARGET_MCP_CODE_MODE_CATALOG_MODE" "$OPENCLAW_FROZEN_TARGET_MCP_MEMORY_CONFIG_MODE" "$OPENCLAW_FROZEN_TARGET_SESSION_REPAIR_MODE" "$OPENCLAW_FROZEN_TARGET_PLUGIN_UNINSTALL_MODE"',
           ].join("; "),
           "test",
           frozenTargetCompatPath,
@@ -472,20 +483,20 @@ export function parseRegistryNpmSpec(spec: string) {
 
     const legacy = createSource("legacy");
     expect(run(legacy, "1").stdout.trim()).toBe(
-      "omitted|legacy|jsonl|local-basic,remote-non-interactive,reset,channels,skills|interactive|legacy|legacy|agent|jsonl",
+      "omitted|legacy|jsonl|local-basic,remote-non-interactive,reset,channels,skills|interactive|legacy|legacy|agent|jsonl|legacy",
     );
     expect(run(legacy, "0").stdout.trim()).toBe(
-      "required|current|sqlite||required|current|current|current|sqlite",
+      "required|current|sqlite||required|current|current|current|sqlite|current",
     );
 
     const modern = createSource("modern");
     expect(run(modern, "1").stdout.trim()).toBe(
-      "required|current|sqlite||required|current|current|current|sqlite",
+      "required|current|sqlite||required|current|current|current|sqlite|current",
     );
 
     const unknown = createSource("unknown");
     expect(run(unknown, "1").stdout.trim()).toBe(
-      "required|current|sqlite||required|current|current|current|sqlite",
+      "required|current|sqlite||required|current|current|current|sqlite|current",
     );
 
     const mismatched = run(legacy, "1", "e".repeat(40));
