@@ -939,6 +939,141 @@ Shell access instead goes through OpenClaw sandbox-backed dynamic tools such
 as `sandbox_exec` and `sandbox_process` when the normal exec/process tools
 are available.
 
+### Sandboxed startup recovery
+
+When an OpenClaw sandbox disables native tools, Codex needs a local stdio
+process whose native configuration stays outside model-writable paths.
+Both the default agent home and `homeScope: "user"` work when their directories
+are protected. User-home mode keeps the same native account and thread store;
+OpenClaw pins the verified physical `CODEX_HOME` for the process. The real
+workspace remains the working directory for managed hooks, while project-local
+Codex configuration and ordinary hooks cannot bypass the restricted tool policy.
+
+Startup reports the specific requirement that could not be met and links here.
+Choose the matching recovery below. These are operator-controlled configuration
+changes: the plugin's `appServer` settings apply to every agent using that plugin,
+including agents without an OpenClaw sandbox. Review other agents and supervision
+connections before changing a shared transport, home, or network profile.
+OpenClaw does not automatically rewrite these settings on upgrade or during
+`doctor --fix`.
+
+**Remote, Unix-socket, or stdio-proxy connection.** These connections cannot apply
+the required process configuration to the server they attach to. To run this
+gateway's agents locally, save this patch as `codex-local.patch.json5`:
+
+```json5 validate=false
+{
+  plugins: {
+    entries: {
+      codex: {
+        config: {
+          appServer: {
+            transport: "stdio",
+            homeScope: "agent",
+            command: null,
+            args: ["app-server", "--listen", "stdio://"],
+            url: null,
+            authToken: null,
+            headers: null,
+            remoteWorkspaceRoot: null,
+          },
+        },
+      },
+    },
+  },
+}
+```
+
+The patch removes the custom command, connection credentials, remote workspace
+mapping, and custom launch arguments; other settings remain. Remove an authored
+`OPENCLAW_CODEX_APP_SERVER_BIN` override from the gateway's launch environment
+if it selects a remote wrapper. The managed local binary is selected when neither
+configuration nor the launch environment supplies a command. Preview and apply:
+
+```bash
+openclaw config patch --file ./codex-local.patch.json5 --dry-run
+openclaw config patch --file ./codex-local.patch.json5
+openclaw models auth list --provider openai
+```
+
+If the local agent has no suitable OpenAI profile, run
+`openclaw models auth login --provider openai` and choose the login method for
+its existing model route. Native remote/user-home credentials and threads are
+not copied into the agent home. Keep the current connection if those shared
+agents must continue running remotely; use a separate gateway configuration for
+the local sandboxed agents instead.
+
+**Native network permission profile.** The generated `appServer.networkProxy`
+profile selects native filesystem and network permissions, which conflicts with
+the protected turn's sandbox ceiling. If this shared plugin no longer needs
+that profile, disable it explicitly:
+
+```bash
+openclaw config set plugins.entries.codex.config.appServer.networkProxy.enabled false --strict-json --dry-run
+openclaw config set plugins.entries.codex.config.appServer.networkProxy.enabled false --strict-json
+```
+
+This also removes the selected native proxy policy for unsandboxed agents using
+the plugin; it is not a per-agent change. Keep a separate gateway configuration
+for agents that still require it. The protected sandboxed turn continues to deny
+native network access and retains its filesystem ceiling. OpenClaw sandbox
+egress remains controlled by the [sandbox configuration](/gateway/sandboxing).
+
+**Workspace or writable bind overlaps native state.** Run
+`openclaw sandbox explain --agent <agent-id>` and inspect the effective workspace,
+agent state directory, `CODEX_HOME`, and configured `sandbox.docker.binds`.
+Keep native state outside the tool workspace and writable binds. A writable
+ancestor of the workspace also needs narrowing: it can replace the workspace
+directory itself. Bind the workspace or its children instead, or make an
+ancestor mount read-only if its consumers only need reads. Do not expose native
+authentication files through a read-only mount merely to pass the write check.
+
+For example, if the first default bind is `/srv:/shared:rw` and only reads of
+that parent are needed, update that exact entry while keeping the other binds:
+
+```bash
+openclaw config set 'agents.defaults.sandbox.docker.binds[0]' '"/srv:/shared:ro"' --strict-json --dry-run
+openclaw config set 'agents.defaults.sandbox.docker.binds[0]' '"/srv:/shared:ro"' --strict-json
+openclaw sandbox recreate --agent <agent-id>
+```
+
+Use the actual configuration path if the bind is an agent override. Changing a
+bind to read-only removes writes through that mount. Sandbox recreation removes
+the old container so the next turn uses the edited mounts.
+
+**Directory permissions or session root.** Keep the agent directory and native
+home as directories owned by the gateway process account or root, without group
+or other write access. Native `config.toml` and `hooks.json` must have the same
+trusted ownership and be regular files without extra hard links or group or other write access. Replace linked sources
+with reviewed, independent files in the protected native home; overwriting a hard
+link in place keeps the shared inode. A link into a writable workspace would let
+the model change native policy.
+Parent directories must also prevent other accounts from replacing native state:
+their owners must be the gateway account or root, and group or other write access
+is allowed only when a sticky directory protects a child owned by one of those
+trusted accounts. Root-owned sticky temporary directories remain supported.
+Sandboxed startup pins the canonical agent directory before resolving the default native home, so a
+workspace alias cannot redirect it later. The default `codex-home` entry must be
+a directory, not a symbolic link; replace a linked entry with a reviewed
+independent directory, or configure an explicit protected `CODEX_HOME`, which
+is pinned to its canonical path.
+Move native state out of another account's replaceable directory tree, or repair
+ownership and permissions on the affected paths; do not recursively
+change the workspace. POSIX checks use the gateway process's effective UID; root
+remains a trusted administrator. Windows has no POSIX UID check here: protect
+these paths with Windows ownership and ACLs before use. Passing this check does
+not verify Windows ACLs. If the workspace is outside the
+session permission root, select a workspace inside that root instead of widening
+the permission root to include native state.
+
+After recovery, run `openclaw config validate`, restart the gateway with
+`openclaw gateway restart` if its launch environment changed, and send a fresh
+turn to the affected agent. It should start inference without the protected
+startup error. Managed requirements still apply; a conflicting administrator
+requirement needs administrator repair. An actual native
+`allow_managed_hooks_only` requirement protects hook discovery, but it does not
+replace the workspace/configuration protections required here.
+
 Use normalized OpenClaw exec mode for Codex native auto-review before
 sandbox escapes or extra permissions:
 
