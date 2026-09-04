@@ -325,13 +325,13 @@ export function renderProviderProfiles(card: ModelProviderCard, props: ProviderP
                 ? "modelProviders.profiles.accountOne"
                 : "modelProviders.profiles.accounts",
               { count: String(profiles.length) },
-            )}${reorderOffered
-              ? ` · ${t("modelProviders.profiles.reorderHint")}`
-              : ""}${priorityManaged
-              ? ` · ${priorityManaged}`
-              : priorityAutomatic
-                ? ` · ${t("modelProviders.profiles.partialOrder")}`
-                : ""}${additionalCredentialSource ? ` · ${additionalCredentialSource}` : ""}</span
+            )}${reorderOffered ? ` · ${t("modelProviders.profiles.reorderHint")}` : ""}${
+              priorityManaged
+                ? ` · ${priorityManaged}`
+                : priorityAutomatic
+                  ? ` · ${t("modelProviders.profiles.partialOrder")}`
+                  : ""
+            }${additionalCredentialSource ? ` · ${additionalCredentialSource}` : ""}</span
           >
         </span>
         <span class="model-providers__profiles-heading-actions">
@@ -391,57 +391,59 @@ export function renderProviderProfiles(card: ModelProviderCard, props: ProviderP
                 data-profile-id=${profile.profileId}
                 data-profile-provider=${provider}
               >
-                ${locked || automatic
-                  ? html`<span
-                      class="model-providers__profile-grip-spacer"
-                      aria-hidden="true"
-                    ></span>`
-                  : html`<button
-                      type="button"
-                      class="model-providers__profile-grip"
-                      ?disabled=${!canMove}
-                      aria-label=${t("modelProviders.profiles.reorder", {
-                        account: identity,
-                        position: String(index + 1),
-                      })}
-                      aria-keyshortcuts=${canMove ? "ArrowUp ArrowDown" : nothing}
-                      title=${reorderBlocked}
-                      @pointerdown=${(event: PointerEvent) =>
-                        startPointerDrag({
-                          event,
-                          canMove,
-                          sourceId: profile.profileId,
-                          provider,
-                          move,
+                ${
+                  locked || automatic
+                    ? html`<span
+                        class="model-providers__profile-grip-spacer"
+                        aria-hidden="true"
+                      ></span>`
+                    : html`<button
+                        type="button"
+                        class="model-providers__profile-grip"
+                        ?disabled=${!canMove}
+                        aria-label=${t("modelProviders.profiles.reorder", {
+                          account: identity,
+                          position: String(index + 1),
                         })}
-                      @keydown=${(event: KeyboardEvent) => {
-                        if (!canMove) {
-                          return;
-                        }
-                        const delta =
-                          event.key === "ArrowUp" ? -1 : event.key === "ArrowDown" ? 1 : 0;
-                        const targetId = order[index + delta];
-                        if (!delta || !targetId) {
-                          return;
-                        }
-                        event.preventDefault();
-                        const grip = event.currentTarget;
-                        const restoreFocus =
-                          grip instanceof HTMLElement && document.activeElement === grip;
-                        move(targetId, delta < 0 ? "before" : "after");
-                        if (restoreFocus) {
-                          // Lit moves keyed rows through removal/reinsertion, dropping focus.
-                          // Restore this grip after rendering without taking focus from another control.
-                          queueMicrotask(() => {
-                            if (grip.isConnected && document.activeElement === document.body) {
-                              grip.focus({ preventScroll: true });
-                            }
-                          });
-                        }
-                      }}
-                    >
-                      ${icons.gripVertical}
-                    </button>`}
+                        aria-keyshortcuts=${canMove ? "ArrowUp ArrowDown" : nothing}
+                        title=${reorderBlocked}
+                        @pointerdown=${(event: PointerEvent) =>
+                          startPointerDrag({
+                            event,
+                            canMove,
+                            sourceId: profile.profileId,
+                            provider,
+                            move,
+                          })}
+                        @keydown=${(event: KeyboardEvent) => {
+                          if (!canMove) {
+                            return;
+                          }
+                          const delta =
+                            event.key === "ArrowUp" ? -1 : event.key === "ArrowDown" ? 1 : 0;
+                          const targetId = order[index + delta];
+                          if (!delta || !targetId) {
+                            return;
+                          }
+                          event.preventDefault();
+                          const grip = event.currentTarget;
+                          const restoreFocus =
+                            grip instanceof HTMLElement && document.activeElement === grip;
+                          move(targetId, delta < 0 ? "before" : "after");
+                          if (restoreFocus) {
+                            // Lit moves keyed rows through removal/reinsertion, dropping focus.
+                            // Restore this grip after rendering without taking focus from another control.
+                            queueMicrotask(() => {
+                              if (grip.isConnected && document.activeElement === document.body) {
+                                grip.focus({ preventScroll: true });
+                              }
+                            });
+                          }
+                        }}
+                      >
+                        ${icons.gripVertical}
+                      </button>`
+                }
                 <span class="model-providers__profile-avatar" aria-hidden="true"
                   >${profileInitials(profile)}</span
                 >
@@ -455,10 +457,12 @@ export function renderProviderProfiles(card: ModelProviderCard, props: ProviderP
                   class="model-providers__profile-logout"
                   aria-label=${logoutLabel}
                   title=${logoutBlocked}
-                  ?disabled=${!props.canMutate ||
-                  profile.logoutSupported !== true ||
-                  !logoutProvider ||
-                  props.busy[`logout:${card.id}`]}
+                  ?disabled=${
+                    !props.canMutate ||
+                    profile.logoutSupported !== true ||
+                    !logoutProvider ||
+                    props.busy[`logout:${card.id}`]
+                  }
                   @click=${() => {
                     if (!logoutProvider) {
                       return;
