@@ -1,6 +1,8 @@
-// Profile hero card: featured agent identity with an authenticated avatar.
-import { html } from "lit";
+// Profile hero: live personal identity, or the agent preview for unidentified connections.
+import { html, nothing } from "lit";
 import type { AgentIdentityResult } from "../../api/types.ts";
+import "../../components/viewer-facepile.ts";
+import type { AuthenticatedUser } from "../../app/user-profile.ts";
 import { icons } from "../../components/icons.ts";
 import { renderSettingsGroup } from "../../components/settings-ui.ts";
 import { resolveAgentAvatarUrl, resolveAssistantTextAvatar } from "../../lib/avatar.ts";
@@ -14,6 +16,7 @@ type HeroAgentRow = {
 type HeroAgentIdentity = AgentIdentityResult | null | undefined;
 
 export type ProfileHeroProps = {
+  selfUser: AuthenticatedUser | null;
   agentId: string;
   row: HeroAgentRow;
   identity: HeroAgentIdentity;
@@ -23,6 +26,12 @@ export type ProfileHeroProps = {
 };
 
 function renderHeroAvatar(props: ProfileHeroProps) {
+  if (props.selfUser) {
+    return html`<openclaw-viewer-avatar
+      .user=${{ ...props.selfUser, watchedSessions: [] }}
+      variant="profile"
+    ></openclaw-viewer-avatar>`;
+  }
   const avatarUrl = resolveAgentAvatarUrl(props.row, props.identity);
   const textAvatar =
     resolveAssistantTextAvatar(props.identity?.avatar) ??
@@ -45,6 +54,10 @@ function renderHeroAvatar(props: ProfileHeroProps) {
 }
 
 function heroName(props: ProfileHeroProps): string {
+  // Presence owns live absence too: a cached users.self name can be stale after clearing.
+  if (props.selfUser) {
+    return props.selfUser.name?.trim() || props.selfUser.email || props.selfUser.id;
+  }
   return (
     props.identity?.name?.trim() ||
     props.row.identity?.name?.trim() ||
@@ -59,7 +72,13 @@ export function renderProfileHero(props: ProfileHeroProps) {
       <div class="profile-hero__avatar">${renderHeroAvatar(props)}</div>
       <div class="profile-hero__name">${heroName(props)}</div>
       <div class="profile-hero__handle">
-        <span>@${props.agentId}</span>
+        ${
+          props.selfUser
+            ? props.selfUser.email
+              ? html`<span class="profile-hero__email">${props.selfUser.email}</span>`
+              : nothing
+            : html`<span>@${props.agentId}</span>`
+        }
         <span class="profile-hero__badge">OpenClaw</span>
       </div>
     </section>

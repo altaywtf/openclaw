@@ -442,6 +442,7 @@ export class ProfilePage extends OpenClawLightDomElement {
     const agentId = list?.defaultId ?? "main";
     const row = list?.agents.find((agent) => agent.id === agentId) ?? { id: agentId };
     return renderProfileHero({
+      selfUser: this.selfUser,
       agentId,
       row,
       identity: this.context.agentIdentity.get(agentId),

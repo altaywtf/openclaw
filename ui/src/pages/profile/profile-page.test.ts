@@ -460,6 +460,7 @@ it("renders a write-access note without calling users.self for read-only viewers
   const page = mountProfilePage(harness.context);
 
   await page.updateComplete;
+  expect(page.querySelector(".profile-hero__name")?.textContent).toBe("Ada");
   expect(request.mock.calls).toEqual([["users.github.status", {}]]);
   expect(page.textContent).toContain("Profile editing requires operator.write access.");
   expect(page.querySelector(".identity-name-control")).toBeNull();
@@ -802,6 +803,16 @@ it("bootstraps and refreshes the connected user's profile through users.self", a
   };
   expect(identityState.selfUser?.id).toBe(profile.id);
   expect(identityState.ownProfile?.id).toBe(profile.id);
+  expect(page.querySelector(".profile-hero__name")?.textContent).toBe("Ada");
+  expect(page.querySelector(".profile-hero__handle")?.textContent).toContain("ada@example.test");
+  // The loaded users.self profile remains Ada while authoritative presence
+  // renames and then clears the name. Its cached value must never win.
+  for (const name of ["Ada Lovelace", undefined]) {
+    harness.context.gateway.updateSelfUser?.({ name });
+    await page.updateComplete;
+    expect(page.querySelector(".profile-hero__name")?.textContent).toBe(name ?? "ada@example.test");
+  }
+  harness.context.gateway.updateSelfUser?.({ name: "Ada" });
   expect(page.textContent).toContain("ada@example.test, ada@work.test");
   expect(request.mock.calls.some(([method]) => method === "users.list")).toBe(false);
 

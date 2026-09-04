@@ -36,11 +36,11 @@ beforeEach(() => {
 const basePath = "/wilfred";
 const profilePath = `${basePath}/settings/profile`;
 
-async function screenshot(page: Page, name: string) {
+async function screenshot(page: Page, name: string, selector = "#settings-profile-identity") {
   if (!captureUiProof) {
     return;
   }
-  const identity = page.locator("#settings-profile-identity");
+  const identity = page.locator(selector);
   if (page.video()) {
     await writeFile(
       path.join(proofDir, name),
@@ -76,23 +76,30 @@ const linkedGitHubProfile = {
     avatarUrl: githubAvatarUrl,
   },
 };
-const testPresenceUsers = [
-  {
-    self: true,
-    id: testProfile.id,
-    name: testProfile.displayName,
-    email: testProfile.emails[0],
-    avatarUrl: `/api/users/${testProfile.id}/avatar?v=${testProfile.updatedAt}`,
-  },
-];
+const testPresenceUser = {
+  self: true,
+  id: testProfile.id,
+  name: testProfile.displayName,
+  email: testProfile.emails[0],
+  avatarUrl: `/api/users/${testProfile.id}/avatar?v=${testProfile.updatedAt}`,
+};
+const testPresenceUsers = [testPresenceUser];
 
 suite.define(() => {
-  async function openProfilePage(page: Page, methodResponses: Record<string, unknown> = {}) {
+  async function openProfilePage(
+    page: Page,
+    methodResponses: Record<string, unknown> = {},
+    presenceUsers = testPresenceUsers,
+  ) {
     const gateway = await installMockGateway(page, {
       basePath,
-      presenceUsers: testPresenceUsers,
+      presenceUsers,
       methodResponses: {
         "users.self": { profile: testProfile },
+        "agents.list": {
+          defaultId: "clipper",
+          agents: [{ id: "clipper", name: "Clipper" }],
+        },
         ...methodResponses,
       },
     });
@@ -106,11 +113,14 @@ suite.define(() => {
       const gateway = await openProfilePage(page);
 
       await page.locator(".profile-hero__name").waitFor({ timeout: 10_000 });
+      await screenshot(page, "profile-hero.png", ".profile-hero");
       await expect(page.locator(".profile-hero__name").textContent()).resolves.toContain(
-        "OpenClaw",
+        "Test Person",
       );
-      await expect(page.locator(".profile-hero__handle").textContent()).resolves.toContain("@main");
-      await page.locator(".profile-hero__avatar-mascot svg").waitFor({ timeout: 5_000 });
+      await expect(page.locator(".profile-hero__handle").textContent()).resolves.toContain(
+        "test@example.com",
+      );
+      await expect(page.locator(".profile-hero").textContent()).resolves.not.toContain("Clipper");
       await page.locator("#settings-profile-identity").waitFor({ timeout: 5_000 });
       await expect(
         page.getByRole("button", { name: /Usage statistics/u }).textContent(),
@@ -120,6 +130,27 @@ suite.define(() => {
       expect(await page.locator(".profile-stats, .profile-heatmap, .profile-tools").count()).toBe(
         0,
       );
+    });
+  });
+
+  it("wraps a long authenticated email beside the Profile badge on narrow screens", async () => {
+    const longEmail = "very-long-primary-user-address-for-profile-proof@example.com";
+    await suite.withPage({ viewport: { width: 360, height: 800 } }, async ({ page }) => {
+      await openProfilePage(
+        page,
+        { "users.self": { profile: { ...testProfile, emails: [longEmail] } } },
+        [{ ...testPresenceUser, email: longEmail }],
+      );
+
+      const handle = page.locator(".profile-hero__handle");
+      await expect(handle).toContainText(longEmail);
+      expect(await handle.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
+        true,
+      );
+      expect(
+        await page.locator("body").evaluate((element) => element.scrollWidth),
+      ).toBeLessThanOrEqual(360);
+      await screenshot(page, "profile-narrow.png", ".profile-hero");
     });
   });
 
@@ -255,23 +286,27 @@ suite.define(() => {
             status: 200,
           });
         });
-        const gateway = await openProfilePage(page, {
-          "agent.identity.get": {
-            agentId: "main",
-            name: "Main agent",
-            avatar: `${basePath}/avatar/main`,
-            avatarStatus: "local",
+        const gateway = await openProfilePage(
+          page,
+          {
+            "agent.identity.get": {
+              agentId: "main",
+              name: "Main agent",
+              avatar: `${basePath}/avatar/main`,
+              avatarStatus: "local",
+            },
+            "agents.list": {
+              defaultId: "main",
+              agents: [
+                {
+                  id: "main",
+                  identity: { name: "Main agent", avatarUrl: `${basePath}/avatar/main` },
+                },
+              ],
+            },
           },
-          "agents.list": {
-            defaultId: "main",
-            agents: [
-              {
-                id: "main",
-                identity: { name: "Main agent", avatarUrl: `${basePath}/avatar/main` },
-              },
-            ],
-          },
-        });
+          [],
+        );
 
         await gateway.waitForRequest("agent.identity.get");
         const image = page.locator(".profile-hero__avatar-image");
@@ -387,6 +422,11 @@ suite.define(() => {
         await profileAvatar.waitFor({ timeout: 10_000 });
         const imageUrl = await profileAvatar.getAttribute("src");
         expect(imageUrl).toMatch(/^blob:/u);
+        const heroAvatar = page.locator(".profile-hero openclaw-viewer-avatar img");
+        await expect(heroAvatar).toHaveAttribute("src", imageUrl!);
+        await expect
+          .poll(() => heroAvatar.evaluate((image) => (image as HTMLImageElement).naturalWidth))
+          .toBe(1);
         await expect
           .poll(() => profileAvatar.evaluate((image) => (image as HTMLImageElement).naturalWidth))
           .toBe(1);

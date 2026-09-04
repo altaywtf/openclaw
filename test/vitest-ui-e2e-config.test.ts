@@ -412,6 +412,7 @@ describe("Control UI E2E resource ownership", () => {
       "cron-duration-save.real-gateway",
       "logs-lifecycle",
       "mcp-app-conformance",
+      "profile-page.real-gateway",
       "session-progress-hovercard.real-gateway",
       "usage-sessions-owner-attribution",
     ]
