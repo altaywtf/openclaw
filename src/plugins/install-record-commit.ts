@@ -620,7 +620,7 @@ export async function commitConfigWriteWithPendingPluginInstalls(params: {
         : await params.commit(params.nextConfig);
     });
     return {
-      config: params.nextConfig,
+      config: committed ? committed.nextConfig : params.nextConfig,
       installRecords: {},
       movedInstallRecords: false,
       persistedHash: committed?.persistedHash ?? null,
@@ -649,7 +649,7 @@ export async function commitConfigWriteWithPendingPluginInstalls(params: {
     commit: params.commit,
   });
   return {
-    config: strippedConfig,
+    config: result.committed ? result.committed.nextConfig : strippedConfig,
     installRecords: result.nextInstallRecords,
     movedInstallRecords: true,
     persistedHash: result.committed?.persistedHash ?? null,

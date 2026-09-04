@@ -1002,27 +1002,6 @@ describe("commitConfigWithPendingPluginInstalls", () => {
     }
   });
 
-  it("uses a plain config write when no pending plugin install records exist", async () => {
-    const nextConfig: OpenClawConfig = {
-      gateway: {
-        mode: "local",
-      },
-    };
-
-    const result = await commitConfigWithPendingPluginInstalls({ nextConfig });
-
-    expect(mocks.writePersistedInstalledPluginIndexInstallRecordsWithLease).not.toHaveBeenCalled();
-    expect(mocks.replaceConfigFile).toHaveBeenCalledWith({
-      nextConfig,
-    });
-    expect(result).toEqual({
-      config: nextConfig,
-      installRecords: {},
-      movedInstallRecords: false,
-      persistedHash: "test-config-hash",
-    });
-  });
-
   it("supports non-replace config writers without adding an undefined write options argument", async () => {
     const writeConfigFile = vi.fn(async () => undefined);
     const nextConfig: OpenClawConfig = {
@@ -1044,4 +1023,40 @@ describe("commitConfigWithPendingPluginInstalls", () => {
       persistedHash: null,
     });
   });
+
+  it.each([false, true])(
+    "returns the writer's committed config rather than its input (pending installs: %s)",
+    async (pendingInstalls) => {
+      const committedConfig: OpenClawConfig = {
+        gateway: { mode: "local" },
+        meta: { lastTouchedVersion: "2026.9.4" },
+      };
+      mocks.replaceConfigFile.mockResolvedValueOnce({
+        nextConfig: committedConfig,
+        persistedHash: "committed-config-hash",
+      });
+
+      const result = await commitConfigWithPendingPluginInstalls({
+        nextConfig: {
+          gateway: { mode: "local" },
+          ...(pendingInstalls
+            ? { plugins: { installs: { fixture: { source: "npm", spec: "fixture@1.0.0" } } } }
+            : {}),
+        },
+      });
+
+      expect(result.config).toEqual(committedConfig);
+      expect(result.persistedHash).toBe("committed-config-hash");
+      if (!pendingInstalls) {
+        expect(
+          mocks.writePersistedInstalledPluginIndexInstallRecordsWithLease,
+        ).not.toHaveBeenCalled();
+        expect(mocks.replaceConfigFile).toHaveBeenCalledWith({
+          nextConfig: { gateway: { mode: "local" } },
+        });
+        expect(result.installRecords).toEqual({});
+        expect(result.movedInstallRecords).toBe(false);
+      }
+    },
+  );
 });
