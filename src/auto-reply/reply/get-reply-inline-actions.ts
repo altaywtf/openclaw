@@ -53,6 +53,7 @@ import { extractExplicitGroupId } from "./group-id.js";
 import { stripMentions, stripStructuralPrefixes } from "./mentions.js";
 import type { createModelSelectionState } from "./model-selection.js";
 import { extractInlineSimpleCommand, getStandaloneSlashCommandName } from "./reply-inline.js";
+import { createSkillCommandLoaders } from "./skill-command-loaders.js";
 import type { TypingController } from "./typing.js";
 
 type SkillCommandsRuntime = typeof import("../../skills/discovery/chat-commands.runtime.js");
@@ -637,27 +638,15 @@ export async function handleInlineActions(params: {
       contextTokens,
       isGroup,
       skillCommands,
-      loadSkillCommands: async () =>
-        (await loadSkillCommandsRuntime()).listSkillCommandsForWorkspace({
-          workspaceDir,
-          cfg,
-          agentId,
-          skillFilter,
-          sessionEntry: targetSessionEntry,
-          sessionKey,
-          execOverrides,
-        }),
-      loadBundledSkillCommand: async (skillName) =>
-        (await loadSkillCommandsRuntime()).findBundledSkillCommandForWorkspace({
-          workspaceDir,
-          cfg,
-          skillName,
-          agentId,
-          skillFilter,
-          sessionEntry: targetSessionEntry,
-          sessionKey,
-          execOverrides,
-        }),
+      ...createSkillCommandLoaders(loadSkillCommandsRuntime, {
+        workspaceDir,
+        cfg,
+        agentId,
+        skillFilter,
+        sessionEntry: targetSessionEntry,
+        sessionKey,
+        execOverrides,
+      }),
       typing,
     });
   };
