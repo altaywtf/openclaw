@@ -90,13 +90,12 @@ type LoadSessionPreview = (
   sessionKey: string,
   context: GatewayRequestContext,
   client: GatewayClient | null,
-  mediaSource?: string,
 ) => ControlUiSessionAccess | null | Promise<ControlUiSessionAccess | null>;
 
 type LoadAssistantMedia = (
   source: string,
   context: GatewayRequestContext,
-  authority: { agentId?: string; connId: string; sessionKey?: string },
+  authority: Parameters<typeof resolveControlUiAssistantMedia>[2],
 ) => Promise<AssistantMediaGetResult>;
 
 const SESSION_PREVIEW_TEXT_MAX_CHARS = 200;
@@ -137,7 +136,7 @@ function parseAssistantMediaParams(
 async function loadAssistantMedia(
   source: string,
   context: GatewayRequestContext,
-  authority: { agentId?: string; connId: string; sessionKey?: string },
+  authority: Parameters<typeof resolveControlUiAssistantMedia>[2],
 ): Promise<AssistantMediaGetResult> {
   const cfg = context.getRuntimeConfig();
   return await resolveControlUiAssistantMedia(source, cfg, authority);
@@ -174,9 +173,8 @@ function loadControlUiSessionPreview(
   sessionKey: string,
   context: GatewayRequestContext,
   client: GatewayClient | null,
-  mediaSource?: string,
 ): ControlUiSessionAccess | null {
-  return resolveControlUiSessionAccess(sessionKey, context.getRuntimeConfig(), client, mediaSource);
+  return resolveControlUiSessionAccess(sessionKey, context.getRuntimeConfig(), client);
 }
 
 export function createControlUiHandlers(
@@ -185,7 +183,7 @@ export function createControlUiHandlers(
   loadMedia: LoadAssistantMedia = loadAssistantMedia,
 ): GatewayRequestHandlers {
   return {
-    "assistant.media.get": async ({ params, context, client, respond }) => {
+    "assistant.media.get": async ({ params, context, client, respond, signal }) => {
       const parsed = parseAssistantMediaParams(params);
       if (!parsed) {
         respond(
@@ -195,39 +193,72 @@ export function createControlUiHandlers(
         );
         return;
       }
-      const connId = client?.connId?.trim();
-      if (!connId) {
-        respond(
-          true,
-          { available: false, reason: "Client unavailable", code: "client_unavailable" },
-          undefined,
-        );
-        return;
-      }
-      if (!parsed.sessionKey) {
-        respond(true, await loadMedia(parsed.source, context, { connId }), undefined);
-        return;
-      }
-      const session = await loadSessionPreview(parsed.sessionKey, context, client, parsed.source);
-      if (!session) {
-        respond(
-          true,
-          { available: false, reason: "Session unavailable", code: "session_unavailable" },
-          undefined,
-        );
-        return;
-      }
-      const agentId = session.agentId;
-      const sessionKey = session.sessionKey;
-      respond(
-        true,
-        await loadMedia(parsed.source, context, {
-          agentId,
+      const connId = client?.connId;
+      const clientUnavailable = new Error("Client unavailable");
+      const sessionUnavailable = new Error("Session unavailable");
+      const session = parsed.sessionKey
+        ? resolveControlUiSessionAccess(
+            parsed.sessionKey,
+            context.getRuntimeConfig(),
+            client,
+            parsed.source,
+          )
+        : undefined;
+      // Carry the exact live connection and selected session into each media
+      // effect; a pre-await access snapshot cannot authorize later file I/O.
+      const assertActive = () => {
+        if (
+          !connId ||
+          signal?.aborted ||
+          !context.getClientConnIds?.((current) => current === client).has(connId)
+        ) {
+          throw clientUnavailable;
+        }
+        if (parsed.sessionKey) {
+          const current = resolveControlUiSessionAccess(
+            parsed.sessionKey,
+            context.getRuntimeConfig(),
+            client,
+            parsed.source,
+          );
+          if (
+            !current ||
+            !session ||
+            current.agentId !== session.agentId ||
+            current.sessionKey !== session.sessionKey
+          ) {
+            throw sessionUnavailable;
+          }
+        }
+      };
+      try {
+        if (!connId) {
+          throw clientUnavailable;
+        }
+        assertActive();
+        const result = await loadMedia(parsed.source, context, {
+          agentId: session?.agentId,
           connId,
-          ...(sessionKey ? { sessionKey } : {}),
-        }),
-        undefined,
-      );
+          sessionKey: session?.sessionKey,
+          assertActive,
+        });
+        assertActive();
+        respond(true, result, undefined);
+      } catch (error) {
+        if (error !== clientUnavailable && error !== sessionUnavailable) {
+          throw error;
+        }
+        respond(
+          true,
+          {
+            available: false,
+            reason:
+              error === clientUnavailable ? clientUnavailable.message : sessionUnavailable.message,
+            code: error === clientUnavailable ? "client_unavailable" : "session_unavailable",
+          },
+          undefined,
+        );
+      }
     },
     "controlUi.githubPreview": async (options) => {
       const { params, respond, context } = options;

@@ -8,6 +8,8 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { appendTranscriptMessage } from "../config/sessions/session-accessor.js";
 import * as safeFiles from "../infra/fs-safe.js";
 import { resolveRequiredHomeDir } from "../infra/home-dir.js";
+import * as localMediaAccess from "../media/local-media-access.js";
+import * as mediaProbe from "../media/media-probe.js";
 import * as playbackTranscode from "../media/playback-transcode.js";
 import { connectGatewayClient, disconnectGatewayClient } from "./test-helpers.e2e.js";
 import {
@@ -154,6 +156,122 @@ describe("Control UI assistant media e2e", () => {
             vi.restoreAllMocks();
             await disconnectGatewayClient(client);
           }
+        }
+      },
+      {
+        serverOptions: {
+          auth: { mode: "token", token: CONTROL_UI_E2E_TOKEN },
+          controlUiEnabled: true,
+        },
+      },
+    );
+  });
+
+  test("rejects issuance after awaited open, MIME, probe, and close boundaries", async () => {
+    const stateDir = process.env.OPENCLAW_STATE_DIR;
+    if (!stateDir) {
+      throw new Error("Gateway test state is required");
+    }
+    const mediaDir = path.join(stateDir, "media", "issuance-revocation");
+    await fs.mkdir(mediaDir, { recursive: true });
+    const source = path.join(mediaDir, "voice.wav");
+    await fs.writeFile(source, "audio fixture");
+    testState.gatewayAuth = { mode: "token", token: CONTROL_UI_E2E_TOKEN };
+    testState.sessionStorePath = path.join(stateDir, "sessions.sqlite");
+    const sessionKey = "agent:main:main";
+    const sessionId = "issuance-revocation";
+    await withGatewayServer(
+      async ({ port }) => {
+        const client = await connectGatewayClient({
+          url: `ws://127.0.0.1:${port}`,
+          token: CONTROL_UI_E2E_TOKEN,
+          scopes: ["operator.read"],
+        });
+        try {
+          for (const boundary of ["open", "mime", "probe", "close"] as const) {
+            await writeSessionStore({
+              entries: { [sessionKey]: { sessionId, updatedAt: Date.now() } },
+            });
+            await appendTranscriptMessage(
+              { agentId: "main", sessionId, sessionKey, storePath: testState.sessionStorePath },
+              {
+                message: {
+                  role: "assistant",
+                  content: [{ type: "audio", url: source }],
+                  timestamp: Date.now(),
+                },
+              },
+            );
+            const revoke = async () => await writeSessionStore({ entries: {} });
+            const open = safeFiles.openLocalFileSafely;
+            const reads = vi.fn();
+            const closes = vi.fn();
+            vi.spyOn(safeFiles, "openLocalFileSafely").mockImplementation(async (params) => {
+              const opened = await open(params);
+              const read = opened.handle.read.bind(opened.handle);
+              vi.spyOn(opened.handle, "read").mockImplementation(
+                (...args: Parameters<typeof read>) => {
+                  reads();
+                  return read(...args);
+                },
+              );
+              const close = opened.handle.close.bind(opened.handle);
+              vi.spyOn(opened.handle, "close").mockImplementation(async () => {
+                await close();
+                closes();
+                if (boundary === "close") {
+                  await revoke();
+                }
+              });
+              if (boundary === "open") {
+                await revoke();
+              }
+              return opened;
+            });
+            const detectMime = mediaMime.detectMime;
+            vi.spyOn(mediaMime, "detectMime").mockImplementation(async (params) => {
+              const mime = await detectMime(params);
+              if (boundary === "mime") {
+                await revoke();
+              }
+              return mime;
+            });
+            const probe = mediaProbe.probePlaybackMediaFileDescriptor;
+            const probes = vi
+              .spyOn(mediaProbe, "probePlaybackMediaFileDescriptor")
+              .mockImplementation(async (...args) => {
+                const result = await probe(...args);
+                if (boundary === "probe") {
+                  await revoke();
+                }
+                return result;
+              });
+            const playback = vi.spyOn(playbackTranscode, "resolvePlaybackModeForSource");
+            try {
+              expect(
+                await client.request("assistant.media.get", { source, sessionKey }),
+                boundary,
+              ).toEqual({
+                available: false,
+                code: "session_unavailable",
+                reason: "Session unavailable",
+              });
+              expect(closes, boundary).toHaveBeenCalledOnce();
+              if (boundary === "open") {
+                expect(reads).not.toHaveBeenCalled();
+              }
+              if (boundary === "open" || boundary === "mime") {
+                expect(probes).not.toHaveBeenCalled();
+              }
+              if (boundary !== "close") {
+                expect(playback).not.toHaveBeenCalled();
+              }
+            } finally {
+              vi.restoreAllMocks();
+            }
+          }
+        } finally {
+          await disconnectGatewayClient(client);
         }
       },
       {
@@ -376,7 +494,32 @@ describe("Control UI assistant media e2e", () => {
           expect(await notModified.text()).toBe("");
         }
 
-        await writeSessionStore({ entries: {} });
+        // Revoke the selected session after real root validation, while the
+        // WebSocket availability request is still awaiting that boundary.
+        const assertAllowed = localMediaAccess.assertLocalMediaAllowed;
+        const allowed = vi
+          .spyOn(localMediaAccess, "assertLocalMediaAllowed")
+          .mockImplementation(async (...args) => {
+            await assertAllowed(...args);
+            await writeSessionStore({ entries: {} });
+          });
+        const opens = vi.spyOn(safeFiles, "openLocalFileSafely");
+        try {
+          const revoked = await client.request("assistant.media.get", {
+            source: researchFile,
+            sessionKey: "agent:research:main",
+          });
+          expect(allowed).toHaveBeenCalled();
+          expect.soft(opens).not.toHaveBeenCalled();
+          expect(revoked).toEqual({
+            available: false,
+            code: "session_unavailable",
+            reason: "Session unavailable",
+          });
+        } finally {
+          allowed.mockRestore();
+          opens.mockRestore();
+        }
         const revokedResearchTicket = await fetch(
           `${route}?source=${encodeURIComponent(researchFile)}&mediaTicket=${encodeURIComponent(researchPayload.mediaTicket ?? "")}`,
         );

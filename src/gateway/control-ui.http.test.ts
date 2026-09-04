@@ -1136,6 +1136,7 @@ describe("handleControlUiHttpRequest", () => {
           const minted = await resolveControlUiAssistantMedia(filePath, config, {
             agentId: "main",
             connId: "ticket-race-conn",
+            assertActive: () => {},
             ...(sessionKey ? { sessionKey } : {}),
           });
           expect(minted.available).toBe(true);
@@ -1216,6 +1217,7 @@ describe("handleControlUiHttpRequest", () => {
           const minted = await resolveControlUiAssistantMedia(filePath, config, {
             agentId: "main",
             connId: client.connId,
+            assertActive: () => {},
           });
           expect(minted.available).toBe(true);
           const mediaTicket = minted.available ? minted.mediaTicket : "";

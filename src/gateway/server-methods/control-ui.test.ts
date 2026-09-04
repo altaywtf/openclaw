@@ -10,6 +10,7 @@ import type { OpenClawConfig } from "../../config/types.js";
 import { SecretSurfaceUnavailableError } from "../../secrets/runtime-degraded-state.js";
 import type { ControlUiGitHubPreview, ControlUiSessionPreview } from "../control-ui-contract.js";
 import { ControlUiGitHubError } from "../control-ui-github-api.js";
+import * as sessionAccess from "../control-ui-session-access.js";
 import { createControlUiHandlers } from "./control-ui.js";
 import type { RespondFn } from "./types.js";
 
@@ -21,6 +22,12 @@ function requestOptions(
   return {
     client: (overrides.client ?? null) as never,
     context: (overrides.context ?? {
+      getClientConnIds: (filter?: (client: { connId: string }) => boolean) =>
+        new Set(
+          overrides.client && (!filter || filter(overrides.client))
+            ? [overrides.client.connId]
+            : [],
+        ),
       getRuntimeConfig: () => ({
         agents: { entries: { main: {} } },
         gateway: { controlUi: { github: { token: "preview-service-token" } } },
@@ -34,6 +41,7 @@ function requestOptions(
 }
 
 describe("assistant.media.get", () => {
+  afterEach(() => vi.restoreAllMocks());
   it("mints one exact-source capability through the registered Control UI handler", async () => {
     const loadMedia = vi.fn().mockResolvedValue({
       available: true,
@@ -42,13 +50,16 @@ describe("assistant.media.get", () => {
       mimeType: "image/png",
       sizeBytes: 42,
     });
-    const loadSessionPreview = vi.fn().mockResolvedValue({
-      sessionKey: "agent:main:main",
-      agentId: "main",
-    });
-    const handlers = createControlUiHandlers(vi.fn(), loadSessionPreview, loadMedia);
+    const loadSessionPreview = vi
+      .spyOn(sessionAccess, "resolveControlUiSessionAccess")
+      .mockReturnValue({
+        sessionKey: "agent:main:main",
+        agentId: "main",
+      });
+    const handlers = createControlUiHandlers(vi.fn(), vi.fn(), loadMedia);
     const respond = vi.fn<RespondFn>();
-    const context = requestOptions({}, respond).context;
+    const client = { connId: "control-ui-client" };
+    const context = requestOptions({}, respond, { client }).context;
 
     await expectDefined(
       handlers["assistant.media.get"],
@@ -58,7 +69,7 @@ describe("assistant.media.get", () => {
         { source: " /tmp/browser-shot.png ", sessionKey: "agent:main:main" },
         respond,
         {
-          client: { connId: "control-ui-client" },
+          client,
           context,
         },
       ),
@@ -66,14 +77,15 @@ describe("assistant.media.get", () => {
 
     expect(loadSessionPreview).toHaveBeenCalledWith(
       "agent:main:main",
-      context,
       expect.anything(),
+      client,
       "/tmp/browser-shot.png",
     );
     expect(loadMedia).toHaveBeenCalledWith("/tmp/browser-shot.png", context, {
       agentId: "main",
       connId: "control-ui-client",
       sessionKey: "agent:main:main",
+      assertActive: expect.any(Function),
     });
     expect(respond).toHaveBeenCalledWith(
       true,
@@ -83,17 +95,19 @@ describe("assistant.media.get", () => {
   });
 
   it("uses the visible session's agent when resolving chat media", async () => {
-    const loadSessionPreview = vi.fn().mockResolvedValue({
-      sessionKey: "agent:research:main",
-      agentId: "research",
-    });
+    const loadSessionPreview = vi
+      .spyOn(sessionAccess, "resolveControlUiSessionAccess")
+      .mockReturnValue({
+        sessionKey: "agent:research:main",
+        agentId: "research",
+      });
     const loadMedia = vi
       .fn()
       .mockResolvedValue({ available: false, reason: "missing", code: "missing" });
-    const handlers = createControlUiHandlers(vi.fn(), loadSessionPreview, loadMedia);
+    const handlers = createControlUiHandlers(vi.fn(), vi.fn(), loadMedia);
     const respond = vi.fn<RespondFn>();
-    const context = requestOptions({}, respond).context;
     const client = { connId: "control-ui-client" };
+    const context = requestOptions({}, respond, { client }).context;
 
     await expectDefined(
       handlers["assistant.media.get"],
@@ -108,7 +122,7 @@ describe("assistant.media.get", () => {
 
     expect(loadSessionPreview).toHaveBeenCalledWith(
       "agent:research:main",
-      context,
+      expect.anything(),
       client,
       "/tmp/research/output.png",
     );
@@ -116,13 +130,14 @@ describe("assistant.media.get", () => {
       agentId: "research",
       connId: "control-ui-client",
       sessionKey: "agent:research:main",
+      assertActive: expect.any(Function),
     });
   });
 
   it("does not reveal media roots without visible transcript ownership", async () => {
-    const loadSessionPreview = vi.fn().mockResolvedValue(null);
+    vi.spyOn(sessionAccess, "resolveControlUiSessionAccess").mockReturnValue(null);
     const loadMedia = vi.fn();
-    const handlers = createControlUiHandlers(vi.fn(), loadSessionPreview, loadMedia);
+    const handlers = createControlUiHandlers(vi.fn(), vi.fn(), loadMedia);
     const respond = vi.fn<RespondFn>();
 
     await expectDefined(
@@ -143,6 +158,79 @@ describe("assistant.media.get", () => {
       undefined,
     );
   });
+
+  it.each(["intact", "disconnected", "replaced", "aborted", "hidden", "agent-changed"] as const)(
+    "revalidates media authority at resolver effects and RPC delivery: %s",
+    async (change) => {
+      const client = { connId: "media-owner" };
+      let liveClient: typeof client | null = client;
+      const controller = new AbortController();
+      const session = { sessionKey: "agent:main:main", agentId: "main" };
+      const access = vi
+        .spyOn(sessionAccess, "resolveControlUiSessionAccess")
+        .mockReturnValue(session);
+      const result = { available: false, code: "missing", reason: "missing" } as const;
+      const loadMedia = vi.fn<NonNullable<Parameters<typeof createControlUiHandlers>[2]>>(
+        async (_source, _context, authority) => {
+          await Promise.resolve();
+          if (change === "disconnected") {
+            liveClient = null;
+          }
+          if (change === "replaced") {
+            liveClient = { ...client };
+          }
+          if (change === "aborted") {
+            controller.abort();
+          }
+          if (change === "hidden") {
+            access.mockReturnValue(null);
+          }
+          if (change === "agent-changed") {
+            access.mockReturnValue({ ...session, agentId: "other" });
+          }
+          if (change === "intact") {
+            expect(authority.assertActive).not.toThrow();
+          } else {
+            expect(authority.assertActive).toThrow();
+          }
+          return result;
+        },
+      );
+      const respond = vi.fn<RespondFn>();
+      const params = {
+        source: "/tmp/shot.png",
+        ...(change === "hidden" || change === "agent-changed"
+          ? { sessionKey: session.sessionKey }
+          : {}),
+      };
+      const options = requestOptions(params, respond, {
+        client,
+        context: {
+          getRuntimeConfig: () => ({}),
+          getClientConnIds: (filter: (current: typeof client) => boolean) =>
+            new Set(liveClient && filter(liveClient) ? [liveClient.connId] : []),
+        },
+      });
+      const handler = expectDefined(
+        createControlUiHandlers(vi.fn(), vi.fn(), loadMedia)["assistant.media.get"],
+        "media handler",
+      );
+      await handler({ ...options, signal: controller.signal });
+      expect(loadMedia).toHaveBeenCalledOnce();
+      const sessionChanged = change === "hidden" || change === "agent-changed";
+      expect(respond).toHaveBeenCalledExactlyOnceWith(
+        true,
+        change === "intact"
+          ? result
+          : {
+              available: false,
+              code: sessionChanged ? "session_unavailable" : "client_unavailable",
+              reason: sessionChanged ? "Session unavailable" : "Client unavailable",
+            },
+        undefined,
+      );
+    },
+  );
 
   it.each([
     {},

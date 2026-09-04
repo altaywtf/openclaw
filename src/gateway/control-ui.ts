@@ -410,15 +410,20 @@ function classifyAssistantMediaError(err: unknown): AssistantMediaAvailability {
   return { available: false, code: "attachment-unavailable", reason: "Attachment unavailable" };
 }
 
-async function resolveAssistantMediaAvailability(
+async function resolveAssistantMediaCapability(
   source: string,
   localRoots: readonly string[],
-): Promise<AssistantMediaAvailability> {
+  authority?: { agentId?: string; connId?: string; sessionKey?: string; assertActive?: () => void },
+): Promise<AssistantMediaCapability> {
+  const assertActive = authority?.assertActive;
   try {
     const localPath = await resolveMediaReferenceLocalPath(source);
     await assertLocalMediaAllowed(localPath, localRoots);
+    assertActive?.();
     const opened = await openLocalFileSafely({ filePath: localPath });
+    let availability: AssistantMediaAvailability;
     try {
+      assertActive?.();
       const sizeBytes = opened.stat.size;
       let mimeType: string | undefined;
       try {
@@ -435,11 +440,13 @@ async function resolveAssistantMediaAvailability(
       } catch {
         // Availability is authoritative; optional metadata remains best-effort.
       }
+      assertActive?.();
       const mediaKind = kindFromMime(mimeType);
       const playbackProbe =
         mediaKind === "audio" || mediaKind === "video"
           ? await probePlaybackMediaFileDescriptor(opened.handle.fd, mediaKind)
           : null;
+      assertActive?.();
       const probe: MediaProbeResult = playbackProbe
         ? {
             ...(playbackProbe.durationMs ? { durationMs: playbackProbe.durationMs } : {}),
@@ -458,7 +465,7 @@ async function resolveAssistantMediaAvailability(
               probe: playbackProbe,
             })
           : undefined;
-      return {
+      availability = {
         available: true,
         ...(mimeType ? { mimeType } : {}),
         ...(playback ? { playback } : {}),
@@ -468,32 +475,25 @@ async function resolveAssistantMediaAvailability(
     } finally {
       await opened.handle.close().catch(() => {});
     }
+    // Cleanup is awaited too: only the live owner may mint or expose metadata.
+    assertActive?.();
+    const ticket = createAssistantMediaTicket(source, authority);
+    return {
+      ...availability,
+      ...(ticket.mediaTicket && ticket.mediaTicketExpiresAt ? ticket : {}),
+    };
   } catch (err) {
+    // Access denial outranks best-effort metadata and filesystem diagnostics.
+    assertActive?.();
     return classifyAssistantMediaError(err);
   }
-}
-
-async function resolveAssistantMediaCapability(
-  source: string,
-  localRoots: readonly string[],
-  authority?: { agentId?: string; connId?: string; sessionKey?: string },
-): Promise<AssistantMediaCapability> {
-  const availability = await resolveAssistantMediaAvailability(source, localRoots);
-  if (!availability.available) {
-    return availability;
-  }
-  const ticket = createAssistantMediaTicket(source, authority);
-  return {
-    ...availability,
-    ...(ticket.mediaTicket && ticket.mediaTicketExpiresAt ? ticket : {}),
-  };
 }
 
 /** Resolve one allowed local source and mint the capability used by its HTTP byte fetch. */
 export async function resolveControlUiAssistantMedia(
   source: string,
   config: OpenClawConfig,
-  authority: { agentId?: string; connId: string; sessionKey?: string },
+  authority: { agentId?: string; connId: string; sessionKey?: string; assertActive: () => void },
 ): Promise<AssistantMediaGetResult> {
   const normalizedSource = normalizeAssistantMediaSource(source);
   if (!normalizedSource) {
