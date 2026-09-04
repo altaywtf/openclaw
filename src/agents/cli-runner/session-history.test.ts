@@ -8,6 +8,7 @@ import {
   resolveSessionTranscriptDatabasePath,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
+import type { PersistedUserTurnMessage } from "../../sessions/user-turn-transcript.types.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { estimateToolResultTextChars } from "../embedded-agent-runner/tool-result-text-budget.js";
 import { MAX_AGENT_HOOK_HISTORY_MESSAGES } from "../harness/hook-history.js";
@@ -122,12 +123,13 @@ describe("canonical CLI history", () => {
     async (owner) => {
       const fixture = await createSession();
       const manager = owner === "memory" ? SessionManager.inMemory() : fixture.manager;
-      const retained = manager.appendMessage({
+      const retainedMessage: PersistedUserTurnMessage = {
         role: "user",
         content: "EXPLICITLY_RETAINED_FACT",
         excludeFromContext: true,
         timestamp: 1,
-      });
+      };
+      const retained = manager.appendMessage(retainedMessage);
       manager.appendResetBoundary("reset", retained);
       manager.appendMessage({ role: "user", content: "next", timestamp: 2 });
       manager.appendMessage({
