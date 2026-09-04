@@ -49,8 +49,7 @@ function fixture() {
     databasePath: path.join(root, "lease", "state.sqlite"),
     serviceManagerEnv: resolveServiceManagerEnv(),
   };
-  const builtins = { fs, path, spawnSync, process };
-  const store = createStore(builtins, options);
+  const store = createStore(options);
   const acquired = store.acquire(from, "original-helper", { kind: "update" });
   if (acquired.kind !== "acquired") {
     throw new Error("fixture busy");
@@ -71,14 +70,14 @@ function fixture() {
       };
       return db;
     });
-    return createStore(builtins, options);
+    return createStore(options);
   };
   const closedDestination = () => {
     // Both independent processes finish through bind/activate/complete, then exit
     // without deleting the closed row. No fabricated lease grants reclamation.
     const common = `const fs=require('node:fs'),path=require('node:path'),{spawn,spawnSync}=require('node:child_process');
 const {createManagedHandoffLeaseRuntime}=require(${JSON.stringify(runtimeEntry)});
-const store=createManagedHandoffLeaseRuntime({fs,path,spawnSync,process},${JSON.stringify(options)});`;
+const store=createManagedHandoffLeaseRuntime(${JSON.stringify(options)});`;
     const executor =
       common +
       `process.once('message',lease=>{const closed=store.complete(lease);if(!closed)throw new Error('complete failed');process.send(closed,()=>process.disconnect());});`;
@@ -103,7 +102,7 @@ if(!running)throw new Error('activation failed');child.send(running);
     expect(closed.action).toMatchObject({ phase: "closed" });
     return closed;
   };
-  return { from, to, store, source: acquired.lease, racing, closedDestination, builtins, options };
+  return { from, to, store, source: acquired.lease, racing, closedDestination, options };
 }
 
 unix("moves the captured source key after its realpath changes and preserves the helper", () => {
@@ -246,7 +245,7 @@ unix("reclaims a closed destination only after its real helper and executor exit
 });
 
 unix("leaves source and destination unchanged when destination inspection is unreadable", () => {
-  const { to, store, source, builtins, options } = fixture();
+  const { to, store, source, options } = fixture();
   expect(store.acquire(to, "winner", { kind: "update" }).kind).toBe("acquired");
   const before = store.read(to);
   const probe = vi.spyOn(nodeSqlite, "openNodeSqliteDatabase").mockImplementation((...args) => {
@@ -270,7 +269,7 @@ unix("leaves source and destination unchanged when destination inspection is unr
     };
     return db;
   });
-  const other = createStore(builtins, options);
+  const other = createStore(options);
   try {
     expect(() => other.retarget(source, to, action)).toThrow("destination unreadable");
   } finally {
@@ -514,7 +513,7 @@ unix(
         `
     const fs=require('node:fs'),path=require('node:path'),{spawnSync}=require('node:child_process');
     const {createManagedHandoffLeaseRuntime}=require(${JSON.stringify(runtimeEntry)});
-    const store=createManagedHandoffLeaseRuntime({fs,path,spawnSync,process},${JSON.stringify(options)});
+    const store=createManagedHandoffLeaseRuntime(${JSON.stringify(options)});
     process.stdin.resume();
     process.once('message',lease=>{const closed=store.complete(lease);if(!closed)throw new Error('completion refused');process.send(closed,()=>process.disconnect());});
   `,

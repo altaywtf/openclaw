@@ -58,7 +58,7 @@ function appendLog(line) {
 }
 
 const { createManagedHandoffLeaseRuntime } = require("./runtime/${MANAGED_HANDOFF_RUNTIME_ENTRY}");
-const leaseStore = createManagedHandoffLeaseRuntime({ fs, path, spawnSync, process }, {
+const leaseStore = createManagedHandoffLeaseRuntime({
   databasePath: params.updateLeaseDatabasePath,
   serviceManagerEnv: params.serviceManagerEnv,
 }, { warn: (message, metadata) => appendLog(message + " " + JSON.stringify(metadata)) });

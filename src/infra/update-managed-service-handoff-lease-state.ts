@@ -1,12 +1,5 @@
 import { isRecord } from "../../packages/normalization-core/src/record-coerce.ts";
 
-export type HandoffRuntimeBuiltins = {
-  fs: typeof import("node:fs");
-  path: typeof import("node:path");
-  spawnSync: typeof import("node:child_process").spawnSync;
-  process: NodeJS.Process;
-};
-
 export type HandoffProcessIdentity = { pid: number; startIdentity: string };
 export type HandoffBootIdentity = { platform: string; identity: string };
 export type HandoffNativeLifetime = {

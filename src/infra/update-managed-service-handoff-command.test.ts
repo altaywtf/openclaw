@@ -199,8 +199,9 @@ describe("managed service update handoff command", () => {
   );
 
   it("confirms native group cleanup after a scope is collected, without stopping a replaced scope", async () => {
-    const { stopManagedTriageScope, resolveManagedUpdateLeaseDatabasePath } =
+    const { createManagedHandoffLeaseStore, resolveManagedUpdateLeaseDatabasePath } =
       await import("./update-managed-service-handoff-lease.js");
+    const store = createManagedHandoffLeaseStore();
     const action = {
       kind: "triage" as const,
       phase: "closing" as const,
@@ -265,14 +266,14 @@ describe("managed service update handoff command", () => {
         status: 1,
         stdout: "Id=synthetic.scope\nLoadState=not-found\nActiveState=inactive\nInvocationID=",
       });
-    expect(stopManagedTriageScope(lease)).toBe(true);
+    expect(store.stopNative(lease)).toBe(true);
     expect(spawnSyncMock.mock.calls.filter(([, args]) => args.includes("stop"))).toHaveLength(1);
     spawnSyncMock.mockReset().mockReturnValue({
       status: 0,
       stdout:
         "Id=synthetic.scope\nLoadState=loaded\nActiveState=active\nInvocationID=" + "b".repeat(32),
     });
-    expect(stopManagedTriageScope(lease)).toBe(false);
+    expect(store.stopNative(lease)).toBe(false);
     expect(spawnSyncMock.mock.calls.filter(([, args]) => args.includes("stop"))).toEqual([]);
   });
 

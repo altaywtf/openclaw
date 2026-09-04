@@ -1,37 +1,16 @@
-import { readFileLockProcessStartTime } from "../shared/pid-alive.ts";
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import { isPidDefinitelyDead, readFileLockProcessStartTime } from "../shared/pid-alive.ts";
 import {
   isManagedHandoffBoot,
   type HandoffBootIdentity,
   type HandoffProcessIdentity,
-  type HandoffRuntimeBuiltins,
 } from "./update-managed-service-handoff-lease-state.ts";
 
 /** Process and boot identities shared by preloaded and staged lease owners. */
-export function createHandoffProcessIdentity(
-  { fs, spawnSync, process }: HandoffRuntimeBuiltins,
-  serviceManagerEnv: Record<string, string>,
-) {
+export function createHandoffProcessIdentity(serviceManagerEnv: Record<string, string>) {
   // Lease reclamation needs ESRCH evidence; other probe errors cannot prove absence.
-  function isPidAlive(pid: number) {
-    if (!pid || typeof pid !== "number") {
-      return false;
-    }
-    try {
-      process.kill(pid, 0);
-    } catch (err) {
-      // SAFETY: the native process.kill boundary throws Node system errors with an errno code.
-      return Boolean(err && (err as NodeJS.ErrnoException).code !== "ESRCH");
-    }
-    if (process.platform === "linux") {
-      try {
-        const status = fs.readFileSync("/proc/" + pid + "/status", "utf8");
-        return !/^State:\s+Z/m.test(status);
-      } catch {
-        return true;
-      }
-    }
-    return true;
-  }
+  const isPidAlive = (pid: number) => !isPidDefinitelyDead(pid);
 
   function readProcessStartIdentity(pid: number): string | null {
     if (!isPidAlive(pid)) {
