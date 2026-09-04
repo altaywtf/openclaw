@@ -1,0 +1,537 @@
+diff --git a/apps/macos/Sources/OpenClaw/GatewayEndpointStore.swift b/apps/macos/Sources/OpenClaw/GatewayEndpointStore.swift
+index 76654a10f6c..24a282e517f 100644
+--- a/apps/macos/Sources/OpenClaw/GatewayEndpointStore.swift
++++ b/apps/macos/Sources/OpenClaw/GatewayEndpointStore.swift
+@@ -160,0 +161,14 @@ actor GatewayEndpointStore {
++        if !isRemote,
++           self.localAuthSurface(root: root, env: env, launchdSnapshot: launchdSnapshot) != "password" { return nil }
++        if !isRemote,
++           let gateway = root["gateway"] as? [String: Any],
++           let auth = gateway["auth"] as? [String: Any],
++           let password = auth["password"],
++           !(password is String)
++        {
++            return self.resolveLocalConfigAuthValue(
++                password,
++                root: root,
++                env: env,
++                serviceEnv: serviceEnv)
++        }
+@@ -241,0 +256,14 @@ actor GatewayEndpointStore {
++        if !isRemote,
++           self.localAuthSurface(root: root, env: env, launchdSnapshot: launchdSnapshot) != "token" { return nil }
++        if !isRemote,
++           let gateway = root["gateway"] as? [String: Any],
++           let auth = gateway["auth"] as? [String: Any],
++           let token = auth["token"],
++           !(token is String)
++        {
++            return self.resolveLocalConfigAuthValue(
++                token,
++                root: root,
++                env: env,
++                serviceEnv: serviceEnv)
++        }
+@@ -324,16 +351,0 @@ actor GatewayEndpointStore {
+-    private static func envSecretRefName(_ value: String) -> String? {
+-        let name: Substring
+-        if value.hasPrefix("${"), value.hasSuffix("}") {
+-            let nameStart = value.index(value.startIndex, offsetBy: 2)
+-            let nameEnd = value.index(before: value.endIndex)
+-            name = value[nameStart..<nameEnd]
+-        } else if value.hasPrefix("$") {
+-            let nameStart = value.index(after: value.startIndex)
+-            name = value[nameStart..<value.endIndex]
+-        } else {
+-            return nil
+-        }
+-        let candidate = String(name)
+-        return self.isValidEnvSecretRefID(candidate) ? candidate : nil
+-    }
+-
+@@ -895,0 +908,62 @@ extension GatewayEndpointStore.SourceSnapshot {
++extension GatewayEndpointStore {
++    private static func envSecretRefName(_ value: String) -> String? {
++        let name: Substring
++        if value.hasPrefix("${"), value.hasSuffix("}") {
++            let nameStart = value.index(value.startIndex, offsetBy: 2)
++            let nameEnd = value.index(before: value.endIndex)
++            name = value[nameStart..<nameEnd]
++        } else if value.hasPrefix("$") {
++            let nameStart = value.index(after: value.startIndex)
++            name = value[nameStart..<value.endIndex]
++        } else {
++            return nil
++        }
++        let candidate = String(name)
++        return self.isValidEnvSecretRefID(candidate) ? candidate : nil
++    }
++
++    private static func resolveLocalConfigAuthValue(
++        _ raw: Any,
++        root: [String: Any],
++        env: [String: String],
++        serviceEnv: [String: String]) -> String?
++    {
++        guard let ref = raw as? [String: Any],
++              Set(ref.keys) == Set(["source", "provider", "id"]),
++              ref["source"] as? String == "env",
++              let provider = ref["provider"] as? String,
++              provider.range(
++                  of: #"^[a-z][a-z0-9_-]{0,63}$"#,
++                  options: .regularExpression) != nil,
++              let envName = ref["id"] as? String,
++              self.isValidEnvSecretRefID(envName)
++        else { return nil }
++
++        let secrets = root["secrets"] as? [String: Any] ?? [:]
++        let providers = secrets["providers"] as? [String: Any] ?? [:]
++        let defaults = secrets["defaults"] as? [String: Any]
++        let defaultEnvProvider = defaults?["env"] as? String ?? "default"
++        let providerConfig = providers[provider] as? [String: Any]
++        let configuredSource = providerConfig?["source"] as? String
++        let usesBuiltInDefault = provider == defaultEnvProvider && configuredSource != "env"
++        if !usesBuiltInDefault {
++            guard configuredSource == "env" else { return nil }
++            if let configuredAllowlist = providerConfig?["allowlist"] {
++                guard let allowlist = configuredAllowlist as? [String],
++                      allowlist.contains(envName)
++                else { return nil }
++            }
++        }
++
++        // The managed Gateway runs with the LaunchAgent environment. Prefer that
++        // effective value, then fall back to the Finder-launched app environment.
++        for source in [serviceEnv, env] {
++            let value = source[envName]?.trimmingCharacters(in: .whitespacesAndNewlines)
++            if let value, !value.isEmpty {
++                return value
++            }
++        }
++        return nil
++    }
++}
++
+@@ -945,0 +1020,44 @@ extension GatewayEndpointStore {
++    private static func localAuthMode(root: [String: Any]) -> String? {
++        let gateway = root["gateway"] as? [String: Any]
++        let auth = gateway?["auth"] as? [String: Any]
++        return auth?["mode"] as? String
++    }
++
++    private static func localAuthSurface(
++        root: [String: Any],
++        env: [String: String],
++        launchdSnapshot: LaunchAgentPlistSnapshot?) -> String?
++    {
++        let mode = self.localAuthMode(root: root)
++        if mode == "token" { return "token" }
++        if mode == "password" || mode == "trusted-proxy" { return "password" }
++        guard mode == nil else { return nil }
++        let gateway = root["gateway"] as? [String: Any]
++        let auth = gateway?["auth"] as? [String: Any]
++        let serviceEnv = launchdSnapshot?.environment ?? [:]
++        func configuredInput(_ key: String) -> (configured: Bool, isSecretRef: Bool) {
++            guard let value = auth?[key] else { return (false, false) }
++            guard let string = value as? String else { return (true, true) }
++            return (!string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, false)
++        }
++        func hasAmbientCandidate(_ envKey: String, _ launchdValue: String?) -> Bool {
++            [env[envKey], serviceEnv[envKey], launchdValue]
++                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
++                .contains { !$0.isEmpty }
++        }
++        let configuredToken = configuredInput("token")
++        let configuredPassword = configuredInput("password")
++        // Core rejects two configured inputs without an explicit mode.
++        guard !(configuredToken.configured && configuredPassword.configured) else { return nil }
++
++        let ambientToken = hasAmbientCandidate("OPENCLAW_GATEWAY_TOKEN", launchdSnapshot?.token)
++        let ambientPassword = hasAmbientCandidate("OPENCLAW_GATEWAY_PASSWORD", launchdSnapshot?.password)
++        // During startup, a concrete opposite-side fallback suppresses typed-ref materialization.
++        let hasToken = ambientToken || (configuredToken.configured && !(configuredToken.isSecretRef && ambientPassword))
++        let hasPassword = ambientPassword ||
++            (configuredPassword.configured && !(configuredPassword.isSecretRef && ambientToken))
++        // resolveGatewayAuth infers password before token once active refs are materialized.
++        if hasPassword { return "password" }
++        return hasToken ? "token" : nil
++    }
++
+diff --git a/apps/macos/Tests/OpenClawIPCTests/GatewayEndpointStoreTests.swift b/apps/macos/Tests/OpenClawIPCTests/GatewayEndpointStoreTests.swift
+index 4a7b6f77d5e..84e274c65fa 100644
+--- a/apps/macos/Tests/OpenClawIPCTests/GatewayEndpointStoreTests.swift
++++ b/apps/macos/Tests/OpenClawIPCTests/GatewayEndpointStoreTests.swift
+@@ -2,0 +3 @@ import Foundation
++import os
+@@ -474,0 +476,324 @@ struct GatewayEndpointStoreTests {
++    @Test func `resolve gateway token resolves typed env secret ref from gateway service environment`() {
++        let snapshot = self.makeLaunchAgentSnapshot(
++            env: ["OPENCLAW_GATEWAY_TOKEN": "  service-token  "])
++        let root: [String: Any] = [
++            "gateway": [
++                "auth": [
++                    "token": [
++                        "source": "env",
++                        "provider": "default",
++                        "id": "OPENCLAW_GATEWAY_TOKEN",
++                    ],
++                ],
++            ],
++        ]
++
++        let token = GatewayEndpointStore._testResolveGatewayToken(
++            isRemote: false,
++            root: root,
++            env: [:],
++            launchdSnapshot: snapshot)
++        #expect(token == "service-token")
++    }
++
++    @Test func `typed env secret ref rejects absent provider without launchd fallback`() {
++        let snapshot = self.makeLaunchAgentTokenSnapshot("launchd-token")
++        let root: [String: Any] = [
++            "gateway": ["auth": ["token": [
++                "source": "env",
++                "provider": "vault",
++                "id": "OPENCLAW_GATEWAY_TOKEN",
++            ]]],
++        ]
++
++        let token = GatewayEndpointStore._testResolveGatewayToken(
++            isRemote: false,
++            root: root,
++            env: [:],
++            launchdSnapshot: snapshot)
++        #expect(token == nil)
++    }
++
++    @Test func `typed env secret ref enforces provider source and allowlist`() {
++        let snapshot = self.makeLaunchAgentTokenSnapshot("launchd-token")
++        let deniedRoots: [[String: Any]] = [
++            [
++                "gateway": ["auth": ["token": [
++                    "source": "env",
++                    "provider": "vault",
++                    "id": "OPENCLAW_GATEWAY_TOKEN",
++                ]]],
++                "secrets": ["providers": ["vault": ["source": "file"]]],
++            ],
++            [
++                "gateway": ["auth": ["token": [
++                    "source": "env",
++                    "provider": "restricted",
++                    "id": "OPENCLAW_GATEWAY_TOKEN",
++                ]]],
++                "secrets": ["providers": ["restricted": [
++                    "source": "env",
++                    "allowlist": ["OTHER_TOKEN"],
++                ]]],
++            ],
++        ]
++
++        for root in deniedRoots {
++            let token = GatewayEndpointStore._testResolveGatewayToken(
++                isRemote: false,
++                root: root,
++                env: [:],
++                launchdSnapshot: snapshot)
++            #expect(token == nil)
++        }
++    }
++
++    @Test func `typed env secret ref accepts configured provider allowlist`() {
++        let snapshot = self.makeLaunchAgentSnapshot(env: ["GW_TOKEN": "service-token"])
++        let root: [String: Any] = [
++            "gateway": ["auth": ["token": [
++                "source": "env",
++                "provider": "restricted",
++                "id": "GW_TOKEN",
++            ]]],
++            "secrets": ["providers": ["restricted": [
++                "source": "env",
++                "allowlist": ["GW_TOKEN"],
++            ]]],
++        ]
++
++        let token = GatewayEndpointStore._testResolveGatewayToken(
++            isRemote: false,
++            root: root,
++            env: [:],
++            launchdSnapshot: snapshot)
++        #expect(token == "service-token")
++    }
++
++    @Test func `typed env secret ref prefers gateway service environment`() {
++        let snapshot = self.makeLaunchAgentSnapshot(env: ["GW_TOKEN": "service-token"])
++        let root: [String: Any] = [
++            "gateway": ["auth": ["token": [
++                "source": "env",
++                "provider": "restricted",
++                "id": "GW_TOKEN",
++            ]]],
++            "secrets": ["providers": ["restricted": [
++                "source": "env",
++                "allowlist": ["GW_TOKEN"],
++            ]]],
++        ]
++
++        let token = GatewayEndpointStore._testResolveGatewayToken(
++            isRemote: false,
++            root: root,
++            env: ["GW_TOKEN": "stale-app-token"],
++            launchdSnapshot: snapshot)
++        #expect(token == "service-token")
++    }
++
++    @Test func `typed env secret refs control final gateway handshake auth`() async throws {
++        let snapshot = self.makeLaunchAgentSnapshot(
++            env: [
++                "GW_TOKEN": "custom-token",
++                "GW_PASSWORD": "custom-password", // pragma: allowlist secret
++                "OPENCLAW_GATEWAY_TOKEN": "fallback-token",
++            ],
++            token: "fallback-token")
++        let allowedRoot: [String: Any] = [
++            "gateway": ["auth": [
++                "mode": "token",
++                "token": ["source": "env", "provider": "restricted", "id": "GW_TOKEN"],
++                "password": ["source": "env", "provider": "restricted", "id": "GW_PASSWORD"],
++            ]],
++            "secrets": ["providers": ["restricted": [
++                "source": "env",
++                "allowlist": ["GW_TOKEN", "GW_PASSWORD"],
++            ]]],
++        ]
++        let deniedRoot: [String: Any] = [
++            "gateway": ["auth": [
++                "mode": "token",
++                "token": ["source": "env", "provider": "restricted", "id": "GW_TOKEN"],
++            ]],
++            "secrets": ["providers": ["restricted": [
++                "source": "env",
++                "allowlist": ["OTHER_TOKEN"],
++            ]]],
++        ]
++        let passwordRoot: [String: Any] = [
++            "gateway": ["auth": [
++                "mode": "password",
++                "token": ["source": "env", "provider": "restricted", "id": "GW_TOKEN"],
++                "password": ["source": "env", "provider": "restricted", "id": "GW_PASSWORD"],
++            ]],
++            "secrets": ["providers": ["restricted": [
++                "source": "env",
++                "allowlist": ["GW_TOKEN", "GW_PASSWORD"],
++            ]]],
++        ]
++        let trustedProxyRoot: [String: Any] = [
++            "gateway": ["auth": [
++                "mode": "trusted-proxy",
++                "token": ["source": "env", "provider": "restricted", "id": "GW_TOKEN"],
++                "password": ["source": "env", "provider": "restricted", "id": "GW_PASSWORD"],
++            ]],
++            "secrets": ["providers": ["restricted": [
++                "source": "env",
++                "allowlist": ["GW_TOKEN", "GW_PASSWORD"],
++            ]]],
++        ]
++
++        let cases: [(root: [String: Any], token: String?, password: String?, authPresent: Bool)] = [
++            (allowedRoot, "custom-token", nil, true),
++            (deniedRoot, nil, nil, false),
++            (passwordRoot, nil, "custom-password", true), // pragma: allowlist secret
++            (trustedProxyRoot, nil, "custom-password", true), // pragma: allowlist secret
++        ]
++        for testCase in cases {
++            let config = GatewayEndpointStore._testLocalConfig(
++                root: testCase.root,
++                env: [:],
++                launchdSnapshot: snapshot)
++            #expect(config.token == testCase.token)
++            #expect(config.password == testCase.password)
++            let recordedAuth = OSAllocatedUnfairLock<(present: Bool, token: String?, password: String?)>(
++                initialState: (false, nil, nil))
++            let session = GatewayTestWebSocketSession(taskFactory: {
++                GatewayTestWebSocketTask(sendHook: { _, message, sendIndex in
++                    guard sendIndex == 0,
++                          let params = GatewayWebSocketTestSupport.connectRequestParams(from: message)
++                    else { return }
++                    let auth = params["auth"] as? [String: Any]
++                    let authPresent = auth != nil
++                    let token = auth?["token"] as? String
++                    let password = auth?["password"] as? String
++                    recordedAuth.withLock { $0 = (authPresent, token, password) }
++                })
++            })
++            let channel = GatewayChannelActor(
++                url: config.url,
++                token: config.token,
++                password: config.password,
++                session: WebSocketSessionBox(session: session),
++                connectOptions: GatewayWebSocketTestSupport.identityFreeOperatorConnectOptions)
++            try await channel.connect()
++
++            let auth = recordedAuth.withLock { $0 }
++            #expect(auth.present == testCase.authPresent)
++            #expect(auth.token == testCase.token)
++            #expect(auth.password == testCase.password)
++            await channel.shutdown()
++        }
++    }
++
++    @Test func `inferred gateway auth selects one typed credential surface`() {
++        let tokenRoot: [String: Any] = [
++            "gateway": ["auth": [
++                "token": ["source": "env", "provider": "restricted", "id": "GW_TOKEN"],
++            ]],
++            "secrets": ["providers": ["restricted": [
++                "source": "env",
++                "allowlist": ["GW_TOKEN"],
++            ]]],
++        ]
++        let passwordRoot: [String: Any] = [
++            "gateway": ["auth": [
++                "password": ["source": "env", "provider": "restricted", "id": "GW_PASSWORD"],
++            ]],
++            "secrets": ["providers": ["restricted": [
++                "source": "env",
++                "allowlist": ["GW_PASSWORD"],
++            ]]],
++        ]
++        let tokenSnapshot = self.makeLaunchAgentSnapshot(env: ["GW_TOKEN": "custom-token"])
++        let passwordSnapshot = self.makeLaunchAgentSnapshot(env: ["GW_PASSWORD": "custom-password"])
++        let tokenWithAmbientPassword = self.makeLaunchAgentSnapshot(
++            env: [
++                "GW_TOKEN": "custom-token",
++                "OPENCLAW_GATEWAY_PASSWORD": "ambient-password",
++            ],
++            password: "ambient-password")
++        let passwordWithAmbientToken = self.makeLaunchAgentSnapshot(
++            env: [
++                "GW_PASSWORD": "custom-password",
++                "OPENCLAW_GATEWAY_TOKEN": "ambient-token",
++            ],
++            token: "ambient-token")
++
++        let cases: [([String: Any], LaunchAgentPlistSnapshot, String?, String?)] = [
++            (tokenRoot, tokenSnapshot, "custom-token", nil),
++            (passwordRoot, passwordSnapshot, nil, "custom-password"),
++            (tokenRoot, tokenWithAmbientPassword, nil, "ambient-password"),
++            (passwordRoot, passwordWithAmbientToken, "ambient-token", nil),
++        ]
++        for (root, snapshot, expectedToken, expectedPassword) in cases {
++            let config = GatewayEndpointStore._testLocalConfig(
++                root: root,
++                env: [:],
++                launchdSnapshot: snapshot)
++            #expect(config.token == expectedToken)
++            #expect(config.password == expectedPassword)
++        }
++    }
++
++    @Test func `typed env secret ref stays authoritative over app environment`() {
++        let snapshot = self.makeLaunchAgentTokenSnapshot("service-token")
++        let root: [String: Any] = [
++            "gateway": ["auth": ["token": [
++                "source": "file",
++                "provider": "default",
++                "id": "/token",
++            ]]],
++        ]
++
++        let token = GatewayEndpointStore._testResolveGatewayToken(
++            isRemote: false,
++            root: root,
++            env: ["OPENCLAW_GATEWAY_TOKEN": "app-token"],
++            launchdSnapshot: snapshot)
++        #expect(token == nil)
++    }
++
++    @Test func `built in env default wins source alias collision`() {
++        let snapshot = self.makeLaunchAgentTokenSnapshot("service-token")
++        let root: [String: Any] = [
++            "gateway": ["auth": ["token": [
++                "source": "env",
++                "provider": "default",
++                "id": "OPENCLAW_GATEWAY_TOKEN",
++            ]]],
++            "secrets": ["providers": ["default": ["source": "file"]]],
++        ]
++
++        let token = GatewayEndpointStore._testResolveGatewayToken(
++            isRemote: false,
++            root: root,
++            env: [:],
++            launchdSnapshot: snapshot)
++        #expect(token == "service-token")
++    }
++
++    @Test func `unsupported or malformed typed token refs suppress launchd fallback`() {
++        let snapshot = self.makeLaunchAgentTokenSnapshot("launchd-token")
++        let refs: [[String: Any]] = [
++            ["source": "file", "provider": "default", "id": "/token"],
++            [
++                "source": "env",
++                "provider": "default",
++                "id": "OPENCLAW_GATEWAY_TOKEN",
++                "extra": true,
++            ],
++        ]
++
++        for ref in refs {
++            let root: [String: Any] = ["gateway": ["auth": ["token": ref]]]
++            let token = GatewayEndpointStore._testResolveGatewayToken(
++                isRemote: false,
++                root: root,
++                env: [:],
++                launchdSnapshot: snapshot)
++            #expect(token == nil)
++        }
++    }
++
+@@ -590,0 +916,41 @@ struct GatewayEndpointStoreTests {
++    @Test func `resolve gateway password resolves typed env secret ref from gateway service environment`() {
++        let snapshot = self.makeLaunchAgentSnapshot(
++            env: ["OPENCLAW_GATEWAY_PASSWORD": "  service-pass  "])
++        let root: [String: Any] = [
++            "gateway": [
++                "auth": [
++                    "password": [
++                        "source": "env",
++                        "provider": "default",
++                        "id": "OPENCLAW_GATEWAY_PASSWORD",
++                    ],
++                ],
++            ],
++        ]
++
++        let password = GatewayEndpointStore._testResolveGatewayPassword(
++            isRemote: false,
++            root: root,
++            env: [:],
++            launchdSnapshot: snapshot)
++        #expect(password == "service-pass")
++    }
++
++    @Test func `unsupported typed password ref suppresses launchd fallback`() {
++        let snapshot = self.makeLaunchAgentPasswordSnapshot("launchd-pass")
++        let root: [String: Any] = [
++            "gateway": ["auth": ["password": [
++                "source": "store",
++                "provider": "default",
++                "id": "OPENCLAW_GATEWAY_PASSWORD",
++            ]]],
++        ]
++
++        let password = GatewayEndpointStore._testResolveGatewayPassword(
++            isRemote: false,
++            root: root,
++            env: [:],
++            launchdSnapshot: snapshot)
++        #expect(password == nil)
++    }
++
+@@ -1368,0 +1735 @@ extension GatewayEndpointStoreTests {
++                "auth": ["mode": "token"],
+@@ -1384 +1751 @@ extension GatewayEndpointStoreTests {
+-        #expect(config.password == "launchd-pass")
++        #expect(config.password == nil)

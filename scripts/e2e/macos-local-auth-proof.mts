@@ -12,8 +12,10 @@ assert.equal(process.platform, "darwin");
 assert.equal(process.env.GITHUB_ACTIONS, "true");
 assert.equal(process.env.RUNNER_OS, "macOS");
 assert.ok(process.env.RUNNER_TEMP);
-const repository = process.cwd();
-const evidence = path.join(repository, ".artifacts/macos-local-auth-proof");
+const harnessRepository = process.cwd();
+assert.equal(process.argv[2], "candidate");
+const repository = fs.realpathSync(path.join(harnessRepository, process.argv[2]));
+const evidence = path.join(harnessRepository, ".artifacts/macos-local-auth-proof");
 fs.mkdirSync(evidence, { recursive: true });
 const root = fs.realpathSync(fs.mkdtempSync(path.join(process.env.RUNNER_TEMP, "local-auth-")));
 const binary = path.join(repository, "dist/OpenClaw.app/Contents/MacOS/OpenClaw");
@@ -28,17 +30,39 @@ const productDelta = execFileSync("git", ["diff", "--name-only", baseline, "HEAD
   .filter(Boolean);
 assert.deepEqual(productDelta.toSorted(), [
   ".github/workflows/macos-local-auth-proof.yml",
+  "scripts/e2e/fixtures/macos-local-auth-proof/candidate.commit",
+  "scripts/e2e/fixtures/macos-local-auth-proof/candidate.patch",
   "scripts/e2e/macos-local-auth-proof.mts",
 ]);
+const candidate = "23b805fa3821e06e882d846843d96da2252a91bd";
+assert.equal(
+  execFileSync("git", ["rev-parse", "HEAD"], { cwd: repository, encoding: "utf8" }).trim(),
+  candidate,
+);
+assert.equal(
+  execFileSync("git", ["diff", "--name-only", "HEAD"], {
+    cwd: repository,
+    encoding: "utf8",
+  }).trim(),
+  "",
+);
+process.chdir(repository);
 
 const results: Record<string, unknown>[] = [];
 const syntheticValues: string[] = [];
+const runnerNames = [process.env.HOME, os.hostname(), os.userInfo().username];
+for (const property of ["ComputerName", "LocalHostName"]) {
+  runnerNames.push(execFileSync("scutil", ["--get", property], { encoding: "utf8" }).trim());
+}
 const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 function sanitized(value: string): string {
-  let result = value.replaceAll(root, "<fixture>").replaceAll(repository, "<checkout>");
+  let result = value
+    .replaceAll(root, "<fixture>")
+    .replaceAll(repository, "<candidate>")
+    .replaceAll(harnessRepository, "<harness>");
   for (const secret of syntheticValues)
     result = result.replaceAll(secret, "<synthetic-credential>");
-  for (const privateValue of [process.env.HOME, os.hostname()]) {
+  for (const privateValue of runnerNames) {
     if (privateValue) result = result.replaceAll(privateValue, "<runner>");
   }
   return result;
@@ -69,7 +93,19 @@ async function command(
   }
 }
 
-async function observe(name: string, typed: boolean, port: number): Promise<void> {
+type Surface = "token" | "password";
+type Scenario = {
+  name: string;
+  surface: Surface;
+  appValue?: "same" | "different";
+  wrapperValue?: boolean;
+  inactiveOpposite?: boolean;
+  mixedImplicit?: boolean;
+  rejected?: "denied" | "unresolved";
+};
+
+async function observe(scenario: Scenario, port: number): Promise<void> {
+  const { name, surface } = scenario;
   const profile = `auth-proof-${randomUUID().slice(0, 8)}`;
   // Native service ownership is anchored to the OS account, not a relocated HOME.
   // The disposable CI account and a fresh named profile provide the isolation.
@@ -109,52 +145,75 @@ async function observe(name: string, typed: boolean, port: number): Promise<void
     FORCE_COLOR: "0",
   });
   const credential = `synthetic-${randomUUID()}`;
-  syntheticValues.push(credential);
+  const otherCredential = `synthetic-${randomUUID()}`;
+  syntheticValues.push(credential, otherCredential);
   const ref = { source: "env", provider: "proof", id: "GW_PROOF_CREDENTIAL" };
+  const opposite = surface === "token" ? "password" : "token";
+  const auth = scenario.mixedImplicit
+    ? { [opposite]: ref }
+    : {
+        mode: surface,
+        [surface]: ref,
+        ...(scenario.inactiveOpposite ? { [opposite]: { ...ref, id: "GW_PROOF_INACTIVE" } } : {}),
+      };
+  const config = {
+    gateway: {
+      mode: "local",
+      bind: "loopback",
+      port,
+      auth,
+      // Keep the healthy server's credentials fixed while the app reads a rejected ref.
+      // This is an existing operator reload policy, not an auth or pairing bypass.
+      ...(scenario.rejected ? { reload: { mode: "off" } } : {}),
+    },
+    secrets: { providers: { proof: { source: "env", allowlist: ["GW_PROOF_CREDENTIAL"] } } },
+    logging: {
+      level: "debug",
+      consoleLevel: "debug",
+      consoleStyle: "json",
+      file: path.join(state, "gateway.jsonl"),
+    },
+  };
+  fs.writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 });
+  const ambientKey = `OPENCLAW_GATEWAY_${surface.toUpperCase()}`;
+  const durableEnv: Record<string, string> = scenario.wrapperValue
+    ? {}
+    : { GW_PROOF_CREDENTIAL: scenario.mixedImplicit ? otherCredential : credential };
+  if (scenario.mixedImplicit) durableEnv[ambientKey] = credential;
+  // The ordinary installer carries durable env inputs into its LaunchAgent snapshot.
   fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      gateway: {
-        mode: "local",
-        bind: "loopback",
-        port,
-        auth: { mode: "token", token: typed ? ref : credential },
-      },
-      secrets: { providers: { proof: { source: "env", allowlist: ["GW_PROOF_CREDENTIAL"] } } },
-      logging: {
-        level: "debug",
-        consoleLevel: "debug",
-        consoleStyle: "json",
-        file: path.join(state, "gateway.jsonl"),
-      },
-    }),
+    path.join(state, ".env"),
+    Object.entries(durableEnv)
+      .map(([key, value]) => `${key}=${value}\n`)
+      .join(""),
     { mode: 0o600 },
   );
-  // The ordinary installer carries durable env inputs into its LaunchAgent snapshot.
-  fs.writeFileSync(path.join(state, ".env"), `GW_PROOF_CREDENTIAL=${credential}\n`, {
-    mode: 0o600,
-  });
+  const appEnv = { ...env };
+  if (scenario.appValue) {
+    appEnv.GW_PROOF_CREDENTIAL = scenario.appValue === "same" ? credential : otherCredential;
+  }
+  if (scenario.rejected) appEnv[ambientKey] = credential;
   const wrapper = path.join(root, name, "gateway-wrapper");
   fs.writeFileSync(
     wrapper,
-    `#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(path.join(repository, "openclaw.mjs"))} "$@" --verbose --ws-log full\n`,
+    `#!/bin/sh\n${scenario.wrapperValue ? `export GW_PROOF_CREDENTIAL=${shellQuote(credential)}\n` : ""}exec ${shellQuote(process.execPath)} ${shellQuote(path.join(repository, "openclaw.mjs"))} "$@" --verbose --ws-log full\n`,
     { mode: 0o700 },
   );
-  const cli = (suffix: string, args: string[]) =>
+  const cli = (suffix: string, args: string[], extraEnv: NodeJS.ProcessEnv = {}) =>
     command(
       `${name}-${suffix}`,
       process.execPath,
       [path.join(repository, "openclaw.mjs"), "--profile", profile, ...args],
-      env,
+      { ...env, ...extraEnv },
     );
   let keychainCreated = false;
   const failures: unknown[] = [];
   const result: Record<string, unknown> = {
     name,
-    typed,
+    scenario,
     port,
     profile,
-    productionRevision: baseline,
+    productionRevision: candidate,
   };
   results.push(result);
   try {
@@ -186,17 +245,21 @@ async function observe(name: string, typed: boolean, port: number): Promise<void
     }
     // Installation owns activation; no direct launchctl bootstrap or hand-written plist.
     assert.equal(
-      await cli("install", [
-        "gateway",
+      await cli(
         "install",
-        "--port",
-        String(port),
-        "--runtime",
-        "node",
-        "--wrapper",
-        wrapper,
-        "--json",
-      ]),
+        [
+          "gateway",
+          "install",
+          "--port",
+          String(port),
+          "--runtime",
+          "node",
+          "--wrapper",
+          wrapper,
+          "--json",
+        ],
+        scenario.wrapperValue ? { GW_PROOF_CREDENTIAL: credential } : {},
+      ),
       0,
     );
     const installedConfigText = fs.readFileSync(configPath, "utf8");
@@ -205,13 +268,16 @@ async function observe(name: string, typed: boolean, port: number): Promise<void
       sanitized(installedConfigText),
     );
     const installedConfig = JSON.parse(installedConfigText);
-    assert.deepEqual(installedConfig.gateway.auth.token, typed ? ref : credential);
+    assert.deepEqual(installedConfig.gateway.auth, auth);
     result.installedAuthInputPreserved = true;
     const serviceEnvironment = path.join(state, "service-env", `ai.openclaw.${profile}.env`);
-    result.serviceHasCredential = fs.readFileSync(serviceEnvironment, "utf8").includes(credential);
-    result.appHasCredential = Object.values(env).includes(credential);
-    if (typed) assert.equal(result.serviceHasCredential, true);
-    assert.equal(result.appHasCredential, false);
+    const snapshot = fs.readFileSync(serviceEnvironment, "utf8");
+    result.serviceSnapshotHasCredential = snapshot.includes(credential);
+    result.serviceSnapshotHasRefKey = snapshot.includes("GW_PROOF_CREDENTIAL=");
+    result.appHasCredential = Object.values(appEnv).includes(credential);
+    result.wrapperSuppliesCredential = Boolean(scenario.wrapperValue);
+    assert.equal(result.serviceSnapshotHasCredential, !scenario.wrapperValue);
+    assert.equal(result.serviceSnapshotHasRefKey, !scenario.wrapperValue);
     const readinessDeadline = Date.now() + 90_000;
     let ready = false;
     while (Date.now() < readinessDeadline) {
@@ -228,35 +294,59 @@ async function observe(name: string, typed: boolean, port: number): Promise<void
     }
     result.serviceReady = ready;
     assert.ok(ready, "The actual installed Gateway did not become ready");
-    const controller = new AbortController();
-    const app = command(`${name}-app`, binary, ["--attach-only", "--chat"], env, {
-      signal: controller.signal,
-      timeoutMs: 90_000,
-    }).then(
-      (exit) => ({ exit }),
-      (error: unknown) => ({ error }),
-    );
-    try {
-      // Observe the same startup interval in both cases. Logs, not the timer, decide the verdict.
-      await delay(45_000);
-      result.screenshotExit = await command(
-        `${name}-screenshot`,
-        "screencapture",
-        ["-x", path.join(evidence, `${name}.png`)],
-        env,
-        { timeoutMs: 10_000 },
-      );
-    } finally {
-      controller.abort();
-      const outcome = await app;
-      if ("error" in outcome) {
-        const error = outcome.error;
-        if (!(error instanceof Error) || !("code" in error) || error.code !== "ABORT_ERR") {
-          throw error;
-        }
-        result.appExit = "stopped-after-observation";
+    if (scenario.rejected) {
+      const rejectedConfig = structuredClone(config);
+      if (scenario.rejected === "denied") {
+        rejectedConfig.secrets.providers.proof.allowlist = [];
       } else {
-        result.appExit = outcome.exit;
+        rejectedConfig.gateway.auth[surface] = { ...ref, id: "GW_PROOF_MISSING" };
+        rejectedConfig.secrets.providers.proof.allowlist.push("GW_PROOF_MISSING");
+      }
+      fs.writeFileSync(configPath, JSON.stringify(rejectedConfig), { mode: 0o600 });
+      fs.writeFileSync(
+        path.join(evidence, `${name}-rejected-config.json`),
+        sanitized(JSON.stringify(rejectedConfig, null, 2)),
+      );
+      await delay(2_000);
+    }
+    const phases = scenario.rejected ? ["rejected", "corrected"] : ["connect"];
+    for (const phase of phases) {
+      if (phase === "corrected") {
+        fs.writeFileSync(configPath, installedConfigText, { mode: 0o600 });
+        await delay(2_000);
+      }
+      const phaseResult: Record<string, unknown> = { phase, startedAt: new Date().toISOString() };
+      result[phase] = phaseResult;
+      const controller = new AbortController();
+      const app = command(`${name}-${phase}-app`, binary, ["--attach-only", "--chat"], appEnv, {
+        signal: controller.signal,
+        timeoutMs: 90_000,
+      }).then(
+        (exit) => ({ exit }),
+        (error: unknown) => ({ error }),
+      );
+      try {
+        // Complete protocol logs supply the verdict; elapsed time alone cannot pass a case.
+        await delay(45_000);
+        phaseResult.serviceHealthy = (
+          await fetch(`http://127.0.0.1:${port}/healthz`, {
+            signal: AbortSignal.timeout(1_000),
+          })
+        ).ok;
+        assert.equal(phaseResult.serviceHealthy, true);
+      } finally {
+        controller.abort();
+        const outcome = await app;
+        if ("error" in outcome) {
+          const error = outcome.error;
+          if (!(error instanceof Error) || !("code" in error) || error.code !== "ABORT_ERR") {
+            throw error;
+          }
+          phaseResult.appExit = "stopped-after-observation";
+        } else {
+          phaseResult.appExit = outcome.exit;
+        }
+        phaseResult.finishedAt = new Date().toISOString();
       }
     }
     result.serviceStatusExit = await cli("status", ["gateway", "status", "--json", "--no-probe"]);
@@ -298,8 +388,25 @@ async function observe(name: string, typed: boolean, port: number): Promise<void
 }
 
 try {
-  await observe("literal-control", false, 19891);
-  await observe("typed-service-env", true, 19892);
+  const scenarios: Scenario[] = [
+    { name: "typed-service-token", surface: "token" },
+    { name: "typed-service-password", surface: "password" },
+    { name: "service-wins-token", surface: "token", appValue: "different" },
+    { name: "service-wins-password", surface: "password", appValue: "different" },
+    { name: "app-fallback-token", surface: "token", appValue: "same", wrapperValue: true },
+    { name: "app-fallback-password", surface: "password", appValue: "same", wrapperValue: true },
+    { name: "inactive-password", surface: "token", inactiveOpposite: true },
+    { name: "inactive-token", surface: "password", inactiveOpposite: true },
+    { name: "implicit-password", surface: "password", mixedImplicit: true },
+    { name: "implicit-token", surface: "token", mixedImplicit: true },
+    { name: "denied-token", surface: "token", rejected: "denied" },
+    { name: "denied-password", surface: "password", rejected: "denied" },
+    { name: "unresolved-token", surface: "token", rejected: "unresolved" },
+    { name: "unresolved-password", surface: "password", rejected: "unresolved" },
+  ];
+  for (const [index, scenario] of scenarios.entries()) {
+    await observe(scenario, 19891 + index);
+  }
 } finally {
   fs.writeFileSync(
     path.join(evidence, "observations.json"),
@@ -307,6 +414,7 @@ try {
       {
         revision,
         baseline,
+        candidate,
         scope: "Actual app and installed local Gateway; observations require independent judgment.",
         results,
       },

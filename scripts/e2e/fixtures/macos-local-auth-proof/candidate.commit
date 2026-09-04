@@ -1,0 +1,13 @@
+tree ad916b6f775b546d25d1bb6b8f6b1534a9aad5bc
+parent 4e35b1caf03687853b8cc9dd47f8d5c6ea81bb93
+parent 2998a3350f22a50850adfc72cee44f453570fae1
+author Ayaan Zaidi <hi@obviy.us> 1788552944 +0200
+committer Ayaan Zaidi <hi@obviy.us> 1788552944 +0200
+gpgsig -----BEGIN SSH SIGNATURE-----
+ U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgxkp0Y680w6L3k3PVnP3iMlF0tO
+ OZU/j6/pRssQzmmGoAAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5
+ AAAAQHzdWA0O7oa0Zws9pdPI9ka9NoevuaTPG6MUu9uf9vE6PKLkOfpdsZcnjMa0D6zNN4
+ pyHH74aLl6//TSgAU0VQ8=
+ -----END SSH SIGNATURE-----
+
+fix(macos): refresh typed gateway auth repair on main
