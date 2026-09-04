@@ -529,7 +529,7 @@ async function updateCommandInternal(
 
   const callerDatabaseSchemaContext = {
     configSnapshot,
-    env: { ...process.env },
+    env: resolveServiceRefreshEnv(process.env, invocationCwd),
   };
   const packageSchemaPreflight = opts.dryRun
     ? await import("./update-execution.runtime.js").then(
