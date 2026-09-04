@@ -102,7 +102,7 @@ function reconcileStreamSourceIdentity(job: CronJob, nextJob: CronJob): void {
     sourceChanged || !currentIdentity ? createCronStreamSourceIdentity() : currentIdentity;
 }
 
-function finalizeUpdatedJob(params: {
+export function finalizeUpdatedJob(params: {
   job: CronJob;
   nextJob: CronJob;
   now: number;

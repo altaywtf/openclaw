@@ -54,7 +54,7 @@ type ValidatedHeartbeatTask = {
   occurrenceIndex: number;
 };
 
-function validateTasks(
+export function validateLegacyHeartbeatTasks(
   tasks: readonly LegacyHeartbeatTask[],
   declaredEntryCount: number,
 ): ValidatedHeartbeatTask[] {
@@ -128,7 +128,7 @@ export async function collectHeartbeatTaskMigrationFindings(
       continue;
     }
     try {
-      validateTasks(document.tasks, document.taskEntryCount);
+      validateLegacyHeartbeatTasks(document.tasks, document.taskEntryCount);
       findings.push(
         migrationFinding({
           storePath,
@@ -450,7 +450,7 @@ export async function maybeMigrateHeartbeatTasksToCron(params: {
     const tasks = document.tasks;
     let validatedTasks: ValidatedHeartbeatTask[];
     try {
-      validatedTasks = validateTasks(tasks, document.taskEntryCount);
+      validatedTasks = validateLegacyHeartbeatTasks(tasks, document.taskEntryCount);
     } catch (error) {
       warnings.push(
         `Agent "${agent.agentId}" heartbeat tasks were not migrated: ${errorMessage(error)}.`,

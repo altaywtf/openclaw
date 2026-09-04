@@ -1,4 +1,5 @@
 // Machine-owned values retired from openclaw.json live in the shared state database.
+import type { DatabaseSync } from "node:sqlite";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
@@ -35,22 +36,50 @@ export function readConfigMachineStateWithMetadata<T>(
   key: string,
   options: OpenClawStateDatabaseOptions = {},
 ): { value: T; updatedAtMs: number } | undefined {
-  return withExistingOpenClawStateDatabaseReadOnly(({ db: database }) => {
-    if (!tableExists(database, "config_machine_state")) {
-      return undefined;
-    }
-    const db = getNodeSqliteKysely<ConfigMachineStateDatabase>(database);
-    const row = executeSqliteQueryTakeFirstSync(
-      database,
-      db
-        .selectFrom("config_machine_state")
-        .select(["value_json", "updated_at_ms"])
-        .where("state_key", "=", normalizeStateKey(key)),
-    );
-    return row
-      ? { value: JSON.parse(row.value_json) as T, updatedAtMs: row.updated_at_ms }
-      : undefined;
-  }, options);
+  return withExistingOpenClawStateDatabaseReadOnly(
+    ({ db }) => readConfigMachineStateWithMetadataInDatabase<T>(db, key),
+    options,
+  );
+}
+
+// oxlint-disable-next-line typescript/no-unnecessary-type-parameters -- Callers own the JSON shape for open-ended state keys.
+export function readConfigMachineStateWithMetadataInDatabase<T>(
+  database: DatabaseSync,
+  key: string,
+): { value: T; updatedAtMs: number } | undefined {
+  if (!tableExists(database, "config_machine_state")) {
+    return undefined;
+  }
+  const db = getNodeSqliteKysely<ConfigMachineStateDatabase>(database);
+  const row = executeSqliteQueryTakeFirstSync(
+    database,
+    db
+      .selectFrom("config_machine_state")
+      .select(["value_json", "updated_at_ms"])
+      .where("state_key", "=", normalizeStateKey(key)),
+  );
+  return row
+    ? { value: JSON.parse(row.value_json) as T, updatedAtMs: row.updated_at_ms }
+    : undefined;
+}
+
+/** Join the caller's synchronous commit with an already serialized value. */
+export function writeConfigMachineStateInDatabase(
+  database: DatabaseSync,
+  stateKey: string,
+  valueJson: string,
+  now: number,
+): void {
+  const db = getNodeSqliteKysely<ConfigMachineStateDatabase>(database);
+  executeSqliteQuerySync(
+    database,
+    db
+      .insertInto("config_machine_state")
+      .values({ state_key: stateKey, value_json: valueJson, updated_at_ms: now })
+      .onConflict((conflict) =>
+        conflict.column("state_key").doUpdateSet({ value_json: valueJson, updated_at_ms: now }),
+      ),
+  );
 }
 
 // oxlint-disable-next-line typescript/no-unnecessary-type-parameters -- Callers own the JSON shape for open-ended state keys.
@@ -71,16 +100,7 @@ export function writeConfigMachineState(
   const now = Date.now();
   runOpenClawStateWriteTransaction(
     (database) => {
-      const db = getNodeSqliteKysely<ConfigMachineStateDatabase>(database.db);
-      executeSqliteQuerySync(
-        database.db,
-        db
-          .insertInto("config_machine_state")
-          .values({ state_key: stateKey, value_json: valueJson, updated_at_ms: now })
-          .onConflict((conflict) =>
-            conflict.column("state_key").doUpdateSet({ value_json: valueJson, updated_at_ms: now }),
-          ),
-      );
+      writeConfigMachineStateInDatabase(database.db, stateKey, valueJson, now);
     },
     options,
     { operationLabel: "config-machine-state.write" },
@@ -127,15 +147,7 @@ export function updateConfigMachineState<T>(
         return undefined;
       }
       const valueJson = serializeStateValue(value);
-      executeSqliteQuerySync(
-        database.db,
-        db
-          .insertInto("config_machine_state")
-          .values({ state_key: stateKey, value_json: valueJson, updated_at_ms: now })
-          .onConflict((conflict) =>
-            conflict.column("state_key").doUpdateSet({ value_json: valueJson, updated_at_ms: now }),
-          ),
-      );
+      writeConfigMachineStateInDatabase(database.db, stateKey, valueJson, now);
       return value;
     },
     options,

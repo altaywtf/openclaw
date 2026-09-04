@@ -53,7 +53,7 @@ function rowToState(row: {
   };
 }
 
-function readScratchStateFromDatabase(
+export function readCronJobScratchStateInDatabase(
   db: DatabaseSync,
   storeKey: string,
   jobId: string,
@@ -77,7 +77,7 @@ export function readCronJobScratchState(
   options: OpenClawStateDatabaseOptions = {},
 ): CronJobScratchState {
   const { db } = openOpenClawStateDatabase(options);
-  return readScratchStateFromDatabase(db, cronStoreKey(storePath), jobId);
+  return readCronJobScratchStateInDatabase(db, cronStoreKey(storePath), jobId);
 }
 
 function readHeartbeatMonitorScratchFromDatabase(
@@ -164,7 +164,7 @@ export function writeCronJobScratch(params: {
   return runOpenClawStateWriteTransaction(
     ({ db }) => {
       const cronDb = getCronStoreKysely(db);
-      const { currentRevision } = readScratchStateFromDatabase(db, storeKey, params.jobId);
+      const { currentRevision } = readCronJobScratchStateInDatabase(db, storeKey, params.jobId);
       const owningJob = executeSqliteQuerySync(
         db,
         cronDb
@@ -242,7 +242,7 @@ export function deleteCronJobScratch(
     ({ db }) => {
       const storeKey = cronStoreKey(storePath);
       if (guard) {
-        const { currentRevision } = readScratchStateFromDatabase(db, storeKey, jobId);
+        const { currentRevision } = readCronJobScratchStateInDatabase(db, storeKey, jobId);
         if (currentRevision !== guard.expectedRevision) {
           return false;
         }
