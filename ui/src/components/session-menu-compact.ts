@@ -48,9 +48,7 @@ export function renderCompactSessionMenuNavigationItem(params: {
             >`
           : nothing
       }
-      <span class="row session-menu__label">
-        <span class="session-menu__text">${params.label}</span>
-      </span>
+      <span class="session-menu__text">${params.label}</span>
       <span slot="details" class="session-menu__compact-details" aria-hidden="true">
         ${params.details ?? nothing}
         <span class="session-menu__icon session-menu__chevron">${icons.chevronRight}</span>

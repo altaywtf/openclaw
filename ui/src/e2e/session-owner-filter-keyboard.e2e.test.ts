@@ -288,7 +288,7 @@ suite.define(() => {
           const dropdown = element.closest("wa-dropdown");
           const menuPart = dropdown?.shadowRoot?.querySelector<HTMLElement>('[part="menu"]');
           const label = element.querySelector<HTMLElement>(
-            ":scope > .session-menu__label > .session-menu__text",
+            ":scope > .session-menu__text, :scope > .session-menu__label > .session-menu__text",
           );
           const value = element.querySelector<HTMLElement>(".sidebar-session-owner-selection");
           const chevron =
