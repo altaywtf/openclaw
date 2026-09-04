@@ -196,6 +196,14 @@ async function observe(name: string, typed: boolean, port: number): Promise<void
       ]),
       0,
     );
+    const installedConfigText = fs.readFileSync(env.OPENCLAW_CONFIG_PATH!, "utf8");
+    fs.writeFileSync(
+      path.join(evidence, `${name}-installed-config.json`),
+      sanitized(installedConfigText),
+    );
+    const installedConfig = JSON.parse(installedConfigText);
+    assert.deepEqual(installedConfig.gateway.auth.token, typed ? ref : credential);
+    result.installedAuthInputPreserved = true;
     const serviceEnvironment = path.join(state, "service-env", `ai.openclaw.${profile}.env`);
     result.serviceHasCredential = fs.readFileSync(serviceEnvironment, "utf8").includes(credential);
     result.appHasCredential = Object.values(env).includes(credential);

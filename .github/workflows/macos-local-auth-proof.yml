@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   native:
-    runs-on: blacksmith-12vcpu-macos-26
+    runs-on: macos-26
     timeout-minutes: 60
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -64,5 +64,6 @@ jobs:
         with:
           name: macos-local-auth-proof
           path: .artifacts/macos-local-auth-proof
-          if-no-files-found: warn
+          include-hidden-files: true
+          if-no-files-found: error
           retention-days: 7
