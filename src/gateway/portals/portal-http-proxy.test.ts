@@ -777,6 +777,39 @@ describe("portal HTTP proxy", () => {
         port: portal.listenPort,
         path: `/?${portal.tokenQuery}`,
       });
+      if (result.status !== 200 || result.body !== "v6 proxied") {
+        // Observe only after the failed response so diagnostics cannot affect the original dial.
+        const runtime = { node: process.version, platform: process.platform };
+        try {
+          const { ADDRCONFIG, promises: dns } = await import("node:dns");
+          const { networkInterfaces } = await import("node:os");
+          const { isLoopbackIpAddress } = await import("@openclaw/net-policy/ip");
+          const lookups = await Promise.allSettled(
+            [0, ADDRCONFIG].map((hints) => dns.lookup("localhost", { all: true, hints })),
+          );
+          console.error(
+            "portal IPv6 diagnostics",
+            JSON.stringify({
+              ...runtime,
+              nonLoopbackIpv6: Object.values(networkInterfaces()).some((entries) =>
+                entries?.some((entry) => entry.family === "IPv6" && !entry.internal),
+              ),
+              lookups: lookups.map((lookup, index) => ({
+                hints: index === 0 ? "none" : "ADDRCONFIG",
+                addresses:
+                  lookup.status === "fulfilled"
+                    ? lookup.value.map(({ address, family }) => ({
+                        family,
+                        loopback: isLoopbackIpAddress(address),
+                      }))
+                    : null,
+              })),
+            }),
+          );
+        } catch {
+          console.error("portal IPv6 diagnostics unavailable", runtime);
+        }
+      }
       expect(result).toMatchObject({ status: 200, body: "v6 proxied" });
     } finally {
       await new Promise<void>((resolve) => {
