@@ -3412,6 +3412,7 @@ jobs:
           done
 
       - name: Run check shard
+        if: matrix.task != 'lint'
         env:
           FROZEN_TARGET: ${{ needs.preflight.outputs.frozen_target }}
           HISTORICAL_TARGET: ${{ needs.preflight.outputs.compatibility_target }}
@@ -3663,6 +3664,13 @@ jobs:
               exit 1
               ;;
           esac
+
+      - name: Prove omitted-effort resume binding
+        if: matrix.task == 'lint'
+        run: >-
+          node scripts/run-vitest.mjs
+          extensions/codex/src/app-server/thread-lifecycle.binding.test.ts
+          -t "preserves the stored reasoning effort when resume omits it"
 
   # The github/hybrid planner profile aggregates core targets into five Programs
   # across five hosted jobs. All-Blacksmith mode keeps one lint job.
