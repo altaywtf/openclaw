@@ -6,15 +6,21 @@ import {
   validateReefFederationBody,
   type ReefFederationFrame,
 } from "../protocol/federation.js";
-import { ReefPeerIdentitySchema, type ReefPeerIdentity } from "./friend-types.js";
+import {
+  ReefPeerIdentitySchema,
+  sameReefPeerIdentity,
+  type ReefPeerIdentity,
+} from "./friend-types.js";
 
-const REEF_FEDERATION_MOUNTS_NAMESPACE = "federation-mounts";
 const REEF_FEDERATION_PROPOSALS_NAMESPACE = "federation-proposals";
-const REEF_FEDERATION_MOUNTS_MAX_ENTRIES = 1_000;
-const REEF_FEDERATION_MOUNTS_PER_PEER = 32;
-const REEF_FEDERATION_MOUNT_TTL_MS = 7 * 24 * 60 * 60_000;
+const REEF_FEDERATION_OUTBOUND_PROPOSALS_NAMESPACE = "federation-outbound-proposals";
 const REEF_FEDERATION_PROPOSALS_MAX_ENTRIES = 5_000;
+const REEF_FEDERATION_PROPOSALS_MAX_ENTRIES_PER_PEER = 128;
 const REEF_FEDERATION_PROPOSAL_TTL_MS = 30 * 24 * 60 * 60_000;
+
+type CrossSessionGrant = NonNullable<ReturnType<PluginRuntime["crossSessionGrants"]["get"]>>;
+type CrossSessionGrantCreate = Parameters<PluginRuntime["crossSessionGrants"]["create"]>[0];
+type CrossSessionGrantAuthority = Parameters<PluginRuntime["crossSessionGrants"]["authorize"]>[0];
 
 export type ReefFederationMount = {
   mountId: string;
@@ -26,6 +32,15 @@ export type ReefFederationMount = {
   grantGeneration: number;
   allowAlways: boolean;
   revoked: boolean;
+  revocationPending?: boolean;
+};
+
+export type ReefGrantAuthority = {
+  mountId: string;
+  peer: string;
+  peerIdentity: ReefPeerIdentity;
+  sessionId: string;
+  generation: number;
 };
 
 export type ReefFederationPromptRequest = {
@@ -47,120 +62,262 @@ export type ReefFederationProposal = {
     { type: "session.mount.offer" | "session.prompt.propose" }
   >;
   outcomeSentAt?: number;
+  outcomeAbandonedAt?: number;
+  outcomeAbandonReason?: "peer-identity-changed";
   approvalId?: string;
+  approvalDecision?: "allow-once";
   runId?: string;
   failureCode?: string;
 };
 
+export type ReefFederationPromptOutcome = Extract<
+  ReefFederationFrame,
+  {
+    type: "session.prompt.accepted" | "session.prompt.denied" | "session.prompt.failed";
+  }
+>;
+
+type ReefOutboundProposal = ReefFederationPromptRequest & {
+  outcome?: ReefFederationPromptOutcome;
+  outcomeReceivedAt?: number;
+};
+
 export type ReefFederationProposalResolution = Pick<ReefFederationProposal, "status"> &
-  Partial<Pick<ReefFederationProposal, "approvalId" | "runId" | "failureCode" | "outcome">>;
+  Partial<
+    Pick<
+      ReefFederationProposal,
+      "approvalId" | "approvalDecision" | "runId" | "failureCode" | "outcome"
+    >
+  >;
 
-/** Durable Reef-owned state for session mounts, standing grants, and proposal replay outcomes. */
+/** Reef transport projection over host-owned grants plus durable proposal replay outcomes. */
 export class ReefFederationState {
-  readonly #mounts: PluginStateSyncKeyedStore<ReefFederationMount>;
+  readonly #grants: PluginRuntime["crossSessionGrants"];
   readonly #proposals: PluginStateSyncKeyedStore<ReefFederationProposal>;
+  readonly #outboundProposals: PluginStateSyncKeyedStore<ReefOutboundProposal>;
 
-  constructor(runtime: PluginRuntime) {
-    this.#mounts = runtime.state.openSyncKeyedStore<ReefFederationMount>({
-      namespace: REEF_FEDERATION_MOUNTS_NAMESPACE,
-      maxEntries: REEF_FEDERATION_MOUNTS_MAX_ENTRIES,
-      overflowPolicy: "reject-new",
-      defaultTtlMs: REEF_FEDERATION_MOUNT_TTL_MS,
-    });
+  constructor(
+    runtime: PluginRuntime,
+    private readonly authoritySignal: AbortSignal,
+    private readonly localIdentityBinding = "test-local-identity",
+  ) {
+    if (!localIdentityBinding) {
+      throw new Error("Reef federation requires a local identity binding");
+    }
+    this.#grants = runtime.crossSessionGrants;
     this.#proposals = runtime.state.openSyncKeyedStore<ReefFederationProposal>({
       namespace: REEF_FEDERATION_PROPOSALS_NAMESPACE,
       maxEntries: REEF_FEDERATION_PROPOSALS_MAX_ENTRIES,
       overflowPolicy: "reject-new",
       defaultTtlMs: REEF_FEDERATION_PROPOSAL_TTL_MS,
     });
-  }
-
-  /** Persist a host-issued mount without replacing an existing authority binding. */
-  createMount(mount: ReefFederationMount): boolean {
-    validateMount(mount);
-    const peerMounts = this.#mounts
-      .entries()
-      .filter((entry) => validateMount(entry.value).peer === mount.peer);
-    if (peerMounts.length >= REEF_FEDERATION_MOUNTS_PER_PEER) {
-      return false;
-    }
-    return this.#mounts.registerIfAbsent(mountKey(mount.mountId), structuredClone(mount));
-  }
-
-  /** List validated mounts for owner commands and status surfaces. */
-  listMounts(): ReefFederationMount[] {
-    return this.#mounts.entries().map((entry) => validateMount(entry.value));
-  }
-
-  /** Read one validated mount by its public identifier. */
-  getMount(mountId: string): ReefFederationMount | undefined {
-    const value = this.#mounts.lookup(mountKey(mountId));
-    return value ? validateMount(value) : undefined;
-  }
-
-  /** Enable the standing session grant only when the exact authority generation still matches. */
-  allowAlways(mountId: string, expectedGeneration: number): boolean {
-    return this.#updateMount(mountId, expectedGeneration, (mount) => ({
-      ...mount,
-      allowAlways: true,
-    }));
-  }
-
-  /** Revoke a standing grant before returning the new generation to the caller. */
-  revoke(mountId: string, expectedGeneration: number): ReefFederationMount | undefined {
-    let revoked: ReefFederationMount | undefined;
-    this.#updateMount(mountId, expectedGeneration, (mount) => {
-      revoked = {
-        ...mount,
-        allowAlways: false,
-        revoked: true,
-        grantGeneration: mount.grantGeneration + 1,
-      };
-      return revoked;
+    this.#outboundProposals = runtime.state.openSyncKeyedStore<ReefOutboundProposal>({
+      namespace: REEF_FEDERATION_OUTBOUND_PROPOSALS_NAMESPACE,
+      maxEntries: REEF_FEDERATION_PROPOSALS_MAX_ENTRIES,
+      overflowPolicy: "reject-new",
+      defaultTtlMs: REEF_FEDERATION_PROPOSAL_TTL_MS,
     });
-    return revoked;
   }
 
-  /** Apply a peer-issued revocation only when it advances the local authority generation. */
-  applyRevocation(mountId: string, generation: number): boolean {
-    let changed = false;
-    const update = this.#mounts.update;
-    if (!update) {
-      throw new Error("Reef federation mounts require atomic plugin-state updates");
+  /** Persist transport metadata through the host-owned cross-session grant authority. */
+  createMount(mount: ReefFederationMount): boolean {
+    return this.#grants.create(
+      toCrossSessionGrant(validateMount(mount), this.localIdentityBinding),
+      this.authoritySignal,
+    );
+  }
+
+  /** List mounts projected from host-owned grant records. */
+  listMounts(): ReefFederationMount[] {
+    return this.#grants.list(this.authoritySignal).map(fromCrossSessionGrant);
+  }
+
+  /** Read one mount projected from its host-owned grant record. */
+  getMount(mountId: string): ReefFederationMount | undefined {
+    const grant = this.#grants.get(mountId, this.authoritySignal);
+    return grant ? fromCrossSessionGrant(grant) : undefined;
+  }
+
+  /** Revalidate exact lifecycle and transport authority before privileged use. */
+  authorizeMount(params: ReefGrantAuthority): ReefFederationMount | undefined {
+    const grant = this.#grants.authorize(
+      toGrantAuthority(params, this.authoritySignal, this.localIdentityBinding),
+    );
+    return grant ? fromCrossSessionGrant(grant) : undefined;
+  }
+
+  /** Persist standing authority only after core revalidates the exact live grant. */
+  allowAlways(params: ReefGrantAuthority): boolean {
+    return this.#grants.allowStanding(
+      toGrantAuthority(params, this.authoritySignal, this.localIdentityBinding),
+    );
+  }
+
+  /** Revoke a standing grant, or return its committed generation for idempotent delivery. */
+  revoke(mountId: string, expectedGeneration: number): ReefFederationMount | undefined {
+    const grant = this.#grants.revoke({
+      grantId: mountId,
+      expectedGeneration,
+      signal: this.authoritySignal,
+    });
+    return grant ? fromCrossSessionGrant(grant) : undefined;
+  }
+
+  /** Apply a peer-issued revocation only to that peer's exact holder grant. */
+  applyRevocation(params: ReefGrantAuthority): boolean {
+    return this.#grants.applyRevocation(
+      toGrantAuthority(params, this.authoritySignal, this.localIdentityBinding),
+    );
+  }
+
+  /** Stop durable revocation recovery after the exact generation reaches transport. */
+  acknowledgeRevocation(mountId: string, generation: number): boolean {
+    return this.#grants.acknowledgeRevocation({
+      grantId: mountId,
+      generation,
+      signal: this.authoritySignal,
+    });
+  }
+
+  /** Find an unresolved outbound proposal so command retry preserves its idempotency key. */
+  findOutboundProposal(
+    mount: ReefFederationMount,
+    text: string,
+  ): ReefFederationPromptRequest | undefined {
+    const proposal = this.#outboundProposals
+      .entries()
+      .map((entry) => validateOutboundProposal(entry.value))
+      .find(
+        (entry) =>
+          !entry.outcome &&
+          entry.peer === mount.peer &&
+          sameReefPeerIdentity(entry.peerIdentity, mount.peerIdentity) &&
+          entry.frame.mountId === mount.mountId &&
+          entry.frame.sessionId === mount.sessionId &&
+          entry.frame.grantGeneration === mount.grantGeneration &&
+          entry.frame.text === text,
+      );
+    return proposal ? validatePromptRequest(proposal) : undefined;
+  }
+
+  /** Reserve an outbound proposal before its transport outcome becomes ambiguous. */
+  registerOutboundProposal(request: ReefFederationPromptRequest): boolean {
+    const validated = validatePromptRequest(request);
+    const existing = this.#outboundProposals.lookup(outboundProposalKey(request.frame.proposalId));
+    if (existing) {
+      return matchesPromptRequest(validateOutboundProposal(existing), validated);
     }
-    update(mountKey(mountId), (existing) => {
+    const peerCount = this.#outboundProposals
+      .entries()
+      .map((entry) => validateOutboundProposal(entry.value))
+      .filter((entry) => entry.peer === validated.peer).length;
+    return (
+      peerCount < REEF_FEDERATION_PROPOSALS_MAX_ENTRIES_PER_PEER &&
+      this.#outboundProposals.registerIfAbsent(
+        outboundProposalKey(validated.frame.proposalId),
+        validated,
+      )
+    );
+  }
+
+  /** Accept one terminal outcome only for its exact guest mount and outbound proposal binding. */
+  acceptOutboundOutcome(
+    peer: string,
+    peerIdentity: ReefPeerIdentity,
+    outcome: ReefFederationPromptOutcome,
+  ): "accepted" | "duplicate" | "invalid" {
+    let result: "accepted" | "duplicate" | "invalid" = "invalid";
+    const update = this.#outboundProposals.update;
+    if (!update) {
+      throw new Error("Reef outbound proposals require atomic plugin-state updates");
+    }
+    update(outboundProposalKey(outcome.proposalId), (existing) => {
       if (!existing) {
         return existing;
       }
-      const mount = validateMount(existing);
-      if (generation <= mount.grantGeneration) {
-        return mount;
+      const proposal = validateOutboundProposal(existing);
+      if (
+        proposal.peer !== peer ||
+        !sameReefPeerIdentity(proposal.peerIdentity, peerIdentity) ||
+        proposal.frame.mountId !== outcome.mountId ||
+        proposal.frame.sessionId !== outcome.sessionId ||
+        proposal.frame.proposalId !== outcome.proposalId
+      ) {
+        return proposal;
       }
-      changed = true;
-      return { ...mount, grantGeneration: generation, allowAlways: false, revoked: true };
+      if (proposal.outcome) {
+        result = "duplicate";
+        return proposal;
+      }
+      result = "accepted";
+      return validateOutboundProposal({
+        ...proposal,
+        outcome,
+        outcomeReceivedAt: Date.now(),
+      });
     });
-    return changed;
+    return result;
+  }
+
+  /** Claim an inbound request before transport acknowledgement. */
+  claimPrompt(
+    request: ReefFederationPromptRequest,
+  ): "new" | "duplicate" | "mismatch" | "peer-capacity" {
+    return this.claimProposal({
+      proposalId: request.frame.proposalId,
+      mountId: request.frame.mountId,
+      digest: request.frame.textSha256,
+      status: "pending",
+      request: structuredClone(request),
+    }).result;
   }
 
   /** Claim one exact proposal; duplicate IDs return the prior outcome, while digest reuse fails. */
   claimProposal(proposal: ReefFederationProposal): {
-    result: "new" | "duplicate" | "mismatch";
+    result: "new" | "duplicate" | "mismatch" | "peer-capacity";
     proposal: ReefFederationProposal;
   } {
     validateProposal(proposal);
-    let result: "new" | "duplicate" | "mismatch" = "new";
+    const key = proposalKey(proposal.proposalId, proposal.digest);
+    const existing = this.#proposals.lookup(key);
+    if (!existing) {
+      const retained = this.#proposals.entries().map((entry) => validateProposal(entry.value));
+      const peerProposalCount = retained.filter(
+        (entry) => entry.request.peer === proposal.request.peer,
+      ).length;
+      if (peerProposalCount >= REEF_FEDERATION_PROPOSALS_MAX_ENTRIES_PER_PEER) {
+        return { result: "peer-capacity", proposal: structuredClone(proposal) };
+      }
+      const rebound = retained.some(
+        (entry) => entry.proposalId === proposal.proposalId && entry.digest !== proposal.digest,
+      );
+      if (rebound) {
+        let current = proposal;
+        const update = this.#proposals.update;
+        if (!update) {
+          throw new Error("Reef federation proposals require atomic plugin-state updates");
+        }
+        update(key, (currentValue) => {
+          current = currentValue ? validateProposal(currentValue) : structuredClone(proposal);
+          return current;
+        });
+        return { result: "mismatch", proposal: structuredClone(current) };
+      }
+    }
+
+    let result: "new" | "duplicate" = "new";
     let current = proposal;
     const update = this.#proposals.update;
     if (!update) {
       throw new Error("Reef federation proposals require atomic plugin-state updates");
     }
-    update(proposalKey(proposal.proposalId), (existing) => {
-      if (!existing) {
+    update(key, (currentValue) => {
+      if (!currentValue) {
         return structuredClone(proposal);
       }
-      current = validateProposal(existing);
-      result = existing.digest === proposal.digest ? "duplicate" : "mismatch";
-      return existing;
+      current = validateProposal(currentValue);
+      result = "duplicate";
+      return currentValue;
     });
     return { result, proposal: structuredClone(current) };
   }
@@ -170,7 +327,10 @@ export class ReefFederationState {
     return this.#proposals
       .entries()
       .map((entry) => validateProposal(entry.value))
-      .filter((proposal) => proposal.outcomeSentAt === undefined);
+      .filter(
+        (proposal) =>
+          proposal.outcomeSentAt === undefined && proposal.outcomeAbandonedAt === undefined,
+      );
   }
 
   /** Record a proposal outcome only while its exact digest remains authoritative. */
@@ -184,7 +344,7 @@ export class ReefFederationState {
     if (!update) {
       throw new Error("Reef federation proposals require atomic plugin-state updates");
     }
-    update(proposalKey(proposalId), (existing) => {
+    update(proposalKey(proposalId, digest), (existing) => {
       if (!existing || existing.digest !== digest) {
         return existing;
       }
@@ -201,8 +361,13 @@ export class ReefFederationState {
     if (!update) {
       throw new Error("Reef federation proposals require atomic plugin-state updates");
     }
-    update(proposalKey(proposalId), (existing) => {
-      if (!existing || existing.digest !== digest || !existing.outcome) {
+    update(proposalKey(proposalId, digest), (existing) => {
+      if (
+        !existing ||
+        existing.digest !== digest ||
+        !existing.outcome ||
+        existing.outcomeAbandonedAt !== undefined
+      ) {
         return existing;
       }
       changed = true;
@@ -211,37 +376,94 @@ export class ReefFederationState {
     return changed;
   }
 
-  #updateMount(
-    mountId: string,
-    expectedGeneration: number,
-    mutate: (mount: ReefFederationMount) => ReefFederationMount,
-  ): boolean {
+  /** Record that identity rotation made one terminal outcome permanently undeliverable. */
+  abandonOutcome(proposalId: string, digest: string): boolean {
     let changed = false;
-    const update = this.#mounts.update;
+    const update = this.#proposals.update;
     if (!update) {
-      throw new Error("Reef federation mounts require atomic plugin-state updates");
+      throw new Error("Reef federation proposals require atomic plugin-state updates");
     }
-    update(mountKey(mountId), (existing) => {
-      if (!existing) {
+    update(proposalKey(proposalId, digest), (existing) => {
+      if (
+        !existing ||
+        existing.digest !== digest ||
+        !existing.outcome ||
+        existing.outcomeSentAt !== undefined
+      ) {
         return existing;
       }
-      const mount = validateMount(existing);
-      if (mount.grantGeneration !== expectedGeneration || mount.revoked) {
-        return mount;
-      }
       changed = true;
-      return validateMount(mutate(mount));
+      return validateProposal({
+        ...existing,
+        outcomeAbandonedAt: Date.now(),
+        outcomeAbandonReason: "peer-identity-changed",
+      });
     });
     return changed;
   }
 }
 
-function mountKey(mountId: string): string {
-  return `mount:${hashKey(mountId)}`;
+function toCrossSessionGrant(
+  mount: ReefFederationMount,
+  localIdentityBinding: string,
+): CrossSessionGrantCreate {
+  return {
+    grantId: mount.mountId,
+    subjectId: mount.peer,
+    subjectBinding: `${localIdentityBinding}|${peerIdentityBinding(mount.peerIdentity)}`,
+    role: mount.role === "host" ? "issuer" : "holder",
+    targetSessionKey: mount.sessionKey,
+    targetSessionId: mount.sessionId,
+    generation: mount.grantGeneration,
+  };
 }
 
-function proposalKey(proposalId: string): string {
-  return `proposal:${hashKey(proposalId)}`;
+function fromCrossSessionGrant(grant: CrossSessionGrant): ReefFederationMount {
+  const remoteBinding = grant.subjectBinding.split("|").at(-1) ?? "";
+  const [epoch, ed25519PublicKey, x25519PublicKey] = remoteBinding.split(":");
+  return validateMount({
+    mountId: grant.grantId,
+    peer: grant.subjectId,
+    peerIdentity: {
+      keyEpoch: Number(epoch),
+      ed25519PublicKey: ed25519PublicKey ?? "",
+      x25519PublicKey: x25519PublicKey ?? "",
+    },
+    role: grant.role === "issuer" ? "host" : "guest",
+    sessionKey: grant.targetSessionKey,
+    sessionId: grant.targetSessionId,
+    grantGeneration: grant.generation,
+    allowAlways: grant.standing,
+    revoked: grant.revoked,
+    revocationPending: grant.revocationPending,
+  });
+}
+
+function toGrantAuthority(
+  params: ReefGrantAuthority,
+  authoritySignal: AbortSignal,
+  localIdentityBinding: string,
+): CrossSessionGrantAuthority {
+  return {
+    grantId: params.mountId,
+    subjectId: params.peer,
+    subjectBinding: `${localIdentityBinding}|${peerIdentityBinding(params.peerIdentity)}`,
+    targetSessionId: params.sessionId,
+    generation: params.generation,
+    signal: authoritySignal,
+  };
+}
+
+function peerIdentityBinding(identity: ReefPeerIdentity): string {
+  return `${identity.keyEpoch}:${identity.ed25519PublicKey}:${identity.x25519PublicKey}`;
+}
+
+function proposalKey(proposalId: string, digest: string): string {
+  return `proposal:${hashKey(`${proposalId}:${digest}`)}`;
+}
+
+function outboundProposalKey(proposalId: string): string {
+  return `outbound-proposal:${hashKey(proposalId)}`;
 }
 
 function hashKey(value: string): string {
@@ -260,11 +482,56 @@ function validateMount(value: ReefFederationMount): ReefFederationMount {
     !Number.isSafeInteger(value.grantGeneration) ||
     value.grantGeneration < 0 ||
     typeof value.allowAlways !== "boolean" ||
-    typeof value.revoked !== "boolean"
+    typeof value.revoked !== "boolean" ||
+    (value.revocationPending !== undefined && typeof value.revocationPending !== "boolean")
   ) {
     throw new Error("invalid Reef federation mount");
   }
   return structuredClone(value);
+}
+
+function validatePromptRequest(value: ReefFederationPromptRequest): ReefFederationPromptRequest {
+  if (
+    !value ||
+    typeof value.from !== "string" ||
+    typeof value.to !== "string" ||
+    typeof value.peer !== "string" ||
+    !ReefPeerIdentitySchema.safeParse(value.peerIdentity).success
+  ) {
+    throw new Error("invalid Reef outbound proposal request");
+  }
+  validateReefFederationBody({ namespace: REEF_FEDERATION_NAMESPACE, frame: value.frame });
+  if (value.frame.type !== "session.prompt.propose") {
+    throw new Error("invalid Reef outbound proposal frame");
+  }
+  return structuredClone(value);
+}
+
+function validateOutboundProposal(value: ReefOutboundProposal): ReefOutboundProposal {
+  const request = validatePromptRequest(value);
+  if (
+    (value.outcomeReceivedAt !== undefined && !Number.isFinite(value.outcomeReceivedAt)) ||
+    (value.outcomeReceivedAt === undefined) !== (value.outcome === undefined)
+  ) {
+    throw new Error("invalid Reef outbound proposal outcome");
+  }
+  if (value.outcome) {
+    validateReefFederationBody({ namespace: REEF_FEDERATION_NAMESPACE, frame: value.outcome });
+  }
+  return structuredClone({ ...request, ...value });
+}
+
+function matchesPromptRequest(
+  left: ReefFederationPromptRequest,
+  right: ReefFederationPromptRequest,
+): boolean {
+  return (
+    left.from === right.from &&
+    left.to === right.to &&
+    left.peer === right.peer &&
+    sameReefPeerIdentity(left.peerIdentity, right.peerIdentity) &&
+    JSON.stringify(left.frame) === JSON.stringify(right.frame)
+  );
 }
 
 function validateProposal(value: ReefFederationProposal): ReefFederationProposal {
@@ -279,7 +546,14 @@ function validateProposal(value: ReefFederationProposal): ReefFederationProposal
     typeof value.request.to !== "string" ||
     typeof value.request.peer !== "string" ||
     !ReefPeerIdentitySchema.safeParse(value.request.peerIdentity).success ||
-    (value.outcomeSentAt !== undefined && !Number.isFinite(value.outcomeSentAt))
+    (value.outcomeSentAt !== undefined && !Number.isFinite(value.outcomeSentAt)) ||
+    (value.outcomeAbandonedAt !== undefined && !Number.isFinite(value.outcomeAbandonedAt)) ||
+    (value.outcomeAbandonReason !== undefined &&
+      value.outcomeAbandonReason !== "peer-identity-changed") ||
+    (value.approvalDecision !== undefined && value.approvalDecision !== "allow-once") ||
+    (value.approvalDecision !== undefined && typeof value.approvalId !== "string") ||
+    (value.outcomeAbandonedAt === undefined) !== (value.outcomeAbandonReason === undefined) ||
+    (value.outcomeSentAt !== undefined && value.outcomeAbandonedAt !== undefined)
   ) {
     throw new Error("invalid Reef federation proposal");
   }

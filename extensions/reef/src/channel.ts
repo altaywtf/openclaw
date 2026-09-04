@@ -23,6 +23,11 @@ import {
   type ReefCoreConfig,
 } from "./config-schema.js";
 import { ReefFederationCoordinator } from "./federation-coordinator.js";
+import {
+  matchesFederatedPromptPeer,
+  retryFederatedRevocations,
+  retryUnsentFederatedPrompts,
+} from "./federation-recovery.js";
 import { ReefFederationState, type ReefFederationPromptRequest } from "./federation-state.js";
 import { createConfiguredGuard, ReefMessageFlow } from "./flow.js";
 import { reefPeerIdentity } from "./friend-types.js";
@@ -361,7 +366,11 @@ export const reefPlugin: ChannelPlugin<ReefAccount> = {
         accountId: "default",
         handle: ctx.account.config.handle!,
       });
-      const federation = new ReefFederationState(runtime);
+      const federation = new ReefFederationState(
+        runtime,
+        authority.signal,
+        `${keys.keyEpoch}:${keys.signing.publicKey}:${keys.encryption.publicKey}`,
+      );
       const federationCoordinator = new ReefFederationCoordinator(
         runtime,
         federation,
@@ -378,14 +387,31 @@ export const reefPlugin: ChannelPlugin<ReefAccount> = {
           ReefFederationFrame,
           { type: "session.mount.offer" | "session.prompt.propose" }
         >,
-      ) => {
+      ): Promise<void> => {
         const taskKey = `${request.frame.proposalId}:${request.frame.textSha256}`;
-        if (federationTasks.has(taskKey)) {
-          return;
+        const running = federationTasks.get(taskKey);
+        if (running) {
+          return running;
         }
         const task = (async () => {
           const outcome = storedOutcome ?? (await federationCoordinator.handlePrompt(request));
-          await flow.sendFederation(request.peer, outcome);
+          const friend = trust.get(request.peer);
+          const currentPeerIdentity =
+            friend && !friend.safetyNumberChanged ? reefPeerIdentity(friend) : undefined;
+          if (!matchesFederatedPromptPeer(request, currentPeerIdentity)) {
+            if (!federation.abandonOutcome(request.frame.proposalId, request.frame.textSha256)) {
+              throw new Error(`Reef proposal ${request.frame.proposalId} lost its durable outcome`);
+            }
+            await ownerNotice({
+              text: `Reef prompt ${request.frame.proposalId} outcome was not sent because @${request.peer}'s identity changed.`,
+              peer: request.peer,
+              contextKey: `reef:federation:${request.frame.proposalId}:identity-changed`,
+            });
+            return;
+          }
+          await flow.sendFederation(request.peer, outcome, {
+            expectedRecipient: request.peerIdentity,
+          });
           if (!federation.markOutcomeSent(request.frame.proposalId, request.frame.textSha256)) {
             throw new Error(`Reef proposal ${request.frame.proposalId} lost its durable outcome`);
           }
@@ -407,6 +433,7 @@ export const reefPlugin: ChannelPlugin<ReefAccount> = {
             }
           })
           .finally(() => federationTasks.delete(taskKey));
+        return task;
       };
       const flow = new ReefMessageFlow({
         config: ctx.account.config,
@@ -451,17 +478,34 @@ export const reefPlugin: ChannelPlugin<ReefAccount> = {
             if (!friend || friend.safetyNumberChanged) {
               throw new Error(`unapproved Reef sender @${peer}`);
             }
-            startFederatedPrompt({
+            const request = {
               from,
               to,
               peer,
               peerIdentity: reefPeerIdentity(friend),
               frame,
-            });
+            };
+            await startFederatedPrompt(request);
             return;
           }
+          const friend = trust.get(peer);
+          if (!friend || friend.safetyNumberChanged) {
+            throw new Error(`unapproved Reef sender @${peer}`);
+          }
+          const peerIdentity = reefPeerIdentity(friend);
           if (frame.type === "session.grant.revoked") {
-            federation.applyRevocation(frame.mountId, frame.grantGeneration);
+            const applied = federation.applyRevocation({
+              mountId: frame.mountId,
+              peer,
+              peerIdentity,
+              sessionId: frame.sessionId,
+              generation: frame.grantGeneration,
+            });
+            if (!applied) {
+              return;
+            }
+          } else if (federation.acceptOutboundOutcome(peer, peerIdentity, frame) === "invalid") {
+            return;
           }
           await ownerNotice({
             text: formatFederationOutcome(peer, frame),
@@ -573,9 +617,14 @@ export const reefPlugin: ChannelPlugin<ReefAccount> = {
           return;
         }
         authority.activate({ flow, friends, reviews, federation, trust });
-        for (const proposal of federation.listUnsentProposals()) {
-          startFederatedPrompt(proposal.request, proposal.outcome);
-        }
+        retryUnsentFederatedPrompts(federation, startFederatedPrompt);
+        await retryFederatedRevocations(
+          federation,
+          (peer, frame, peerIdentity) =>
+            flow.sendFederation(peer, frame, { expectedRecipient: peerIdentity }),
+          (error, peer) =>
+            ctx.log?.warn?.(`reef revocation retry failed for @${peer}: ${String(error)}`),
+        );
         ctx.setStatus({ accountId: "default", running: true, connected: false });
       };
       const inbox = new ReefInboxConnection(
@@ -640,6 +689,15 @@ export const reefPlugin: ChannelPlugin<ReefAccount> = {
               signal.throwIfAborted();
               ctx.log?.warn?.(`reef inbox poll failed: ${String(error)}`);
             }
+            signal.throwIfAborted();
+            retryUnsentFederatedPrompts(federation, startFederatedPrompt);
+            await retryFederatedRevocations(
+              federation,
+              (peer, frame, peerIdentity) =>
+                flow.sendFederation(peer, frame, { expectedRecipient: peerIdentity }),
+              (error, peer) =>
+                ctx.log?.warn?.(`reef revocation retry failed for @${peer}: ${String(error)}`),
+            );
             if (reconcileError) {
               throw reconcileError;
             }

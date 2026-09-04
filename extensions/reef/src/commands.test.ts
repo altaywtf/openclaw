@@ -9,10 +9,15 @@ const mocks = vi.hoisted(() => {
     }),
     getMount: vi.fn((mountId: string) => mounts.get(mountId)),
     listMounts: vi.fn(() => [...mounts.values()]),
+    authorizeMount: vi.fn(({ mountId }: { mountId: string }) => mounts.get(mountId)),
+    acknowledgeRevocation: vi.fn(() => true),
     revoke: vi.fn((mountId: string, generation: number) => {
       const mount = mounts.get(mountId);
       if (!mount) {
         return undefined;
+      }
+      if (mount.revoked === true && mount.grantGeneration === generation) {
+        return mount;
       }
       const revoked = {
         ...mount,
@@ -84,6 +89,7 @@ describe("Reef session commands", () => {
         mountId: mount.mountId,
         sessionId: "session-1",
       }),
+      { expectedRecipient: mount.peerIdentity },
     );
   });
 
@@ -99,6 +105,33 @@ describe("Reef session commands", () => {
       text: "Could not create a Reef session mount for @guest; retry after older mounts expire.",
     });
     expect(mocks.flow.sendFederation).not.toHaveBeenCalled();
+  });
+
+  it("reuses the exact mount when an offer delivery is retried", async () => {
+    mocks.flow.sendFederation.mockRejectedValueOnce(new Error("relay unavailable"));
+
+    await expect(
+      handleReefCommand({
+        args: "session share @guest agent:main:shared",
+        senderIsOwner: true,
+      }),
+    ).rejects.toThrow("relay unavailable");
+    const mount = mocks.federation.createMount.mock.calls[0]![0];
+
+    await expect(
+      handleReefCommand({
+        args: "session share @guest agent:main:shared",
+        senderIsOwner: true,
+      }),
+    ).resolves.toEqual({
+      text: `Shared agent:main:shared with @guest as mount ${String(mount.mountId)}.`,
+    });
+    expect(mocks.federation.createMount).toHaveBeenCalledOnce();
+    expect(mocks.flow.sendFederation).toHaveBeenLastCalledWith(
+      "guest",
+      expect.objectContaining({ mountId: mount.mountId }),
+      { expectedRecipient: mount.peerIdentity },
+    );
   });
 
   it("submits and revokes an existing mount", async () => {
@@ -128,26 +161,69 @@ describe("Reef session commands", () => {
     expect(mocks.flow.proposeFederatedPrompt).toHaveBeenCalledWith(
       mount,
       "Check the current build",
+      mocks.federation,
     );
     mocks.mounts.set(mount.mountId, { ...mount, role: "host", peer: "host" });
 
     await expect(
       handleReefCommand({ args: "session revoke mount-1", senderIsOwner: true }),
     ).resolves.toEqual({ text: "Revoked Reef session mount mount-1." });
-    expect(mocks.flow.sendFederation).toHaveBeenCalledWith("host", {
-      type: "session.grant.revoked",
-      mountId: "mount-1",
-      sessionId: "session-1",
-      grantGeneration: 1,
-    });
+    expect(mocks.flow.sendFederation).toHaveBeenCalledWith(
+      "host",
+      {
+        type: "session.grant.revoked",
+        mountId: "mount-1",
+        sessionId: "session-1",
+        grantGeneration: 1,
+      },
+      { expectedRecipient: mount.peerIdentity },
+    );
   });
 
-  it("keeps session mutation commands owner-only", async () => {
+  it("retries delivery of an already committed revocation", async () => {
+    const mount = {
+      mountId: "mount-1",
+      peer: "host",
+      peerIdentity: {
+        ed25519PublicKey: "A".repeat(43),
+        x25519PublicKey: "B".repeat(43),
+        keyEpoch: 1,
+      },
+      role: "host",
+      sessionKey: "agent:main:shared",
+      sessionId: "session-1",
+      grantGeneration: 0,
+      allowAlways: false,
+      revoked: false,
+    };
+    mocks.mounts.set(mount.mountId, mount);
+    mocks.flow.sendFederation.mockRejectedValueOnce(new Error("relay unavailable"));
+
     await expect(
-      handleReefCommand({ args: "session prompt mount-1 hello", senderIsOwner: false }),
-    ).resolves.toEqual({
-      text: "Only an owner in commands.ownerAllowFrom can change Reef friends or decide reviews. Ask a configured owner; friendship changes can also use openclaw reef locally.",
-    });
+      handleReefCommand({ args: "session revoke mount-1", senderIsOwner: true }),
+    ).rejects.toThrow("relay unavailable");
+    await expect(
+      handleReefCommand({ args: "session revoke mount-1", senderIsOwner: true }),
+    ).resolves.toEqual({ text: "Revoked Reef session mount mount-1." });
+    expect(mocks.flow.sendFederation).toHaveBeenLastCalledWith(
+      "host",
+      {
+        type: "session.grant.revoked",
+        mountId: "mount-1",
+        sessionId: "session-1",
+        grantGeneration: 1,
+      },
+      { expectedRecipient: mount.peerIdentity },
+    );
+  });
+
+  it("keeps every session command owner-only", async () => {
+    for (const args of ["session list", "session prompt mount-1 hello"]) {
+      await expect(handleReefCommand({ args, senderIsOwner: false })).resolves.toEqual({
+        text: "Only an owner in commands.ownerAllowFrom can change Reef friends, decide reviews, or share, prompt, and revoke session mounts. Ask a configured owner; friendship changes can also use openclaw reef locally.",
+      });
+    }
+    expect(mocks.federation.listMounts).not.toHaveBeenCalled();
     expect(mocks.flow.proposeFederatedPrompt).not.toHaveBeenCalled();
   });
 });

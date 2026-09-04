@@ -8,6 +8,7 @@ import type {
   ReefFederationMount,
   ReefFederationProposal,
   ReefFederationProposalResolution,
+  ReefGrantAuthority,
 } from "./federation-state.js";
 import { sameReefPeerIdentity, type ReefPeerIdentity } from "./friend-types.js";
 
@@ -15,9 +16,10 @@ const REEF_FEDERATION_APPROVAL_TIMEOUT_MS = 10 * 60_000;
 
 type FederationState = {
   getMount(mountId: string): ReefFederationMount | undefined;
-  allowAlways(mountId: string, expectedGeneration: number): boolean;
+  authorizeMount(params: ReefGrantAuthority): ReefFederationMount | undefined;
+  allowAlways(params: ReefGrantAuthority): boolean;
   claimProposal(proposal: ReefFederationProposal): {
-    result: "new" | "duplicate" | "mismatch";
+    result: "new" | "duplicate" | "mismatch" | "peer-capacity";
     proposal: ReefFederationProposal;
   };
   resolveProposal(
@@ -65,10 +67,18 @@ export class ReefFederationCoordinator {
       request: structuredClone(params),
     });
     if (claim.result === "mismatch") {
-      return this.failed(
+      return this.recordFailure(
         frame,
+        digest,
         "proposal-rebound",
         "The proposal ID is already bound to other content.",
+      );
+    }
+    if (claim.result === "peer-capacity") {
+      return this.failed(
+        frame,
+        "peer-capacity",
+        `Reef peer @${params.peer} exceeded retained prompt capacity.`,
       );
     }
     const prior = priorOutcome(claim.proposal);
@@ -76,8 +86,15 @@ export class ReefFederationCoordinator {
       return prior;
     }
 
-    const mount = this.state.getMount(frame.mountId);
-    const invalid = this.validateMount({ ...params, mount });
+    const storedMount = this.state.getMount(frame.mountId);
+    const mount = this.state.authorizeMount({
+      mountId: frame.mountId,
+      peer: params.peer,
+      peerIdentity: params.peerIdentity,
+      sessionId: frame.sessionId,
+      generation: frame.grantGeneration,
+    });
+    const invalid = mount ? undefined : this.validateMount({ ...params, mount: storedMount });
     if (invalid) {
       return this.recordDenial(frame, digest, invalid);
     }
@@ -99,8 +116,8 @@ export class ReefFederationCoordinator {
       );
     }
 
-    let approvalId: string | undefined;
-    if (!mount!.allowAlways) {
+    let approvalId = claim.proposal.approvalId;
+    if (!mount!.allowAlways && claim.proposal.approvalDecision !== "allow-once") {
       const approval = await this.requestApproval(params.peer, mount!, frame);
       approvalId = approval.id;
       if (approval.decision === "deny") {
@@ -115,36 +132,69 @@ export class ReefFederationCoordinator {
           approvalId,
         );
       }
-      if (
-        approval.decision === "allow-always" &&
-        !this.state.allowAlways(frame.mountId, frame.grantGeneration)
-      ) {
-        return this.recordFailure(
-          frame,
-          digest,
-          "grant-stale",
-          "The session grant changed before it could be stored.",
+      if (approval.decision === "allow-once") {
+        const recorded = this.state.resolveProposal(frame.proposalId, digest, {
+          status: "pending",
           approvalId,
-        );
+          approvalDecision: "allow-once",
+        });
+        if (!recorded) {
+          throw new Error("Reef could not persist prompt approval before agent admission");
+        }
+      }
+      if (approval.decision === "allow-always") {
+        const grantPeerIdentity = this.currentPeerIdentity(params.peer);
+        if (!grantPeerIdentity) {
+          return this.recordDenial(frame, digest, "grant-revoked", approvalId);
+        }
+        const grantAuthority = this.state.authorizeMount({
+          mountId: frame.mountId,
+          peer: params.peer,
+          peerIdentity: grantPeerIdentity,
+          sessionId: frame.sessionId,
+          generation: frame.grantGeneration,
+        });
+        // Core revalidates the exact grant and lifecycle after awaited approval work and again in
+        // the synchronous standing-grant write, preventing a closed Reef lifecycle from persisting.
+        if (!grantAuthority) {
+          return this.recordDenial(frame, digest, "grant-revoked", approvalId);
+        }
+        if (
+          !this.state.allowAlways({
+            mountId: frame.mountId,
+            peer: params.peer,
+            peerIdentity: grantPeerIdentity,
+            sessionId: frame.sessionId,
+            generation: frame.grantGeneration,
+          })
+        ) {
+          return this.recordFailure(
+            frame,
+            digest,
+            "grant-stale",
+            "The session grant changed before it could be stored.",
+            approvalId,
+          );
+        }
       }
     }
 
-    const currentMount = this.state.getMount(frame.mountId);
     const currentPeerIdentity = this.currentPeerIdentity(params.peer);
-    const staleAuthority = this.validateMount({
-      ...params,
-      peerIdentity: currentPeerIdentity ?? params.peerIdentity,
-      mount: currentPeerIdentity ? currentMount : undefined,
-    });
-    if (staleAuthority) {
-      return this.recordDenial(frame, digest, staleAuthority, approvalId);
-    }
-    if (this.authoritySignal.aborted) {
+    const currentMount = currentPeerIdentity
+      ? this.state.authorizeMount({
+          mountId: frame.mountId,
+          peer: params.peer,
+          peerIdentity: currentPeerIdentity,
+          sessionId: frame.sessionId,
+          generation: frame.grantGeneration,
+        })
+      : undefined;
+    if (!currentMount) {
       return this.recordDenial(frame, digest, "grant-revoked", approvalId);
     }
 
     try {
-      const runId = `reef:${frame.proposalId}`;
+      const idempotencyKey = `reef:${frame.proposalId}`;
       // Canonical agent admission converts inter-session provenance into the model-facing safety
       // envelope. Keep the message undecorated so transcript and display projection remain canonical.
       const result = await this.runtime.gateway.request<AgentResponse>(
@@ -153,7 +203,7 @@ export class ReefFederationCoordinator {
           message: frame.text,
           sessionKey: currentMount!.sessionKey,
           expectedExistingSessionId: currentMount!.sessionId,
-          idempotencyKey: runId,
+          idempotencyKey,
           deliver: false,
           inputProvenance: {
             kind: "inter_session",
@@ -162,14 +212,16 @@ export class ReefFederationCoordinator {
             sourceTool: "reef_federated_prompt",
           },
         },
-        { timeoutMs: REEF_FEDERATION_APPROVAL_TIMEOUT_MS },
+        // Agent admission is in-process and returns on acceptance. Avoid a separate deadline that
+        // could report failure after execution started; lifecycle closure aborts and retries by key.
+        { signal: this.authoritySignal },
       );
       const accepted = {
         type: "session.prompt.accepted" as const,
         mountId: frame.mountId,
         proposalId: frame.proposalId,
         sessionId: frame.sessionId,
-        runId: result.runId || runId,
+        runId: isProtocolId(result.runId) ? result.runId : frame.proposalId,
       };
       this.state.resolveProposal(frame.proposalId, digest, {
         status: "accepted",
@@ -179,6 +231,9 @@ export class ReefFederationCoordinator {
       });
       return accepted;
     } catch (error) {
+      // Lifecycle cancellation can race accepted agent admission. Leave the durable proposal pending
+      // so recovery reconciles the same idempotency key instead of publishing a false failure.
+      this.authoritySignal.throwIfAborted();
       return this.recordFailure(
         frame,
         digest,
@@ -229,7 +284,10 @@ export class ReefFederationCoordinator {
         allowedDecisions: ["allow-once", "allow-always", "deny"],
         timeoutMs: REEF_FEDERATION_APPROVAL_TIMEOUT_MS,
       },
-      { timeoutMs: REEF_FEDERATION_APPROVAL_TIMEOUT_MS },
+      {
+        timeoutMs: REEF_FEDERATION_APPROVAL_TIMEOUT_MS,
+        signal: this.authoritySignal,
+      },
     );
   }
 
@@ -289,9 +347,13 @@ export class ReefFederationCoordinator {
       proposalId: frame.proposalId,
       sessionId: frame.sessionId,
       code,
-      message: truncateUtf8Prefix(message, 512),
+      message: truncateUtf8Prefix(message, 512) || "Agent admission failed.",
     };
   }
+}
+
+function isProtocolId(value: string | undefined): value is string {
+  return Boolean(value && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value));
 }
 
 function priorOutcome(

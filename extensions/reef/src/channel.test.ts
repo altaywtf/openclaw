@@ -19,6 +19,11 @@ import { runReefChannelLifecycle } from "./channel-lifecycle.js";
 import { reefPlugin } from "./channel.js";
 import { handleReefCommand } from "./commands.js";
 import { resolveReefConfig } from "./config-schema.js";
+import {
+  matchesFederatedPromptPeer,
+  retryFederatedRevocations,
+  retryUnsentFederatedPrompts,
+} from "./federation-recovery.js";
 import { reefKeys } from "./flow.test-helpers.js";
 import { ReefFriendManager } from "./friends.js";
 import { resolveReefInboundDispatchContent } from "./inbound.js";
@@ -181,6 +186,108 @@ describe("Reef conversation directory", () => {
         runtime: defaultRuntime,
       }),
     ).resolves.toEqual([{ kind: "user", id: "molty", name: "@molty's agent", handle: "@molty" }]);
+  });
+});
+
+describe("Reef federation outcome recovery", () => {
+  it("resubmits a durable unsent outcome during reconciliation", () => {
+    const request = {
+      from: "guest#1",
+      to: "host#1",
+      peer: "guest",
+      peerIdentity: {
+        ed25519PublicKey: "A".repeat(43),
+        x25519PublicKey: "B".repeat(43),
+        keyEpoch: 1,
+      },
+      frame: {
+        type: "session.prompt.propose" as const,
+        mountId: "mount-1",
+        proposalId: "proposal-1",
+        sessionId: "session-1",
+        grantGeneration: 0,
+        text: "Check the build",
+        textSha256: "a".repeat(64),
+      },
+    };
+    const outcome = {
+      type: "session.prompt.accepted" as const,
+      mountId: "mount-1",
+      proposalId: "proposal-1",
+      sessionId: "session-1",
+      runId: "run-1",
+    };
+    const start = vi.fn();
+
+    retryUnsentFederatedPrompts(
+      {
+        listUnsentProposals: () => [
+          {
+            proposalId: "proposal-1",
+            mountId: "mount-1",
+            digest: "a".repeat(64),
+            status: "accepted",
+            request,
+            outcome,
+          },
+        ],
+      },
+      start,
+    );
+
+    expect(start).toHaveBeenCalledWith(request, outcome);
+    expect(matchesFederatedPromptPeer(request, request.peerIdentity)).toBe(true);
+    expect(
+      matchesFederatedPromptPeer(request, {
+        ...request.peerIdentity,
+        ed25519PublicKey: "C".repeat(43),
+      }),
+    ).toBe(false);
+    expect(matchesFederatedPromptPeer(request, undefined)).toBe(false);
+  });
+
+  it("retries every durably revoked host grant", async () => {
+    const send = vi.fn(async () => undefined);
+
+    await retryFederatedRevocations(
+      {
+        listMounts: () => [
+          {
+            mountId: "mount-1",
+            peer: "guest",
+            peerIdentity: {
+              ed25519PublicKey: "A".repeat(43),
+              x25519PublicKey: "B".repeat(43),
+              keyEpoch: 1,
+            },
+            role: "host" as const,
+            sessionKey: "agent:main:shared",
+            sessionId: "session-1",
+            grantGeneration: 2,
+            allowAlways: false,
+            revoked: true,
+            revocationPending: true,
+          },
+        ],
+        acknowledgeRevocation: vi.fn(() => true),
+      },
+      send,
+    );
+
+    expect(send).toHaveBeenCalledWith(
+      "guest",
+      {
+        type: "session.grant.revoked",
+        mountId: "mount-1",
+        sessionId: "session-1",
+        grantGeneration: 2,
+      },
+      {
+        ed25519PublicKey: "A".repeat(43),
+        x25519PublicKey: "B".repeat(43),
+        keyEpoch: 1,
+      },
+    );
   });
 });
 

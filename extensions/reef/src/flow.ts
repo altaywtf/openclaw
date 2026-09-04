@@ -5,6 +5,7 @@ import {
 import {
   createReefFederatedPromptDigest,
   isReefFederationBody,
+  validateReefFederationBody,
   type ReefFederationFrame,
 } from "../protocol/federation.js";
 import {
@@ -32,7 +33,7 @@ import {
 } from "../protocol/index.js";
 import type { ReefChannelConfig } from "./config-schema.js";
 import { autonomyBudget } from "./config-schema.js";
-import type { ReefFederationMount } from "./federation-state.js";
+import type { ReefFederationMount, ReefFederationPromptRequest } from "./federation-state.js";
 import {
   matchesReefPeerIdentity,
   reefPeerIdentity,
@@ -234,7 +235,17 @@ export class ReefMessageFlow {
   }
 
   /** Propose one prompt against an exact mounted session authority. */
-  async proposeFederatedPrompt(mount: ReefFederationMount, text: string): Promise<string> {
+  async proposeFederatedPrompt(
+    mount: ReefFederationMount,
+    text: string,
+    proposals: {
+      findOutboundProposal?: (
+        mount: ReefFederationMount,
+        text: string,
+      ) => ReefFederationPromptRequest | undefined;
+      registerOutboundProposal: (request: ReefFederationPromptRequest) => boolean;
+    },
+  ): Promise<string> {
     if (mount.role !== "guest" || mount.revoked) {
       throw new Error("Only active guest Reef mounts can propose prompts");
     }
@@ -244,11 +255,16 @@ export class ReefMessageFlow {
         `Reef peer @${mount.peer} is not approved with current keys`,
       );
     }
+    const pending = proposals.findOutboundProposal?.(mount, text);
+    if (pending) {
+      await this.sendFederation(mount.peer, pending.frame);
+      return pending.frame.proposalId;
+    }
     const proposalId = `reef-proposal-${prepareReefMessageId()}`;
     const from = formatHandleEpoch(this.requireHandle(), this.options.keys.keyEpoch);
     const to = formatHandleEpoch(mount.peer, friend.keyEpoch);
-    await this.sendFederation(mount.peer, {
-      type: "session.prompt.propose",
+    const frame = {
+      type: "session.prompt.propose" as const,
       mountId: mount.mountId,
       proposalId,
       sessionId: mount.sessionId,
@@ -263,21 +279,44 @@ export class ReefMessageFlow {
         grantGeneration: mount.grantGeneration,
         text,
       }),
-    });
+    };
+    validateReefFederationBody({ namespace: "openclaw.session-federation.v1", frame });
+    if (
+      !proposals.registerOutboundProposal({
+        from,
+        to,
+        peer: mount.peer,
+        peerIdentity: mount.peerIdentity,
+        frame,
+      })
+    ) {
+      throw new Error(`Could not reserve Reef prompt proposal ${proposalId}`);
+    }
+    await this.sendFederation(mount.peer, frame);
     return proposalId;
   }
 
   /** Send a typed federation frame without routing it through the chat guard pipeline. */
-  async sendFederation(peer: string, frame: ReefFederationFrame): Promise<string> {
+  async sendFederation(
+    peer: string,
+    frame: ReefFederationFrame,
+    context: { expectedRecipient?: ReefPeerIdentity } = {},
+  ): Promise<string> {
     const signal = this.options.authoritySignal;
     signal?.throwIfAborted();
     const friend = this.options.trust.get(peer);
-    if (!friend || friend.safetyNumberChanged) {
+    if (
+      !friend ||
+      friend.safetyNumberChanged ||
+      (context.expectedRecipient !== undefined &&
+        !matchesReefPeerIdentity(friend, context.expectedRecipient))
+    ) {
       throw new ReefOutboundRejectedError(`Reef peer @${peer} is not approved with current keys`);
     }
     const recipient = reefPeerIdentity(friend);
     const id = prepareReefMessageId();
     const body = { namespace: "openclaw.session-federation.v1" as const, frame };
+    validateReefFederationBody(body);
     const from = formatHandleEpoch(this.requireHandle(), this.options.keys.keyEpoch);
     const to = formatHandleEpoch(peer, friend.keyEpoch);
     const proposalHash = hashMessageBody(body);

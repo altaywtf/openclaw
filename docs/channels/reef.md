@@ -67,7 +67,7 @@ The command returns a mount ID and sends the mount to the guest Gateway. Mounts 
 /reef session prompt reef-mount-... Check the current build
 ```
 
-The host sees the existing approval card inline above that session's composer and in **Inbox → Approvals**. **Allow once** admits only that prompt. **Always allow here** admits later prompts from that exact peer and mount until revocation. **Deny** rejects the prompt.
+The host sees the existing approval card inline above that session's composer and in **Inbox → Approvals**. **Allow once** admits only that prompt. **Always allow** admits later prompts from that exact peer and mount until revocation. **Deny** rejects the prompt.
 
 Revoke the mount from the host Gateway:
 

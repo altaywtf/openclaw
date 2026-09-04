@@ -8,6 +8,7 @@ import {
   seal,
   sha256Hex,
   verifyReceipt,
+  type ReefFederationFrame,
   type Verdict,
 } from "../protocol/index.js";
 import { ReefChannelConfigSchema } from "./config-schema.js";
@@ -24,6 +25,7 @@ import {
   transport,
   trust,
 } from "./flow.test-helpers.js";
+import { reefPeerIdentity } from "./friend-types.js";
 import type { ReefTransportClient } from "./transport.js";
 import type { InboxEntry } from "./types.js";
 
@@ -159,6 +161,68 @@ describe("ReefMessageFlow inbound", () => {
     expect(onIngress).not.toHaveBeenCalled();
     expect(classifier.classify).not.toHaveBeenCalled();
     expect(relay.acknowledge).toHaveBeenCalledOnce();
+  });
+
+  it("reprocesses a completed federation replay when durable semantic handling was interrupted", async () => {
+    const alice = generateIdentity();
+    const bob = reefKeys();
+    const id = "01JZ0000000000000000000198";
+    const stores = flowStores();
+    const relay = transport();
+    const onFederation = vi
+      .fn<
+        (params: {
+          peer: string;
+          from: string;
+          to: string;
+          frame: ReefFederationFrame;
+        }) => Promise<void>
+      >()
+      .mockRejectedValueOnce(new Error("interrupted before semantic claim"))
+      .mockResolvedValueOnce();
+    const flow = new ReefMessageFlow({
+      config: config(),
+      trust: trust({ alice: peerTrust(alice) }).store,
+      keys: bob,
+      transport: relay as unknown as ReefTransportClient,
+      guard: guard(allow),
+      audit: new MemoryAuditStore(new Uint8Array(32).fill(12)),
+      replay: new MemoryReplayStore(),
+      ...stores,
+      onIngress: async () => {},
+      onFederation,
+      onOwnerNotice: async () => {},
+    });
+    const frame = {
+      type: "session.mount.offer" as const,
+      mountId: "mount-replay",
+      sessionKey: "agent:main:shared",
+      sessionId: "session-replay",
+      grantGeneration: 0,
+    };
+    const sealed = seal({
+      id,
+      from: "alice#1",
+      to: "bob#1",
+      body: { namespace: "openclaw.session-federation.v1", frame },
+      senderSigningSecretKey: alice.signing.secretKey,
+      recipientEncryptionPublicKey: bob.encryption.publicKey,
+    });
+    const entry: InboxEntry = {
+      seq: 1,
+      peer: "alice",
+      id,
+      kind: "message",
+      envelope: sealed,
+      ts: 1,
+    };
+
+    await expect(flow.processEntries([entry])).rejects.toThrow("interrupted before semantic claim");
+    await flow.processEntries([{ ...entry, seq: 2 }]);
+
+    expect(onFederation).toHaveBeenCalledTimes(2);
+    expect(relay.acknowledge).toHaveBeenCalledOnce();
+    await expect(stores.delivered.has(id)).resolves.toBe(true);
   });
 
   it("parks a review-pending inbound message until the owner decides, without re-classifying", async () => {
@@ -402,6 +466,50 @@ describe("ReefMessageFlow outbound", () => {
     ).resolves.toEqual({ namespace: "openclaw.session-federation.v1", frame });
     expect(trusted.store.outboundDelivery("bob", id)).toMatchObject({ recipient: { keyEpoch: 1 } });
   });
+  it("rejects oversized federated prompts before persistence or transport", async () => {
+    const alice = reefKeys();
+    const bob = generateIdentity();
+    const relay = transport();
+    const trusted = trust({ bob: peerTrust(bob) });
+    const flow = new ReefMessageFlow({
+      config: ReefChannelConfigSchema.parse({
+        handle: "alice",
+        email: "alice@example.com",
+        guard: config().guard,
+      }),
+      trust: trusted.store,
+      keys: alice,
+      transport: relay as unknown as ReefTransportClient,
+      guard: guard(allow),
+      audit: new MemoryAuditStore(new Uint8Array(32).fill(13)),
+      replay: new MemoryReplayStore(),
+      ...flowStores(),
+      onIngress: async () => {},
+      onOwnerNotice: async () => {},
+    });
+    const registerOutboundProposal = vi.fn(() => true);
+
+    await expect(
+      flow.proposeFederatedPrompt(
+        {
+          mountId: "mount-1",
+          peer: "bob",
+          peerIdentity: reefPeerIdentity(trusted.values.get("bob")!),
+          role: "guest",
+          sessionKey: "agent:main:shared",
+          sessionId: "session-1",
+          grantGeneration: 0,
+          allowAlways: false,
+          revoked: false,
+        },
+        "x".repeat(513),
+        { registerOutboundProposal },
+      ),
+    ).rejects.toThrow("invalid prompt text");
+    expect(registerOutboundProposal).not.toHaveBeenCalled();
+    expect(relay.sendEnvelope).not.toHaveBeenCalled();
+  });
+
   it("seals and posts an allowed message", async () => {
     const alice = reefKeys();
     const bob = generateIdentity();

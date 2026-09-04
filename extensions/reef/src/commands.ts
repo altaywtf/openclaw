@@ -1,5 +1,5 @@
 import { prepareReefMessageId } from "./flow.js";
-import { reefPeerIdentity, ReefAutonomySchema } from "./friend-types.js";
+import { reefPeerIdentity, ReefAutonomySchema, sameReefPeerIdentity } from "./friend-types.js";
 import { getActiveReef, getReefRuntime } from "./runtime.js";
 
 export async function handleReefCommand({
@@ -13,10 +13,10 @@ export async function handleReefCommand({
   const changesFriendship =
     words[0] === "friend" && /^(code|request|remove|block|autonomy)$/.test(words[1] ?? "");
   const decidesReview = words[0] === "review" && /^(approve|deny)$/.test(words[1] ?? "");
-  const changesSession = words[0] === "session" && words[1] !== "list";
+  const changesSession = words[0] === "session";
   if ((changesFriendship || decidesReview || changesSession) && senderIsOwner !== true) {
     return {
-      text: "Only an owner in commands.ownerAllowFrom can change Reef friends or decide reviews. Ask a configured owner; friendship changes can also use openclaw reef locally.",
+      text: "Only an owner in commands.ownerAllowFrom can change Reef friends, decide reviews, or share, prompt, and revoke session mounts. Ask a configured owner; friendship changes can also use openclaw reef locally.",
     };
   }
   const active = getActiveReef();
@@ -68,11 +68,27 @@ export async function handleReefCommand({
     if (!session?.sessionId) {
       return { text: `Session ${sessionKey} was not found.` };
     }
-    const mountId = `reef-mount-${prepareReefMessageId()}`;
-    const mount = {
-      mountId,
+    const peerIdentity = reefPeerIdentity(friend);
+    const existing = active.federation.listMounts().find(
+      (mount) =>
+        mount.role === "host" &&
+        !mount.revoked &&
+        mount.peer === peer &&
+        mount.sessionKey === sessionKey &&
+        mount.sessionId === session.sessionId &&
+        sameReefPeerIdentity(mount.peerIdentity, peerIdentity) &&
+        active.federation.authorizeMount({
+          mountId: mount.mountId,
+          peer,
+          peerIdentity,
+          sessionId: mount.sessionId,
+          generation: mount.grantGeneration,
+        }) !== undefined,
+    );
+    const mount = existing ?? {
+      mountId: `reef-mount-${prepareReefMessageId()}`,
       peer,
-      peerIdentity: reefPeerIdentity(friend),
+      peerIdentity,
       role: "host" as const,
       sessionKey,
       sessionId: session.sessionId,
@@ -80,26 +96,34 @@ export async function handleReefCommand({
       allowAlways: false,
       revoked: false,
     };
-    if (!active.federation.createMount(mount)) {
+    if (!existing && !active.federation.createMount(mount)) {
       return {
         text: `Could not create a Reef session mount for @${peer}; retry after older mounts expire.`,
       };
     }
-    await active.flow.sendFederation(peer, {
-      type: "session.mount.offer",
-      mountId,
-      sessionKey,
-      sessionId: session.sessionId,
-      grantGeneration: 0,
-    });
-    return { text: `Shared ${sessionKey} with @${peer} as mount ${mountId}.` };
+    await active.flow.sendFederation(
+      peer,
+      {
+        type: "session.mount.offer",
+        mountId: mount.mountId,
+        sessionKey,
+        sessionId: session.sessionId,
+        grantGeneration: 0,
+      },
+      { expectedRecipient: peerIdentity },
+    );
+    return { text: `Shared ${sessionKey} with @${peer} as mount ${mount.mountId}.` };
   }
   if (words[0] === "session" && words[1] === "prompt" && words[2] && words[3]) {
     const mount = active.federation.getMount(words[2]);
     if (!mount || mount.role !== "guest" || mount.revoked) {
       return { text: `Unknown active guest Reef session mount ${words[2]}.` };
     }
-    const proposalId = await active.flow.proposeFederatedPrompt(mount, words.slice(3).join(" "));
+    const proposalId = await active.flow.proposeFederatedPrompt(
+      mount,
+      words.slice(3).join(" "),
+      active.federation,
+    );
     return { text: `Sent Reef prompt proposal ${proposalId}.` };
   }
   if (words[0] === "session" && words[1] === "revoke" && words[2]) {
@@ -111,12 +135,19 @@ export async function handleReefCommand({
     if (!revoked) {
       return { text: `Reef session mount ${mount.mountId} changed before revocation.` };
     }
-    await active.flow.sendFederation(mount.peer, {
-      type: "session.grant.revoked",
-      mountId: mount.mountId,
-      sessionId: mount.sessionId,
-      grantGeneration: revoked.grantGeneration,
-    });
+    await active.flow.sendFederation(
+      mount.peer,
+      {
+        type: "session.grant.revoked",
+        mountId: mount.mountId,
+        sessionId: mount.sessionId,
+        grantGeneration: revoked.grantGeneration,
+      },
+      { expectedRecipient: mount.peerIdentity },
+    );
+    if (!active.federation.acknowledgeRevocation(mount.mountId, revoked.grantGeneration)) {
+      throw new Error(`Reef session mount ${mount.mountId} lost its durable revocation`);
+    }
     return { text: `Revoked Reef session mount ${mount.mountId}.` };
   }
   if (words[0] === "session" && words[1] === "list") {

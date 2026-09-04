@@ -1,9 +1,4 @@
-import type { OpenKeyedStoreOptions } from "openclaw/plugin-sdk/plugin-state-runtime";
-import {
-  createPluginStateSyncKeyedStoreForTests,
-  resetPluginStateStoreForTests,
-} from "openclaw/plugin-sdk/plugin-state-test-runtime";
-import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
+import { resetPluginStateStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -14,6 +9,10 @@ import {
 import { ReefChannelConfigSchema } from "./config-schema.js";
 import { ReefFederationCoordinator } from "./federation-coordinator.js";
 import { ReefFederationState, type ReefFederationMount } from "./federation-state.js";
+import {
+  createReefFederationTestRuntime,
+  resetReefFederationTestRuntime,
+} from "./federation-test-runtime.test-support.js";
 import { ReefMessageFlow } from "./flow.js";
 import {
   allow,
@@ -46,23 +45,22 @@ function config(handle: string) {
 }
 
 function federationState(name: string, existingStateDir?: string): ReefFederationState {
-  const runtime = createPluginRuntimeMock();
   const stateDir = existingStateDir ?? tempDirs.make(`openclaw-reef-${name}-`);
-  runtime.state.openSyncKeyedStore = <T>(options: OpenKeyedStoreOptions) =>
-    createPluginStateSyncKeyedStoreForTests<T>("reef", {
-      ...options,
-      env: { OPENCLAW_STATE_DIR: stateDir },
-    });
-  return new ReefFederationState(runtime);
+  return new ReefFederationState(
+    createReefFederationTestRuntime(stateDir),
+    new AbortController().signal,
+  );
 }
 
 beforeEach(() => {
   resetPluginStateStoreForTests();
+  resetReefFederationTestRuntime();
   resetFlowStoresForTests();
 });
 
 afterEach(() => {
   resetPluginStateStoreForTests();
+  resetReefFederationTestRuntime();
   resetFlowStoresForTests();
 });
 
@@ -186,10 +184,26 @@ describe("Reef federated prompt E2E", () => {
           return;
         }
         if (frame.type === "session.grant.revoked") {
-          guestState.applyRevocation(frame.mountId, frame.grantGeneration);
+          guestState.applyRevocation({
+            mountId: frame.mountId,
+            peer,
+            sessionId: frame.sessionId,
+            generation: frame.grantGeneration,
+            peerIdentity: reefPeerIdentity(guestTrust.values.get(peer)!),
+          });
           return;
         }
-        outcomes.push(frame.type);
+        if (frame.type === "session.prompt.propose") {
+          throw new Error("guest received a prompt proposal outcome");
+        }
+        const accepted = guestState.acceptOutboundOutcome(
+          peer,
+          reefPeerIdentity(guestTrust.values.get(peer)!),
+          frame,
+        );
+        if (accepted === "accepted") {
+          outcomes.push(frame.type);
+        }
       },
       onOwnerNotice: async () => {},
     });
@@ -216,7 +230,7 @@ describe("Reef federated prompt E2E", () => {
 
     const guestMount = guestState.getMount(hostMount.mountId);
     expect(guestMount).toMatchObject({ role: "guest", sessionId: "session-1" });
-    await guestFlow.proposeFederatedPrompt(guestMount!, "Inspect the current build");
+    await guestFlow.proposeFederatedPrompt(guestMount!, "Inspect the current build", guestState);
 
     expect(outcomes).toEqual(["session.prompt.accepted"]);
     expect(gatewayRequest.mock.calls.map(([method]) => method)).toEqual([
@@ -254,6 +268,7 @@ describe("Reef federated prompt E2E", () => {
       guestFlow.proposeFederatedPrompt(
         guestState.getMount(hostMount.mountId)!,
         "Try after revocation",
+        guestState,
       ),
     ).rejects.toThrow("Only active guest Reef mounts can propose prompts");
 
@@ -292,6 +307,6 @@ describe("Reef federated prompt E2E", () => {
     await hostFlow.sendFederation(unsent!.request.peer, unsent!.outcome!);
     expect(restartedHostState.markOutcomeSent(unsent!.proposalId, unsent!.digest)).toBe(true);
     expect(restartedHostState.listUnsentProposals()).toEqual([]);
-    expect(outcomes).toEqual(["session.prompt.accepted", "session.prompt.denied"]);
+    expect(outcomes).toEqual(["session.prompt.accepted"]);
   });
 });

@@ -1,9 +1,4 @@
-import type { OpenKeyedStoreOptions } from "openclaw/plugin-sdk/plugin-state-runtime";
-import {
-  createPluginStateSyncKeyedStoreForTests,
-  resetPluginStateStoreForTests,
-} from "openclaw/plugin-sdk/plugin-state-test-runtime";
-import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
+import { resetPluginStateStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -11,15 +6,13 @@ import {
   type ReefFederationMount,
   type ReefFederationProposal,
 } from "./federation-state.js";
+import {
+  createReefFederationTestRuntime,
+  resetReefFederationTestRuntime,
+} from "./federation-test-runtime.test-support.js";
 
 function createRuntime(stateDir: string) {
-  const runtime = createPluginRuntimeMock();
-  runtime.state.openSyncKeyedStore = <T>(options: OpenKeyedStoreOptions) =>
-    createPluginStateSyncKeyedStoreForTests<T>("reef", {
-      ...options,
-      env: { OPENCLAW_STATE_DIR: stateDir },
-    });
-  return runtime;
+  return createReefFederationTestRuntime(stateDir);
 }
 
 const mount: ReefFederationMount = {
@@ -71,18 +64,32 @@ describe("Reef federation state", () => {
 
   beforeEach(() => {
     resetPluginStateStoreForTests();
+    resetReefFederationTestRuntime();
     stateDir = tempDirs.make("openclaw-reef-federation-");
   });
 
   afterEach(() => {
     resetPluginStateStoreForTests();
+    resetReefFederationTestRuntime();
   });
 
   it("persists session-scoped grants and revokes them by generation", () => {
-    const state = new ReefFederationState(createRuntime(stateDir));
+    const state = new ReefFederationState(createRuntime(stateDir), new AbortController().signal);
     expect(state.createMount(mount)).toBe(true);
-    expect(state.allowAlways(mount.mountId, 0)).toBe(true);
-    expect(new ReefFederationState(createRuntime(stateDir)).getMount(mount.mountId)).toMatchObject({
+    expect(
+      state.allowAlways({
+        mountId: mount.mountId,
+        peer: mount.peer,
+        peerIdentity: mount.peerIdentity,
+        sessionId: mount.sessionId,
+        generation: 0,
+      }),
+    ).toBe(true);
+    expect(
+      new ReefFederationState(createRuntime(stateDir), new AbortController().signal).getMount(
+        mount.mountId,
+      ),
+    ).toMatchObject({
       allowAlways: true,
       grantGeneration: 0,
       sessionId: mount.sessionId,
@@ -93,18 +100,159 @@ describe("Reef federation state", () => {
       revoked: true,
       grantGeneration: 1,
     });
-    expect(state.allowAlways(mount.mountId, 0)).toBe(false);
-    expect(state.applyRevocation(mount.mountId, 3)).toBe(true);
+    expect(state.revoke(mount.mountId, 1)).toMatchObject({
+      revoked: true,
+      grantGeneration: 1,
+    });
+    expect(
+      state.allowAlways({
+        mountId: mount.mountId,
+        peer: mount.peer,
+        peerIdentity: mount.peerIdentity,
+        sessionId: mount.sessionId,
+        generation: 0,
+      }),
+    ).toBe(false);
+  });
+
+  it("invalidates persisted grants when the local Reef identity rotates", () => {
+    const first = new ReefFederationState(
+      createRuntime(stateDir),
+      new AbortController().signal,
+      "local-key-1",
+    );
+    expect(first.createMount(mount)).toBe(true);
+
+    const rotated = new ReefFederationState(
+      createRuntime(stateDir),
+      new AbortController().signal,
+      "local-key-2",
+    );
+    expect(
+      rotated.authorizeMount({
+        mountId: mount.mountId,
+        peer: mount.peer,
+        peerIdentity: mount.peerIdentity,
+        sessionId: mount.sessionId,
+        generation: mount.grantGeneration,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("fails every grant operation closed after the Reef lifecycle ends", () => {
+    const authority = new AbortController();
+    const state = new ReefFederationState(createRuntime(stateDir), authority.signal);
+    expect(state.createMount(mount)).toBe(true);
+
+    authority.abort();
+
+    expect(state.getMount(mount.mountId)).toBeUndefined();
+    expect(state.listMounts()).toEqual([]);
+    expect(state.createMount({ ...mount, mountId: "closed-mount" })).toBe(false);
+    expect(state.revoke(mount.mountId, mount.grantGeneration)).toBeUndefined();
+    expect(
+      state.authorizeMount({
+        mountId: mount.mountId,
+        peer: mount.peer,
+        peerIdentity: mount.peerIdentity,
+        sessionId: mount.sessionId,
+        generation: mount.grantGeneration,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("binds incoming revocations to the peer's exact guest mount", () => {
+    const state = new ReefFederationState(createRuntime(stateDir), new AbortController().signal);
+    expect(state.createMount({ ...mount, role: "guest" })).toBe(true);
+    expect(
+      state.applyRevocation({
+        mountId: mount.mountId,
+        peer: "other-peer",
+        sessionId: mount.sessionId,
+        generation: 3,
+        peerIdentity: mount.peerIdentity,
+      }),
+    ).toBe(false);
+    expect(
+      state.applyRevocation({
+        mountId: mount.mountId,
+        peer: mount.peer,
+        sessionId: "other-session",
+        generation: 3,
+        peerIdentity: mount.peerIdentity,
+      }),
+    ).toBe(false);
+    expect(
+      state.applyRevocation({
+        mountId: mount.mountId,
+        peer: mount.peer,
+        sessionId: mount.sessionId,
+        generation: 3,
+        peerIdentity: mount.peerIdentity,
+      }),
+    ).toBe(true);
     expect(state.getMount(mount.mountId)).toMatchObject({
       allowAlways: false,
       revoked: true,
       grantGeneration: 3,
     });
-    expect(state.applyRevocation(mount.mountId, 2)).toBe(false);
+    expect(
+      state.applyRevocation({
+        mountId: mount.mountId,
+        peer: mount.peer,
+        sessionId: mount.sessionId,
+        generation: 2,
+        peerIdentity: mount.peerIdentity,
+      }),
+    ).toBe(false);
+  });
+
+  it("accepts outbound outcomes only for their exact guest mount and proposal binding", () => {
+    const state = new ReefFederationState(createRuntime(stateDir), new AbortController().signal);
+    expect(state.createMount({ ...mount, role: "guest" })).toBe(true);
+    const request = pendingProposal().request;
+    const outcome = {
+      type: "session.prompt.accepted" as const,
+      mountId: mount.mountId,
+      proposalId: request.frame.proposalId,
+      sessionId: mount.sessionId,
+      runId: "run-1",
+    };
+
+    expect(state.registerOutboundProposal(request)).toBe(true);
+    expect(state.registerOutboundProposal(request)).toBe(true);
+    expect(state.acceptOutboundOutcome("other-peer", mount.peerIdentity, outcome)).toBe("invalid");
+    expect(
+      state.acceptOutboundOutcome(mount.peer, mount.peerIdentity, {
+        ...outcome,
+        sessionId: "other-session",
+      }),
+    ).toBe("invalid");
+    expect(state.revoke(mount.mountId, 0)).toBeUndefined();
+    expect(
+      state.applyRevocation({
+        mountId: mount.mountId,
+        peer: mount.peer,
+        peerIdentity: mount.peerIdentity,
+        sessionId: mount.sessionId,
+        generation: 1,
+      }),
+    ).toBe(true);
+    expect(state.acceptOutboundOutcome(mount.peer, mount.peerIdentity, outcome)).toBe("accepted");
+    expect(state.acceptOutboundOutcome(mount.peer, mount.peerIdentity, outcome)).toBe("duplicate");
+  });
+
+  it("finds an unresolved outbound proposal for idempotent command retry", () => {
+    const state = new ReefFederationState(createRuntime(stateDir), new AbortController().signal);
+    const request = pendingProposal().request;
+    expect(state.registerOutboundProposal(request)).toBe(true);
+    expect(state.findOutboundProposal({ ...mount, role: "guest" }, request.frame.text)).toEqual(
+      request,
+    );
   });
 
   it("deduplicates an exact proposal and rejects ID rebinding", () => {
-    const state = new ReefFederationState(createRuntime(stateDir));
+    const state = new ReefFederationState(createRuntime(stateDir), new AbortController().signal);
     const proposal = pendingProposal();
     const outcome = {
       type: "session.prompt.accepted" as const,
@@ -116,7 +264,22 @@ describe("Reef federation state", () => {
 
     expect(state.claimProposal(proposal).result).toBe("new");
     expect(state.claimProposal(proposal).result).toBe("duplicate");
-    expect(state.claimProposal({ ...proposal, digest: "b".repeat(64) }).result).toBe("mismatch");
+    const reboundDigest = "b".repeat(64);
+    expect(state.claimProposal({ ...proposal, digest: reboundDigest }).result).toBe("mismatch");
+    const reboundOutcome = {
+      type: "session.prompt.failed" as const,
+      mountId: mount.mountId,
+      proposalId: proposal.proposalId,
+      sessionId: mount.sessionId,
+      code: "proposal-rebound",
+      message: "The proposal ID is already bound to other content.",
+    };
+    expect(
+      state.resolveProposal(proposal.proposalId, reboundDigest, {
+        status: "failed",
+        outcome: reboundOutcome,
+      }),
+    ).toBeDefined();
     expect(
       state.resolveProposal(proposal.proposalId, proposal.digest, {
         status: "accepted",
@@ -124,15 +287,83 @@ describe("Reef federation state", () => {
         outcome,
       }),
     ).toMatchObject({ status: "accepted", runId: "run-1" });
-    expect(state.listUnsentProposals()).toEqual([
-      expect.objectContaining({ proposalId: proposal.proposalId, outcome }),
-    ]);
+    expect(state.listUnsentProposals()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ proposalId: proposal.proposalId, outcome }),
+        expect.objectContaining({ proposalId: proposal.proposalId, outcome: reboundOutcome }),
+      ]),
+    );
     expect(state.markOutcomeSent(proposal.proposalId, proposal.digest)).toBe(true);
+    expect(state.markOutcomeSent(proposal.proposalId, reboundDigest)).toBe(true);
     expect(state.listUnsentProposals()).toEqual([]);
+
+    const rotatedProposal = pendingProposal({
+      proposalId: "proposal-rotated",
+      request: {
+        ...proposal.request,
+        frame: { ...proposal.request.frame, proposalId: "proposal-rotated" },
+      },
+    });
+    const rotatedOutcome = { ...outcome, proposalId: rotatedProposal.proposalId };
+    expect(state.claimProposal(rotatedProposal).result).toBe("new");
+    expect(
+      state.resolveProposal(rotatedProposal.proposalId, rotatedProposal.digest, {
+        status: "accepted",
+        outcome: rotatedOutcome,
+      }),
+    ).toBeDefined();
+    expect(state.abandonOutcome(rotatedProposal.proposalId, rotatedProposal.digest)).toBe(true);
+    expect(state.listUnsentProposals()).toEqual([]);
+    expect(state.claimProposal(rotatedProposal).proposal).toMatchObject({
+      outcomeAbandonReason: "peer-identity-changed",
+    });
+  });
+
+  it("bounds retained proposals per peer without blocking duplicates or other peers", () => {
+    const state = new ReefFederationState(createRuntime(stateDir), new AbortController().signal);
+    const base = pendingProposal();
+    for (let index = 0; index < 128; index += 1) {
+      const proposalId = `proposal-${index}`;
+      expect(
+        state.claimProposal(
+          pendingProposal({
+            proposalId,
+            request: {
+              ...base.request,
+              frame: { ...base.request.frame, proposalId },
+            },
+          }),
+        ).result,
+      ).toBe("new");
+    }
+
+    const first = pendingProposal({
+      proposalId: "proposal-0",
+      request: {
+        ...base.request,
+        frame: { ...base.request.frame, proposalId: "proposal-0" },
+      },
+    });
+    expect(state.claimProposal(first).result).toBe("duplicate");
+    expect(state.claimProposal(pendingProposal({ proposalId: "proposal-overflow" })).result).toBe(
+      "peer-capacity",
+    );
+    expect(
+      state.claimProposal(
+        pendingProposal({
+          proposalId: "proposal-other-peer",
+          request: {
+            ...base.request,
+            peer: "other",
+            frame: { ...base.request.frame, proposalId: "proposal-other-peer" },
+          },
+        }),
+      ).result,
+    ).toBe("new");
   });
 
   it("limits live mounts per peer", () => {
-    const state = new ReefFederationState(createRuntime(stateDir));
+    const state = new ReefFederationState(createRuntime(stateDir), new AbortController().signal);
     for (let index = 0; index < 32; index += 1) {
       expect(
         state.createMount({ ...mount, mountId: `mount-${index}`, sessionId: `session-${index}` }),
