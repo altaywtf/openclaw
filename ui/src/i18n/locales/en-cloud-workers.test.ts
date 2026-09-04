@@ -12,8 +12,8 @@ it("loads cloud worker English with its page while preserving shared and localiz
   const shared = en.common;
   expect(en.cloudWorkersPage).toEqual({});
 
-  const { registerCloudWorkersEnglish } = await import("./en-cloud-workers.ts");
-  registerCloudWorkersEnglish();
+  const { registerSettingsEnglish } = await import("./en-settings.ts");
+  registerSettingsEnglish();
   expect(en.common).toBe(shared);
   expect(t("cloudWorkersPage.addProfile")).toBe("Add profile");
   expect(t("cloudWorkersPage.deleteConfirm", { profile: "example" })).toBe(
@@ -22,7 +22,7 @@ it("loads cloud worker English with its page while preserving shared and localiz
 
   i18n.registerTranslation("de", { cloudWorkersPage: { addProfile: "Profil hinzufügen" } });
   await i18n.setLocale("de");
-  registerCloudWorkersEnglish();
+  registerSettingsEnglish();
   expect(t("cloudWorkersPage.addProfile")).toBe("Profil hinzufügen");
   expect(t("cloudWorkersPage.errors.saveFailed")).toBe(
     "The profile was not saved. Reload the config and try again.",

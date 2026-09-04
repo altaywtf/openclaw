@@ -19,7 +19,7 @@ import {
 } from "../../components/settings-ui.ts";
 import { renderSettingsWorkspace } from "../../components/settings-workspace.ts";
 import { t } from "../../i18n/index.ts";
-import { registerCloudWorkersEnglish } from "../../i18n/locales/en-cloud-workers.ts";
+import { registerSettingsEnglish } from "../../i18n/locales/en-settings.ts";
 import { resolveEditableSnapshotConfig } from "../../lib/config/config-state-model.ts";
 import { formatUiError } from "../../lib/format-error.ts";
 import { canCallGatewayMethod } from "../../lib/gateway-methods.ts";
@@ -38,7 +38,7 @@ import {
   type ConfiguredCloudWorkerProfile,
 } from "./cloud-worker-config.ts";
 
-registerCloudWorkersEnglish();
+registerSettingsEnglish();
 
 const CLOUD_WORKERS_DOCS_URL = "https://docs.openclaw.ai/gateway/cloud-workers";
 type EditorState = { kind: "add" } | { kind: "edit"; profileId: string } | null;
@@ -532,22 +532,30 @@ class CloudWorkersPage extends OpenClawLightDomElement {
       ? profiles.map((profile) => this.renderProfile(profile))
       : renderSettingsEmpty(t("cloudWorkersPage.empty"));
     const body = renderSettingsPage(html`
-      ${!this.hasManageAccess()
-        ? html`<div class="callout warning" role="note">
-            ${t("cloudWorkersPage.adminRequired")}
-          </div>`
-        : nothing}
-      ${this.catalogError
-        ? html`<div class="callout warning" role="status">
-            ${t("cloudWorkersPage.catalogFailed", { error: this.catalogError })}
-          </div>`
-        : nothing}
-      ${this.formError && !this.editor
-        ? html`<div class="callout warning" role="alert">${this.formError}</div>`
-        : nothing}
-      ${this.notice
-        ? html`<div class="callout warning" role="status">${this.notice}</div>`
-        : nothing}
+      ${
+        !this.hasManageAccess()
+          ? html`<div class="callout warning" role="note">
+              ${t("cloudWorkersPage.adminRequired")}
+            </div>`
+          : nothing
+      }
+      ${
+        this.catalogError
+          ? html`<div class="callout warning" role="status">
+              ${t("cloudWorkersPage.catalogFailed", { error: this.catalogError })}
+            </div>`
+          : nothing
+      }
+      ${
+        this.formError && !this.editor
+          ? html`<div class="callout warning" role="alert">${this.formError}</div>`
+          : nothing
+      }
+      ${
+        this.notice
+          ? html`<div class="callout warning" role="status">${this.notice}</div>`
+          : nothing
+      }
       ${renderSettingsSection(
         {
           title: t("cloudWorkersPage.sectionTitle"),
