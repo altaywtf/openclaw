@@ -60,11 +60,11 @@ class ListMarkerWidget extends WidgetType {
     super();
   }
 
-  eq(other: ListMarkerWidget) {
+  override eq(other: ListMarkerWidget) {
     return other.label === this.label;
   }
 
-  toDOM() {
+  override toDOM() {
     const marker = document.createElement("span");
     marker.className = "chat-composer-rich-list-marker";
     marker.textContent = this.label;
@@ -167,16 +167,19 @@ function buildRichDecorations(state: EditorState): RichDecorations {
           const target = children.find((child) => child.name === "URL");
           const marks = children.filter((child) => child.name === "LinkMark");
           const editingTarget = target && markerIsBeingEdited(state, target.from, target.to);
-          if (!editingTarget && marks.length >= 4 && target) {
+          const labelStart = marks[0];
+          const labelEnd = marks[1];
+          const linkEnd = marks.at(-1);
+          if (!editingTarget && target && labelStart && labelEnd && linkEnd) {
             ranges.push(
               Decoration.mark({ class: "chat-composer-rich-link" }).range(
-                marks[0].to,
-                marks[1].from,
+                labelStart.to,
+                labelEnd.from,
               ),
             );
-            addHidden(marks[0].from, marks[0].to);
-            addHidden(marks[1].from, target.to);
-            addHidden(marks.at(-1)!.from, marks.at(-1)!.to);
+            addHidden(labelStart.from, labelStart.to);
+            addHidden(labelEnd.from, target.to);
+            addHidden(linkEnd.from, linkEnd.to);
           }
           break;
         }
@@ -436,4 +439,67 @@ export function createChatComposerRichEditor(params: {
       copyEditorSelectionToSource(view, params.source);
     },
   };
+}
+
+type ChatComposerRichEditorState = {
+  composerEditor: ChatComposerRichEditorHandle | null;
+  composerEditorHost: HTMLElement | null;
+  composerEditorOptions: ChatComposerRichEditorOptions | null;
+  composerTextarea: HTMLTextAreaElement | null;
+  restoreComposerFocus: boolean;
+};
+
+function attachChatComposerRichEditor(state: ChatComposerRichEditorState) {
+  if (
+    state.composerEditor ||
+    !state.composerEditorHost ||
+    !state.composerTextarea ||
+    !state.composerEditorOptions
+  ) {
+    return;
+  }
+  state.composerEditor = createChatComposerRichEditor({
+    parent: state.composerEditorHost,
+    source: state.composerTextarea,
+    options: state.composerEditorOptions,
+  });
+}
+
+export function setChatComposerRichEditorSource(
+  state: ChatComposerRichEditorState,
+  element?: Element,
+) {
+  const nextTextarea = element instanceof HTMLTextAreaElement ? element : null;
+  if (state.composerTextarea && state.composerTextarea !== nextTextarea) {
+    state.composerEditor?.destroy();
+    state.composerEditor = null;
+  }
+  state.composerTextarea = nextTextarea;
+  attachChatComposerRichEditor(state);
+  if (state.restoreComposerFocus && state.composerEditor) {
+    state.restoreComposerFocus = false;
+    queueMicrotask(() => state.composerEditor?.focus());
+  }
+}
+
+export function setChatComposerRichEditorHost(
+  state: ChatComposerRichEditorState,
+  element?: Element,
+) {
+  const nextHost = element instanceof HTMLElement ? element : null;
+  if (state.composerEditorHost && state.composerEditorHost !== nextHost) {
+    state.composerEditor?.destroy();
+    state.composerEditor = null;
+  }
+  state.composerEditorHost = nextHost;
+  attachChatComposerRichEditor(state);
+}
+
+export function updateChatComposerRichEditor(
+  state: ChatComposerRichEditorState,
+  options: ChatComposerRichEditorOptions,
+) {
+  state.composerEditorOptions = options;
+  state.composerEditor?.updateOptions(options);
+  attachChatComposerRichEditor(state);
 }

@@ -12,11 +12,10 @@ import type { SlashCommandDef } from "../../../lib/chat/commands.ts";
 import { updateHumanMentions } from "../../../lib/chat/human-mentions.ts";
 import { resolveThinkingCommandArgOptionsForSession } from "../../../lib/chat/thinking.ts";
 import { areUiSessionKeysEquivalent } from "../../../lib/sessions/session-key.ts";
-import { detectTextDirection } from "../../../lib/text-direction.ts";
 import { ComposerDictationController, insertComposerDictation } from "../composer-dictation.ts";
 import { normalizeChatComposerDraft } from "../composer-draft.ts";
 import { ComposerMicrophonePicker } from "../composer-microphone-picker.ts";
-import { handleChatAttachmentPaste, isLargePastedTextAttachment } from "./chat-attachments.ts";
+import { isLargePastedTextAttachment } from "./chat-attachments.ts";
 import { renderContextNotice } from "./chat-composer-context.ts";
 import { renderMicrophonePicker, type ChatRunControlsProps } from "./chat-composer-controls.ts";
 import {
@@ -27,7 +26,11 @@ import {
 import { createGoalComposerController } from "./chat-composer-goal-mode.ts";
 import { createComposerKeyDownHandler } from "./chat-composer-keydown.ts";
 import type { HumanMentionMenuHost } from "./chat-composer-mention-menu.ts";
-import { createChatComposerRichEditor } from "./chat-composer-rich-editor.ts";
+import { configureChatComposerRichEditor } from "./chat-composer-rich-editor-config.ts";
+import {
+  setChatComposerRichEditorHost,
+  setChatComposerRichEditorSource,
+} from "./chat-composer-rich-editor.ts";
 import {
   getActiveSkillMenuOptionId,
   getActiveSkillMenuOptionLabel,
@@ -45,7 +48,6 @@ import {
   updateSlashMenu,
 } from "./chat-composer-slash-menu.ts";
 import {
-  clearPendingClearedSubmittedDraft,
   commitComposerDraft,
   composerDraftKey,
   consumeComposerInputIntent,
@@ -54,6 +56,7 @@ import {
   isCurrentSessionSubmittedProgress,
   markComposerInputIntent,
   suppressStaleSubmittedDraftReplay,
+  syncComposerDraftAfterSend,
 } from "./chat-composer-state.ts";
 import type { ChatComposerProps } from "./chat-composer-types.ts";
 import { renderChatComposerView } from "./chat-composer-view.ts";
@@ -112,43 +115,8 @@ export function renderChatComposer(props: ChatComposerProps) {
   state.composerInputRef ??= (element?: Element) => {
     state.composerInput = replaceComposerPopoverAnchor(state.composerInput, element);
   };
-  const attachComposerEditor = () => {
-    if (
-      state.composerEditor ||
-      !state.composerEditorHost ||
-      !state.composerTextarea ||
-      !state.composerEditorOptions
-    ) {
-      return;
-    }
-    state.composerEditor = createChatComposerRichEditor({
-      parent: state.composerEditorHost,
-      source: state.composerTextarea,
-      options: state.composerEditorOptions,
-    });
-  };
-  state.textareaRef ??= (element?: Element) => {
-    const nextTextarea = element instanceof HTMLTextAreaElement ? element : null;
-    if (state.composerTextarea && state.composerTextarea !== nextTextarea) {
-      state.composerEditor?.destroy();
-      state.composerEditor = null;
-    }
-    state.composerTextarea = nextTextarea;
-    attachComposerEditor();
-    if (state.restoreComposerFocus && state.composerEditor) {
-      state.restoreComposerFocus = false;
-      queueMicrotask(() => state.composerEditor?.focus());
-    }
-  };
-  state.composerEditorRef ??= (element?: Element) => {
-    const nextHost = element instanceof HTMLElement ? element : null;
-    if (state.composerEditorHost && state.composerEditorHost !== nextHost) {
-      state.composerEditor?.destroy();
-      state.composerEditor = null;
-    }
-    state.composerEditorHost = nextHost;
-    attachComposerEditor();
-  };
+  state.textareaRef ??= (element?: Element) => setChatComposerRichEditorSource(state, element);
+  state.composerEditorRef ??= (element?: Element) => setChatComposerRichEditorHost(state, element);
   const hasVisualAttachments = (props.attachments ?? []).some(
     (attachment) => !isLargePastedTextAttachment(attachment),
   );
@@ -333,26 +301,6 @@ export function renderChatComposer(props: ChatComposerProps) {
     (props.getPendingAttachmentReads?.() ?? props.pendingAttachmentReads ?? 0) === 0 &&
     (props.connected || !draft.trimStart().startsWith("/"));
   const renderedDraftCanSubmit = canSubmitDraft(visibleDraft);
-  const syncComposerDraftAfterSend = (target: HTMLTextAreaElement | null) => {
-    state.mentionMenu.close();
-    const submittedDraft = target?.value ?? props.getDraft?.() ?? props.draft;
-    const hostDraft = props.getDraft?.() ?? props.draft;
-    const clearedSubmittedDraft =
-      hostDraft === "" && submittedDraft !== "" && target?.value === submittedDraft;
-    if (clearedSubmittedDraft) {
-      state.pendingClearedSubmittedDraft = {
-        key: draftKey,
-        value: submittedDraft,
-      };
-    } else {
-      clearPendingClearedSubmittedDraft(state, draftKey);
-    }
-    if (target && target.value !== hostDraft) {
-      target.value = hostDraft;
-      state.composerEditor?.setDraft(hostDraft);
-    }
-  };
-
   const handleKeyDown = createComposerKeyDownHandler({
     state,
     props,
@@ -363,7 +311,7 @@ export function renderChatComposer(props: ChatComposerProps) {
     sendShortcut,
     canSubmitDraft,
     commitDraft: (draft) => commitComposerDraft(props, draft),
-    syncDraftAfterSend: syncComposerDraftAfterSend,
+    syncDraftAfterSend: (target) => syncComposerDraftAfterSend(state, props, draftKey, target),
     showAbortableUi,
     alternateFollowUpMode,
     goalComposer,
@@ -711,45 +659,29 @@ export function renderChatComposer(props: ChatComposerProps) {
         : "slash-menu-listbox",
   );
   const slashMenuAnnouncementId = paneDomId(props.paneId, "slash-active-announcement");
-  const disabledReasonId = paneDomId(props.paneId, "disabled-reason");
-  const editorDraft = dictation?.active
-    ? insertComposerDictation(
-        state.dictationSelection?.value ?? visibleDraft,
-        dictation.transcript,
-        state.dictationSelection?.start ?? visibleDraft.length,
-        state.dictationSelection?.end ?? visibleDraft.length,
-      ).value
-    : visibleDraft;
-  state.composerEditorOptions = {
-    draft: editorDraft,
-    direction: detectTextDirection(editorDraft),
-    disabled: !canCompose,
-    readOnly: dictation?.locksComposer === true || goalComposer.pending,
-    placeholder: dictation?.active ? "" : placeholder,
-    ariaLabel: t("chat.composer.composerInput"),
-    ariaDescriptionIds: `${slashMenuAnnouncementId}${
-      props.disabledReason ? ` ${disabledReasonId}` : ""
-    }`,
-    ariaControls:
-      slashMenuVisible || skillMenuVisible || mentionMenuVisible ? slashMenuListboxId : undefined,
-    ariaExpanded: slashMenuVisible || skillMenuVisible || mentionMenuVisible ? "true" : undefined,
-    ariaActiveDescendant: activeSlashMenuOptionId ?? undefined,
-    ariaKeyShortcuts: sendShortcut === "enter" ? "Enter" : "Control+Enter Meta+Enter",
-    onKeyDown: handleKeyDown,
-    onBeforeInput: handleBeforeInput,
-    onInput: handleInput,
-    onSelect: syncComposerSelection,
-    onCompositionStart: handleCompositionStart,
-    onCompositionEnd: handleCompositionEnd,
-    onBlur: handleBlur,
-    onPaste: (event) => {
-      if (canCompose && !props.suggestionComposer) {
-        handleChatAttachmentPaste(event, props);
-      }
+  configureChatComposerRichEditor({
+    state,
+    props,
+    dictation,
+    canCompose,
+    goalPending: goalComposer.pending,
+    visibleDraft,
+    placeholder,
+    sendShortcut,
+    slashMenuAnnouncementId,
+    slashMenuListboxId,
+    menuVisible: slashMenuVisible || skillMenuVisible || mentionMenuVisible,
+    activeOptionId: activeSlashMenuOptionId,
+    handlers: {
+      onKeyDown: handleKeyDown,
+      onBeforeInput: handleBeforeInput,
+      onInput: handleInput,
+      onSelect: syncComposerSelection,
+      onCompositionStart: handleCompositionStart,
+      onCompositionEnd: handleCompositionEnd,
+      onBlur: handleBlur,
     },
-  };
-  state.composerEditor?.updateOptions(state.composerEditorOptions);
-  attachComposerEditor();
+  });
 
   return renderChatComposerView({
     props,
