@@ -14,7 +14,7 @@ import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime
 import { defaultRuntime } from "openclaw/plugin-sdk/runtime";
 import { createPluginRuntimeStore } from "openclaw/plugin-sdk/runtime-store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { generateIdentity } from "../protocol/index.js";
+import { createReefFederatedPromptDigest, generateIdentity, seal } from "../protocol/index.js";
 import { runReefChannelLifecycle } from "./channel-lifecycle.js";
 import { reefPlugin } from "./channel.js";
 import { handleReefCommand } from "./commands.js";
@@ -25,12 +25,14 @@ import {
   retryUnsentFederatedPrompts,
 } from "./federation-recovery.js";
 import { reefKeys } from "./flow.test-helpers.js";
+import { reefPeerIdentity } from "./friend-types.js";
 import { ReefFriendManager } from "./friends.js";
 import { resolveReefInboundDispatchContent } from "./inbound.js";
-import { getActiveReef, setReefRuntime } from "./runtime.js";
+import { getActiveReef, getReefRuntime, setReefRuntime } from "./runtime.js";
 import {
   finalizeReefIdentityBinding,
   generateAndStoreKeys,
+  loadKeys,
   reserveReefIdentityBinding,
 } from "./state.js";
 import { ReefInboxConnection, ReefTransportClient } from "./transport.js";
@@ -411,6 +413,136 @@ describe("Reef gateway account ownership", () => {
     }
     return send({ cfg, accountId: "default", to: "@molty", text });
   }
+
+  it("returns and acknowledges peer-capacity without agent work or blocking later inbox entries", async () => {
+    startAccount();
+    await vi.waitFor(() => expect(inboxDrains).toHaveLength(1));
+    const active = getActiveReef();
+    const runtime = getReefRuntime();
+    const hostKeys = await loadKeys(runtime);
+    const guestKeys = generateIdentity();
+    const guestTrust = {
+      autonomy: "bounded" as const,
+      ed25519PublicKey: guestKeys.signing.publicKey,
+      x25519PublicKey: guestKeys.encryption.publicKey,
+      keyEpoch: 1,
+      safetyNumberChanged: false,
+      approvedAt: 1,
+    };
+    active.trust.set("guest", guestTrust);
+    const peerIdentity = reefPeerIdentity(guestTrust);
+    const mountId = "mount-capacity";
+    const sessionId = "session-capacity";
+    for (let index = 0; index < 128; index += 1) {
+      const frame = {
+        type: "session.prompt.propose" as const,
+        mountId,
+        proposalId: `retained-${index}`,
+        sessionId,
+        grantGeneration: 0,
+        text: `retained ${index}`,
+        textSha256: index.toString(16).padStart(64, "0"),
+      };
+      expect(
+        active.federation.claimPrompt({
+          from: "guest#1",
+          to: "clawd#1",
+          peer: "guest",
+          peerIdentity,
+          frame,
+        }),
+      ).toBe("new");
+    }
+    const binding = {
+      from: "guest#1",
+      to: "clawd#1",
+      mountId,
+      proposalId: "over-capacity",
+      sessionId,
+      grantGeneration: 0,
+      text: "capacity probe",
+    };
+    const frame = {
+      type: "session.prompt.propose" as const,
+      mountId,
+      proposalId: binding.proposalId,
+      sessionId,
+      grantGeneration: 0,
+      text: binding.text,
+      textSha256: createReefFederatedPromptDigest(binding),
+    };
+    const envelope = seal({
+      id: "01JZ0000000000000000000137",
+      from: binding.from,
+      to: binding.to,
+      body: { namespace: "openclaw.session-federation.v1", frame },
+      senderSigningSecretKey: guestKeys.signing.secretKey,
+      recipientEncryptionPublicKey: hostKeys.encryption.publicKey,
+    });
+    const nextMountEnvelope = seal({
+      id: "01JZ0000000000000000000138",
+      from: binding.from,
+      to: binding.to,
+      body: {
+        namespace: "openclaw.session-federation.v1",
+        frame: {
+          type: "session.prompt.accepted",
+          mountId: "mount-after-capacity",
+          proposalId: "after-capacity",
+          sessionId,
+          runId: "run-after-capacity",
+        },
+      },
+      senderSigningSecretKey: guestKeys.signing.secretKey,
+      recipientEncryptionPublicKey: hostKeys.encryption.publicKey,
+    });
+    const acknowledge = vi
+      .spyOn(ReefTransportClient.prototype, "acknowledge")
+      .mockResolvedValue({ result: "deleted" });
+    const sendFederation = vi
+      .spyOn(active.flow, "sendFederation")
+      .mockRejectedValueOnce(new Error("relay unavailable"))
+      .mockResolvedValue("outcome-1");
+    const gatewayRequest = vi.mocked(runtime.gateway.request);
+    const capacityEntry = {
+      seq: 1,
+      peer: "guest",
+      id: envelope.id,
+      kind: "message" as const,
+      envelope,
+      ts: 1,
+    };
+
+    await expect(active.flow.processEntries([capacityEntry])).rejects.toThrow("relay unavailable");
+    expect(acknowledge).not.toHaveBeenCalled();
+    await active.flow.processEntries([
+      { ...capacityEntry, seq: 2 },
+      {
+        seq: 3,
+        peer: "guest",
+        id: nextMountEnvelope.id,
+        kind: "message",
+        envelope: nextMountEnvelope,
+        ts: 2,
+      },
+    ]);
+
+    await vi.waitFor(() =>
+      expect(sendFederation).toHaveBeenCalledWith(
+        "guest",
+        expect.objectContaining({
+          type: "session.prompt.failed",
+          proposalId: "over-capacity",
+          code: "peer-capacity",
+        }),
+        { expectedRecipient: peerIdentity },
+      ),
+    );
+    expect(sendFederation).toHaveBeenCalledTimes(2);
+    expect(acknowledge).toHaveBeenCalledTimes(2);
+    expect(gatewayRequest).not.toHaveBeenCalled();
+    expect(active.federation.listUnsentProposals()).toHaveLength(128);
+  });
 
   it("retires outbound, command, and pairing authority before account shutdown drains", async () => {
     const account = startAccount();

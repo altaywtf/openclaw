@@ -285,7 +285,10 @@ export class ReefFederationState {
       const peerProposalCount = retained.filter(
         (entry) => entry.request.peer === proposal.request.peer,
       ).length;
-      if (peerProposalCount >= REEF_FEDERATION_PROPOSALS_MAX_ENTRIES_PER_PEER) {
+      if (
+        retained.length >= REEF_FEDERATION_PROPOSALS_MAX_ENTRIES ||
+        peerProposalCount >= REEF_FEDERATION_PROPOSALS_MAX_ENTRIES_PER_PEER
+      ) {
         return { result: "peer-capacity", proposal: structuredClone(proposal) };
       }
       const rebound = retained.some(

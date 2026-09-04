@@ -1,3 +1,4 @@
+import type { OpenKeyedStoreOptions } from "openclaw/plugin-sdk/plugin-state-runtime";
 import { resetPluginStateStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -360,6 +361,47 @@ describe("Reef federation state", () => {
         }),
       ).result,
     ).toBe("new");
+  });
+
+  it("returns peer-capacity when other peers fill the durable proposal store", () => {
+    const runtime = createRuntime(stateDir);
+    const openStore = runtime.state.openSyncKeyedStore;
+    const base = pendingProposal();
+    const retained = Array.from({ length: 5_000 }, (_, index) => {
+      const proposalId = `global-${index}`;
+      return {
+        key: proposalId,
+        value: pendingProposal({
+          proposalId,
+          request: {
+            ...base.request,
+            peer: `peer-${Math.floor(index / 127)}`,
+            frame: { ...base.request.frame, proposalId },
+          },
+        }),
+        createdAt: index,
+      };
+    });
+    runtime.state.openSyncKeyedStore = <T>(options: OpenKeyedStoreOptions) => {
+      const store = openStore<T>(options);
+      return options.namespace === "federation-proposals"
+        ? { ...store, entries: () => retained as Array<(typeof retained)[number] & { value: T }> }
+        : store;
+    };
+    const state = new ReefFederationState(runtime, new AbortController().signal);
+
+    expect(
+      state.claimProposal(
+        pendingProposal({
+          proposalId: "global-overflow",
+          request: {
+            ...base.request,
+            peer: "peer-below-quota",
+            frame: { ...base.request.frame, proposalId: "global-overflow" },
+          },
+        }),
+      ).result,
+    ).toBe("peer-capacity");
   });
 
   it("limits live mounts per peer", () => {

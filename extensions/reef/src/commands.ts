@@ -145,7 +145,10 @@ export async function handleReefCommand({
       },
       { expectedRecipient: mount.peerIdentity },
     );
-    if (!active.federation.acknowledgeRevocation(mount.mountId, revoked.grantGeneration)) {
+    if (
+      revoked.revocationPending &&
+      !active.federation.acknowledgeRevocation(mount.mountId, revoked.grantGeneration)
+    ) {
       throw new Error(`Reef session mount ${mount.mountId} lost its durable revocation`);
     }
     return { text: `Revoked Reef session mount ${mount.mountId}.` };

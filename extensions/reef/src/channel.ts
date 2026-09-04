@@ -23,6 +23,7 @@ import {
   type ReefCoreConfig,
 } from "./config-schema.js";
 import { ReefFederationCoordinator } from "./federation-coordinator.js";
+import { formatReefFederationOutcome } from "./federation-outcome.js";
 import {
   matchesFederatedPromptPeer,
   retryFederatedRevocations,
@@ -32,7 +33,7 @@ import { ReefFederationState, type ReefFederationPromptRequest } from "./federat
 import { createConfiguredGuard, ReefMessageFlow } from "./flow.js";
 import { reefPeerIdentity } from "./friend-types.js";
 import { ReefFriendManager } from "./friends.js";
-import { resolveReefInboundDispatchContent } from "./inbound.js";
+import { resolveReefInboundDispatchContent, resolveReefReplyText } from "./inbound.js";
 import { reefMessageAdapter, reefOutboundAdapter } from "./outbound.js";
 import {
   createReefOwnerNoticeHandler,
@@ -57,23 +58,6 @@ import {
 } from "./transport.js";
 import { isReefPairingApprovalToken, openReefTrustStore } from "./trust-store.js";
 import type { ReefAccount, ReefIngressMessage } from "./types.js";
-
-function formatFederationOutcome(
-  peer: string,
-  frame: Exclude<ReefFederationFrame, { type: "session.mount.offer" | "session.prompt.propose" }>,
-): string {
-  switch (frame.type) {
-    case "session.prompt.accepted":
-      return `Reef prompt ${frame.proposalId} was accepted by @${peer}.`;
-    case "session.prompt.denied":
-      return `Reef prompt ${frame.proposalId} was denied by @${peer}: ${frame.reason}.`;
-    case "session.prompt.failed":
-      return `Reef prompt ${frame.proposalId} failed at @${peer}: ${frame.message}`;
-    case "session.grant.revoked":
-      return `Reef session mount ${frame.mountId} was revoked by @${peer}.`;
-  }
-  throw new Error("unsupported Reef federation outcome");
-}
 
 function resolveAccount(cfg: unknown): ReefAccount {
   const config = resolveReefConfig(cfg as ReefCoreConfig);
@@ -115,15 +99,6 @@ function listTrustedPeerDirectoryEntries(params: {
     name: `@${peer}'s agent`,
     handle: `@${peer}`,
   }));
-}
-
-function replyText(payload: unknown): string {
-  if (!payload || typeof payload !== "object" || !("text" in payload)) {
-    return "";
-  }
-  return typeof (payload as { text?: unknown }).text === "string"
-    ? (payload as { text: string }).text
-    : "";
 }
 
 function matchesReefToolTarget(target: string, toolContext?: ChannelThreadingToolContext): boolean {
@@ -346,7 +321,7 @@ export const reefPlugin: ChannelPlugin<ReefAccount> = {
           // ReefMessageFlow invokes ingress only after peer trust and guard approval.
           inboundAccessAuthorized: true,
           deliver: async (payload) => {
-            const text = replyText(payload);
+            const text = resolveReefReplyText(payload);
             if (text.trim()) {
               await flow.send(message.peer, text, {
                 thread: message.thread ?? message.id,
@@ -414,7 +389,10 @@ export const reefPlugin: ChannelPlugin<ReefAccount> = {
           await flow.sendFederation(request.peer, outcome, {
             expectedRecipient: request.peerIdentity,
           });
-          if (!federation.markOutcomeSent(request.frame.proposalId, request.frame.textSha256)) {
+          const sent =
+            claim?.result === "peer-capacity" ||
+            federation.markOutcomeSent(request.frame.proposalId, request.frame.textSha256);
+          if (!sent) {
             throw new Error(`Reef proposal ${request.frame.proposalId} lost its durable outcome`);
           }
         })();
@@ -488,12 +466,10 @@ export const reefPlugin: ChannelPlugin<ReefAccount> = {
               frame,
             };
             const claim = federationCoordinator.claimPrompt(request);
+            const task = startFederatedPrompt(request, undefined, claim);
             if (claim.result === "peer-capacity") {
-              throw new Error(`Reef peer @${peer} exceeded retained prompt capacity`);
+              await task;
             }
-            // Approval and agent dispatch continue under the account-owned task so one peer cannot
-            // stall ingress after the durable proposal claim succeeds.
-            void startFederatedPrompt(request, undefined, claim);
             return;
           }
           const friend = trust.get(peer);
@@ -516,7 +492,7 @@ export const reefPlugin: ChannelPlugin<ReefAccount> = {
             return;
           }
           await ownerNotice({
-            text: formatFederationOutcome(peer, frame),
+            text: formatReefFederationOutcome(peer, frame),
             peer,
             contextKey: `reef:federation:${frame.mountId}:${"proposalId" in frame ? frame.proposalId : frame.grantGeneration}`,
           });
@@ -555,7 +531,7 @@ export const reefPlugin: ChannelPlugin<ReefAccount> = {
               if (!notice.allowResend) {
                 return;
               }
-              const text = replyText(payload);
+              const text = resolveReefReplyText(payload);
               if (text.trim()) {
                 resendText = text;
               }

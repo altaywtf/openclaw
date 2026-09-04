@@ -10,7 +10,18 @@ const mocks = vi.hoisted(() => {
     getMount: vi.fn((mountId: string) => mounts.get(mountId)),
     listMounts: vi.fn(() => [...mounts.values()]),
     authorizeMount: vi.fn(({ mountId }: { mountId: string }) => mounts.get(mountId)),
-    acknowledgeRevocation: vi.fn(() => true),
+    acknowledgeRevocation: vi.fn((mountId: string, generation: number) => {
+      const mount = mounts.get(mountId);
+      if (
+        mount?.revoked !== true ||
+        mount.revocationPending !== true ||
+        mount.grantGeneration !== generation
+      ) {
+        return false;
+      }
+      mounts.set(mountId, { ...mount, revocationPending: false });
+      return true;
+    }),
     revoke: vi.fn((mountId: string, generation: number) => {
       const mount = mounts.get(mountId);
       if (!mount) {
@@ -23,6 +34,7 @@ const mocks = vi.hoisted(() => {
         ...mount,
         allowAlways: false,
         revoked: true,
+        revocationPending: true,
         grantGeneration: generation + 1,
       };
       mounts.set(mountId, revoked);
@@ -215,6 +227,32 @@ describe("Reef session commands", () => {
       },
       { expectedRecipient: mount.peerIdentity },
     );
+  });
+
+  it("retries an already delivered revocation idempotently", async () => {
+    const mount = {
+      mountId: "mount-1",
+      peer: "host",
+      peerIdentity: {
+        ed25519PublicKey: "A".repeat(43),
+        x25519PublicKey: "B".repeat(43),
+        keyEpoch: 1,
+      },
+      role: "host",
+      sessionKey: "agent:main:shared",
+      sessionId: "session-1",
+      grantGeneration: 1,
+      allowAlways: false,
+      revoked: true,
+      revocationPending: false,
+    };
+    mocks.mounts.set(mount.mountId, mount);
+
+    await expect(
+      handleReefCommand({ args: "session revoke mount-1", senderIsOwner: true }),
+    ).resolves.toEqual({ text: "Revoked Reef session mount mount-1." });
+    expect(mocks.flow.sendFederation).toHaveBeenCalledOnce();
+    expect(mocks.federation.acknowledgeRevocation).not.toHaveBeenCalled();
   });
 
   it("keeps every session command owner-only", async () => {
