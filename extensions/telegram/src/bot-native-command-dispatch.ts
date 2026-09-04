@@ -225,17 +225,6 @@ async function resolveTelegramCommandAuth(params: {
     logVerbose(`Blocked telegram command in DM ${chatId}: requireTopic=true but no topic present`);
     return null;
   }
-  const commandsAllowFromAccess = commandsAllowFromConfigured
-    ? resolveTelegramCommandAuthorization({
-        cfg,
-        accountId,
-        chatId,
-        isGroup,
-        threadSpec,
-        senderId,
-        senderUsername,
-      })
-    : null;
   const ownerAccess = resolveTelegramCommandAuthorization({
     cfg,
     accountId,
@@ -326,7 +315,7 @@ async function resolveTelegramCommandAuth(params: {
     dmPolicy: effectiveDmPolicy,
   });
   const commandAuthorized = commandsAllowFromConfigured
-    ? Boolean(commandsAllowFromAccess?.isAuthorizedSender)
+    ? ownerAccess.isAuthorizedSender
     : (
         await resolveTelegramCommandIngressAuthorization({
           accountId,

@@ -441,7 +441,7 @@ describe("registerTelegramNativeCommands /login", () => {
     expect(texts.join("\n")).not.toContain("https://auth.openai.com/codex/device");
   });
 
-  it("rejects /login for authorized senders who are not owners", async () => {
+  it.each([undefined, "999", "*"])("rejects /login without matching owner %s", async (owner) => {
     const loginFlow = vi.fn<TelegramLoginFlow>(async () => ({
       providerId: "openai",
       methodId: "device-code",
@@ -452,7 +452,7 @@ describe("registerTelegramNativeCommands /login", () => {
         commands: {
           native: true,
           allowFrom: { telegram: ["200"] },
-          ownerAllowFrom: ["999"],
+          ownerAllowFrom: owner === undefined ? undefined : [owner],
         },
       } as OpenClawConfig,
       loginFlow,

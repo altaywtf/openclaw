@@ -20,7 +20,6 @@ type AuthRunCall = {
 };
 
 type ResolvePluginProvidersCall = {
-  activate?: boolean;
   config?: unknown;
   includeUntrustedWorkspacePlugins?: boolean;
   onlyPluginIds?: string[];
@@ -1356,8 +1355,8 @@ describe("modelsAuthLoginCommand", () => {
       },
     });
     mocks.resolvePluginProvidersCore.mockImplementation(
-      (params: { activate?: boolean; providerRefs?: string[] } | undefined) =>
-        params?.activate === true && params?.providerRefs?.[0] === "anthropic"
+      (params: ResolvePluginProvidersCall | undefined) =>
+        params?.providerRefs?.[0] === "anthropic"
           ? [
               {
                 id: "anthropic",
@@ -1387,7 +1386,6 @@ describe("modelsAuthLoginCommand", () => {
     expect(providerResolutionCall.workspaceDir).toBe("/tmp/openclaw/workspace");
     expect(providerResolutionCall.includeUntrustedWorkspacePlugins).toBe(false);
     expect(providerResolutionCall.providerRefs).toEqual(["anthropic"]);
-    expect(providerResolutionCall.activate).toBe(true);
     expect(runClaudeCliMigration).toHaveBeenCalledOnce();
     expect(mocks.upsertAuthProfileWithLock).not.toHaveBeenCalled();
     expect(lastUpdatedConfig?.agents?.defaults?.model).toEqual({
@@ -1780,7 +1778,7 @@ describe("modelsAuthLoginCommand", () => {
     expect(runProviderAuth).toHaveBeenCalledOnce();
     expect(mocks.resolvePluginProvidersCore).toHaveBeenNthCalledWith(
       1,
-      expect.objectContaining({ providerRefs: ["claude-cli"], activate: true }),
+      expect.objectContaining({ providerRefs: ["claude-cli"] }),
     );
     expect(mocks.resolvePluginProvidersCore).toHaveBeenNthCalledWith(
       2,

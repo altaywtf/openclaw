@@ -1,7 +1,4 @@
-import {
-  normalizeLowercaseStringOrEmpty,
-  normalizeOptionalString,
-} from "../../packages/normalization-core/src/string-coerce.js";
+import { normalizeLowercaseStringOrEmpty } from "../../packages/normalization-core/src/string-coerce.js";
 import type {
   ModelsAuthLoginFlowOptions,
   ModelsAuthLoginFlowResult,
@@ -68,11 +65,6 @@ const bindProviderAuthLoginFlowRuntime = createLazyRuntimeMethodBinder(
 
 export const runModelsAuthLoginFlow: ProviderAuthLoginFlowRuntime["runModelsAuthLoginFlowCore"] =
   bindProviderAuthLoginFlowRuntime((runtime) => runtime.runModelsAuthLoginFlowCore);
-
-export function hasConfiguredCommandOwnerAllowlist(cfg: OpenClawConfig): boolean {
-  const owners = cfg.commands?.ownerAllowFrom;
-  return Array.isArray(owners) && owners.some((owner) => normalizeOptionalString(String(owner)));
-}
 
 function matchesLoginSnapshot(
   current: ProviderLoginSessionEntry,

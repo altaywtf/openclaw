@@ -410,7 +410,7 @@ async function validateResetAuthChoice(params: {
             mode: "setup",
             includeUntrustedWorkspacePlugins: false,
             providerRefs: [providerAuthChoice.providerId],
-            activate: true,
+            activate: false,
           }),
           providerAuthChoice.providerId,
         )

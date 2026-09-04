@@ -1,4 +1,3 @@
-// Telegram plugin module implements native Codex login behavior.
 import type { CommandArgs } from "openclaw/plugin-sdk/command-auth-native";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import {
@@ -10,7 +9,6 @@ import {
   formatProviderLoginControlUiHandoff,
   formatProviderLoginFailed,
   formatProviderLoginSessionSwitchFailed,
-  hasConfiguredCommandOwnerAllowlist,
   isProviderLoginPatchPersisted,
   releaseProviderLoginFlow,
   reserveProviderLoginFlow,
@@ -108,7 +106,7 @@ export async function executeTelegramLoginCommand(params: {
       },
     );
   };
-  if (!dispatch.senderIsOwner || !hasConfiguredCommandOwnerAllowlist(dispatch.runtimeCfg)) {
+  if (!dispatch.senderIsOwner) {
     await sendLoginMessage(
       "Only a configured OpenClaw owner can start provider login from Telegram.",
     );

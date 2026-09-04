@@ -33,6 +33,7 @@ const { testing } = await import("./commands-login.test-support.js");
 function buildLoginParams(
   commandBody: string,
   overrides: {
+    cfg?: OpenClawConfig;
     command?: Partial<HandleCommandsParams["command"]>;
     ctx?: Partial<HandleCommandsParams["ctx"]>;
     opts?: HandleCommandsParams["opts"];
@@ -46,11 +47,11 @@ function buildLoginParams(
 ): HandleCommandsParams {
   const params = buildCommandTestParams(
     commandBody,
-    {
+    overrides.cfg ?? {
       commands: { text: true, ownerAllowFrom: ["owner"] },
       channels: { slack: { allowFrom: ["owner"] } },
       session: { mainKey: "main" },
-    } as OpenClawConfig,
+    },
     {
       Provider: "slack",
       Surface: "slack",
@@ -58,6 +59,7 @@ function buildLoginParams(
       OriginatingTo: "direct:owner",
       AccountId: "workspace-a",
       ChatType: "direct",
+      SenderId: "owner",
       MessageThreadId: "thread-1",
       ...overrides.ctx,
     },
@@ -72,8 +74,6 @@ function buildLoginParams(
     channelId: "slack",
     accountId: "workspace-a",
     senderId: "owner",
-    senderIsOwner: true,
-    isAuthorizedSender: true,
     from: "slack:owner",
     to: "direct:owner",
     ...overrides.command,
@@ -670,34 +670,55 @@ describe("handleLoginCommand", () => {
     now.mockRestore();
   });
 
-  it("rejects non-owner senders before starting login", async () => {
-    const result = await handleLoginCommand(
-      buildLoginParams("/login codex", {
-        command: { senderIsOwner: false },
-      }),
-      true,
-    );
-
-    expect(result).toEqual({
-      shouldContinue: false,
-      reply: {
-        text: "Only a configured OpenClaw owner/admin can start provider login from this channel.",
+  it.each<{
+    name: string;
+    cfg: OpenClawConfig;
+    ctx?: Partial<HandleCommandsParams["ctx"]>;
+  }>([
+    {
+      name: "a different configured owner",
+      cfg: { commands: { ownerAllowFrom: ["other"] } },
+    },
+    {
+      name: "channel allowlist membership without a configured owner",
+      cfg: { channels: { slack: { allowFrom: ["owner"] } } },
+    },
+    {
+      name: "a wildcard owner list",
+      cfg: { commands: { ownerAllowFrom: ["*"] } },
+    },
+    {
+      name: "a context owner list without a configured owner",
+      cfg: {},
+      ctx: { OwnerAllowFrom: ["owner"] },
+    },
+    {
+      name: "an admin scope on an external channel",
+      cfg: {},
+      ctx: { GatewayClientScopes: ["operator.admin"] },
+    },
+    {
+      name: "a read-only internal session",
+      cfg: {},
+      ctx: {
+        Provider: "webchat",
+        Surface: "webchat",
+        OriginatingChannel: "webchat",
+        GatewayClientScopes: ["operator.read"],
       },
-    });
-    expect(runModelsAuthLoginFlowMock).not.toHaveBeenCalled();
-  });
-
-  it("rejects allowlisted senders when no command owner is configured", async () => {
+    },
+    {
+      name: "a configured owner excluded by commands.allowFrom",
+      cfg: {
+        commands: { ownerAllowFrom: ["owner"], allowFrom: { slack: ["other"] } },
+      },
+    },
+  ])("rejects login for $name", async ({ cfg, ctx }) => {
     const params = buildLoginParams("/login codex", {
-      command: {
-        senderIsOwner: true,
-        isAuthorizedSender: true,
-      },
+      cfg,
+      ctx,
+      opts: blockReplyOpts(),
     });
-    params.cfg = {
-      ...params.cfg,
-      commands: { text: true },
-    } as OpenClawConfig;
 
     const result = await handleLoginCommand(params, true);
 
@@ -708,6 +729,25 @@ describe("handleLoginCommand", () => {
       },
     });
     expect(runModelsAuthLoginFlowMock).not.toHaveBeenCalled();
+  });
+
+  it("accepts an internal admin without a configured owner list", async () => {
+    mockSuccessfulLoginFlow();
+    const params = buildLoginParams("/login codex", {
+      cfg: {},
+      ctx: {
+        Provider: "webchat",
+        Surface: "webchat",
+        OriginatingChannel: "webchat",
+        GatewayClientScopes: ["operator.admin"],
+      },
+      opts: blockReplyOpts(),
+    });
+
+    const result = await handleLoginCommand(params, true);
+
+    expect(result?.reply?.text).toContain("OpenAI login complete.");
+    expect(runModelsAuthLoginFlowMock).toHaveBeenCalledOnce();
   });
 
   it("returns a friendly error for unsupported providers", async () => {

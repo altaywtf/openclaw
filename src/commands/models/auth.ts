@@ -389,16 +389,11 @@ async function resolveModelsAuthContext(params?: {
     workspaceDir,
     mode: "setup",
     includeUntrustedWorkspacePlugins: false,
+    activate: false,
     ...(ownerPluginId
-      ? {
-          onlyPluginIds: [ownerPluginId],
-          activate: true,
-        }
+      ? { onlyPluginIds: [ownerPluginId] }
       : providerRef
-        ? {
-            providerRefs: [providerRef],
-            activate: true,
-          }
+        ? { providerRefs: [providerRef] }
         : {}),
   });
   const authProviders = preferSetupAuthProviders({

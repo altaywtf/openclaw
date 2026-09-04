@@ -13,7 +13,6 @@ import {
   formatProviderLoginControlUiHandoff,
   formatProviderLoginFailed,
   formatProviderLoginSessionSwitchFailed,
-  hasConfiguredCommandOwnerAllowlist,
   isProviderLoginPatchPersisted,
   releaseProviderLoginFlow,
   reserveProviderLoginFlow,
@@ -45,21 +44,6 @@ function parseLoginCommand(
   }
   const providerInput = match[1]?.trim() || undefined;
   return { providerInput };
-}
-
-function hasInternalAdminScope(params: HandleCommandsParams): boolean {
-  return (
-    Array.isArray(params.ctx.GatewayClientScopes) &&
-    params.ctx.GatewayClientScopes.includes("operator.admin")
-  );
-}
-
-function canStartProviderLogin(params: HandleCommandsParams): boolean {
-  return (
-    params.command.isAuthorizedSender &&
-    params.command.senderIsOwner &&
-    (hasConfiguredCommandOwnerAllowlist(params.cfg) || hasInternalAdminScope(params))
-  );
 }
 
 function normalizeSurface(value: unknown): string {
@@ -314,7 +298,7 @@ export const handleLoginCommand: CommandHandler = async (params, allowTextComman
     return null;
   }
 
-  if (!canStartProviderLogin(params)) {
+  if (!params.command.isAuthorizedSender || !params.command.senderIsOwner) {
     return {
       shouldContinue: false,
       reply: {
