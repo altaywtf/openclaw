@@ -66,7 +66,7 @@ export async function cleanupCodexAttempt(
   }
   if (params.oneShotCliRun) {
     await runCleanupStep("codex-one-shot-terminals", () =>
-      terminateCodexBackgroundTerminals(resourceState.client, resourceState.thread.threadId),
+      terminateCodexBackgroundTerminals(resourceState.client, resourceState.thread.threadId, true),
     );
   }
   try {
