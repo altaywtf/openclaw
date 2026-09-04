@@ -60,13 +60,24 @@ import {
 } from "./store-normalizers.js";
 import { WorkboardPromoteStore } from "./store-promote.js";
 
-function assertClaimIdentity(claim: WorkboardClaim, input: WorkboardHeartbeatInput): void {
+function assertClaimIdentity(
+  card: WorkboardCard,
+  claim: WorkboardClaim,
+  input: WorkboardHeartbeatInput,
+): void {
   const token = normalizeOptionalString(input.token);
-  const ownerId = normalizeOptionalString(input.ownerId);
-  if (token && !safeEqualSecret(token, claim.token)) {
-    throw new Error("claim token does not match.");
+  if (token) {
+    if (!safeEqualSecret(token, claim.token)) {
+      throw new Error("claim token does not match.");
+    }
+    return;
   }
-  if (!token && ownerId && ownerId !== claim.ownerId) {
+  if (card.execution?.mode === "autonomous" && card.execution.sessionKey) {
+    assertCanMutateClaimedCard(card, input);
+    return;
+  }
+  const ownerId = normalizeOptionalString(input.ownerId);
+  if (ownerId && ownerId !== claim.ownerId) {
     throw new Error("claim owner does not match.");
   }
 }
@@ -98,6 +109,16 @@ export class WorkboardWorkflowStore extends WorkboardPromoteStore {
         throw new Error("card is archived.");
       }
       const expectedAuthority = options.expectedAuthority;
+      if (expectedAuthority?.requireGuardedBoard) {
+        const board = await this.boardStore.lookup(expectedAuthority.boardId);
+        if (
+          board?.version !== 1 ||
+          board.board.archivedAt ||
+          board.board.orchestration?.autopilotMode !== "guarded"
+        ) {
+          throw new Error("board guarded autopilot is no longer enabled.");
+        }
+      }
       if (
         expectedAuthority &&
         (guarded.status !== expectedAuthority.status ||
@@ -171,7 +192,7 @@ export class WorkboardWorkflowStore extends WorkboardPromoteStore {
         throw new Error("card is not claimed.");
       }
       const now = Math.max(Date.now(), claim.lastHeartbeatAt + 1);
-      assertClaimIdentity(claim, input);
+      assertClaimIdentity(existing, claim, input);
       const nextClaim = {
         ...claim,
         lastHeartbeatAt: now,
@@ -216,7 +237,7 @@ export class WorkboardWorkflowStore extends WorkboardPromoteStore {
           : normalizeStatus(input.status, existing.status);
       const claim = existing.metadata?.claim;
       if (claim) {
-        assertClaimIdentity(claim, input);
+        assertClaimIdentity(existing, claim, input);
       }
       return await this.updateCard(
         id,
@@ -308,21 +329,7 @@ export class WorkboardWorkflowStore extends WorkboardPromoteStore {
       existing.execution?.status === "running"
         ? { ...existing.execution, status: targetStatus, updatedAt: now }
         : existing.execution;
-    const attempts = closeRunningAttempts(metadata.attempts, now, "succeeded")?.slice();
-    const completedAttemptIndex = attempts?.findIndex(
-      (attempt) => attempt.endedAt === now && attempt.status === "succeeded",
-    );
-    const completedAttempt =
-      attempts && completedAttemptIndex !== undefined && completedAttemptIndex >= 0
-        ? attempts[completedAttemptIndex]
-        : undefined;
-    if (attempts && completedAttempt && completedAttemptIndex !== undefined) {
-      attempts[completedAttemptIndex] = {
-        ...completedAttempt,
-        ...(attemptSummary ? { summary: attemptSummary } : {}),
-        ...(completionProofId ? { proofIds: [completionProofId] } : {}),
-      };
-    }
+    const attempts = closeRunningAttempts(metadata.attempts, now, "succeeded");
     return await this.updateCard(
       id,
       {
@@ -337,6 +344,8 @@ export class WorkboardWorkflowStore extends WorkboardPromoteStore {
             {
               ...metadata.automation,
               summary: overallOutcome,
+              attemptSummary,
+              attemptProofIds: completionProofId ? [completionProofId] : [],
               createdCardIds,
             },
             metadata.automation,

@@ -91,8 +91,6 @@ export function syncExecutionAttemptMetadata(
     ...(execution.model ? { model: execution.model } : {}),
     ...(execution.sessionKey ? { sessionKey: execution.sessionKey } : {}),
     ...(execution.runId ? { runId: execution.runId } : {}),
-    ...(existingAttempt?.summary ? { summary: existingAttempt.summary } : {}),
-    ...(existingAttempt?.proofIds?.length ? { proofIds: existingAttempt.proofIds } : {}),
     ...(attemptStatus !== "running" && { endedAt: execution.updatedAt || now }),
     ...(attemptStatus !== "succeeded" && existingAttempt?.error
       ? { error: existingAttempt.error }
@@ -357,7 +355,21 @@ export function assertCanMutateClaimedCard(
   }
   const ownerId = normalizeOptionalString(scope.ownerId);
   const token = normalizeOptionalString(scope.token);
-  if (claim.ownerId !== ownerId && !safeEqualSecret(token, claim.token)) {
+  if (safeEqualSecret(token, claim.token)) {
+    return;
+  }
+  const executionSessionKey =
+    card.execution?.mode === "autonomous"
+      ? normalizeOptionalString(card.execution.sessionKey)
+      : undefined;
+  const mutationSessionKey = normalizeOptionalString(scope.sessionKey);
+  if (executionSessionKey && mutationSessionKey) {
+    if (mutationSessionKey === executionSessionKey) {
+      return;
+    }
+    throw new Error(`card is claimed by ${claim.ownerId}.`);
+  }
+  if (claim.ownerId !== ownerId) {
     throw new Error(`card is claimed by ${claim.ownerId}.`);
   }
 }

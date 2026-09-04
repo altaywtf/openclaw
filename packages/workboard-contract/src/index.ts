@@ -135,8 +135,6 @@ export type WorkboardRunAttempt = {
   sessionKey?: string;
   runId?: string;
   error?: string;
-  summary?: string;
-  proofIds?: string[];
 };
 
 export type WorkboardComment = {
@@ -290,6 +288,8 @@ export type WorkboardAutomation = {
   maxRetries?: number;
   scheduledAt?: number;
   summary?: string;
+  attemptSummary?: string;
+  attemptProofIds?: string[];
   createdCardIds?: string[];
   dispatchCount?: number;
   lastDispatchAt?: number;

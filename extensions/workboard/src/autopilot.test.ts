@@ -185,7 +185,7 @@ describe("createWorkboardAutopilotService", () => {
       },
     });
 
-    await vi.advanceTimersByTimeAsync(1_000);
+    vi.setSystemTime(Date.now() + 1_001);
     await service.reconcile();
     expect(api.runtime.sandbox.prepareWorkspaceAuthority).toHaveBeenCalledTimes(2);
     await service.stop?.(context);
@@ -239,9 +239,84 @@ describe("createWorkboardAutopilotService", () => {
     await service.reconcile();
     expect(run).toHaveBeenCalledTimes(1);
 
+    await service.reconcile();
+    expect(run).toHaveBeenCalledTimes(1);
+
     await store.update(first.id, { status: "review" });
     await service.reconcile();
     expect(run).toHaveBeenCalledTimes(2);
+    await service.stop?.(context);
+  });
+
+  it("runs board maintenance before selecting newly unblocked work", async () => {
+    vi.useFakeTimers();
+    const { store, run, service, context } = createHarness();
+    await store.upsertBoard({
+      id: "ops",
+      orchestration: { autopilotMode: "guarded" },
+      defaultWorkspace: { kind: "dir", path: "/tmp" },
+    });
+    const parent = await store.create({ title: "Accepted plan", boardId: "ops", status: "done" });
+    const child = await store.create({
+      title: "Promoted child",
+      boardId: "ops",
+      status: "todo",
+      agentId: "writer",
+      parents: [parent.id],
+      workspace: { kind: "dir", path: "/tmp" },
+      workspaceAccess: { unrestricted: true },
+    });
+
+    await service.start(context);
+    await service.reconcile();
+
+    expect(run).toHaveBeenCalledOnce();
+    await expect(store.get(child.id)).resolves.toMatchObject({ status: "running" });
+    await service.stop?.(context);
+  });
+
+  it("does not launch after guarded mode is switched off during workspace validation", async () => {
+    vi.useFakeTimers();
+    const { store, run, service, context, api } = createHarness();
+    await store.upsertBoard({
+      id: "ops",
+      orchestration: { autopilotMode: "guarded" },
+      defaultWorkspace: { kind: "dir", path: "/tmp" },
+    });
+    const card = await store.create({
+      title: "Turned off while preparing",
+      boardId: "ops",
+      status: "ready",
+      agentId: "writer",
+      workspace: { kind: "dir", path: "/tmp" },
+      workspaceAccess: { unrestricted: false, roots: ["/tmp"], writable: true },
+    });
+    type WorkspaceAuthority = Awaited<
+      ReturnType<OpenClawPluginApi["runtime"]["sandbox"]["prepareWorkspaceAuthority"]>
+    >;
+    let releaseWorkspaceValidation: (() => void) | undefined;
+    api.runtime.sandbox.prepareWorkspaceAuthority = vi.fn(
+      () =>
+        new Promise<WorkspaceAuthority>((resolve) => {
+          releaseWorkspaceValidation = () =>
+            resolve({
+              sandboxed: true,
+              workspaceAccess: "rw",
+            });
+        }),
+    );
+
+    await service.start(context);
+    const reconciliation = service.reconcile();
+    await vi.waitFor(() => {
+      expect(api.runtime.sandbox.prepareWorkspaceAuthority).toHaveBeenCalledOnce();
+    });
+    await store.upsertBoard({ id: "ops", orchestration: { autopilotMode: "off" } });
+    releaseWorkspaceValidation?.();
+    await reconciliation;
+
+    expect(run).not.toHaveBeenCalled();
+    await expect(store.get(card.id)).resolves.toMatchObject({ status: "ready" });
     await service.stop?.(context);
   });
 });

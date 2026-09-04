@@ -2045,8 +2045,6 @@ describe("renderWorkboard", () => {
               status: "blocked",
               startedAt: 1,
               endedAt: 2,
-              summary: "Reran CI and confirmed the existing pull request.",
-              proofIds: ["proof-7"],
             },
           ],
           failureCount: 1,
@@ -2064,6 +2062,8 @@ describe("renderWorkboard", () => {
             workspace: { kind: "worktree", path: "/tmp/workboard", branch: "proof" },
             dispatchCount: 3,
             summary: "Ready for review.",
+            attemptSummary: "Reran CI and confirmed the existing pull request.",
+            attemptProofIds: ["proof-7"],
           },
           proof: Array.from({ length: 7 }, (_, index) => ({
             id: `proof-${index + 1}`,
@@ -2248,6 +2248,10 @@ describe("renderWorkboard", () => {
     expect(onBoardFilterChange).toHaveBeenCalledWith("ops");
     expect(container.textContent).not.toContain("Default work");
     expect(container.textContent).toContain("Ops work");
+
+    state.boardFilter = "archive";
+    renderView();
+    expect(container.querySelector(".workboard-autopilot")).toBeNull();
   });
 
   it("shows the board switcher at two boards with icon, color, and fallback glyphs", () => {

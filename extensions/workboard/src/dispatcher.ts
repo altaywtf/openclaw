@@ -47,6 +47,8 @@ export type WorkboardDispatchStartOptions = {
   materializeWorktree?: boolean;
   requireAssigned?: boolean;
   maxConcurrent?: number;
+  skipCardIds?: ReadonlySet<string>;
+  requireGuardedBoard?: boolean;
   resolveAgentWorkspace?: (agentId?: string) => string;
   resolveAgentWorkspaceRuntime?: ResolveAgentWorkspaceRuntime;
   workspaceAccess?: WorkboardWorkspaceAccess;
@@ -256,7 +258,7 @@ function selectStartableCards(
     const owner = ownerOverride || workboardCardSlotOwner(card, now);
     const rejection = cardIsArchived(card)
       ? "Card is archived; restore it before starting."
-      : mode === "scheduled" && requireAssigned && !card.agentId?.trim()
+      : requireAssigned && !card.agentId?.trim()
         ? "Guarded Autopilot requires an explicitly assigned agent."
         : cardHasActiveClaim(card, now)
           ? `Card is already claimed by ${card.metadata?.claim?.ownerId ?? "another worker"}.`
@@ -322,7 +324,11 @@ async function runWorkboardDispatch(
   const directCard = directCardId ? await params.store.prepareStart(directCardId, now) : undefined;
   const dispatch = directCard
     ? { promoted: [], reclaimed: [], blocked: [], orchestrated: [], count: 0 }
-    : await params.store.dispatch({ now, boardId });
+    : await params.store.dispatch({
+        now,
+        boardId,
+        recordReady: params.options?.requireGuardedBoard !== true,
+      });
   const maxStarts = resolveNonNegativeIntegerOption(
     params.options?.maxStarts,
     DEFAULT_DISPATCH_MAX_STARTS,
@@ -330,8 +336,14 @@ async function runWorkboardDispatch(
   const started: WorkboardStartedRun[] = [];
   const startFailures: WorkboardStartFailure[] = [];
   const cards = await params.store.list();
-  const candidates = directCard ? [directCard] : await params.store.list({ boardId });
-  const activeConcurrentRuns = candidates.filter(
+  const concurrencyBoardId = boardId ?? (directCard ? cardBoardId(directCard) : undefined);
+  const boardCards = concurrencyBoardId
+    ? cards.filter((card) => cardBoardId(card) === concurrencyBoardId)
+    : cards;
+  const candidates = (directCard ? [directCard] : boardCards).filter(
+    (card) => !params.options?.skipCardIds?.has(card.id),
+  );
+  const activeConcurrentRuns = boardCards.filter(
     (card) =>
       !card.metadata?.archivedAt &&
       card.status === "running" &&
@@ -472,6 +484,7 @@ async function runWorkboardDispatch(
             agentId: card.agentId,
             workspace: card.metadata?.automation?.workspace,
             workspaceAccess: card.metadata?.automation?.workspaceAccess,
+            requireGuardedBoard: params.options?.requireGuardedBoard,
           },
           adoptWorkspaceAccess: persistWorkspaceAccess ? workspaceAccess : undefined,
         },

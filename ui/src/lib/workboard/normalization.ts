@@ -9,6 +9,7 @@ import {
   isValidWorkboardBoardId,
   WORKBOARD_PRIORITIES,
   WORKBOARD_STATUSES,
+  type WorkboardAutopilotMode,
   type WorkboardBoardSummary,
   type WorkboardCard,
   type WorkboardPriority,
@@ -39,7 +40,8 @@ function normalizeBoardSummary(value: unknown): WorkboardBoardSummary | null {
   const automationJobId =
     typeof value.automationJobId === "string" ? value.automationJobId.trim() : "";
   const rawOrchestration = isRecord(value.orchestration) ? value.orchestration : undefined;
-  const autopilotMode = rawOrchestration?.autopilotMode === "guarded" ? "guarded" : undefined;
+  const autopilotMode: WorkboardAutopilotMode | undefined =
+    rawOrchestration?.autopilotMode === "guarded" ? "guarded" : undefined;
   const autoDecompose =
     typeof rawOrchestration?.autoDecompose === "boolean"
       ? rawOrchestration.autoDecompose
@@ -47,7 +49,8 @@ function normalizeBoardSummary(value: unknown): WorkboardBoardSummary | null {
   const autoDecomposePerDispatch =
     typeof rawOrchestration?.autoDecomposePerDispatch === "number" &&
     Number.isFinite(rawOrchestration.autoDecomposePerDispatch) &&
-    rawOrchestration.autoDecomposePerDispatch >= 0
+    rawOrchestration.autoDecomposePerDispatch >= 1 &&
+    rawOrchestration.autoDecomposePerDispatch <= 20
       ? Math.trunc(rawOrchestration.autoDecomposePerDispatch)
       : undefined;
   const defaultAssignee =

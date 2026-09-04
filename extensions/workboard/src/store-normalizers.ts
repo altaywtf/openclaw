@@ -120,6 +120,10 @@ export function normalizeBoardMetadata(
       ? undefined
       : now
     : fallback?.archivedAt;
+  const archiveSafeOrchestration =
+    archivedAt && orchestration?.autopilotMode === "guarded"
+      ? { ...orchestration, autopilotMode: "off" as const }
+      : orchestration;
   return {
     id,
     ...(name ? { name } : {}),
@@ -128,7 +132,7 @@ export function normalizeBoardMetadata(
     ...(color ? { color } : {}),
     ...(automationJobId ? { automationJobId } : {}),
     ...(defaultWorkspace ? { defaultWorkspace } : {}),
-    ...(orchestration ? { orchestration } : {}),
+    ...(archiveSafeOrchestration ? { orchestration: archiveSafeOrchestration } : {}),
     createdAt: fallback?.createdAt ?? now,
     updatedAt: now,
     ...(archivedAt ? { archivedAt } : {}),
@@ -449,6 +453,12 @@ export function normalizeAutomation(
     "idempotency key",
   );
   const summary = normalizeBoundedString(record.summary, fallback.summary, 2000, "summary");
+  const attemptSummary = Object.hasOwn(record, "attemptSummary")
+    ? normalizeBoundedString(record.attemptSummary, undefined, 2000, "attempt summary")
+    : fallback.attemptSummary;
+  const attemptProofIds = Object.hasOwn(record, "attemptProofIds")
+    ? normalizeStringList(record.attemptProofIds, "attempt proof ids", 120)
+    : fallback.attemptProofIds;
   const skills = Object.hasOwn(record, "skills")
     ? normalizeStringList(record.skills, "skills")
     : fallback.skills;
@@ -490,6 +500,8 @@ export function normalizeAutomation(
     ...(maxRetries ? { maxRetries } : {}),
     ...(scheduledAt ? { scheduledAt } : {}),
     ...(summary ? { summary } : {}),
+    ...(attemptSummary ? { attemptSummary } : {}),
+    ...(attemptProofIds?.length ? { attemptProofIds } : {}),
     ...(createdCardIds?.length ? { createdCardIds } : {}),
     ...(dispatchCount ? { dispatchCount } : {}),
     ...(lastDispatchAt ? { lastDispatchAt } : {}),
@@ -630,8 +642,6 @@ function normalizeAttempt(value: unknown): WorkboardRunAttempt | null {
   const sessionKey = normalizeOptionalString(record.sessionKey);
   const runId = normalizeOptionalString(record.runId);
   const error = normalizeBoundedString(record.error, undefined, 800, "attempt error");
-  const summary = normalizeBoundedString(record.summary, undefined, 2000, "attempt summary");
-  const proofIds = normalizeStringList(record.proofIds, "attempt proof ids", 120);
   const engine = normalizeBoundedString(record.engine, undefined, 160, "attempt engine");
   const model = normalizeBoundedString(record.model, undefined, 160, "attempt model");
   return {
@@ -648,8 +658,6 @@ function normalizeAttempt(value: unknown): WorkboardRunAttempt | null {
     ...(sessionKey ? { sessionKey } : {}),
     ...(runId ? { runId } : {}),
     ...(error ? { error } : {}),
-    ...(summary ? { summary } : {}),
-    ...(proofIds.length ? { proofIds } : {}),
   };
 }
 
@@ -1243,6 +1251,8 @@ function removeUndefinedAutomationFields(automation: WorkboardAutomation): Workb
     "maxRetries",
     "scheduledAt",
     "summary",
+    "attemptSummary",
+    "attemptProofIds",
     "createdCardIds",
     "dispatchCount",
     "lastDispatchAt",

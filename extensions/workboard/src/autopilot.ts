@@ -1,7 +1,6 @@
 import type { WorkboardBoardSummary, WorkboardCard } from "@openclaw/workboard-contract";
 import type { OpenClawPluginApi, OpenClawPluginService } from "../api.js";
 import { dispatchAndStartWorkboardCards } from "./dispatcher.js";
-import { cardBoardId } from "./store-card-helpers.js";
 import type { WorkboardStore } from "./store.js";
 import {
   resolveAgentWorkboardWorkspaceRuntime,
@@ -69,29 +68,23 @@ export function createWorkboardAutopilotService(params: {
     debounceTimer.unref?.();
   };
 
-  const reconcileBoard = async (board: WorkboardBoardSummary, cards: WorkboardCard[]) => {
+  const reconcileBoard = async (board: WorkboardBoardSummary) => {
     const now = Date.now();
-    const eligibleCards = cards.filter(
-      (card) => isEligibleReadyCard(card) && (failureRetryAt.get(card.id) ?? 0) <= now,
+    const skipCardIds = new Set(
+      [...failureRetryAt].flatMap(([cardId, retryAt]) => (retryAt > now ? [cardId] : [])),
     );
-    if (eligibleCards.length === 0) {
-      return;
-    }
-    const targetCard = eligibleCards[0];
-    if (!targetCard) {
-      return;
-    }
     const config = currentRuntimeConfig(params.api);
     const result = await dispatchAndStartWorkboardCards({
       store: params.store,
       subagent: params.api.runtime.subagent,
       worktrees: params.api.runtime.worktrees,
       options: {
-        cardId: targetCard.id,
         boardId: board.id,
         maxStarts: 1,
         maxConcurrent: 1,
         requireAssigned: true,
+        requireGuardedBoard: true,
+        skipCardIds,
         materializeWorktree: true,
         resolveAgentWorkspace: (agentId) => resolveWorkboardAgentWorkspace(config, agentId),
         resolveAgentWorkspaceRuntime: (agentId, sessionKey, workspaceDir, provider, model) =>
@@ -147,11 +140,6 @@ export function createWorkboardAutopilotService(params: {
         params.store.listBoards(),
         params.store.list(),
       ]);
-      const cardsByBoard = new Map<string, WorkboardCard[]>();
-      for (const card of cards) {
-        const boardId = cardBoardId(card);
-        cardsByBoard.set(boardId, [...(cardsByBoard.get(boardId) ?? []), card]);
-      }
       for (const cardId of failureRetryAt.keys()) {
         const card = cards.find((entry) => entry.id === cardId);
         if (!card || !isEligibleReadyCard(card)) {
@@ -160,7 +148,7 @@ export function createWorkboardAutopilotService(params: {
         }
       }
       for (const board of boardResult.boards.filter(isGuardedBoard)) {
-        await reconcileBoard(board, cardsByBoard.get(board.id) ?? []);
+        await reconcileBoard(board);
       }
     } catch (error) {
       logger?.warn(`workboard guarded autopilot reconciliation failed: ${String(error)}`);

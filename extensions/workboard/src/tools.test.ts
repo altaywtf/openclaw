@@ -681,6 +681,12 @@ describe("workboard tools", () => {
     await expect(
       siblingTools.get("workboard_heartbeat")?.execute("heartbeat-sibling", { id: card.id }),
     ).rejects.toThrow("card is claimed by agent-a");
+    await expect(
+      store.heartbeat(card.id, {
+        ownerId: "agent-a",
+        sessionKey: "agent:agent-a:subagent:unrelated",
+      }),
+    ).rejects.toThrow("card is claimed by agent-a");
 
     const workerTools = new Map(
       createWorkboardTools({

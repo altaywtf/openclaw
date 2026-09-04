@@ -491,6 +491,33 @@ describe("workboard controller", () => {
       ]);
     });
 
+    it("preserves persisted latest-attempt review context through card normalization", async () => {
+      const client = createClient({
+        "workboard.cards.list": {
+          cards: [
+            {
+              ...sampleCard,
+              metadata: {
+                automation: {
+                  attemptSummary: "Reproduced and verified the fix.",
+                  attemptProofIds: ["proof-focused"],
+                },
+              },
+            },
+          ],
+          boards: [],
+          statuses: ["todo", "review"],
+        },
+      });
+
+      await loadBoard(client);
+
+      expect(getWorkboardState(host).cards[0]?.metadata?.automation).toMatchObject({
+        attemptSummary: "Reproduced and verified the fix.",
+        attemptProofIds: ["proof-focused"],
+      });
+    });
+
     it("rejects an invalidated generation after its replacement loads", async () => {
       const staleList = createDeferred<unknown>();
       const currentCard = makeCard({ title: "Current generation" });

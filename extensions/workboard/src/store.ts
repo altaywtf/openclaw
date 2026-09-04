@@ -225,7 +225,12 @@ export class WorkboardStore extends WorkboardNotificationStore {
             },
             metadata: {
               ...card.metadata,
-              automation: { ...card.metadata?.automation, launch },
+              automation: {
+                ...card.metadata?.automation,
+                attemptSummary: undefined,
+                attemptProofIds: [],
+                launch,
+              },
             },
           };
         },
@@ -462,6 +467,7 @@ export class WorkboardStore extends WorkboardNotificationStore {
   ): Promise<WorkboardDispatchResult> {
     const now = typeof input === "number" ? input : normalizeTimestamp(input.now, Date.now());
     const boardId = typeof input === "number" ? undefined : normalizeBoardId(input.boardId);
+    const recordReady = typeof input === "number" || input.recordReady !== false;
     return await this.enqueueMutation(async () => {
       const promoted: WorkboardCard[] = [];
       const reclaimed: WorkboardCard[] = [];
@@ -542,7 +548,7 @@ export class WorkboardStore extends WorkboardNotificationStore {
           });
           blocked.push(latest);
         }
-        if (latest.status === "ready" && !latest.metadata?.archivedAt) {
+        if (recordReady && latest.status === "ready" && !latest.metadata?.archivedAt) {
           latest = await this.recordDispatch(latest, now);
         }
         if (await this.shouldAutoOrchestrate(latest)) {

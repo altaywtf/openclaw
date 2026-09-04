@@ -6,9 +6,9 @@ import type {
   OpenClawPluginApi,
   OpenClawPluginToolContext,
 } from "openclaw/plugin-sdk/plugin-entry";
-import { safeEqualSecret } from "openclaw/plugin-sdk/security-runtime";
 import { Type } from "typebox";
 import { redactClaimToken } from "./card-redaction.js";
+import { assertCanMutateClaimedCard } from "./store-card-helpers.js";
 import { WorkboardStore } from "./store.js";
 import {
   cardIdField,
@@ -38,17 +38,12 @@ function canMutateCard(
   sessionKey: string | undefined,
   token?: string,
 ): boolean {
-  const claim = card.metadata?.claim;
-  if (!claim) {
+  try {
+    assertCanMutateClaimedCard(card, { ownerId, sessionKey, token });
     return true;
+  } catch {
+    return false;
   }
-  if (safeEqualSecret(token, claim.token)) {
-    return true;
-  }
-  if (card.execution?.mode === "autonomous" && card.execution.sessionKey) {
-    return sessionKey === card.execution.sessionKey;
-  }
-  return claim.ownerId === ownerId;
 }
 
 function readParentIds(value: unknown): string[] {
@@ -144,7 +139,7 @@ type WorkboardToolCardParams = {
   record: Record<string, unknown>;
   id: string;
   token?: string;
-  scope: { ownerId: string; token?: string };
+  scope: { ownerId: string; token?: string; sessionKey?: string };
 };
 type WorkboardToolCardParamsReader = (rawParams: unknown) => Promise<WorkboardToolCardParams>;
 type WorkboardCardMutation = (
@@ -155,7 +150,11 @@ type WorkboardCardMutation = (
 
 const ScopedClaimTokenField = claimTokenField("Claim token for claimed cards.");
 
-function readCardToolParams(rawParams: unknown, ownerId: string): WorkboardToolCardParams {
+function readCardToolParams(
+  rawParams: unknown,
+  ownerId: string,
+  sessionKey: string | undefined,
+): WorkboardToolCardParams {
   const record = rawParams as Record<string, unknown>;
   const id = readStringParam(record, "id", { required: true });
   const token = record.token as string | undefined;
@@ -163,7 +162,7 @@ function readCardToolParams(rawParams: unknown, ownerId: string): WorkboardToolC
     record,
     id,
     token,
-    scope: { ownerId, token },
+    scope: { ownerId, token, sessionKey },
   };
 }
 
@@ -200,14 +199,14 @@ export function createWorkboardTools(params: {
   const ownerId = contextOwner(params.context);
   const sessionKey = contextSessionKey(params.context);
   const readScopedCardToolParams = async (rawParams: unknown): Promise<WorkboardToolCardParams> => {
-    const input = readCardToolParams(rawParams, ownerId);
+    const input = readCardToolParams(rawParams, ownerId, sessionKey);
     await requireScopedCard(store, input.id, ownerId, sessionKey, input.token);
     return input;
   };
   const readClaimedCardToolParams = async (
     rawParams: unknown,
   ): Promise<WorkboardToolCardParams> => {
-    const input = readCardToolParams(rawParams, ownerId);
+    const input = readCardToolParams(rawParams, ownerId, sessionKey);
     await requireClaimedCard(store, input.id, ownerId, sessionKey, input.token);
     return input;
   };

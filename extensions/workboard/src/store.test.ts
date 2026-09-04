@@ -721,11 +721,11 @@ describe("WorkboardStore", () => {
       await store.update(card.id, {
         metadata: {
           lifecycleStatusSourceUpdatedAt: 1234,
-          attempts: card.metadata?.attempts?.map((attempt) => ({
-            ...attempt,
-            summary: "Verified this SQLite attempt.",
-            proofIds: ["proof-sqlite"],
-          })),
+          automation: {
+            ...card.metadata?.automation,
+            attemptSummary: "Verified this SQLite attempt.",
+            attemptProofIds: ["proof-sqlite"],
+          },
         },
       });
       const attachmentId = attached.metadata?.attachments?.[0]?.id;
@@ -788,15 +788,13 @@ describe("WorkboardStore", () => {
         id: card.id,
         labels: ["sqlite", "doctor"],
         metadata: {
-          automation: { boardId: "planning" },
+          automation: {
+            boardId: "planning",
+            attemptSummary: "Verified this SQLite attempt.",
+            attemptProofIds: ["proof-sqlite"],
+          },
           lifecycleStatusSourceUpdatedAt: 1234,
           comments: [expect.objectContaining({ body: "round trip" })],
-          attempts: [
-            expect.objectContaining({
-              summary: "Verified this SQLite attempt.",
-              proofIds: ["proof-sqlite"],
-            }),
-          ],
           attachments: expect.arrayContaining([
             expect.objectContaining({ fileName: "proof.txt" }),
             expect.objectContaining({ fileName: "large-proof.bin" }),
@@ -919,7 +917,7 @@ describe("WorkboardStore", () => {
           created_at, updated_at, archived_at
         FROM workboard_boards_strict;
         DROP TABLE workboard_boards_strict;
-        DELETE FROM workboard_schema_migrations;
+        DELETE FROM workboard_schema_migrations WHERE id = 'schema-3';
         INSERT OR IGNORE INTO workboard_schema_migrations (id, applied_at)
         VALUES ('schema-2', 1);
       `);
@@ -945,7 +943,7 @@ describe("WorkboardStore", () => {
         ).toEqual({ strict: 1 });
         expect(
           migrated
-            .prepare("SELECT 1 AS found FROM workboard_schema_migrations WHERE id = 'schema-4'")
+            .prepare("SELECT 1 AS found FROM workboard_schema_migrations WHERE id = 'schema-3'")
             .get(),
         ).toEqual({ found: 1 });
       } finally {
@@ -2821,13 +2819,16 @@ describe("WorkboardStore", () => {
           expect.objectContaining({
             status: "succeeded",
             endedAt: expect.any(Number),
-            summary: "Implemented and verified the isolation in this run.",
-            proofIds: [expect.any(String)],
           }),
         ],
         proof: [expect.objectContaining({ status: "passed" })],
         artifacts: [expect.objectContaining({ path: "/tmp/log.txt" })],
-        automation: { summary: "Portal isolation is implemented.", createdCardIds: [child.id] },
+        automation: {
+          summary: "Portal isolation is implemented.",
+          attemptSummary: "Implemented and verified the isolation in this run.",
+          attemptProofIds: [expect.any(String)],
+          createdCardIds: [child.id],
+        },
         notifications: [expect.objectContaining({ kind: "completed" })],
       },
     });
@@ -3774,6 +3775,22 @@ describe("WorkboardStore", () => {
     await expect(store.listNotificationSubscriptions({ boardId: "ops" })).resolves.toMatchObject({
       subscriptions: [expect.objectContaining({ id: subscription.id, cardId: card.id })],
     });
+  });
+
+  it("turns guarded autopilot off when a board is archived", async () => {
+    const store = new WorkboardStore(createMemoryStore(), {
+      boards: createMemoryStore<PersistedWorkboardBoard>(),
+    });
+    await store.upsertBoard({ id: "ops", orchestration: { autopilotMode: "guarded" } });
+
+    const archived = await store.archiveBoard("ops", true);
+    expect(archived).toMatchObject({
+      archivedAt: expect.any(Number),
+      orchestration: { autopilotMode: "off" },
+    });
+
+    const restored = await store.archiveBoard("ops", false);
+    expect(restored).toMatchObject({ orchestration: { autopilotMode: "off" } });
   });
 
   it("excludes archived cards from notification replay without discarding their history", async () => {

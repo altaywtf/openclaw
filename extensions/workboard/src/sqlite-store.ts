@@ -37,7 +37,7 @@ import type {
 } from "./persistence-types.js";
 import { workboardCardConsumesOwnerSlot, workboardCardSlotOwner } from "./store-constants.js";
 const WORKBOARD_DB_RELATIVE_PATH = ["plugins", "workboard", "workboard.sqlite"] as const;
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 3;
 const WORKBOARD_SQLITE_BUSY_TIMEOUT_MS = 5000;
 const WORKBOARD_SQLITE_DIR_MODE = 0o700;
 const WORKBOARD_SQLITE_FILE_MODE = 0o600;
@@ -224,9 +224,7 @@ const WORKBOARD_SCHEMA_SQL = `
       model TEXT,
       session_key TEXT,
       run_id TEXT,
-      error TEXT,
-      summary TEXT,
-      proof_ids_json TEXT
+      error TEXT
     ) STRICT;
     CREATE INDEX IF NOT EXISTS workboard_card_attempts_card_idx
       ON workboard_card_attempts(card_id, ordinal);
@@ -374,8 +372,6 @@ function ensureWorkboardSchema(db: DatabaseSync): void {
     "lifecycle_status_source_updated_at",
     "lifecycle_status_source_updated_at INTEGER",
   );
-  ensureColumn(db, "workboard_card_attempts", "summary", "summary TEXT");
-  ensureColumn(db, "workboard_card_attempts", "proof_ids_json", "proof_ids_json TEXT");
   const migrationId = `schema-${SCHEMA_VERSION}`;
   const current = db
     .prepare("SELECT 1 AS found FROM workboard_schema_migrations WHERE id = ?")
@@ -624,13 +620,6 @@ function readMetadata(
     const sessionKey = stringValue(child, "session_key");
     const runId = stringValue(child, "run_id");
     const error = stringValue(child, "error");
-    const summary = stringValue(child, "summary");
-    const proofIdsValue = parseJson(child.proof_ids_json);
-    const proofIds = Array.isArray(proofIdsValue)
-      ? proofIdsValue.filter(
-          (value): value is string => typeof value === "string" && value.length > 0,
-        )
-      : [];
     if (endedAt !== undefined) {
       entry.endedAt = endedAt;
     }
@@ -651,12 +640,6 @@ function readMetadata(
     }
     if (error) {
       entry.error = error;
-    }
-    if (summary) {
-      entry.summary = summary;
-    }
-    if (proofIds.length) {
-      entry.proofIds = proofIds;
     }
     return entry;
   });
@@ -1035,8 +1018,8 @@ function insertCard(db: DatabaseSync, card: WorkboardCard): void {
     db.prepare(
       `
         INSERT INTO workboard_card_attempts
-          (id, card_id, ordinal, status, started_at, ended_at, engine, mode, model, session_key, run_id, error, summary, proof_ids_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          (id, card_id, ordinal, status, started_at, ended_at, engine, mode, model, session_key, run_id, error)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
     ).run(
       entry.id,
@@ -1051,8 +1034,6 @@ function insertCard(db: DatabaseSync, card: WorkboardCard): void {
       bindNull(entry.sessionKey),
       bindNull(entry.runId),
       bindNull(entry.error),
-      bindNull(entry.summary),
-      jsonValue(entry.proofIds),
     );
   });
   insertChildren(db, "workboard_card_comments", card.id, metadata?.comments, (entry, ordinal) => {

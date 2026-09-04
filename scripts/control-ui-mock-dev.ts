@@ -1219,6 +1219,8 @@ function buildWorkboardMocks(baseTime: number) {
         automation: {
           boardId,
           summary: "Improved keyboard navigation and documented the remaining contrast check.",
+          attemptSummary: "Verified keyboard navigation during the latest worker attempt.",
+          attemptProofIds: ["proof-keyboard"],
         },
         attempts: [
           {

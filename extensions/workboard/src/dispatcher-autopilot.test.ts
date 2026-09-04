@@ -63,7 +63,7 @@ describe("guarded Workboard dispatch", () => {
         updatedAt: 1,
       },
     });
-    await store.create({
+    const ready = await store.create({
       title: "Waits for capacity",
       status: "ready",
       agentId: "reviewer",
@@ -74,7 +74,13 @@ describe("guarded Workboard dispatch", () => {
     const result = await dispatchAndStartWorkboardCards({
       store,
       subagent: { run },
-      options: { now: 10, maxStarts: 1, maxConcurrent: 1, requireAssigned: true },
+      options: {
+        now: 10,
+        cardId: ready.id,
+        maxStarts: 1,
+        maxConcurrent: 1,
+        requireAssigned: true,
+      },
     });
 
     expect(result.started).toEqual([]);
