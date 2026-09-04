@@ -727,9 +727,9 @@ export function createSessionsSendTool(opts?: {
           sessionKey: unresolvedDisplayKey,
         });
       }
-      // Normalize sessionKey/sessionId input into a canonical session key.
+      // Exact-incarnation callers need the canonical key for follow-up sends.
       const resolvedKey = visibleSession.key;
-      const displayKey = visibleSession.displayKey;
+      const displayKey = opts?.expectedTargetSessionId ? resolvedKey : visibleSession.displayKey;
       const resolvedKeyAgentId = parseAgentSessionKey(resolvedKey)?.agentId;
       const isLiteralLegacyKeyInput =
         !labelParam && sessionKeyParam !== undefined && !resolvedSession.resolvedViaSessionId;

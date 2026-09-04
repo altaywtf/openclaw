@@ -201,7 +201,12 @@ describe("worker family owner resolution", () => {
           callGateway,
         }),
       );
-      expect(result.details).toMatchObject({ status: "accepted" });
+      expect(result.details).toMatchObject({ status: "accepted", sessionKey: target.sessionKey });
+      const text = result.content
+        .filter((block) => block.type === "text")
+        .map((block) => block.text)
+        .join("\n");
+      expect(JSON.parse(text)).toMatchObject({ status: "accepted", sessionKey: target.sessionKey });
       expect(dispatched).toEqual([
         expect.objectContaining({
           agentId: "ops",
