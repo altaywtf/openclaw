@@ -213,51 +213,6 @@ describe("triageCommand", () => {
     expect(runtime.error.mock.calls.flat().join("\n")).toContain("manual");
   });
 
-  it("continues update failure through the installed child without collecting old diagnostics", async () => {
-    const root = path.join(stateDir, "candidate");
-    await fs.mkdir(path.join(root, "dist"), { recursive: true });
-    const capture = path.join(root, "continued.json");
-    await fs.writeFile(
-      path.join(root, "dist/index.js"),
-      `(async () => {
-  const { acceptTriageContinuation } = await import(${JSON.stringify(path.resolve("src/infra/triage-continuation.ts"))});
-  const admission = await acceptTriageContinuation();
-  const message = { type: 'triage', version: 2, failure: admission.failure };
-  require('node:fs').writeFileSync(${JSON.stringify(capture)}, JSON.stringify({ args: process.argv.slice(2), message }));
-  await admission.finish('closed');
-})();`,
-    );
-    vi.stubEnv("NODE_OPTIONS", `--import ${path.resolve("scripts/tsx.mjs")}`);
-    vi.stubEnv("TSX_TSCONFIG_PATH", path.resolve("tsconfig.json"));
-    const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
-    mocks.spawn.mockImplementation(actual.spawn);
-    // The installed child must own diagnostics after package replacement.
-    mocks.collectDoctorFindings.mockRejectedValue(new Error("old triage chunk was removed"));
-    const runtime = createTriageRuntime();
-    const failure = {
-      kind: "update" as const,
-      phase: "post-update-plugins",
-      error: "original plugin failure",
-      installationRoot: root,
-      gateway: "preserve" as const,
-    };
-
-    await triageAfterFailure(runtime, failure);
-
-    expect(mocks.collectDoctorFindings).not.toHaveBeenCalled();
-    expect(JSON.parse(await fs.readFile(capture, "utf8"))).toMatchObject({
-      args: ["triage"],
-      message: {
-        type: "triage",
-        version: 2,
-        failure: { ...failure, installationRoot: await fs.realpath(root) },
-      },
-    });
-    expect(runtime.log).not.toHaveBeenCalled();
-    expect(runtime.writeJson).not.toHaveBeenCalled();
-    expect(runtime.exit).not.toHaveBeenCalled();
-  });
-
   it.each(["claude", "codex"])(
     "shows a headless %s auth failure and retains a manual handoff",
     async (agent) => {

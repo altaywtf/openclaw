@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { withTriageTerminal } from "../../commands/triage.test-support.js";
 import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
 import { triageTestRuntimeEntrypoints } from "../../infra/triage-runtime.test-support.js";
 import { CONTROL_PLANE_UPDATE_SENTINEL_META_ENV } from "../../infra/update-control-plane-sentinel.js";
@@ -103,26 +104,6 @@ async function createManagedTriageTarget() {
     [CONTROL_PLANE_UPDATE_SENTINEL_META_ENV]: metaPath,
   });
   return { target, contextPath };
-}
-
-async function withTerminal(run: () => Promise<void>) {
-  const streams = [process.stdin, process.stdout];
-  const descriptors = streams.map((stream) => Object.getOwnPropertyDescriptor(stream, "isTTY"));
-  for (const stream of streams) {
-    Object.defineProperty(stream, "isTTY", { configurable: true, value: true });
-  }
-  try {
-    await run();
-  } finally {
-    streams.forEach((stream, index) => {
-      const descriptor = descriptors[index];
-      if (descriptor) {
-        Object.defineProperty(stream, "isTTY", descriptor);
-      } else {
-        Reflect.deleteProperty(stream, "isTTY");
-      }
-    });
-  }
 }
 
 beforeEach(() => {
@@ -465,7 +446,7 @@ describe("update failure triage boundary", () => {
               OPENCLAW_WORKSPACE_DIR: state.workspaceDir,
             },
             () =>
-              withTerminal(async () => {
+              withTriageTerminal(true, async () => {
                 const target: UpdateTriageTarget = { env: { ...process.env } };
                 await expect(
                   withUpdateFailureTriage({ invocationCwd }, target, async () => {

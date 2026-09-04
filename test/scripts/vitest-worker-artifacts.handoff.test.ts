@@ -19,7 +19,6 @@ function handoffProbe(directory: string) {
     import fs from 'node:fs';
     import path from 'node:path';
     import {createRequire} from 'node:module';
-    import {spawnSync} from 'node:child_process';
     import {expect,it} from 'vitest';
     import {stageManagedHandoffRuntime} from ${JSON.stringify(stage)};
     it('stages and executes the actual lease owner from current source', () => {
@@ -27,7 +26,7 @@ function handoffProbe(directory: string) {
       const [entry] = stageManagedHandoffRuntime(directory);
       if(process.platform !== 'win32') expect(fs.statSync(entry).mode & 0o777).toBe(0o600);
       const {createManagedHandoffLeaseRuntime} = createRequire(import.meta.url)(entry);
-      const owner = createManagedHandoffLeaseRuntime({fs,path,spawnSync,process}, {
+      const owner = createManagedHandoffLeaseRuntime({
         databasePath:path.join(directory,'state','lease.sqlite'), serviceManagerEnv:{}
       });
       const claim = owner.acquire(directory,'source-borrower',{kind:'update'});

@@ -1,4 +1,6 @@
-import type { Stats } from "node:fs";
+import { spawnSync } from "node:child_process";
+import fs, { type Stats } from "node:fs";
+import path from "node:path";
 import type { DatabaseSync as HandoffDatabase } from "node:sqlite";
 import { sql } from "kysely";
 import {
@@ -19,7 +21,7 @@ import {
   isManagedTriageFailure as validFailure,
   parseManagedHandoffPayload as parse,
   type HandoffNativeLifetime,
-  type HandoffRuntimeBuiltins,
+  type HandoffProcessIdentity,
   type ManagedHandoffLease,
   type ManagedHandoffLeaseAction,
 } from "./update-managed-service-handoff-lease-state.ts";
@@ -37,11 +39,9 @@ type LeaseAcquisition =
 
 /** One lease implementation, preloaded normally and sealed before package replacement. */
 export function createManagedHandoffLeaseRuntime(
-  builtins: HandoffRuntimeBuiltins,
   options: { databasePath: string; serviceManagerEnv: Record<string, string> },
   logger?: SqliteTransactionOptions["logger"],
 ) {
-  const { fs, path, spawnSync, process } = builtins;
   const { databasePath, serviceManagerEnv } = options;
   if (
     !serviceManagerEnv ||
@@ -53,7 +53,7 @@ export function createManagedHandoffLeaseRuntime(
     throw new Error("managed handoff service control environment is invalid");
   }
   const { isPidAlive, readProcessStartIdentity, processState, processIdentity, bootIdentity } =
-    createHandoffProcessIdentity(builtins, serviceManagerEnv);
+    createHandoffProcessIdentity(serviceManagerEnv);
   function properties(stdout: string | Buffer | null | undefined): Record<string, string> {
     return Object.fromEntries(
       String(stdout || "")
@@ -98,13 +98,7 @@ export function createManagedHandoffLeaseRuntime(
       throw new Error("managed handoff lease " + kind + " is unsafe");
     }
   }
-  function close(db?: HandoffDatabase) {
-    // Canonical rollback may already close a damaged handle; keep its original error.
-    if (db?.isOpen) {
-      db.close();
-    }
-  }
-  function open(write: boolean) {
+  function withDatabase<T>(write: boolean, operation: (db: HandoffDatabase) => T): T {
     const dir = path.dirname(databasePath);
     if (write) {
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -139,10 +133,12 @@ export function createManagedHandoffLeaseRuntime(
         );
         fs.chmodSync(databasePath, 0o600);
       }
-      return db;
-    } catch (error) {
-      close(db);
-      throw error;
+      return operation(db);
+    } finally {
+      // Canonical rollback may already close a damaged handle; keep its original error.
+      if (db.isOpen) {
+        db.close();
+      }
     }
   }
   function row(db: HandoffDatabase, root: string) {
@@ -213,18 +209,16 @@ export function createManagedHandoffLeaseRuntime(
     );
   }
   function read(root: string): LeaseRead {
-    let db;
     try {
       if (!fs.existsSync(databasePath)) {
         return { kind: "absent" };
       }
-      db = open(false);
-      const value = row(db, root);
-      return value ? { kind: "current", lease: handle(root, value) } : { kind: "absent" };
+      return withDatabase(false, (db) => {
+        const value = row(db, root);
+        return value ? { kind: "current", lease: handle(root, value) } : { kind: "absent" };
+      });
     } catch {
       return { kind: "unreadable" };
-    } finally {
-      close(db);
     }
   }
   const sameRow = (a: LeaseRow | undefined, b: LeaseRow | undefined) =>
@@ -271,8 +265,7 @@ export function createManagedHandoffLeaseRuntime(
     if (!text(root) || !text(owner) || !parse(payload)) {
       throw new Error("managed handoff admission is invalid");
     }
-    const db = open(true);
-    try {
+    return withDatabase(true, (db) => {
       const observed = row(db, root);
       const currentLease = admissionLease(root, observed);
       const resuming =
@@ -321,9 +314,7 @@ export function createManagedHandoffLeaseRuntime(
           lease: handle(root, { owner, payload_json: payload, updated_at: updatedAt }),
         };
       });
-    } finally {
-      close(db);
-    }
+    });
   }
   function current(lease: ManagedHandoffLease) {
     const result = read(lease.key);
@@ -346,19 +337,25 @@ export function createManagedHandoffLeaseRuntime(
       (role === "helper" || processState(lease.executor) === "live")
     );
   }
-  function cas(lease: ManagedHandoffLease, payload: string) {
+  function cas(
+    lease: ManagedHandoffLease,
+    action: ManagedHandoffLeaseAction,
+    executor?: HandoffProcessIdentity,
+  ) {
+    const payload = JSON.stringify({
+      ...parse(lease.payload),
+      action,
+      ...(executor ? { executor, helper: lease.helper } : {}),
+    });
     if (!parse(payload)) {
       return null;
     }
-    const db = open(true);
-    try {
+    return withDatabase(true, (db) => {
       const updatedAt = Math.max(Date.now(), lease.updatedAt + 1);
       return updateRow(db, lease, { payload_json: payload, updated_at: updatedAt })
         ? handle(lease.key, { owner: lease.owner, payload_json: payload, updated_at: updatedAt })
         : null;
-    } finally {
-      close(db);
-    }
+    });
   }
   function bind(lease: ManagedHandoffLease, pid: number, action = lease.action) {
     if (!owns(lease) || !Number.isInteger(pid) || pid <= 0) {
@@ -397,7 +394,7 @@ export function createManagedHandoffLeaseRuntime(
     ) {
       return null;
     }
-    return cas(lease, JSON.stringify({ version: 2, executor, helper: lease.helper, action }));
+    return cas(lease, action, executor);
   }
   function retarget(
     lease: ManagedHandoffLease,
@@ -428,8 +425,7 @@ export function createManagedHandoffLeaseRuntime(
       const next = bind(lease, process.pid, action);
       return next ? { kind: "acquired", lease: next } : null;
     }
-    const db = open(true);
-    try {
+    return withDatabase(true, (db) => {
       // The source key was captured before package exposure; realpath(source) may now
       // name the destination. Probe reclamation outside the synchronous transaction.
       const source = {
@@ -475,9 +471,7 @@ export function createManagedHandoffLeaseRuntime(
           lease: handle(root, { owner: lease.owner, payload_json: payload, updated_at: updatedAt }),
         };
       });
-    } finally {
-      close(db);
-    }
+    });
   }
   function activate(lease: ManagedHandoffLease) {
     if (
@@ -489,10 +483,7 @@ export function createManagedHandoffLeaseRuntime(
     ) {
       return null;
     }
-    return cas(
-      lease,
-      JSON.stringify({ ...parse(lease.payload), action: { ...lease.action, phase: "running" } }),
-    );
+    return cas(lease, { ...lease.action, phase: "running" });
   }
   function sameGeneration(
     a: ManagedHandoffLease,
@@ -508,12 +499,15 @@ export function createManagedHandoffLeaseRuntime(
       JSON.stringify(a.action.lifetime) === JSON.stringify(b.action.lifetime)
     );
   }
-  function revoke(lease: ManagedHandoffLease, uncertain = false) {
+  function readGeneration(lease: ManagedHandoffLease) {
     const result = read(lease.key);
-    if (result.kind !== "current" || !sameGeneration(lease, result.lease)) {
+    return result.kind === "current" && sameGeneration(lease, result.lease) ? result.lease : null;
+  }
+  function revoke(lease: ManagedHandoffLease, uncertain = false) {
+    const currentLease = readGeneration(lease);
+    if (!currentLease) {
       return null;
     }
-    const currentLease = result.lease;
     if (
       ![currentLease.helper.pid, currentLease.executor.pid].includes(process.pid) ||
       processState(
@@ -528,35 +522,24 @@ export function createManagedHandoffLeaseRuntime(
     ) {
       return currentLease;
     }
-    return cas(
-      currentLease,
-      JSON.stringify({
-        ...parse(currentLease.payload),
-        action: { ...currentLease.action, phase: uncertain ? "uncertain" : "closing" },
-      }),
-    );
+    return cas(currentLease, {
+      ...currentLease.action,
+      phase: uncertain ? "uncertain" : "closing",
+    });
   }
   function complete(lease: ManagedHandoffLease) {
-    const result = read(lease.key);
+    const currentLease = readGeneration(lease);
     if (
-      result.kind !== "current" ||
-      !sameGeneration(lease, result.lease) ||
+      !currentLease ||
       lease.executor.pid !== process.pid ||
       processState(lease.executor) !== "live"
     ) {
       return null;
     }
-    const currentLease = result.lease;
     if (!["running", "closing"].includes(currentLease.action.phase)) {
       return null;
     }
-    return cas(
-      currentLease,
-      JSON.stringify({
-        ...parse(currentLease.payload),
-        action: { ...currentLease.action, phase: "closed" },
-      }),
-    );
+    return cas(currentLease, { ...currentLease.action, phase: "closed" });
   }
   function release(lease: ManagedHandoffLease) {
     if (!current(lease)) {
@@ -578,16 +561,13 @@ export function createManagedHandoffLeaseRuntime(
     if (!closed) {
       return false;
     }
-    const db = open(true);
-    try {
+    return withDatabase(true, (db) => {
       return deleteRow(db, lease.key, {
         owner: lease.owner,
         payload_json: lease.payload,
         updated_at: lease.updatedAt,
       });
-    } finally {
-      close(db);
-    }
+    });
   }
   function stopNative(lease: ManagedHandoffLease, ownPlacement = false) {
     const life = lease.action.kind === "triage" && lease.action.lifetime;
@@ -643,11 +623,11 @@ export function createManagedHandoffLeaseRuntime(
     activate,
     owns,
     current,
+    readGeneration,
     revoke,
     complete,
     release,
     stopNative,
-    parse,
     processIdentity,
     readProcessStartIdentity,
     isPidAlive,

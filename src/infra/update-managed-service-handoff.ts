@@ -38,10 +38,10 @@ import { verifyPackageUpdateRecovery } from "./update-global.js";
 import { resolveUpdateInstallRoot } from "./update-install-root.js";
 import { MANAGED_SERVICE_UPDATE_HANDOFF_TEMP_PREFIX } from "./update-managed-service-handoff-cleanup.js";
 import {
+  createManagedHandoffLeaseStore,
   readManagedServiceUpdateHandoffLease,
   readManagedHandoffProcessStartTime as getFileLockProcessStartTime,
   resolveManagedUpdateLeaseDatabasePath,
-  stopManagedTriageScope,
   type ManagedHandoffLease,
 } from "./update-managed-service-handoff-lease.js";
 import { stageManagedHandoffRuntime } from "./update-managed-service-handoff-runtime.js";
@@ -695,7 +695,7 @@ export async function cancelManagedServiceUpdateHandoff(
         JSON.stringify(current.helper) !== JSON.stringify(active.helper?.helper) ||
         JSON.stringify({ ...current.action, phase: "reserved" }) !==
           JSON.stringify(active.helper?.action) ||
-        !stopManagedTriageScope(current)
+        !createManagedHandoffLeaseStore().stopNative(current)
       ) {
         return false;
       }
