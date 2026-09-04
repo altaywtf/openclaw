@@ -80,7 +80,8 @@ describe("OpenClaw native shell", () => {
     };
     const nativeWindow = window as Window & { __OPENCLAW_NATIVE_COMMANDS_READY__?: boolean };
     const states: boolean[] = [];
-    const recordState = () => states.push(nativeWindow.__OPENCLAW_NATIVE_COMMANDS_READY__ === true);
+    const recordState = () =>
+      states.push(nativeWindow["__OPENCLAW_NATIVE_COMMANDS_READY__"] === true);
     window.addEventListener("openclaw:native-commands-state", recordState);
     try {
       shell.connectedCallback();

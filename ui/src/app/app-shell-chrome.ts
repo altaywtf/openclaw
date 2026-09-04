@@ -74,7 +74,7 @@ type KeyboardShortcutsDialogElement = HTMLElement & {
 
 type NativeCommandsWindow = Window & { __OPENCLAW_NATIVE_COMMANDS_READY__?: boolean };
 
-let nativeCommandsOwner: ShellChromeOwner | undefined;
+let nativeCommandsOwner: AbortController | undefined;
 
 function isSettingsTakeover(routeId: RouteId | undefined): boolean {
   return routeId !== undefined && isSettingsNavigationRoute(routeId);
@@ -159,18 +159,19 @@ export class ShellChromeOwner {
       this.navDrawerSwipe.load();
     }
     // Document load can be a proxy sign-in page; the listener owner records readiness.
-    nativeCommandsOwner = this;
-    (window as NativeCommandsWindow).__OPENCLAW_NATIVE_COMMANDS_READY__ = true;
+    nativeCommandsOwner = this.listeners;
+    (window as NativeCommandsWindow)["__OPENCLAW_NATIVE_COMMANDS_READY__"] = true;
     window.dispatchEvent(new Event("openclaw:native-commands-state"));
   }
 
   disconnect(): void {
+    const listenerOwner = this.listeners;
     this.listeners?.abort();
     this.listeners = undefined;
     this.navDrawerSwipe.disconnect();
-    if (nativeCommandsOwner === this) {
+    if (listenerOwner && nativeCommandsOwner === listenerOwner) {
       nativeCommandsOwner = undefined;
-      (window as NativeCommandsWindow).__OPENCLAW_NATIVE_COMMANDS_READY__ = false;
+      (window as NativeCommandsWindow)["__OPENCLAW_NATIVE_COMMANDS_READY__"] = false;
       window.dispatchEvent(new Event("openclaw:native-commands-state"));
     }
   }
