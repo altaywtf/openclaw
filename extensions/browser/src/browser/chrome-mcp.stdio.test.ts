@@ -63,6 +63,14 @@ input.on("close", () => process.exit(0));
   const session = await creation.promise;
   const pid = session.transport.pid;
   const close = vi.spyOn(session.client, "close");
+  const closed = new Promise<void>((resolve) => {
+    const onclose = session.client.onclose;
+    // oxlint-disable-next-line unicorn/prefer-add-event-listener -- MCP Client exposes callbacks, not EventTarget.
+    session.client.onclose = () => {
+      onclose?.();
+      resolve();
+    };
+  });
   const stderrEnded = once(session.transport.stderr!, "end");
   let readinessError: unknown;
   try {
@@ -75,6 +83,8 @@ input.on("close", () => process.exit(0));
     // A failed startup can leave unread stderr delaying close after the child exits.
     session.transport.stderr?.on("data", () => {});
     await stderrEnded;
+    // Failed initialization starts SDK close asynchronously; stderr EOF is not child exit.
+    await closed;
   }
   try {
     const events = (await fs.readFile(eventsPath, "utf8"))
