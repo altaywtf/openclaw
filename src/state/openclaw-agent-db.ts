@@ -1,6 +1,7 @@
 // OpenClaw agent database stores agent-scoped persisted runtime state.
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import type { DatabaseSync } from "node:sqlite";
 import { enableNodeSqliteKyselyStatementCache } from "../infra/kysely-sync.js";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
@@ -180,6 +181,10 @@ function logSlowAgentDatabaseOpen(params: {
   agentId: string;
   elapsedMs: number;
   path: string;
+  phaseDurationsMs: Record<
+    "open" | "validation" | "configuration" | "schema" | "registration",
+    number
+  >;
 }): void {
   if (params.elapsedMs < OPENCLAW_AGENT_DB_SLOW_OPEN_MS) {
     return;
@@ -188,6 +193,7 @@ function logSlowAgentDatabaseOpen(params: {
     agentId: params.agentId,
     elapsedMs: params.elapsedMs,
     path: params.path,
+    phaseDurationsMs: params.phaseDurationsMs,
     thresholdMs: OPENCLAW_AGENT_DB_SLOW_OPEN_MS,
   });
 }
@@ -314,7 +320,15 @@ export function openOpenClawAgentDatabase(
     path: pathname,
     ...(options.env ? { env: options.env } : {}),
   });
-  const openStartedAt = Date.now();
+  const openStartedAt = performance.now();
+  let elapsedMs = 0;
+  const phaseDurationsMs = { open: 0, validation: 0, configuration: 0, schema: 0, registration: 0 };
+  // Shared monotonic checkpoints partition the existing open interval, including eviction.
+  const finishPhase = (phase: keyof typeof phaseDurationsMs) => {
+    const completedMs = Math.floor(performance.now() - openStartedAt);
+    phaseDurationsMs[phase] = completedMs - elapsedMs;
+    elapsedMs = completedMs;
+  };
   let openedDb: DatabaseSync | undefined;
   let openedDatabase: OpenClawAgentDatabase | undefined;
   let openedWalMaintenance: SqliteWalMaintenance | undefined;
@@ -326,6 +340,7 @@ export function openOpenClawAgentDatabase(
     const db = openNodeSqliteDatabase(pathname);
     enableNodeSqliteKyselyStatementCache(db);
     openedDb = db;
+    finishPhase("open");
     // Eviction churn must avoid migration/convergence and registry busy waits.
     // Version and owner can change while evicted, so their read-only gates run on every open.
     let isValidatedReopen = validatedAgentDatabasePaths.get(pathname) === agentId;
@@ -349,6 +364,7 @@ export function openOpenClawAgentDatabase(
           isValidatedReopen = false;
         }
         assertCanonicalAgentPersistenceVersion(db, pathname);
+        finishPhase("validation");
         configureSqlitePreSchemaPragmas(db, {
           busyTimeoutMs: OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
         });
@@ -360,9 +376,11 @@ export function openOpenClawAgentDatabase(
           synchronous: "NORMAL",
         });
         openedWalMaintenance = maintenance;
+        finishPhase("configuration");
         if (!isValidatedReopen) {
           ensureOpenClawAgentSchema(db, agentId, pathname);
         }
+        finishPhase("schema");
         return maintenance;
       } catch (err) {
         maintenance?.close();
@@ -388,10 +406,12 @@ export function openOpenClawAgentDatabase(
     // Safety net for processes that end without an orderly close: agent DBs have
     // no shutdown owner like the ACP/gateway state DB closes. Closing unregisters.
     unregisterExitClose ??= registerSqliteCacheExitClose(closeOpenClawAgentDatabases);
+    finishPhase("registration");
     logSlowAgentDatabaseOpen({
       agentId,
-      elapsedMs: Date.now() - openStartedAt,
+      elapsedMs,
       path: pathname,
+      phaseDurationsMs,
     });
     cachedDatabaseLeases.set(pathname, { leaseId, env: options.env });
     cachedDatabases.set(pathname, database);
