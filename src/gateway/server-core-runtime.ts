@@ -470,7 +470,6 @@ export async function startGatewayCoreRuntime(input: {
         log,
         loadGatewayPluginBootstrapModule,
         prepareAttachedPluginRuntime,
-        refreshAttachedGatewayDiscovery,
       },
       params,
     );
