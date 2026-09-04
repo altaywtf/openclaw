@@ -71,10 +71,17 @@ async function command(
 
 async function observe(name: string, typed: boolean, port: number): Promise<void> {
   const profile = `auth-proof-${randomUUID().slice(0, 8)}`;
-  const home = path.join(root, name, "home");
+  // Native service ownership is anchored to the OS account, not a relocated HOME.
+  // The disposable CI account and a fresh named profile provide the isolation.
+  const home = os.userInfo().homedir;
+  assert.equal(process.env.HOME, home);
   const state = path.join(home, `.openclaw-${profile}`);
+  const configPath = path.join(state, "openclaw.json");
+  const plist = path.join(home, "Library/LaunchAgents", `ai.openclaw.${profile}.plist`);
+  assert.ok(!fs.existsSync(state), "Refusing to reuse an existing profile");
+  assert.ok(!fs.existsSync(plist), "Refusing to reuse an existing service");
   const temporary = path.join(root, name, "tmp");
-  const keychain = path.join(home, "Library/Keychains/proof.keychain-db");
+  const keychain = path.join(root, name, "proof.keychain-db");
   for (const directory of [
     state,
     temporary,
@@ -96,11 +103,8 @@ async function observe(name: string, typed: boolean, port: number): Promise<void
   }
   Object.assign(env, {
     HOME: home,
-    CFFIXED_USER_HOME: home,
     TMPDIR: `${temporary}/`,
     OPENCLAW_PROFILE: profile,
-    OPENCLAW_STATE_DIR: state,
-    OPENCLAW_CONFIG_PATH: path.join(state, "openclaw.json"),
     NO_COLOR: "1",
     FORCE_COLOR: "0",
   });
@@ -108,7 +112,7 @@ async function observe(name: string, typed: boolean, port: number): Promise<void
   syntheticValues.push(credential);
   const ref = { source: "env", provider: "proof", id: "GW_PROOF_CREDENTIAL" };
   fs.writeFileSync(
-    env.OPENCLAW_CONFIG_PATH!,
+    configPath,
     JSON.stringify({
       gateway: {
         mode: "local",
@@ -143,8 +147,8 @@ async function observe(name: string, typed: boolean, port: number): Promise<void
       [path.join(repository, "openclaw.mjs"), ...args],
       env,
     );
-  let installed = false;
   let keychainCreated = false;
+  const failures: unknown[] = [];
   const result: Record<string, unknown> = {
     name,
     typed,
@@ -181,7 +185,6 @@ async function observe(name: string, typed: boolean, port: number): Promise<void
       );
     }
     // Installation owns activation; no direct launchctl bootstrap or hand-written plist.
-    installed = true;
     assert.equal(
       await cli("install", [
         "gateway",
@@ -196,7 +199,7 @@ async function observe(name: string, typed: boolean, port: number): Promise<void
       ]),
       0,
     );
-    const installedConfigText = fs.readFileSync(env.OPENCLAW_CONFIG_PATH!, "utf8");
+    const installedConfigText = fs.readFileSync(configPath, "utf8");
     fs.writeFileSync(
       path.join(evidence, `${name}-installed-config.json`),
       sanitized(installedConfigText),
@@ -257,9 +260,14 @@ async function observe(name: string, typed: boolean, port: number): Promise<void
       }
     }
     result.serviceStatusExit = await cli("status", ["gateway", "status", "--json", "--no-probe"]);
+  } catch (error) {
+    result.failure = sanitized(String(error));
+    failures.push(error);
   } finally {
     const cleanup = await Promise.allSettled([
-      installed ? cli("uninstall", ["gateway", "uninstall", "--json"]) : Promise.resolve(0),
+      fs.existsSync(plist)
+        ? cli("uninstall", ["gateway", "uninstall", "--json"])
+        : Promise.resolve(0),
       keychainCreated
         ? command(`${name}-keychain-cleanup`, "security", ["delete-keychain", keychain], env)
         : Promise.resolve(0),
@@ -284,8 +292,9 @@ async function observe(name: string, typed: boolean, port: number): Promise<void
       }
     }
     result.cleanupSucceeded = cleanupSucceeded;
-    assert.ok(cleanupSucceeded, "An owned native fixture did not clean up");
+    if (!cleanupSucceeded) failures.push(new Error("An owned native fixture did not clean up"));
   }
+  if (failures.length) throw new AggregateError(failures, `${name} native fixture failed`);
 }
 
 try {

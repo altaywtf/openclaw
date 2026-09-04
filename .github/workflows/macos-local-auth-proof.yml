@@ -28,6 +28,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          baseline=606d9ab82afdb28ebaad33896e41811b96ad87c7
+          git merge-base --is-ancestor "$baseline" HEAD
+          git diff --quiet "$baseline" HEAD -- . \
+            ':(exclude).github/workflows/macos-local-auth-proof.yml' \
+            ':(exclude)scripts/e2e/macos-local-auth-proof.mts'
+          git diff --quiet HEAD --
           test "$(uname -s)" = Darwin
           launchctl print "gui/$(id -u)" >/dev/null
           test ! -d "$HOME/.openclaw"
@@ -53,6 +59,18 @@ jobs:
           SKIP_TEAM_ID_CHECK: "1"
           CODESIGN_TIMESTAMP: "off"
         run: bash scripts/package-mac-app.sh
+
+      - name: Archive the verified native app
+        shell: bash
+        run: tar -czf "$RUNNER_TEMP/native-auth-app.tar.gz" -C dist OpenClaw.app
+
+      - name: Retain the app before fixture setup
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: native-auth-app-${{ github.sha }}
+          path: ${{ runner.temp }}/native-auth-app.tar.gz
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Observe fresh local auth connections
         shell: bash
