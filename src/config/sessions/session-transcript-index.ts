@@ -415,6 +415,7 @@ export function replaceSessionTranscriptIndexSuffixInTransaction(
       .$if(incremental, (query) =>
         query.where("active_position", ">=", params.retainedActiveCount!),
       )
+      .$if(!incremental, (query) => query.where("event_seq", "<", params.unchangedBeforeSeq))
       .orderBy("active_position", "asc"),
   ).rows;
   const sameRow = (
