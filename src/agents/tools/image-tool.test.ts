@@ -2567,18 +2567,49 @@ describe("image tool implicit imageModel config", () => {
 });
 
 describe("image tool data URL support", () => {
-  it("decodes base64 image data URLs", () => {
-    const pngB64 =
-      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/woAAn8B9FD5fHAAAAAASUVORK5CYII=";
-    const out = testing.decodeDataUrl(`data:image/png;base64,${pngB64}`);
+  const pngB64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/woAAn8B9FD5fHAAAAAASUVORK5CYII=";
+
+  it.each([
+    ["plain PNG", `data:image/png;base64,${pngB64}`],
+    ["mixed-case header", `DaTa:ImAgE/PnG;BaSe64,${pngB64}`],
+    ["outer whitespace", ` \tdata:image/png;base64,${pngB64}\r\n`],
+    ["MIME whitespace", `data: \timage/png\t ;base64,${pngB64}`],
+    ["payload CRLF", `data:image/png;base64,\r\n${pngB64.slice(0, 16)}\r\n${pngB64.slice(16)}`],
+    ["unpadded base64", `data:image/png;base64,${pngB64.replace(/=+$/, "")}`],
+  ])("decodes image data URLs with %s", (_name, dataUrl) => {
+    const out = testing.decodeDataUrl(dataUrl);
     expect(out.kind).toBe("image");
     expect(out.mimeType).toBe("image/png");
     expect(out.buffer).toEqual(Buffer.from(pngB64, "base64"));
   });
 
-  it("rejects non-image data URLs", () => {
-    expect(() => testing.decodeDataUrl("data:text/plain;base64,SGVsbG8=")).toThrow(
+  it.each([
+    ["missing scheme", "image/png;base64,QQ=="],
+    ["missing comma", "data:image/png;base64QQ=="],
+    ["empty MIME type", "data:;base64,QQ=="],
+    ["extra MIME parameters", "data:image/png;charset=utf-8;base64,QQ=="],
+    ["non-base64 encoding", "data:image/png;utf8,QQ=="],
+    ["empty payload", "data:image/png;base64,"],
+    ["payload space", "data:image/png;base64, QQ=="],
+    ["payload tab", "data:image/png;base64,Q\tQ=="],
+    ["URL-safe alphabet", "data:image/png;base64,_w=="],
+    ["invalid alphabet on a non-image MIME type", "data:text/plain;base64,SGVsbG8=!"],
+  ])("rejects %s before MIME and size checks", (_name, dataUrl) => {
+    expect(() => testing.decodeDataUrl(dataUrl, { maxBytes: 0 })).toThrow(
+      "Invalid data URL (expected base64 data: URL).",
+    );
+  });
+
+  it("rejects non-image data URLs before checking size", () => {
+    expect(() => testing.decodeDataUrl("data:text/plain;base64,SGVsbG8=", { maxBytes: 0 })).toThrow(
       /Unsupported data URL type/i,
+    );
+  });
+
+  it("rejects an alphabet-valid payload that decodes to no bytes", () => {
+    expect(() => testing.decodeDataUrl("data:image/png;base64,A")).toThrow(
+      "Invalid data URL: empty payload.",
     );
   });
 

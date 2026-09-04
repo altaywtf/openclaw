@@ -96,15 +96,20 @@ export function decodeDataUrl(
   kind: "image";
 } {
   const trimmed = dataUrl.trim();
-  const match = /^data:([^;,]+);base64,([a-z0-9+/=\r\n]+)$/i.exec(trimmed);
-  if (!match) {
+  const comma = trimmed.indexOf(",");
+  const header = trimmed.slice(0, comma);
+  const typeEnd = header.indexOf(";");
+  const b64 = trimmed.slice(comma + 1);
+  // Quantified header/payload matches can exhaust V8's unoptimized regexp stack.
+  const validHeader =
+    /^data:/i.test(header) && typeEnd > 5 && header.slice(typeEnd).toLowerCase() === ";base64";
+  if (comma < 0 || !validHeader || !b64 || /[^a-z0-9+/=\r\n]/i.test(b64)) {
     throw new Error("Invalid data URL (expected base64 data: URL).");
   }
-  const mimeType = normalizeLowercaseStringOrEmpty(match[1]);
+  const mimeType = normalizeLowercaseStringOrEmpty(header.slice(5, typeEnd));
   if (!mimeType.startsWith("image/")) {
     throw new Error(`Unsupported data URL type: ${mimeType || "unknown"}`);
   }
-  const b64 = (match[2] ?? "").trim();
   if (typeof opts?.maxBytes === "number" && estimateBase64DecodedBytes(b64) > opts.maxBytes) {
     // Estimate before decoding so oversized inline payloads do not allocate large buffers.
     throw new Error("Invalid data URL: payload exceeds size limit.");
