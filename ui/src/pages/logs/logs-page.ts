@@ -144,7 +144,7 @@ class LogsPage extends OpenClawLightDomElement {
       void this.logsTask.run([null, null, null, null, false, false]);
     },
     onSnapshot: () => this.syncPolling(),
-    ensureInitialData: () => this.ensureInitialLogs(),
+    ensureInitialData: () => this.loadConnectionLogs(),
   });
   private readonly streamFollow = new StreamAutoFollowController(this, {
     selector: ".log-stream",
@@ -208,12 +208,18 @@ class LogsPage extends OpenClawLightDomElement {
     this.polling.start();
   }
 
-  private ensureInitialLogs() {
-    if (!this.gateway.connected || !this.gateway.client || this.logsEntries.length > 0) {
+  private loadConnectionLogs() {
+    if (!this.gateway.connected || !this.gateway.client) {
       return;
     }
-    void this.loadLogs({ reset: true }).then((current) => {
-      if (current) {
+    // The first successful tail records its source. Reconnects reload it quietly;
+    // keeping both paths here guarantees one reset per connection transition.
+    const reconnect = this.logsFile !== null;
+    if (!reconnect && this.logsEntries.length > 0) {
+      return;
+    }
+    void this.loadLogs({ reset: true, quiet: reconnect }).then((current) => {
+      if (current && !reconnect) {
         this.streamFollow.schedule(true);
       }
     });
