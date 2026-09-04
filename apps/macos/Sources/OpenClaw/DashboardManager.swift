@@ -1135,7 +1135,10 @@ extension DashboardManager {
         controller.pendingGatewaySwitch = nil
         _ = controller.takePendingNativeActions()
         self.displayedPrimaryRoutes[ObjectIdentifier(controller)] = nil
-        if let windowID = self.auxiliaryWindows.first(where: { $0.value.controller === controller })?.key {
+        // Auxiliary windows can share the primary target, but only the main window owns presentation.
+        if self.controller === controller {
+            self.retirePresentation()
+        } else if let windowID = self.auxiliaryWindows.first(where: { $0.value.controller === controller })?.key {
             self.auxiliaryWindows.removeValue(forKey: windowID)
             self.auxiliaryWindowOrder.removeAll { $0 == windowID }
         }
