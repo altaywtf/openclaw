@@ -21,7 +21,23 @@ type TelegramRichPlainFallbackTrigger =
   | "rich-entity-invalid"
   | "rich-structure-invalid"
   | "html-parse"
-  | "rich-content-required";
+  | "rich-content-required"
+  | "rich-payload-too-large";
+
+// Telegram answers JSON request bodies up to 24 KiB and never answers at 28 KiB (live-verified
+// 2026-09-04 against api.telegram.org): the call surfaces as a grammY HttpError with no Bot API
+// code, so no server-side rejection can trigger the plain fallback. Bound the serialized rich
+// message before sending so a long table degrades to plain pages instead of dropping the reply.
+export const TELEGRAM_RICH_REQUEST_BYTE_LIMIT = 24 * 1024;
+
+export class TelegramRichPayloadTooLargeError extends Error {
+  constructor(readonly bytes: number) {
+    super(
+      `rich message payload is ${bytes} bytes; Telegram stops answering above ${TELEGRAM_RICH_REQUEST_BYTE_LIMIT}`,
+    );
+    this.name = "TelegramRichPayloadTooLargeError";
+  }
+}
 
 type TelegramPlainFallbackTrigger = TelegramRichPlainFallbackTrigger | "empty-content";
 
@@ -46,6 +62,9 @@ export function isTelegramEmptyContentError(err: unknown): boolean {
 function getTelegramPlainFallbackTrigger(
   err: unknown,
 ): TelegramRichPlainFallbackTrigger | undefined {
+  if (err instanceof TelegramRichPayloadTooLargeError) {
+    return "rich-payload-too-large";
+  }
   if (isTelegramRichEntityInvalidError(err)) {
     return "rich-entity-invalid";
   }
