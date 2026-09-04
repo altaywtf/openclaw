@@ -830,7 +830,7 @@ describe("SQLite exact transcript suffix replacement", () => {
       message: {
         role: "assistant" as const,
         content: `prefix ${index}`,
-        ...(index === 0 ? { idempotencyKey: " retry " } : {}),
+        ...(index === 0 ? { idempotencyKey: "\tretry\n" } : {}),
       },
     }));
     const owner = {

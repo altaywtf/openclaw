@@ -73,7 +73,8 @@ export class SessionManagerCore {
     this.boundedContextLimits = boundedContext?.limits;
     this.boundedContextIncomplete = boundedContext !== undefined;
     this.persistedBoundaryCount = boundedContext?.boundaryCount;
-    this.transcriptMutationAt = boundedContext?.transcriptMutationAt ?? transcriptMutationAt;
+    this.transcriptMutationAt =
+      boundedContext !== undefined ? boundedContext.transcriptMutationAt : transcriptMutationAt;
     if (persistenceTarget || loadedEntries) {
       this.setLoadedSessionTarget(persistenceTarget, loadedEntries ?? [], boundedContext);
     } else {
@@ -90,7 +91,9 @@ export class SessionManagerCore {
     this.boundedContextIncomplete = bounded !== undefined;
     this.persistedBoundaryCount = bounded?.boundaryCount;
     this.transcriptMutationAt =
-      bounded?.transcriptMutationAt ?? inspected?.snapshot.transcriptUpdatedAt;
+      bounded !== undefined
+        ? bounded.transcriptMutationAt
+        : inspected?.snapshot.transcriptUpdatedAt;
     const header = entries.find(
       (entry) => typeof entry === "object" && entry !== null && entry.type === "session",
     );
