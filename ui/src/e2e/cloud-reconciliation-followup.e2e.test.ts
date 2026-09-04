@@ -37,19 +37,20 @@ function placement(state: "reconciling" | "active" | "failed") {
     remoteWorkspaceDir: "/workspace/openclaw",
     workerBundleHash: "a".repeat(64),
     workspaceBaseManifestRef: "manifest-before-sync",
+    ...(state === "reconciling" ? { workspaceResultPending: true as const } : {}),
   };
 }
 
-function session(state: "reconciling" | "active" | "failed") {
+function session(state: "reconciling" | "active" | "failed", queuedFollowUp = false) {
   return {
-    activeRunIds: state === "reconciling" ? ["follow-up-run"] : [],
-    hasActiveRun: state === "reconciling",
+    activeRunIds: queuedFollowUp ? ["follow-up-run"] : [],
+    hasActiveRun: queuedFollowUp,
     key: sessionKey,
     kind: "direct",
     label: "Cloud reconciliation proof",
     placement: placement(state),
     sessionId: "cloud-reconciliation-session",
-    status: state === "reconciling" ? "running" : "done",
+    status: queuedFollowUp ? "running" : "done",
     updatedAt: now,
   };
 }
@@ -83,7 +84,7 @@ suite.define(() => {
         const reconcilingHistory = {
           inFlightRun: null,
           messages: [{ role: "assistant", content: "Cloud edits are ready to apply." }],
-          pendingInputs: { items: [pendingInput], total: 1 },
+          pendingInputs: { items: [], total: 0 },
           sessionId: reconciling.sessionId,
           sessionInfo: reconciling,
           thinkingLevel: null,
@@ -94,6 +95,7 @@ suite.define(() => {
             "chat.startup": reconcilingHistory,
             "sessions.list": chatSessionListResponse([reconciling]),
           },
+          deferredMethods: ["chat.send"],
           sessionInfo: reconciling,
           sessionKey,
           sessions: [reconciling],
@@ -102,11 +104,40 @@ suite.define(() => {
         await page.goto(controlUiSessionUrl(suite.server.baseUrl, sessionKey));
         await gateway.waitForRequest("chat.startup");
         await page.getByRole("button", { name: "Cloud · syncing files" }).waitFor();
-        await page.getByText("Received · waiting for workspace sync", { exact: true }).waitFor();
         await page.getByText("Safely applying cloud edits", { exact: false }).waitFor();
         const composer = page.locator(".agent-chat__composer-combobox textarea");
         await expect.poll(() => composer.isEnabled()).toBe(true);
         await page.getByText("your message starts automatically", { exact: false }).waitFor();
+        await expect
+          .poll(() =>
+            page.getByText("Received · waiting for workspace sync", { exact: true }).count(),
+          )
+          .toBe(0);
+
+        await composer.fill(pendingInput.message.content);
+        await page.getByRole("button", { name: "Send message" }).click();
+        const firstFollowUp = await gateway.waitForRequest("chat.send");
+        expect(firstFollowUp.params).toMatchObject({ message: pendingInput.message.content });
+        await gateway.resolveDeferred("chat.send", {
+          runId: pendingInput.runId,
+          status: "started",
+        });
+
+        const queued = session("reconciling", true);
+        const queuedHistory = {
+          ...reconcilingHistory,
+          pendingInputs: { items: [pendingInput], total: 1 },
+          sessionInfo: queued,
+        };
+        await gateway.setMethodResponse("chat.history", queuedHistory);
+        await gateway.setSessionsListResponse(chatSessionListResponse([queued]));
+        await gateway.emitGatewayEvent("sessions.changed", {
+          agentId: "main",
+          hasActiveRun: true,
+          reason: "send",
+          sessionKey,
+        });
+        await page.getByText("Received · waiting for workspace sync", { exact: true }).waitFor();
         if (captureUiProofEnabled) {
           await page.screenshot({
             fullPage: true,

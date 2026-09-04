@@ -37,7 +37,7 @@ function presentation(
     restartingKey: null,
     row,
     startupPending: false,
-    hasQueuedInputWaitingForWorkspaceSync: false,
+    workspaceResultPending: false,
     onRestart: vi.fn(),
     onReclaim: vi.fn(),
     ...overrides,
@@ -56,7 +56,7 @@ describe("chat placement composer presentation", () => {
   ] as const)("projects %s placement into a %s composer", (state, kind, busyMessage) => {
     const acceptsDuringSync = state === "draining" || state === "reconciling";
     const result = presentation(placementSession(state), {
-      hasQueuedInputWaitingForWorkspaceSync: acceptsDuringSync,
+      workspaceResultPending: acceptsDuringSync,
     });
 
     expect(result.state.kind).toBe(kind);
@@ -81,7 +81,7 @@ describe("chat placement composer presentation", () => {
   });
 
   it.each(["draining", "reconciling"] as const)(
-    "keeps %s blocked without an admitted queued follow-up",
+    "keeps %s blocked without a pending workspace result",
     (state) => {
       expect(presentation(placementSession(state)).blocksSend).toBe(true);
     },
