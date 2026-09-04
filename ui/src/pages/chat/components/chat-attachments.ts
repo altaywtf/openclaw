@@ -20,6 +20,7 @@ import {
 import { admitAttachmentFiles } from "./chat-attachment-admission.ts";
 import { resolveAttachmentFileIcon } from "./chat-attachment-file-icon.ts";
 import { syncChatAttachmentRailScroll } from "./chat-attachment-viewport.ts";
+import { renderBrowserAnnotationGroup } from "./chat-browser-annotation-group.ts";
 
 registerCanvasAnnotationEnglish();
 
@@ -620,61 +621,6 @@ function removeBrowserAnnotationGroup(
     currentAttachments(props).filter((attachment) => !ids.has(attachment.id)),
   );
 }
-function renderBrowserAnnotationGroup(
-  attachments: readonly ChatAttachment[],
-  props: ChatAttachmentControlsProps,
-) {
-  const labelKey =
-    attachments.length === 1
-      ? "chat.composer.browserAnnotationCount"
-      : "chat.composer.browserAnnotationCountPlural";
-  const label = t(labelKey, { count: String(attachments.length) });
-  return html`<div class="chat-browser-annotation-group" role="group" aria-label=${label}>
-    <div
-      class="chat-browser-annotation-group__summary"
-      data-attachment-id=${attachments[0]?.id ?? ""}
-      tabindex="0"
-    >
-      <span aria-hidden="true">${icons.messageSquare}</span>
-      <span>${label}</span>
-      <button
-        type="button"
-        class="chat-browser-annotation-group__remove"
-        aria-label=${t("chat.composer.removeBrowserAnnotation", { name: label })}
-        ?disabled=${props.disabled}
-        @click=${() => removeBrowserAnnotationGroup(attachments, props)}
-      >
-        ${icons.x}
-      </button>
-    </div>
-    <div
-      class="chat-browser-annotation-group__popover"
-      aria-label=${t("chat.composer.browserAnnotation")}
-    >
-      ${attachments.map((attachment, index) => {
-        const annotation = attachment.browserAnnotation!;
-        const preview = getChatAttachmentPreviewUrl(attachment);
-        const selector = annotation.selector || annotation.title || annotation.displayUrl;
-        return html`<article class="chat-browser-annotation-group__item">
-          ${
-            preview
-              ? html`<img src=${preview} alt=${t("chat.composer.browserAnnotationPreview")} />`
-              : nothing
-          }
-          <div class="chat-browser-annotation-group__item-copy">
-            <div class="chat-browser-annotation-group__item-title">
-              <span class="chat-browser-annotation-group__number">${index + 1}</span>
-              ${annotation.elementTag ? html`<code>${annotation.elementTag}</code>` : nothing}
-              <span title=${selector}>${selector}</span>
-            </div>
-            <p>${annotation.comment || annotation.title}</p>
-          </div>
-        </article>`;
-      })}
-    </div>
-  </div>`;
-}
-
 export function renderAttachmentPreview(props: ChatAttachmentControlsProps) {
   const attachments = props.attachments ?? [];
   if (attachments.length === 0) {
@@ -685,7 +631,11 @@ export function renderAttachmentPreview(props: ChatAttachmentControlsProps) {
   return html`
     ${
       browserAnnotations.length > 0
-        ? renderBrowserAnnotationGroup(browserAnnotations, props)
+        ? renderBrowserAnnotationGroup({
+            attachments: browserAnnotations,
+            disabled: props.disabled,
+            onRemove: () => removeBrowserAnnotationGroup(browserAnnotations, props),
+          })
         : nothing
     }
     ${

@@ -502,17 +502,19 @@ class OpenClawBoardWidgetCell extends OpenClawLightDomElement {
           class=${`board-widget__body ${contentScrollable ? "board-widget__body--scrollable" : ""} ${presentation === "card" ? "board-widget__body--card" : ""}`}
         >
           ${body}
-          ${this.commentMode && widget.contentKind === "html" && !bodyErrored
-            ? html`<openclaw-board-widget-commenter
-                active
-                .annotations=${this.commentAnnotations}
-                .captureEpoch=${this.commentEpoch}
-                .sessionKey=${this.sessionKey}
-                .title=${label}
-                .widgetName=${widget.name}
-                .widgetRevision=${widget.revision}
-              ></openclaw-board-widget-commenter>`
-            : nothing}
+          ${
+            this.commentMode && widget.contentKind === "html" && !bodyErrored
+              ? html`<openclaw-board-widget-commenter
+                  active
+                  .annotations=${this.commentAnnotations}
+                  .captureEpoch=${this.commentEpoch}
+                  .sessionKey=${this.sessionKey}
+                  .title=${label}
+                  .widgetName=${widget.name}
+                  .widgetRevision=${widget.revision}
+                ></openclaw-board-widget-commenter>`
+              : nothing
+          }
           ${
             this.actionError && widget.grantState !== "pending"
               ? html`<div class="board-widget__error-overlay">

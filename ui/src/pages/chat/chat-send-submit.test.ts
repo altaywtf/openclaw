@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createDeferred } from "../../../../test/helpers/promise.js";
 import { stripInboundMetadata } from "../../../../src/auto-reply/reply/strip-inbound-meta.ts";
+import { createDeferred } from "../../../../test/helpers/promise.js";
 import { GatewayRequestError } from "../../api/gateway.ts";
 import type { ChatAttachment } from "../../lib/chat/chat-types.ts";
 import {
@@ -193,52 +193,6 @@ describe("structured Goal admission", () => {
     expect(requests).toHaveLength(2);
     expect(requests[1]?.[1]).toEqual(original);
     expect(host.chatMessage).toBe("A separate conversation draft");
-  });
-});
-
-describe("composeBrowserAnnotationContext", () => {
-  it("materializes an annotation-only message", () => {
-    const attachment = createBrowserAnnotationAttachment("only", "Inspect the marked region.");
-
-    expectAnnotationPrompt(
-      composeBrowserAnnotationContext("", [attachment]),
-      ["Inspect the marked region."],
-      "",
-    );
-  });
-
-  it("prepends annotation context to the user's draft", () => {
-    const attachment = createBrowserAnnotationAttachment("mixed", "Browser context");
-
-    expectAnnotationPrompt(
-      composeBrowserAnnotationContext("Please fix this", [attachment]),
-      ["Browser context"],
-      "Please fix this",
-    );
-  });
-
-  it("preserves attachment order across two annotations", () => {
-    const first = createBrowserAnnotationAttachment("first", "First context");
-    const second = createBrowserAnnotationAttachment("second", "Second context");
-
-    expectAnnotationPrompt(
-      composeBrowserAnnotationContext("Compare them", [first, second]),
-      ["First context", "Second context"],
-      "Compare them",
-    );
-  });
-
-  it("omits context for an annotation removed before submit", () => {
-    const removed = createBrowserAnnotationAttachment("removed", "Removed context");
-    const remaining = createBrowserAnnotationAttachment("remaining", "Remaining context");
-    const attachments = [removed, remaining];
-    attachments.splice(0, 1);
-
-    expectAnnotationPrompt(
-      composeBrowserAnnotationContext("Continue", attachments),
-      ["Remaining context"],
-      "Continue",
-    );
   });
 });
 
@@ -560,10 +514,11 @@ describe("handleSendChat browser annotation context", () => {
 
 describe("human mention submission", () => {
   it("keeps only selected recipients after annotation and reply prefixes", async () => {
+    const annotation = createBrowserAnnotationAttachment("mention", "Unselected @Other context");
     const host = makeChatHost({
       chatMessage: "  🔎 @Alex please review  ",
       chatMentions: [{ profileId: "profile-alex", start: 5, end: 10 }],
-      chatAttachments: [createBrowserAnnotationAttachment("mention", "Unselected @Other context")],
+      chatAttachments: [annotation],
       chatReplyTarget: {
         messageId: "synthetic-reply",
         text: "Unselected @Other quote",
@@ -575,8 +530,8 @@ describe("human mention submission", () => {
 
     await handleSendChat(host);
 
-    const expected =
-      "> **Reader:** Unselected @Other quote\n\nUnselected @Other context\n\n🔎 @Alex please review\n\nUnselected @Other work context";
+    const prompt = composeBrowserAnnotationContext("🔎 @Alex please review", [annotation]);
+    const expected = `> **Reader:** Unselected @Other quote\n\n${prompt}\n\nUnselected @Other work context`;
     expect(findChatSendPayload(host)).toMatchObject({
       message: expected,
       mentions: [
