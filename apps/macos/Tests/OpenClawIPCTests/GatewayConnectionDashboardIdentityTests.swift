@@ -1,3 +1,4 @@
+import AppKit
 import ConcurrencyExtras
 import Foundation
 import Testing
@@ -64,6 +65,82 @@ private struct DashboardIdentityFixture: Sendable {
 
 @Suite(.serialized)
 struct GatewayConnectionDashboardIdentityTests {
+    @Test(arguments: [nil, "https://team.example.test/", "https://renewed.example.test/"])
+    @MainActor
+    func `open saved profile windows follow their native connection identity`(announcement: String?) async throws {
+        try await TestIsolation.withIsolatedState {
+            _ = AppKitTestSupport.application
+            let originalURL = try #require(URL(string: "https://team.example.test/"))
+            let fixture = try DashboardIdentityFixture(announcement: originalURL.absoluteString)
+            let target = DashboardGatewayTarget.profile("identity-reconnect")
+            let manager = DashboardManager._testMake(
+                connectionProvider: { _ in fixture.connection },
+                browserIdentityURLProvider: nil,
+                observeGatewayChanges: true,
+                profileEndpointProvider: { _ in fixture.source.snapshot() },
+                gatewayEntriesProvider: {
+                    [DashboardGatewayEntry(
+                        id: target.bridgeID,
+                        name: "Saved Gateway",
+                        kind: "remote",
+                        isPrimary: false,
+                        canPromote: true,
+                        health: .unknown)]
+                })
+            let result: Result<Void, Error>
+            do {
+                await manager._testOpenWindow(for: target)
+                await manager._testOpenWindow(for: target)
+                let originals = manager._testAuxiliaryWindows().map(\.controller)
+                try #require(originals.count == 2)
+                let windows = originals.compactMap(\.window)
+                try #require(windows.count == 2)
+                try #require(originals.allSatisfy { $0.currentURL == originalURL && $0.auth.usesBrowserIdentity })
+                let lease = try #require(await fixture.connection.captureServerLease())
+
+                // Serve withdraws its announcement before retiring connections that received it.
+                fixture.announcement.withValue { $0 = announcement }
+                fixture.session.latestTask()?.emitReceiveFailure()
+                let retired = ContinuousClock.now + .seconds(3)
+                while await fixture.connection.isCurrentServerLease(lease), ContinuousClock.now < retired {
+                    try await Task.sleep(for: .milliseconds(10))
+                }
+                try #require(await fixture.connection.isCurrentServerLease(lease) == false)
+                _ = try await fixture.connection.request(method: "health", params: nil)
+                try #require(try await fixture.connection.controlUiBrowserIdentityURL(config: fixture.config)?
+                    .absoluteString == announcement)
+
+                let expectedURL = try announcement.flatMap(URL.init(string:)) ?? GatewayEndpointStore.dashboardURL(
+                    for: fixture.config, mode: .remote, authToken: fixture.config.token)
+                let unchanged = announcement == originalURL.absoluteString
+                let refreshed = ContinuousClock.now + .seconds(5)
+                while unchanged || manager._testAuxiliaryWindows().contains(where: {
+                    $0.controller.currentURL != expectedURL
+                }),
+                    ContinuousClock.now < refreshed
+                {
+                    try await Task.sleep(for: .milliseconds(10))
+                }
+                let current = manager._testAuxiliaryWindows()
+                #expect(current.count == 2)
+                #expect(current.allSatisfy { $0.target == target && $0.controller.currentURL == expectedURL })
+                #expect(current.allSatisfy { instance in windows.contains { $0 === instance.controller.window } })
+                #expect(current.allSatisfy { $0.controller.auth.usesBrowserIdentity == (announcement != nil) })
+                #expect(current
+                    .allSatisfy { $0.controller.auth.token == (announcement == nil ? fixture.config.token : nil) })
+                #expect(current.allSatisfy { instance in
+                    originals.contains { $0 === instance.controller } == unchanged
+                })
+                result = .success(())
+            } catch {
+                result = .failure(error)
+            }
+            manager.close()
+            await fixture.connection.shutdown()
+            try result.get()
+        }
+    }
+
     @Test(arguments: [nil, "https://team.example.test/", "https://team.example.test/team/"])
     func `first open reads the authenticated hello without admin discovery RPCs`(announcement: String?) async throws {
         let fixture = try DashboardIdentityFixture(announcement: announcement)

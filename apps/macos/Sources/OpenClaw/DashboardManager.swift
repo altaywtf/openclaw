@@ -53,6 +53,7 @@ final class DashboardManager {
     @ObservationIgnored private var gatewaySnapshotGeneration: UInt64 = 0
     @ObservationIgnored private var profileCredentialsNeedRefresh = false
     @ObservationIgnored private let authTokenProvider: @Sendable (GatewayConnection.Config) async -> String?
+    @ObservationIgnored private let connectionProvider: @Sendable (DashboardGatewayTarget) async -> GatewayConnection
     @ObservationIgnored private let browserIdentityURLProvider:
         @Sendable (DashboardGatewayTarget, GatewayConnection.Config) async throws -> URL?
     @ObservationIgnored private let routeProbe: @Sendable (DashboardRouteProbePurpose) async -> Void
@@ -78,14 +79,11 @@ final class DashboardManager {
         authTokenProvider: @escaping @Sendable (GatewayConnection.Config) async -> String? = { config in
             await GatewayConnection.shared.controlUiAutoAuthToken(config: config)
         },
-        browserIdentityURLProvider: @escaping @Sendable (DashboardGatewayTarget, GatewayConnection.Config) async throws
-            -> URL? = { target, config in
-                let connection = switch target {
-                case .primary: GatewayConnection.shared
-                case let .profile(id): MacGatewayConnectionFleet.shared.connection(profileID: id)
-                }
-                return try await connection.controlUiBrowserIdentityURL(config: config)
-            },
+        connectionProvider: @escaping @Sendable (DashboardGatewayTarget) async -> GatewayConnection = {
+            await DashboardManager.gatewayConnection(for: $0)
+        },
+        browserIdentityURLProvider: (@Sendable (DashboardGatewayTarget, GatewayConnection.Config) async throws
+            -> URL?)? = nil,
         routeProbe: @escaping @Sendable (DashboardRouteProbePurpose) async -> Void = { purpose in
             switch purpose {
             case .authentication:
@@ -108,7 +106,11 @@ final class DashboardManager {
     {
         self.websiteDataStore = websiteDataStore
         self.authTokenProvider = authTokenProvider
-        self.browserIdentityURLProvider = browserIdentityURLProvider
+        self.connectionProvider = connectionProvider
+        self.browserIdentityURLProvider = browserIdentityURLProvider ?? { target, config in
+            let connection = await connectionProvider(target)
+            return try await connection.controlUiBrowserIdentityURL(config: config)
+        }
         self.routeProbe = routeProbe
         self.endpointStateProvider = endpointStateProvider
         self.mainWindowAutosaveName = mainWindowAutosaveName
@@ -994,6 +996,13 @@ extension DashboardManager {
         return try await MacGatewayProfileStore.shared.endpoint(profileID: profileID)
     }
 
+    private static func gatewayConnection(for target: DashboardGatewayTarget) async -> GatewayConnection {
+        switch target {
+        case .primary: GatewayConnection.shared
+        case let .profile(id): await MacGatewayConnectionFleet.shared.connection(profileID: id)
+        }
+    }
+
     private func loadGatewayEntries() async throws -> [DashboardGatewayEntry] {
         #if DEBUG
         if let testGatewayEntriesProvider {
@@ -1438,8 +1447,11 @@ extension DashboardManager {
     static func _testMake(
         websiteDataStore: WKWebsiteDataStore = .nonPersistent(),
         authTokenProvider: @escaping @Sendable (GatewayConnection.Config) async -> String? = { $0.token },
-        browserIdentityURLProvider: @escaping @Sendable (DashboardGatewayTarget, GatewayConnection.Config) async throws
-            -> URL? = { _, _ in nil },
+        connectionProvider: @escaping @Sendable (DashboardGatewayTarget) async -> GatewayConnection = {
+            await DashboardManager.gatewayConnection(for: $0)
+        },
+        browserIdentityURLProvider: (@Sendable (DashboardGatewayTarget, GatewayConnection.Config) async throws
+            -> URL?)? = { _, _ in nil },
         routeProbe: @escaping @Sendable (DashboardRouteProbePurpose) async -> Void = { _ in },
         endpointStateProvider: @escaping @Sendable () async -> GatewayEndpointState = {
             .unavailable(mode: .unconfigured, reason: "not configured")
@@ -1456,6 +1468,7 @@ extension DashboardManager {
         let manager = DashboardManager(
             websiteDataStore: websiteDataStore,
             authTokenProvider: authTokenProvider,
+            connectionProvider: connectionProvider,
             browserIdentityURLProvider: browserIdentityURLProvider,
             routeProbe: routeProbe,
             endpointStateProvider: endpointStateProvider,
