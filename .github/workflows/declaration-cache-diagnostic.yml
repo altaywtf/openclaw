@@ -17,7 +17,7 @@ jobs:
     runs-on: blacksmith-16vcpu-ubuntu-2404
     timeout-minutes: 60
     env:
-      EXPECTED_SHA: f82e17bd6706cc197f0585e71b2ee493ff58c297
+      EXPECTED_SHA: c0403dbf4945955156de5ea0069062cc939a6502
     steps:
       - name: Checkout diagnostic tooling
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
