@@ -28,9 +28,27 @@ function contextOwner(ctx: OpenClawPluginToolContext | undefined): string {
   );
 }
 
-function canMutateCard(card: WorkboardCard, ownerId: string, token?: string): boolean {
+function contextSessionKey(ctx: OpenClawPluginToolContext | undefined): string | undefined {
+  return typeof ctx?.sessionKey === "string" && ctx.sessionKey.trim() ? ctx.sessionKey : undefined;
+}
+
+function canMutateCard(
+  card: WorkboardCard,
+  ownerId: string,
+  sessionKey: string | undefined,
+  token?: string,
+): boolean {
   const claim = card.metadata?.claim;
-  return !claim || claim.ownerId === ownerId || safeEqualSecret(token, claim.token);
+  if (!claim) {
+    return true;
+  }
+  if (safeEqualSecret(token, claim.token)) {
+    return true;
+  }
+  if (card.execution?.mode === "autonomous" && card.execution.sessionKey) {
+    return sessionKey === card.execution.sessionKey;
+  }
+  return claim.ownerId === ownerId;
 }
 
 function readParentIds(value: unknown): string[] {
@@ -66,13 +84,14 @@ async function requireScopedCard(
   store: WorkboardStore,
   cardId: string,
   ownerId: string,
+  sessionKey: string | undefined,
   token?: string,
 ): Promise<WorkboardCard> {
   const card = await store.get(cardId);
   if (!card) {
     throw new Error(`card not found: ${cardId}`);
   }
-  if (!canMutateCard(card, ownerId, token)) {
+  if (!canMutateCard(card, ownerId, sessionKey, token)) {
     throw new Error(`card is claimed by ${card.metadata?.claim?.ownerId ?? "another agent"}.`);
   }
   return card;
@@ -82,9 +101,10 @@ async function requireClaimedCard(
   store: WorkboardStore,
   cardId: string,
   ownerId: string,
+  sessionKey: string | undefined,
   token?: string,
 ): Promise<WorkboardCard> {
-  const card = await requireScopedCard(store, cardId, ownerId, token);
+  const card = await requireScopedCard(store, cardId, ownerId, sessionKey, token);
   if (!card.metadata?.claim) {
     throw new Error("card must be claimed before lifecycle completion.");
   }
@@ -178,16 +198,17 @@ export function createWorkboardTools(params: {
 }): AnyAgentTool[] {
   const store = params.store ?? WorkboardStore.openSqlite();
   const ownerId = contextOwner(params.context);
+  const sessionKey = contextSessionKey(params.context);
   const readScopedCardToolParams = async (rawParams: unknown): Promise<WorkboardToolCardParams> => {
     const input = readCardToolParams(rawParams, ownerId);
-    await requireScopedCard(store, input.id, ownerId, input.token);
+    await requireScopedCard(store, input.id, ownerId, sessionKey, input.token);
     return input;
   };
   const readClaimedCardToolParams = async (
     rawParams: unknown,
   ): Promise<WorkboardToolCardParams> => {
     const input = readCardToolParams(rawParams, ownerId);
-    await requireClaimedCard(store, input.id, ownerId, input.token);
+    await requireClaimedCard(store, input.id, ownerId, sessionKey, input.token);
     return input;
   };
   const runCardMutation = async (
@@ -446,6 +467,12 @@ export function createWorkboardTools(params: {
         id: cardIdField(),
         token: claimTokenField(),
         summary: Type.Optional(Type.String({ description: "Completion summary." })),
+        overallOutcome: Type.Optional(
+          Type.String({ description: "Overall feature or fix outcome now ready for review." }),
+        ),
+        attemptSummary: Type.Optional(
+          Type.String({ description: "Work and verification performed during this attempt only." }),
+        ),
         proofId: Type.Optional(
           Type.String({
             description: "Proof id returned by workboard_proof when resolving that pending proof.",
@@ -562,7 +589,8 @@ export function createWorkboardTools(params: {
     ...createWorkboardOrchestrationTools({
       store,
       ownerId,
-      requireScopedCard,
+      requireScopedCard: (targetStore, cardId, targetOwnerId, token) =>
+        requireScopedCard(targetStore, cardId, targetOwnerId, sessionKey, token),
       readScopedCardToolParams,
       readClaimedCardToolParams,
       runScopedCardMutation,

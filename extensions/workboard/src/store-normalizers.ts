@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   isValidWorkboardBoardId,
+  isWorkboardAutopilotMode,
   WORKBOARD_ATTEMPT_STATUSES,
   WORKBOARD_DIAGNOSTIC_KINDS,
   WORKBOARD_DIAGNOSTIC_SEVERITIES,
@@ -142,6 +143,9 @@ function normalizeOrchestration(
     return fallback;
   }
   const record = value;
+  const autopilotMode = isWorkboardAutopilotMode(record.autopilotMode)
+    ? record.autopilotMode
+    : fallback?.autopilotMode;
   const autoDecompose =
     typeof record.autoDecompose === "boolean" ? record.autoDecompose : fallback?.autoDecompose;
   const autoDecomposePerDispatch =
@@ -162,6 +166,7 @@ function normalizeOrchestration(
     "orchestrator profile",
   );
   const next: WorkboardOrchestrationSettings = {
+    ...(autopilotMode ? { autopilotMode } : {}),
     ...(autoDecompose !== undefined ? { autoDecompose } : {}),
     ...(autoDecomposePerDispatch ? { autoDecomposePerDispatch } : {}),
     ...(defaultAssignee ? { defaultAssignee } : {}),
@@ -625,6 +630,8 @@ function normalizeAttempt(value: unknown): WorkboardRunAttempt | null {
   const sessionKey = normalizeOptionalString(record.sessionKey);
   const runId = normalizeOptionalString(record.runId);
   const error = normalizeBoundedString(record.error, undefined, 800, "attempt error");
+  const summary = normalizeBoundedString(record.summary, undefined, 2000, "attempt summary");
+  const proofIds = normalizeStringList(record.proofIds, "attempt proof ids", 120);
   const engine = normalizeBoundedString(record.engine, undefined, 160, "attempt engine");
   const model = normalizeBoundedString(record.model, undefined, 160, "attempt model");
   return {
@@ -641,6 +648,8 @@ function normalizeAttempt(value: unknown): WorkboardRunAttempt | null {
     ...(sessionKey ? { sessionKey } : {}),
     ...(runId ? { runId } : {}),
     ...(error ? { error } : {}),
+    ...(summary ? { summary } : {}),
+    ...(proofIds.length ? { proofIds } : {}),
   };
 }
 

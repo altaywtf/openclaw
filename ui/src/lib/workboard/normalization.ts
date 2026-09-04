@@ -38,6 +38,41 @@ function normalizeBoardSummary(value: unknown): WorkboardBoardSummary | null {
   }
   const automationJobId =
     typeof value.automationJobId === "string" ? value.automationJobId.trim() : "";
+  const rawOrchestration = isRecord(value.orchestration) ? value.orchestration : undefined;
+  const autopilotMode = rawOrchestration?.autopilotMode === "guarded" ? "guarded" : undefined;
+  const autoDecompose =
+    typeof rawOrchestration?.autoDecompose === "boolean"
+      ? rawOrchestration.autoDecompose
+      : undefined;
+  const autoDecomposePerDispatch =
+    typeof rawOrchestration?.autoDecomposePerDispatch === "number" &&
+    Number.isFinite(rawOrchestration.autoDecomposePerDispatch) &&
+    rawOrchestration.autoDecomposePerDispatch >= 0
+      ? Math.trunc(rawOrchestration.autoDecomposePerDispatch)
+      : undefined;
+  const defaultAssignee =
+    typeof rawOrchestration?.defaultAssignee === "string" && rawOrchestration.defaultAssignee.trim()
+      ? rawOrchestration.defaultAssignee.trim()
+      : undefined;
+  const orchestratorProfile =
+    typeof rawOrchestration?.orchestratorProfile === "string" &&
+    rawOrchestration.orchestratorProfile.trim()
+      ? rawOrchestration.orchestratorProfile.trim()
+      : undefined;
+  const orchestration =
+    autopilotMode ||
+    autoDecompose !== undefined ||
+    autoDecomposePerDispatch !== undefined ||
+    defaultAssignee ||
+    orchestratorProfile
+      ? {
+          ...(autopilotMode ? { autopilotMode } : {}),
+          ...(autoDecompose !== undefined ? { autoDecompose } : {}),
+          ...(autoDecomposePerDispatch !== undefined ? { autoDecomposePerDispatch } : {}),
+          ...(defaultAssignee ? { defaultAssignee } : {}),
+          ...(orchestratorProfile ? { orchestratorProfile } : {}),
+        }
+      : undefined;
   return {
     id,
     total: normalizeCount(value.total),
@@ -51,6 +86,7 @@ function normalizeBoardSummary(value: unknown): WorkboardBoardSummary | null {
     ...(typeof value.icon === "string" && value.icon.trim() ? { icon: value.icon.trim() } : {}),
     ...(typeof value.color === "string" && value.color.trim() ? { color: value.color.trim() } : {}),
     ...(automationJobId && automationJobId.length <= 128 ? { automationJobId } : {}),
+    ...(orchestration ? { orchestration } : {}),
     ...(typeof value.updatedAt === "number" ? { updatedAt: value.updatedAt } : {}),
     ...(typeof value.archivedAt === "number" ? { archivedAt: value.archivedAt } : {}),
   };

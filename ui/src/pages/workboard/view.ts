@@ -11,10 +11,12 @@ import {
   filterWorkboardCardsForPreset,
   getWorkboardState,
   refreshWorkboard,
+  setWorkboardAutopilot,
   summarizeWorkboardHealth,
   workboardHasActiveWrites,
   WORKBOARD_PRIORITIES,
   type WorkboardCard,
+  type WorkboardBoardSummary,
   type WorkboardHealthKey,
   type WorkboardHealthSummary,
   type WorkboardStatus,
@@ -82,9 +84,10 @@ function renderHealthStrip(
       ${items.map(
         ([key, label, count]) => html`
           <button
-            class="workboard-health__item workboard-health__item--${key} ${
-              state.activeHealthHighlight === key ? "workboard-health__item--active" : ""
-            } ${count === 0 ? "workboard-health__item--empty" : ""}"
+            class="workboard-health__item workboard-health__item--${key} ${state.activeHealthHighlight ===
+            key
+              ? "workboard-health__item--active"
+              : ""} ${count === 0 ? "workboard-health__item--empty" : ""}"
             type="button"
             aria-pressed=${state.activeHealthHighlight === key}
             aria-label=${`${count} ${label}`}
@@ -104,9 +107,9 @@ function renderHealthStrip(
 function renderRefreshStatus(state: WorkboardUiState) {
   if (state.lastRefreshAt) {
     return html`<span
-      class="workboard-refresh-status ${
-        state.lastRefreshError ? "workboard-refresh-status--error" : ""
-      }"
+      class="workboard-refresh-status ${state.lastRefreshError
+        ? "workboard-refresh-status--error"
+        : ""}"
       title=${state.lastRefreshError ? t("workboard.refreshError") : ""}
     >
       ${t("workboard.lastRefreshed", { time: formatRefreshTime(state.lastRefreshAt) })}
@@ -117,6 +120,37 @@ function renderRefreshStatus(state: WorkboardUiState) {
         ${t("workboard.refreshError")}
       </span>`
     : nothing;
+}
+
+function renderAutopilotControl(
+  props: WorkboardProps,
+  state: WorkboardUiState,
+  board: WorkboardBoardSummary | undefined,
+) {
+  if (!board || !canMutate(props)) {
+    return nothing;
+  }
+  const guarded = board.orchestration?.autopilotMode === "guarded";
+  const label = t(guarded ? "workboard.autopilotGuarded" : "workboard.autopilotOff");
+  return html`
+    <button
+      class="btn workboard-autopilot ${guarded ? "workboard-autopilot--guarded" : ""}"
+      type="button"
+      role="switch"
+      aria-checked=${guarded ? "true" : "false"}
+      ?disabled=${state.busyCardIds.has(`board:${board.id}`) || workboardHasActiveWrites(state)}
+      @click=${() =>
+        setWorkboardAutopilot({
+          host: props.host,
+          client: props.client,
+          boardId: board.id,
+          mode: guarded ? "off" : "guarded",
+          requestUpdate: props.onRequestUpdate,
+        })}
+    >
+      ${icons.lock} ${label}
+    </button>
+  `;
 }
 
 const viewPresetOptions: Array<{ value: WorkboardUiState["viewPreset"]; labelKey: string }> = [
@@ -150,13 +184,11 @@ export function renderWorkboard(props: WorkboardProps) {
       return html`
         <section class="workboard">
           <div class="callout danger" role="alert">${props.pluginEnablementError}</div>
-          ${
-            props.onReloadConfig
-              ? html`<button class="btn" type="button" @click=${props.onReloadConfig}>
-                  ${t("lazyView.retry")}
-                </button>`
-              : nothing
-          }
+          ${props.onReloadConfig
+            ? html`<button class="btn" type="button" @click=${props.onReloadConfig}>
+                ${t("lazyView.retry")}
+              </button>`
+            : nothing}
         </section>
       `;
     }
@@ -180,6 +212,12 @@ export function renderWorkboard(props: WorkboardProps) {
   // A valid route can outlive a deleted board. Keep that id as the active
   // filter so the page becomes empty instead of silently showing every card.
   const activeBoardFilter = state.boardFilter;
+  const autopilotBoard =
+    activeBoardFilter !== WORKBOARD_ALL_BOARDS_FILTER
+      ? state.boards.find((board) => board.id === activeBoardFilter)
+      : state.boards.length === 1
+        ? state.boards[0]
+        : undefined;
   const applyNonViewFilters = (cards: readonly WorkboardCard[]) =>
     cards
       .filter((card) => state.showArchived || !card.metadata?.archivedAt)
@@ -296,41 +334,37 @@ export function renderWorkboard(props: WorkboardProps) {
               className: "workboard-select--toolbar",
               showLabel: false,
             })}
-            ${
-              boardOptions.length >= 3
-                ? renderWorkboardSelect({
-                    value: activeBoardFilter,
-                    options: boardOptions,
-                    label: t("workboard.boardFilter"),
-                    onChange: (value) => {
-                      state.boardFilter = value;
-                      props.onBoardFilterChange?.(value);
-                    },
-                    requestUpdate: props.onRequestUpdate,
-                    className: "workboard-select--toolbar workboard-select--toolbar-board",
-                    showLabel: false,
-                  })
-                : nothing
-            }
-            ${
-              props.showAgentFilter !== false
-                ? html`
-                    <openclaw-agent-select
-                      class="workboard-agent-select workboard-agent-select--toolbar"
-                      .options=${agentSelectOptions}
-                      .value=${state.agentFilter}
-                      .accessibleLabel=${t("workboard.agentFilter")}
-                      .onSelect=${(value: string) => {
-                        const option = agentOptions.find((candidate) => candidate.id === value);
-                        if (option) {
-                          state.agentFilter = option.id;
-                          props.onRequestUpdate?.();
-                        }
-                      }}
-                    ></openclaw-agent-select>
-                  `
-                : nothing
-            }
+            ${boardOptions.length >= 3
+              ? renderWorkboardSelect({
+                  value: activeBoardFilter,
+                  options: boardOptions,
+                  label: t("workboard.boardFilter"),
+                  onChange: (value) => {
+                    state.boardFilter = value;
+                    props.onBoardFilterChange?.(value);
+                  },
+                  requestUpdate: props.onRequestUpdate,
+                  className: "workboard-select--toolbar workboard-select--toolbar-board",
+                  showLabel: false,
+                })
+              : nothing}
+            ${props.showAgentFilter !== false
+              ? html`
+                  <openclaw-agent-select
+                    class="workboard-agent-select workboard-agent-select--toolbar"
+                    .options=${agentSelectOptions}
+                    .value=${state.agentFilter}
+                    .accessibleLabel=${t("workboard.agentFilter")}
+                    .onSelect=${(value: string) => {
+                      const option = agentOptions.find((candidate) => candidate.id === value);
+                      if (option) {
+                        state.agentFilter = option.id;
+                        props.onRequestUpdate?.();
+                      }
+                    }}
+                  ></openclaw-agent-select>
+                `
+              : nothing}
             <button
               class="btn workboard-archive-toggle ${state.showArchived ? "active" : ""}"
               type="button"
@@ -341,11 +375,9 @@ export function renderWorkboard(props: WorkboardProps) {
               }}
             >
               ${state.showArchived ? icons.eye : icons.eyeOff}
-              ${
-                state.showArchived
-                  ? t("workboard.hideArchivedShort")
-                  : t("workboard.showArchivedShort")
-              }
+              ${state.showArchived
+                ? t("workboard.hideArchivedShort")
+                : t("workboard.showArchivedShort")}
             </button>
             <div class="workboard-layout-controls">
               <div class="workboard-layout-toggle" role="group" aria-label=${t("workboard.layout")}>
@@ -384,6 +416,7 @@ export function renderWorkboard(props: WorkboardProps) {
             })}
           </div>
           <div class="workboard-toolbar__actions">
+            ${renderAutopilotControl(props, state, autopilotBoard)}
             <button
               class="btn"
               type="button"
@@ -399,70 +432,65 @@ export function renderWorkboard(props: WorkboardProps) {
             >
               ${state.loading ? t("common.refreshing") : t("common.refresh")}
             </button>
-            ${
-              writable
-                ? html`
-                    <button
-                      class="btn"
-                      type="button"
-                      ?disabled=${state.dispatching || workboardHasActiveWrites(state)}
-                      @click=${() =>
-                        dispatchWorkboard({
-                          host: props.host,
-                          client: props.client,
-                          requestUpdate: props.onRequestUpdate,
-                        })}
-                    >
-                      ${icons.zap} ${t("workboard.dispatch")}
-                    </button>
-                  `
-                : nothing
-            }
-            ${
-              writable
-                ? html`
-                    <button
-                      class="btn primary"
-                      type="button"
-                      aria-haspopup="dialog"
-                      aria-expanded=${state.draftOpen ? "true" : "false"}
-                      aria-controls=${workboardCardModalId}
-                      ?disabled=${state.dispatching}
-                      @click=${() => {
-                        openCreateModal(state, props);
-                        props.onRequestUpdate?.();
-                      }}
-                    >
-                      ${icons.plus} ${t("workboard.newCard")}
-                    </button>
-                  `
-                : nothing
-            }
+            ${writable
+              ? html`
+                  <button
+                    class="btn"
+                    type="button"
+                    ?disabled=${state.dispatching || workboardHasActiveWrites(state)}
+                    @click=${() =>
+                      dispatchWorkboard({
+                        host: props.host,
+                        client: props.client,
+                        requestUpdate: props.onRequestUpdate,
+                      })}
+                  >
+                    ${icons.zap} ${t("workboard.dispatch")}
+                  </button>
+                `
+              : nothing}
+            ${writable
+              ? html`
+                  <button
+                    class="btn primary"
+                    type="button"
+                    aria-haspopup="dialog"
+                    aria-expanded=${state.draftOpen ? "true" : "false"}
+                    aria-controls=${workboardCardModalId}
+                    ?disabled=${state.dispatching}
+                    @click=${() => {
+                      openCreateModal(state, props);
+                      props.onRequestUpdate?.();
+                    }}
+                  >
+                    ${icons.plus} ${t("workboard.newCard")}
+                  </button>
+                `
+              : nothing}
           </div>
         </div>
         ${renderHealthStrip(state, health, props.onRequestUpdate)}
         ${visibleError ? html`<div class="callout danger">${visibleError}</div>` : nothing}
         ${renderDispatchSummary(state)}
-        ${
-          (filtered.length === 0 && activeFiltering) || visibleStatuses.length === 0
-            ? html`
-                <div class="workboard-empty-state" role="status">
-                  <strong>${t("workboard.emptyFilteredTitle")}</strong>
-                  <span>${t("workboard.emptyFilteredHint")}</span>
-                </div>
-              `
-            : html`
-                <div
-                  class="workboard-board workboard-board--page workboard-board--${state.layout} ${
-                    visibleStatuses.length === 1 ? "workboard-board--single-column" : ""
-                  }"
-                >
-                  ${visibleStatuses.map((status) =>
-                    renderColumn(props, status, byStatus.get(status) ?? []),
-                  )}
-                </div>
-              `
-        }
+        ${(filtered.length === 0 && activeFiltering) || visibleStatuses.length === 0
+          ? html`
+              <div class="workboard-empty-state" role="status">
+                <strong>${t("workboard.emptyFilteredTitle")}</strong>
+                <span>${t("workboard.emptyFilteredHint")}</span>
+              </div>
+            `
+          : html`
+              <div
+                class="workboard-board workboard-board--page workboard-board--${state.layout} ${visibleStatuses.length ===
+                1
+                  ? "workboard-board--single-column"
+                  : ""}"
+              >
+                ${visibleStatuses.map((status) =>
+                  renderColumn(props, status, byStatus.get(status) ?? []),
+                )}
+              </div>
+            `}
       </div>
       ${renderCardModal(props)} ${renderCardDetailsPanel(props)}
     </section>

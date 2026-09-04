@@ -111,6 +111,8 @@ export type WorkboardCompleteInput = {
   ownerId?: unknown;
   token?: unknown;
   summary?: unknown;
+  overallOutcome?: unknown;
+  attemptSummary?: unknown;
   proof?: unknown;
   proofId?: unknown;
   artifacts?: unknown;

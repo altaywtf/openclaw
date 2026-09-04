@@ -19,7 +19,9 @@ import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runti
 import {
   BLOCKED_TOO_LONG_MS,
   MAX_CARD_ATTEMPTS,
+  MAX_CARD_COMMENTS,
   MAX_CARD_EVENTS,
+  MAX_CARD_NOTIFICATIONS,
   READY_STRANDED_MS,
   RUNNING_HEARTBEAT_STALE_MS,
 } from "./store-constants.js";
@@ -89,6 +91,8 @@ export function syncExecutionAttemptMetadata(
     ...(execution.model ? { model: execution.model } : {}),
     ...(execution.sessionKey ? { sessionKey: execution.sessionKey } : {}),
     ...(execution.runId ? { runId: execution.runId } : {}),
+    ...(existingAttempt?.summary ? { summary: existingAttempt.summary } : {}),
+    ...(existingAttempt?.proofIds?.length ? { proofIds: existingAttempt.proofIds } : {}),
     ...(attemptStatus !== "running" && { endedAt: execution.updatedAt || now }),
     ...(attemptStatus !== "succeeded" && existingAttempt?.error
       ? { error: existingAttempt.error }
@@ -730,6 +734,37 @@ export function closeRunningAttempts(
       ? { ...attempt, status, endedAt: now, ...(reason ? { error: reason } : {}) }
       : attempt,
   );
+}
+
+export function terminalExitMetadata(params: {
+  card: WorkboardCard;
+  metadata: WorkboardMetadata;
+  now: number;
+  reason: string;
+  notificationSequence: number;
+}): WorkboardMetadata {
+  return {
+    ...params.metadata,
+    claim: undefined,
+    attempts: closeRunningAttempts(params.metadata.attempts, params.now, "blocked", params.reason),
+    failureCount: (params.metadata.failureCount ?? 0) + 1,
+    comments: [
+      ...(params.metadata.comments ?? []),
+      { id: randomUUID(), body: params.reason, createdAt: params.now },
+    ].slice(-MAX_CARD_COMMENTS),
+    notifications: [
+      ...(params.metadata.notifications ?? []),
+      {
+        id: randomUUID(),
+        kind: "failed" as const,
+        createdAt: params.now,
+        sequence: params.notificationSequence,
+        message: params.reason,
+        ...(cardSessionKey(params.card) ? { sessionKey: cardSessionKey(params.card) } : {}),
+        ...(cardRunId(params.card) ? { runId: cardRunId(params.card) } : {}),
+      },
+    ].slice(-MAX_CARD_NOTIFICATIONS),
+  };
 }
 
 export function notificationSequence(event: WorkboardNotification): number | undefined {
