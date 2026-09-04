@@ -1,9 +1,6 @@
 import type { ChatQueueItem, HumanMention } from "../../../lib/chat/chat-types.ts";
 import type { ChatRunUiStatus } from "../run-lifecycle.ts";
-import {
-  adjustTextareaHeight,
-  disconnectComposerPopoverAnchorObserver,
-} from "./chat-composer-dom.ts";
+import { disconnectComposerPopoverAnchorObserver } from "./chat-composer-dom.ts";
 import { clearGoalElapsedTimers } from "./chat-composer-goal.ts";
 import { HumanMentionMenu } from "./chat-composer-mention-menu.ts";
 import { createSkillMenuState } from "./chat-composer-skill-menu.ts";
@@ -27,10 +24,14 @@ function createChatComposerState(): ChatComposerState {
     restoreComposerFocus: false,
     composerInput: null,
     composerTextarea: null,
+    composerEditorHost: null,
+    composerEditor: null,
+    composerEditorOptions: null,
     microphonePicker: null,
     capabilityMenuOpen: false,
     capabilityMenuView: "root",
     textareaRef: null,
+    composerEditorRef: null,
     composerInputRef: null,
     dictation: null,
     composerDraftScopeKey: null,
@@ -143,7 +144,7 @@ export function suppressStaleSubmittedDraftReplay(
   }
 
   target.value = currentDraft;
-  adjustTextareaHeight(target);
+  state.composerEditor?.setDraft(currentDraft);
   return true;
 }
 
@@ -152,6 +153,7 @@ function disposeChatComposerState(state: ChatComposerState) {
   state.composerDraftScopeKey = null;
   state.dictation?.dispose();
   state.microphonePicker?.dispose();
+  state.composerEditor?.destroy();
   if (state.composerInput) {
     disconnectComposerPopoverAnchorObserver(state.composerInput);
   }

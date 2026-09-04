@@ -41,11 +41,9 @@ export function createComposerKeyDownHandler({
   showAbortableUi,
   alternateFollowUpMode,
   goalComposer,
-}: ComposerKeyDownDeps): (event: KeyboardEvent) => void {
-  return (event) => {
-    // The handler only ever binds to the composer textarea; narrowing here
-    // keeps the draft/selection reads below assertion-free.
-    const target = event.target;
+}: ComposerKeyDownDeps): (event: KeyboardEvent, source?: HTMLTextAreaElement) => void {
+  return (event, source) => {
+    const target = source ?? event.target;
     if (!(target instanceof HTMLTextAreaElement)) {
       return;
     }
@@ -111,7 +109,7 @@ export function createComposerKeyDownHandler({
         // reactive property; commit it before placing the caret in the DOM.
         requestUpdate();
         if (result.restoreCaret) {
-          restoreHistoryCaret(target, result.restoreCaret);
+          restoreHistoryCaret(target, result.restoreCaret, state.composerEditor);
         }
         return;
       }

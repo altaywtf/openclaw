@@ -204,13 +204,12 @@
 /* Focus is a neutral state, not an accent/status signal. Keep it within one
    subtle luminance step of the resting hairline; a second ring or outer spread
    would make the composer look thicker as soon as the operator starts typing. */
-.agent-chat__input:has(.agent-chat__composer-combobox > :is(textarea, input):focus) {
+.agent-chat__input:has(.agent-chat__composer-editor .cm-focused) {
   border-color: color-mix(in srgb, var(--chat-composer-hairline) 94%, var(--text-strong));
   box-shadow: 0 4px 16px rgb(0 0 0 / 5%);
 }
 
-:root[data-theme-mode="light"]
-  .agent-chat__input:has(.agent-chat__composer-combobox > :is(textarea, input):focus) {
+:root[data-theme-mode="light"] .agent-chat__input:has(.agent-chat__composer-editor .cm-focused) {
   border-color: transparent;
   box-shadow:
     0 0 0 1px rgb(0 0 0 / 8%),
@@ -407,25 +406,7 @@
   min-width: 0;
 }
 
-/* The preview is presentation only: the textarea below remains the sole draft
-   owner for selection, IME, dictation, history, and slash-command behavior. */
-.agent-chat__composer-markdown-preview {
-  --chat-text: var(--text-strong);
-  --chat-text-size: var(--chat-composer-editor-size);
-
-  max-height: min(28dvh, calc(var(--chat-composer-editor-line) * 9));
-  padding: var(--chat-composer-editor-inset-block) 0 10px;
-  overflow: hidden;
-  border-bottom: 1px solid var(--chat-composer-hairline);
-  pointer-events: none;
-  user-select: none;
-}
-
-.agent-chat__composer-markdown-preview:not([hidden]) + textarea {
-  margin-top: 6px;
-}
-
-.agent-chat__composer-combobox > :is(textarea, input) {
+.agent-chat__composer-editor {
   --control-ui-touch-input-size: var(--chat-composer-editor-size);
 
   width: 100%;
@@ -436,56 +417,121 @@
     25dvh,
     calc(var(--chat-composer-editor-line) * 6 + var(--chat-composer-editor-inset-block) * 2)
   );
-  resize: none;
-  padding-block: var(--chat-composer-editor-inset-block);
-  /* The horizontal inset belongs to the row, so the text keeps one origin while
-     the surface changes shape; the control adds none of its own. */
-  padding-inline: 0;
-  border: none;
+  overflow: hidden;
+}
+
+.agent-chat__composer-editor .cm-editor,
+.agent-chat__composer-editor .cm-scroller {
+  min-height: inherit;
+  max-height: inherit;
   background: transparent;
+}
+
+.agent-chat__composer-editor .cm-editor {
   color: var(--text-strong);
+  font-family: inherit;
   font-size: var(--chat-composer-editor-size);
   line-height: var(--chat-composer-editor-line);
   outline: none;
 }
 
-.agent-chat__composer-combobox > textarea:is([data-scroll-fade-top], [data-scroll-fade-bottom]) {
-  --chat-composer-scroll-mask-top: currentColor;
-  --chat-composer-scroll-mask-bottom: currentColor;
-
-  mask-image: linear-gradient(
-    to bottom,
-    var(--chat-composer-scroll-mask-top) 0,
-    currentColor 16px,
-    currentColor calc(100% - 16px),
-    var(--chat-composer-scroll-mask-bottom) 100%
-  );
+.agent-chat__composer-editor .cm-scroller {
+  overflow-x: hidden;
+  overflow-y: auto;
+  font-family: inherit;
 }
 
-.agent-chat__composer-combobox > textarea[data-scroll-fade-top] {
-  --chat-composer-scroll-mask-top: transparent;
+.agent-chat__composer-editor .cm-content {
+  min-height: calc(var(--chat-composer-editor-line) + 8px);
+  padding-block: var(--chat-composer-editor-inset-block);
+  caret-color: var(--text-strong);
 }
 
-.agent-chat__composer-combobox > textarea[data-scroll-fade-bottom] {
-  --chat-composer-scroll-mask-bottom: transparent;
+.agent-chat__composer-editor .cm-line {
+  padding-inline: 0;
 }
 
-.agent-chat__composer-combobox > :is(textarea, input):focus-visible {
-  box-shadow: none;
-}
-
-.agent-chat__composer-combobox > :is(textarea, input)::placeholder {
+.agent-chat__composer-editor .cm-placeholder {
   color: var(--chat-composer-tertiary);
+  font-style: normal;
 }
 
-/* One ellipsized line while empty: long agent names otherwise wrap the
-   placeholder, grow the box, and surface the overlay scrollbar as a stray
-   gray pill. On the control (not ::placeholder) so Firefox honors it too;
-   typing unsets :placeholder-shown, restoring normal wrapping. */
-.agent-chat__composer-combobox > :is(textarea, input):placeholder-shown {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.agent-chat__composer-source {
+  position: absolute;
+  z-index: -1;
+  width: 1px;
+  height: 1px;
+  min-height: 1px;
+  padding: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.chat-composer-rich-strong {
+  font-weight: 700;
+}
+
+.chat-composer-rich-emphasis {
+  font-style: italic;
+}
+
+.chat-composer-rich-strike {
+  text-decoration: line-through;
+}
+
+.chat-composer-rich-code {
+  padding: 0.08em 0.34em;
+  border: 1px solid color-mix(in srgb, var(--text-strong) 11%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--text-strong) 7%, transparent);
+  font-family: var(--mono);
+  font-size: 0.9em;
+}
+
+.chat-composer-rich-link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.cm-line.chat-composer-rich-quote {
+  padding-inline-start: 12px;
+  border-inline-start: 3px solid color-mix(in srgb, var(--text-strong) 28%, transparent);
+  color: var(--chat-composer-secondary);
+}
+
+.cm-line.chat-composer-rich-list-item {
+  padding-inline-start: 4px;
+}
+
+.chat-composer-rich-list-marker {
+  display: inline-block;
+  min-width: 1.15em;
+  color: var(--chat-composer-tertiary);
+  text-align: center;
+}
+
+.cm-line[class*="chat-composer-rich-heading-"] {
+  font-weight: 700;
+}
+
+.cm-line.chat-composer-rich-heading-1 {
+  font-size: 1.4em;
+}
+
+.cm-line.chat-composer-rich-heading-2 {
+  font-size: 1.25em;
+}
+
+.cm-line.chat-composer-rich-heading-3 {
+  font-size: 1.12em;
+}
+
+.cm-line.chat-composer-rich-code-block {
+  padding-inline: 10px;
+  background: color-mix(in srgb, var(--text-strong) 6%, transparent);
+  font-family: var(--mono);
+  font-size: 0.9em;
 }
 
 .agent-chat__composer-status-stack {
@@ -2027,7 +2073,7 @@
     align-self: stretch;
   }
 
-  .agent-chat__composer-combobox > :is(textarea, input) {
+  .agent-chat__composer-editor .cm-content {
     flex: 1 1 auto;
     padding-top: 10px;
     padding-bottom: 10px;
@@ -2113,10 +2159,9 @@
     background: var(--chat-composer-surface);
   }
 
-  .agent-chat__composer-combobox > :is(textarea, input) {
+  .agent-chat__composer-editor {
     min-height: 48px;
     max-height: 56px;
-    overflow-y: auto;
   }
 
   .agent-chat__input > .slash-menu {

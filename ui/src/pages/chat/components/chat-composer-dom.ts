@@ -136,7 +136,7 @@ function updateTextareaOverflow(el: HTMLTextAreaElement) {
   el.toggleAttribute("data-scroll-fade-bottom", fadeBottom);
 }
 
-export function preserveComposerBottomAnchor(el: HTMLTextAreaElement, mutateLayout: () => void) {
+export function preserveComposerBottomAnchor(el: Element, mutateLayout: () => void) {
   const thread = el.closest(".chat")?.querySelector<HTMLElement>(".chat-thread") ?? null;
   const preserveBottomAnchor = thread
     ? captureChatSessionScrollPosition(thread).anchorToEnd
@@ -257,29 +257,36 @@ export function focusComposerFromChrome(event: MouseEvent | PointerEvent, connec
     return;
   }
   currentTarget
-    .querySelector<HTMLTextAreaElement>(".agent-chat__composer-combobox > textarea")
+    .querySelector<HTMLElement>(".agent-chat__composer-editor .cm-content")
     ?.focus({ preventScroll: true });
 }
 
 export function preserveComposerFocusOnPrimaryAction(
   event: PointerEvent,
-  textarea: HTMLTextAreaElement | null,
+  editor: HTMLElement | null,
 ): void {
-  const composerShell = textarea?.closest<HTMLElement>(".agent-chat__composer-shell");
-  if (document.activeElement === textarea && composerShell) {
+  const composerShell = editor?.closest<HTMLElement>(".agent-chat__composer-shell");
+  if (composerShell && editor?.contains(document.activeElement)) {
     event.preventDefault();
   }
 }
 
-export function restoreHistoryCaret(target: HTMLTextAreaElement, direction: "up" | "down") {
+export function restoreHistoryCaret(
+  target: HTMLTextAreaElement,
+  direction: "up" | "down",
+  editor?: {
+    hasFocus: () => boolean;
+    setSelection: (start: number, end?: number) => void;
+  } | null,
+) {
   requestAnimationFrame(() => {
-    if (document.activeElement !== target) {
+    if (document.activeElement !== target && !editor?.hasFocus()) {
       return;
     }
-    adjustTextareaHeight(target);
     const caret = direction === "up" ? 0 : target.value.length;
     target.selectionStart = caret;
     target.selectionEnd = caret;
+    editor?.setSelection(caret);
   });
 }
 

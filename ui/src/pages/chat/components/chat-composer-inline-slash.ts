@@ -3,8 +3,6 @@ import {
   type InlineSlashCompletion,
   type SlashCommandDef,
 } from "../../../lib/chat/commands.ts";
-import { adjustTextareaHeight } from "./chat-composer-dom.ts";
-
 type InlineSlashState = {
   slashMenuCompletion: InlineSlashCompletion | null;
 };
@@ -13,6 +11,7 @@ type InlineSlashHost = {
   getDraft: () => string;
   commitDraft: (next: string) => void;
   getTextarea: () => HTMLTextAreaElement | null;
+  focusEditor?: (start: number, end?: number) => void;
 };
 
 type InlineSlashArgumentInvocation = {
@@ -24,7 +23,6 @@ function commitDraftWithCaret(host: InlineSlashHost, next: string, caret: number
   const target = host.getTextarea();
   if (target) {
     target.value = next;
-    adjustTextareaHeight(target);
   }
   host.commitDraft(next);
   queueMicrotask(() => {
@@ -32,9 +30,9 @@ function commitDraftWithCaret(host: InlineSlashHost, next: string, caret: number
     if (!textarea) {
       return;
     }
-    textarea.focus({ preventScroll: true });
     textarea.selectionStart = caret;
     textarea.selectionEnd = caret;
+    host.focusEditor?.(caret);
   });
 }
 

@@ -4,7 +4,6 @@ import { icons } from "../../../components/icons.ts";
 import { t } from "../../../i18n/index.ts";
 import type { ChatGoalDraftMode } from "../../../lib/chat/chat-types.ts";
 import type { SlashCommandDef } from "../../../lib/chat/commands.ts";
-import { adjustTextareaHeight } from "./chat-composer-dom.ts";
 import { resetSkillMenuState } from "./chat-composer-skill-menu.ts";
 import { resetSlashMenuState } from "./chat-composer-slash-menu.ts";
 import { commitComposerDraft, composerDraftKey } from "./chat-composer-state.ts";
@@ -41,10 +40,10 @@ export function createGoalComposerController(
     const textarea = state.composerTextarea;
     if (textarea) {
       textarea.value = draft;
-      adjustTextareaHeight(textarea);
     }
+    state.composerEditor?.setDraft(draft);
   };
-  const focus = () => queueMicrotask(() => state.composerTextarea?.focus({ preventScroll: true }));
+  const focus = () => queueMicrotask(() => state.composerEditor?.focus());
   const cancel = () => {
     const mode = current();
     if (!mode || mode.pending) {

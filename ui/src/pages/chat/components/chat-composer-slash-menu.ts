@@ -51,6 +51,7 @@ export type SlashMenuHost = {
   getDraft: () => string;
   commitDraft: (next: string) => void;
   getTextarea: () => HTMLTextAreaElement | null;
+  focusEditor?: (start: number, end?: number) => void;
   resolveArgOptions: (command: SlashCommandDef) => string[];
   runCommand: () => void;
   canRun: (inline: boolean) => boolean;
@@ -575,19 +576,17 @@ function renderSlashCommandOption(params: {
       }}
     >
       <span class="slash-menu-icon"
-        >${
-          cmd.source === "skill"
-            ? icons.pencilSparkles
-            : cmd.icon
-              ? renderSlashIcon(cmd.icon)
-              : icons.terminal
-        }</span
+        >${cmd.source === "skill"
+          ? icons.pencilSparkles
+          : cmd.icon
+            ? renderSlashIcon(cmd.icon)
+            : icons.terminal}</span
       >
       <span class="slash-menu-copy">
         <span class="slash-menu-name"
-          >/${renderSlashMatchedName(cmd.name, query)}${
-            cmd.args ? html`<span class="slash-menu-args"> ${cmd.args}</span>` : nothing
-          }</span
+          >/${renderSlashMatchedName(cmd.name, query)}${cmd.args
+            ? html`<span class="slash-menu-args"> ${cmd.args}</span>`
+            : nothing}</span
         >
         <span class="slash-menu-desc">${getSlashCommandDescription(cmd)}</span>
       </span>
@@ -631,9 +630,9 @@ export function renderSlashMenu(
               (arg, i) => html`
                 <div
                   id=${getSlashArgOptionId(host.paneId, state.slashMenuCommand?.name ?? "", arg)}
-                  class="slash-menu-item ${
-                    i === state.slashMenuIndex ? "slash-menu-item--active" : ""
-                  }"
+                  class="slash-menu-item ${i === state.slashMenuIndex
+                    ? "slash-menu-item--active"
+                    : ""}"
                   role="option"
                   aria-selected=${i === state.slashMenuIndex}
                   @click=${() => selectSlashArg(arg, state, host, requestUpdate, true)}
@@ -643,11 +642,9 @@ export function renderSlashMenu(
                   }}
                 >
                   <span class="slash-menu-icon"
-                    >${
-                      state.slashMenuCommand?.icon
-                        ? renderSlashIcon(state.slashMenuCommand.icon)
-                        : icons.terminal
-                    }</span
+                    >${state.slashMenuCommand?.icon
+                      ? renderSlashIcon(state.slashMenuCommand.icon)
+                      : icons.terminal}</span
                   >
                   <span class="slash-menu-copy">
                     <span class="slash-menu-name">${arg}</span>
@@ -704,23 +701,21 @@ export function renderSlashMenu(
             )}
           </div>`,
         )}
-        ${
-          skills.length > 0
-            ? html`<div class="slash-menu-group slash-menu-group--skills">
-                <div class="slash-menu-group__label">${t("chat.skills.label")}</div>
-                ${skills.map((cmd, index) =>
-                  renderSlashCommandOption({
-                    cmd,
-                    index: commands.length + index,
-                    query,
-                    requestUpdate,
-                    host,
-                    state,
-                  }),
-                )}
-              </div>`
-            : nothing
-        }
+        ${skills.length > 0
+          ? html`<div class="slash-menu-group slash-menu-group--skills">
+              <div class="slash-menu-group__label">${t("chat.skills.label")}</div>
+              ${skills.map((cmd, index) =>
+                renderSlashCommandOption({
+                  cmd,
+                  index: commands.length + index,
+                  query,
+                  requestUpdate,
+                  host,
+                  state,
+                }),
+              )}
+            </div>`
+          : nothing}
       </div>
     </div>
   `;

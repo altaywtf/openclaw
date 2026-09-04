@@ -12,25 +12,22 @@ import type { SlashCommandDef } from "../../../lib/chat/commands.ts";
 import { updateHumanMentions } from "../../../lib/chat/human-mentions.ts";
 import { resolveThinkingCommandArgOptionsForSession } from "../../../lib/chat/thinking.ts";
 import { areUiSessionKeysEquivalent } from "../../../lib/sessions/session-key.ts";
+import { detectTextDirection } from "../../../lib/text-direction.ts";
 import { ComposerDictationController, insertComposerDictation } from "../composer-dictation.ts";
 import { normalizeChatComposerDraft } from "../composer-draft.ts";
 import { ComposerMicrophonePicker } from "../composer-microphone-picker.ts";
-import { isLargePastedTextAttachment } from "./chat-attachments.ts";
+import { handleChatAttachmentPaste, isLargePastedTextAttachment } from "./chat-attachments.ts";
 import { renderContextNotice } from "./chat-composer-context.ts";
 import { renderMicrophonePicker, type ChatRunControlsProps } from "./chat-composer-controls.ts";
 import {
-  adjustTextareaHeight,
-  disconnectTextareaOverflowObserver,
-  observeTextareaOverflow,
   paneDomId,
   preserveComposerFocusOnPrimaryAction,
   replaceComposerPopoverAnchor,
-  scheduleTextareaHeightAdjustment,
 } from "./chat-composer-dom.ts";
 import { createGoalComposerController } from "./chat-composer-goal-mode.ts";
 import { createComposerKeyDownHandler } from "./chat-composer-keydown.ts";
-import * as composerPreview from "./chat-composer-markdown-preview.ts";
 import type { HumanMentionMenuHost } from "./chat-composer-mention-menu.ts";
+import { createChatComposerRichEditor } from "./chat-composer-rich-editor.ts";
 import {
   getActiveSkillMenuOptionId,
   getActiveSkillMenuOptionLabel,
@@ -115,31 +112,43 @@ export function renderChatComposer(props: ChatComposerProps) {
   state.composerInputRef ??= (element?: Element) => {
     state.composerInput = replaceComposerPopoverAnchor(state.composerInput, element);
   };
+  const attachComposerEditor = () => {
+    if (
+      state.composerEditor ||
+      !state.composerEditorHost ||
+      !state.composerTextarea ||
+      !state.composerEditorOptions
+    ) {
+      return;
+    }
+    state.composerEditor = createChatComposerRichEditor({
+      parent: state.composerEditorHost,
+      source: state.composerTextarea,
+      options: state.composerEditorOptions,
+    });
+  };
   state.textareaRef ??= (element?: Element) => {
     const nextTextarea = element instanceof HTMLTextAreaElement ? element : null;
-    const prevTextarea = state.composerTextarea;
-    if (prevTextarea && prevTextarea !== nextTextarea) {
-      disconnectTextareaOverflowObserver(prevTextarea);
+    if (state.composerTextarea && state.composerTextarea !== nextTextarea) {
+      state.composerEditor?.destroy();
+      state.composerEditor = null;
     }
     state.composerTextarea = nextTextarea;
-    if (nextTextarea) {
-      observeTextareaOverflow(nextTextarea);
-      scheduleTextareaHeightAdjustment(nextTextarea);
-      composerPreview.syncComposerMarkdownPreview(nextTextarea, nextTextarea.value);
-      if (state.restoreComposerFocus) {
-        state.restoreComposerFocus = false;
-        queueMicrotask(() => state.composerTextarea?.focus({ preventScroll: true }));
-      }
+    attachComposerEditor();
+    if (state.restoreComposerFocus && state.composerEditor) {
+      state.restoreComposerFocus = false;
+      queueMicrotask(() => state.composerEditor?.focus());
     }
   };
-  // The stable ref only measures on attach, so programmatic draft swaps (send
-  // clear, session switch, history restore) must re-measure explicitly.
-  if (state.composerTextarea?.isConnected && state.composerTextarea.value !== visibleDraft) {
-    scheduleTextareaHeightAdjustment(state.composerTextarea);
-  }
-  if (state.composerTextarea?.isConnected) {
-    composerPreview.syncComposerMarkdownPreview(state.composerTextarea, visibleDraft);
-  }
+  state.composerEditorRef ??= (element?: Element) => {
+    const nextHost = element instanceof HTMLElement ? element : null;
+    if (state.composerEditorHost && state.composerEditorHost !== nextHost) {
+      state.composerEditor?.destroy();
+      state.composerEditor = null;
+    }
+    state.composerEditorHost = nextHost;
+    attachComposerEditor();
+  };
   const hasVisualAttachments = (props.attachments ?? []).some(
     (attachment) => !isLargePastedTextAttachment(attachment),
   );
@@ -195,6 +204,10 @@ export function renderChatComposer(props: ChatComposerProps) {
     getDraft: () => state.composerTextarea?.value ?? props.getDraft?.() ?? props.draft,
     commitDraft: commitMenuDraft,
     getTextarea: () => state.composerTextarea,
+    focusEditor: (start, end) => {
+      state.composerEditor?.setSelection(start, end);
+      state.composerEditor?.focus();
+    },
     refreshCommands: props.onSlashIntent,
   };
   const slashMenuHost: SlashMenuHost = {
@@ -202,6 +215,7 @@ export function renderChatComposer(props: ChatComposerProps) {
     getDraft: skillMenuHost.getDraft,
     commitDraft: skillMenuHost.commitDraft,
     getTextarea: () => state.composerTextarea,
+    focusEditor: skillMenuHost.focusEditor,
     resolveArgOptions: (command) => resolveChatSlashCommandArgOptions(command, props),
     runCommand: () => props.onSend(),
     canRun: (inline) => state.slashCommandDispatchConnected && !(inline && !props.onSlashCommand),
@@ -214,6 +228,7 @@ export function renderChatComposer(props: ChatComposerProps) {
     getDraft: skillMenuHost.getDraft,
     getMentions,
     getTextarea: skillMenuHost.getTextarea,
+    focusEditor: skillMenuHost.focusEditor,
     commitDraft: commitMenuDraft,
   };
   const sendShortcut = normalizeChatSendShortcut(props.sendShortcut);
@@ -334,7 +349,7 @@ export function renderChatComposer(props: ChatComposerProps) {
     }
     if (target && target.value !== hostDraft) {
       target.value = hostDraft;
-      adjustTextareaHeight(target);
+      state.composerEditor?.setDraft(hostDraft);
     }
   };
 
@@ -355,7 +370,6 @@ export function renderChatComposer(props: ChatComposerProps) {
   });
 
   const syncComposerValue = (target: HTMLTextAreaElement, typedAtSign = false) => {
-    composerPreview.syncComposerValuePresentation(target);
     const mentions = getMentions();
     commitComposerDraft(
       props,
@@ -384,8 +398,8 @@ export function renderChatComposer(props: ChatComposerProps) {
       requestUpdate();
     }
   };
-  const handleBeforeInput = (event: InputEvent) => {
-    const target = event.target;
+  const handleBeforeInput = (event: InputEvent, source?: HTMLTextAreaElement) => {
+    const target = source ?? event.target;
     if (!(target instanceof HTMLTextAreaElement)) {
       return;
     }
@@ -399,8 +413,8 @@ export function renderChatComposer(props: ChatComposerProps) {
       markComposerInputIntent(state, composerDraftKey(props));
     }
   };
-  const handleInput = (event: InputEvent) => {
-    const target = event.target as HTMLTextAreaElement;
+  const handleInput = (event: InputEvent, source?: HTMLTextAreaElement) => {
+    const target = source ?? (event.target as HTMLTextAreaElement);
     const hasInputIntent = consumeComposerInputIntent(state, draftKey);
     if (state.composerComposing || event.isComposing) {
       state.composingDraft = { key: draftKey, value: target.value };
@@ -428,8 +442,7 @@ export function renderChatComposer(props: ChatComposerProps) {
     syncComposerValue(target, typedAtSign);
     props.onTypingChange?.(Boolean(target.value.trim()), target.value);
   };
-  const handleSelect = (event: Event) => {
-    const target = event.target as HTMLTextAreaElement;
+  const syncComposerSelection = (target: HTMLTextAreaElement) => {
     if (goalComposer.active) {
       return;
     }
@@ -437,17 +450,27 @@ export function renderChatComposer(props: ChatComposerProps) {
     updateSkillMenu(target.value, target.selectionStart, state, skillMenuHost, requestUpdate);
     state.mentionMenu.update(target.value, target.selectionStart, requestUpdate);
   };
-  const handleCompositionEnd = (event: CompositionEvent) => {
+  const handleSelect = (event: Event) => {
+    syncComposerSelection(event.target as HTMLTextAreaElement);
+  };
+  const handleCompositionStart = (event: CompositionEvent, source?: HTMLTextAreaElement) => {
+    const target = source ?? (event.target as HTMLTextAreaElement);
+    state.mentionMenu.close();
+    state.composerComposing = true;
+    state.composingDraft = { key: draftKey, value: target.value };
+  };
+  const handleCompositionEnd = (event: CompositionEvent, source?: HTMLTextAreaElement) => {
+    const target = source ?? (event.target as HTMLTextAreaElement);
     state.composerComposing = false;
     if (state.composingDraft?.key === draftKey) {
       state.composingDraft = null;
     }
-    syncComposerValue(event.target as HTMLTextAreaElement);
-    const value = (event.target as HTMLTextAreaElement).value;
+    syncComposerValue(target);
+    const value = target.value;
     props.onTypingChange?.(Boolean(value.trim()), value);
   };
-  const handleBlur = (event: FocusEvent) => {
-    const target = event.target as HTMLTextAreaElement;
+  const handleBlur = (event: FocusEvent, source?: HTMLTextAreaElement) => {
+    const target = source ?? (event.target as HTMLTextAreaElement);
     // A dropped compositionend (detach/blur mid-IME) must not wedge the
     // composing flag: it persists across renders and kills Enter-send,
     // history keys, and command menus until the Send button resets it.
@@ -460,7 +483,7 @@ export function renderChatComposer(props: ChatComposerProps) {
       const normalizedDraft = normalizeChatComposerDraft(target.value);
       if (target.value !== normalizedDraft) {
         target.value = normalizedDraft;
-        adjustTextareaHeight(target);
+        state.composerEditor?.setDraft(normalizedDraft);
       }
       commitComposerDraft(props, normalizedDraft);
     }
@@ -562,7 +585,7 @@ export function renderChatComposer(props: ChatComposerProps) {
       );
       if (target) {
         target.value = insertion.value;
-        adjustTextareaHeight(target);
+        state.composerEditor?.setDraft(insertion.value);
       }
       commitComposerDraft(props, insertion.value);
       state.dictationSelection = null;
@@ -572,9 +595,10 @@ export function renderChatComposer(props: ChatComposerProps) {
         if (!textarea) {
           return;
         }
-        textarea.focus({ preventScroll: true });
         textarea.selectionStart = insertion.caret;
         textarea.selectionEnd = insertion.caret;
+        state.composerEditor?.setSelection(insertion.caret);
+        state.composerEditor?.focus();
       });
     },
     onError: (
@@ -650,7 +674,10 @@ export function renderChatComposer(props: ChatComposerProps) {
     dictation,
     onDictationPointerDown: handleDictationPointerDown,
     onPrimaryActionPointerDown: (event) =>
-      preserveComposerFocusOnPrimaryAction(event, state.composerTextarea),
+      preserveComposerFocusOnPrimaryAction(
+        event,
+        state.composerEditor?.hasFocus() ? state.composerEditorHost : state.composerTextarea,
+      ),
   };
   const cameraFacingMode = props.realtimeTalkVideoStream
     ?.getVideoTracks?.()[0]
@@ -684,6 +711,45 @@ export function renderChatComposer(props: ChatComposerProps) {
         : "slash-menu-listbox",
   );
   const slashMenuAnnouncementId = paneDomId(props.paneId, "slash-active-announcement");
+  const disabledReasonId = paneDomId(props.paneId, "disabled-reason");
+  const editorDraft = dictation?.active
+    ? insertComposerDictation(
+        state.dictationSelection?.value ?? visibleDraft,
+        dictation.transcript,
+        state.dictationSelection?.start ?? visibleDraft.length,
+        state.dictationSelection?.end ?? visibleDraft.length,
+      ).value
+    : visibleDraft;
+  state.composerEditorOptions = {
+    draft: editorDraft,
+    direction: detectTextDirection(editorDraft),
+    disabled: !canCompose,
+    readOnly: dictation?.locksComposer === true || goalComposer.pending,
+    placeholder: dictation?.active ? "" : placeholder,
+    ariaLabel: t("chat.composer.composerInput"),
+    ariaDescriptionIds: `${slashMenuAnnouncementId}${
+      props.disabledReason ? ` ${disabledReasonId}` : ""
+    }`,
+    ariaControls:
+      slashMenuVisible || skillMenuVisible || mentionMenuVisible ? slashMenuListboxId : undefined,
+    ariaExpanded: slashMenuVisible || skillMenuVisible || mentionMenuVisible ? "true" : undefined,
+    ariaActiveDescendant: activeSlashMenuOptionId ?? undefined,
+    ariaKeyShortcuts: sendShortcut === "enter" ? "Enter" : "Control+Enter Meta+Enter",
+    onKeyDown: handleKeyDown,
+    onBeforeInput: handleBeforeInput,
+    onInput: handleInput,
+    onSelect: syncComposerSelection,
+    onCompositionStart: handleCompositionStart,
+    onCompositionEnd: handleCompositionEnd,
+    onBlur: handleBlur,
+    onPaste: (event) => {
+      if (canCompose && !props.suggestionComposer) {
+        handleChatAttachmentPaste(event, props);
+      }
+    },
+  };
+  state.composerEditor?.updateOptions(state.composerEditorOptions);
+  attachComposerEditor();
 
   return renderChatComposerView({
     props,
@@ -706,7 +772,7 @@ export function renderChatComposer(props: ChatComposerProps) {
     handleBeforeInput,
     handleInput,
     handleSelect,
-    draftKey,
+    handleCompositionStart,
     handleCompositionEnd,
     handleBlur,
     dictation,

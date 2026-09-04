@@ -34,6 +34,10 @@ import type {
   ChatComposerCapabilityMenuProps,
   ChatComposerPlusMenuView,
 } from "./chat-composer-plus-menu.ts";
+import type {
+  ChatComposerRichEditorHandle,
+  ChatComposerRichEditorOptions,
+} from "./chat-composer-rich-editor.ts";
 import type { SkillMenuState } from "./chat-composer-skill-menu.ts";
 import type { SlashMenuState } from "./chat-composer-slash-menu.ts";
 import type { ChatPermissionPickerProps } from "./chat-permission-picker.ts";
@@ -194,6 +198,9 @@ export type ChatComposerState = SkillMenuState &
     restoreComposerFocus: boolean;
     composerInput: HTMLElement | null;
     composerTextarea: HTMLTextAreaElement | null;
+    composerEditorHost: HTMLElement | null;
+    composerEditor: ChatComposerRichEditorHandle | null;
+    composerEditorOptions: ChatComposerRichEditorOptions | null;
     microphonePicker: ComposerMicrophonePicker | null;
     capabilityMenuOpen: boolean;
     capabilityMenuView: ChatComposerPlusMenuView;
@@ -201,6 +208,7 @@ export type ChatComposerState = SkillMenuState &
     // layout observers to detach and reconnect on every chat update.
     composerInputRef: ((element?: Element) => void) | null;
     textareaRef: ((element?: Element) => void) | null;
+    composerEditorRef: ((element?: Element) => void) | null;
     dictation: ComposerDictationController | null;
     composerDraftScopeKey: string | null;
     dictationError: string | null;
