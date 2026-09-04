@@ -3,7 +3,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { loadSessionEntryWithDatabase } from "../../config/sessions/session-accessor.sqlite-entry.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
+import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import type { HookRunner } from "../../plugins/hooks.js";
 import {
   getActiveGatewayRootWorkCount,
@@ -11,6 +13,12 @@ import {
   resetGatewayWorkAdmission,
   tryBeginGatewayRootWorkAdmission,
 } from "../../process/gateway-work-admission.js";
+import {
+  isSessionBackgroundTargetRetired,
+  releaseSessionBackgroundTarget,
+  retainSessionBackgroundTarget,
+  type SessionBackgroundTarget,
+} from "../../sessions/session-background-custody.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import type { PreparedAgentRunAdmission } from "../admitted-run-context.js";
 import type {
@@ -43,6 +51,8 @@ async function withAcceptanceFixture(
     loadEntry: () => InternalSessionEntry | undefined;
     replaceWriter: () => Promise<void>;
     replaceEntry: (patch: Partial<InternalSessionEntry>) => Promise<unknown>;
+    replaceEntrySync: (entry: InternalSessionEntry) => void;
+    captureBackgroundTarget: () => SessionBackgroundTarget;
     deleteEntry: () => Promise<unknown>;
     observeIdentity: (observer: () => void) => void;
     writeLegacyArtifact: () => Promise<string>;
@@ -57,6 +67,7 @@ async function withAcceptanceFixture(
         loadSessionEntry,
         loadTranscriptEvents,
         replaceSessionEntry,
+        replaceSessionEntrySync,
       } = await import("../../config/sessions/session-accessor.js");
       const { waitForSessionTranscriptIndexReconcile } =
         await import("../../config/sessions/session-transcript-reconcile.js");
@@ -89,6 +100,7 @@ async function withAcceptanceFixture(
       const admissions: PreparedAgentRunAdmission[] = [admission];
       const unsubscriptions: Array<() => void> = [];
       const facts: AcceptedCompactionSuccessor[] = [];
+      const backgroundTargets: SessionBackgroundTarget[] = [];
       const controller = new AbortController();
       const callerError = new Error("caller stopped successor acceptance");
       try {
@@ -178,6 +190,22 @@ async function withAcceptanceFixture(
             });
           },
           replaceEntry: (patch) => replaceSessionEntry(target, { ...entry, ...patch }),
+          replaceEntrySync: (replacement) => replaceSessionEntrySync(target, replacement),
+          captureBackgroundTarget: () => {
+            const { entry: sourceEntry, databaseClaim } = loadSessionEntryWithDatabase(target);
+            const background: SessionBackgroundTarget = {
+              agentId: target.agentId,
+              sessionKey: target.sessionKey,
+              sessionId: sourceEntry?.sessionId,
+              lifecycleRevision: sourceEntry?.lifecycleRevision,
+              lifecycleGeneration: getAgentEventLifecycleGeneration(),
+              abortController: new AbortController(),
+              databaseClaim,
+            };
+            retainSessionBackgroundTarget(background);
+            backgroundTargets.push(background);
+            return background;
+          },
           deleteEntry: () =>
             applySessionEntryLifecycleMutation({
               agentId: target.agentId,
@@ -210,6 +238,9 @@ async function withAcceptanceFixture(
           },
         });
       } finally {
+        for (const background of backgroundTargets) {
+          releaseSessionBackgroundTarget(background);
+        }
         for (const unsubscribe of unsubscriptions) {
           unsubscribe();
         }
@@ -250,6 +281,7 @@ describe("acceptCompactionSuccessor", () => {
     "transfers the declared identity without reclaiming its writer (claimed=%s)",
     async (claimWriter) => {
       await withAcceptanceFixture({ claimWriter }, async (fixture) => {
+        const background = fixture.captureBackgroundTarget();
         const accepted = await fixture.accept();
         expect(accepted.sessionTarget).toMatchObject({
           ...fixture.target,
@@ -267,10 +299,31 @@ describe("acceptCompactionSuccessor", () => {
         expect(accepted.entry.activeWriterRunId).toBe(fixture.entry.activeWriterRunId);
         expect(fixture.loadEntry()).toEqual(accepted.entry);
         expect(fixture.facts).toEqual([accepted]);
+        expect(background.sessionId).toBe(accepted.entry.sessionId);
+        expect(background.lifecycleRevision).toBe(accepted.entry.lifecycleRevision);
+        expect(isSessionBackgroundTargetRetired(background)).toBe(false);
+        expect(background.abortController.signal.aborted).toBe(false);
         fixture.assertActive();
       });
     },
   );
+
+  it("retires transferred work when a commit observer replaces the successor", async () => {
+    await withAcceptanceFixture({}, async (fixture) => {
+      const background = fixture.captureBackgroundTarget();
+      const replacementId = randomUUID();
+      const accepted = await fixture.accept({
+        onCommitted: (successor) => {
+          expect(background.sessionId).toBe(successor.entry.sessionId);
+          fixture.replaceEntrySync({ ...successor.entry, sessionId: replacementId });
+        },
+      });
+      expect(accepted.entry.sessionId).toBe(fixture.successorId);
+      expect(fixture.loadEntry()?.sessionId).toBe(replacementId);
+      expect(isSessionBackgroundTargetRetired(background)).toBe(true);
+      expect(background.abortController.signal.aborted).toBe(true);
+    });
+  });
 
   it.each([false, true])(
     "does not write or notify when the accepted identity is unchanged (compacted=%s)",

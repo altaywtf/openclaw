@@ -50,8 +50,9 @@ import {
 } from "./session-accessor.sqlite-entry-store.js";
 import { emitArchivedTranscriptUpdates } from "./session-accessor.sqlite-events.js";
 import {
-  emitCommittedLifecycleIdentityMutations,
-  emitCommittedSessionEntryRemovals,
+  prepareLifecycleIdentityPublication,
+  prepareCommittedSessionEntryRemovals,
+  prepareSessionBackgroundEntryChanges,
 } from "./session-accessor.sqlite-identity.js";
 import {
   assertPlannedLifecycleArtifactEntriesUnchanged,
@@ -175,7 +176,7 @@ export async function applySessionStoreProjection<T>(params: {
     return {
       deletedEntries: deletedOwners,
       commit: () => {
-        runOpenClawAgentWriteTransaction(
+        const publish = runOpenClawAgentWriteTransaction(
           (transactionDb) => {
             for (const sessionKey of changedKeys) {
               const current = readExactSessionEntryRow(transactionDb, sessionKey)?.entry;
@@ -203,10 +204,16 @@ export async function applySessionStoreProjection<T>(params: {
                 storePath: params.storePath,
               }),
             );
+            return prepareSessionBackgroundEntryChanges(
+              transactionDb,
+              new Map(changedKeys.map((key) => [key, before[key]])),
+              new Map(changedKeys.map((key) => [key, projected[key]])),
+            );
           },
           toDatabaseOptions(resolved),
           { operationLabel: "session.store-projection" },
         );
+        publish();
         return { maintenancePlans, result: operation.result };
       },
     };
@@ -332,7 +339,7 @@ export async function applySessionEntryLifecycleMutation(params: {
     const removedSessionKeys: string[] = [];
     let archivedTranscripts: SessionLifecycleArchivedTranscript[] = [];
     const maintenancePlans: SessionEntryMaintenancePlan[] = [];
-    runOpenClawAgentWriteTransaction((transactionDb) => {
+    const publish = runOpenClawAgentWriteTransaction((transactionDb) => {
       params.beforeCommitInTransaction?.();
       beforeCount = readSessionEntryCount(transactionDb);
       const validatedRemovals = projected.removals.filter((removal) => {
@@ -494,8 +501,13 @@ export async function applySessionEntryLifecycleMutation(params: {
           storePath: params.storePath,
         }),
       );
+      return prepareLifecycleIdentityPublication({
+        database: transactionDb,
+        projected,
+        removedSessionKeys,
+      });
     }, toDatabaseOptions(resolved));
-    emitCommittedLifecycleIdentityMutations({ projected, removedSessionKeys });
+    publish();
     return { archivedTranscripts, beforeCount, maintenancePlans, removedSessionKeys };
   }
 
@@ -602,7 +614,7 @@ export async function purgeDeletedAgentSessionEntries(
       await runExclusiveSqliteSessionWrite(resolved, async () => {
         let archivedTranscripts: SessionLifecycleArchivedTranscript[] = [];
         const maintenancePlans: SessionEntryMaintenancePlan[] = [];
-        runOpenClawAgentWriteTransaction((transactionDb) => {
+        const publishRemovals = runOpenClawAgentWriteTransaction((transactionDb) => {
           const currentOwnedSessionKeys = Object.keys(readSessionEntryStore(transactionDb))
             .filter(
               (sessionKey) =>
@@ -627,6 +639,10 @@ export async function purgeDeletedAgentSessionEntries(
             new Set(prepared.entryRemovals.map((removal) => removal.sessionKey)),
           );
           deletePlannedLifecycleArtifactEntries(transactionDb, prepared.entryRemovals);
+          const publish = prepareCommittedSessionEntryRemovals(
+            transactionDb,
+            prepared.entryRemovals,
+          );
           maintenancePlans.push(
             applySessionEntryMaintenance(transactionDb, {
               activeSessionKey: "",
@@ -634,8 +650,9 @@ export async function purgeDeletedAgentSessionEntries(
               storePath: params.storePath,
             }),
           );
+          return publish;
         }, toDatabaseOptions(resolved));
-        emitCommittedSessionEntryRemovals(prepared.entryRemovals);
+        publishRemovals();
         return { archivedTranscripts, maintenancePlans };
       }),
   );

@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
+import { retainOpenClawAgentDatabaseReadOnly } from "./openclaw-agent-db-readonly.js";
 import {
   borrowOpenClawAgentDatabase,
   closeOpenClawAgentDatabaseByPath,
@@ -128,6 +129,27 @@ describe("openclaw agent database handle cache", () => {
       expect(isOpenClawAgentDatabaseOpen(leastRecentlyUsed.path)).toBe(false);
     } finally {
       transactionOwner.db.exec("ROLLBACK");
+    }
+  });
+
+  it("pins a completion's exact database until its claim is released", () => {
+    const env = requireFixtureEnv();
+    const first = baseDatabases[0]!;
+    const retained = retainOpenClawAgentDatabaseReadOnly({ agentId: first.agentId, env });
+    if (!retained.found) {
+      throw new Error("expected the cached database");
+    }
+    const { claim } = retained;
+    try {
+      evictAfterRefreshingBaseHandles("completion-pinned", env);
+      expect(claim.isCurrent()).toBe(true);
+      expect(first.db.isOpen).toBe(true);
+      claim.release();
+      evictAfterRefreshingBaseHandles("completion-released", env);
+      expect(first.db.isOpen).toBe(false);
+      expect(claim.isCurrent()).toBe(false);
+    } finally {
+      claim.release();
     }
   });
 

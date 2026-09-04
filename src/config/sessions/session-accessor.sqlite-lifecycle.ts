@@ -41,7 +41,7 @@ import {
   writeSessionEntry,
 } from "./session-accessor.sqlite-entry-store.js";
 import { emitArchivedTranscriptUpdates } from "./session-accessor.sqlite-events.js";
-import { emitCommittedSessionEntryRemovals } from "./session-accessor.sqlite-identity.js";
+import { prepareSessionBackgroundEntryChanges } from "./session-accessor.sqlite-identity.js";
 import {
   planSessionLifecycleArtifactCleanup,
   planSessionStateDeleteIfUnreferenced,
@@ -169,7 +169,6 @@ export async function cleanupSessionLifecycleArtifactsCore(
               `SQLite session reclamation returned ${reclaimed.kind} for ${plan.kind}`,
             );
           }
-          emitCommittedSessionEntryRemovals(cleanupPlan.entries);
           return reclaimed.value;
         });
       }),
@@ -219,7 +218,7 @@ export async function resetSessionEntryLifecycle(
           ...(current ? { previousEntry: cloneSessionEntry(current.entry) } : {}),
           ...(current?.entry.sessionId ? { previousSessionId: current.entry.sessionId } : {}),
         };
-        runOpenClawAgentWriteTransaction((transactionDb) => {
+        const publish = runOpenClawAgentWriteTransaction((transactionDb) => {
           params.commitGuard?.();
           assertLifecycleTargetUnchanged(transactionDb, params.target, current?.entry, "reset");
           if (shouldAppendResetBoundary && current?.entry.sessionId && params.resetBoundary) {
@@ -248,7 +247,14 @@ export async function resetSessionEntryLifecycle(
           recordCommit(transactionDb);
           // Reset only advances the live entry and route. Historical rows stay searchable;
           // disk-budget cleanup owns durable extraction before reclaiming them.
+          return prepareSessionBackgroundEntryChanges(
+            transactionDb,
+            new Map(targetSnapshot.map((row) => [row.sessionKey, row.entry])),
+            new Map([[params.target.canonicalKey, nextEntry]]),
+            true,
+          );
         }, toDatabaseOptions(resolved));
+        publish();
         if (current) {
           emitSessionIdentityMutation({
             kind: "reset",

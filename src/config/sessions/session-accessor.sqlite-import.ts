@@ -11,6 +11,7 @@ import { readExactSessionEntryRowForCanonicalRepair } from "./session-accessor.s
 import type { SessionAccessScope, TranscriptEvent } from "./session-accessor.sqlite-contract.js";
 import { publishSessionEntryCacheInvalidation } from "./session-accessor.sqlite-entry-cache.js";
 import { writeSessionEntry } from "./session-accessor.sqlite-entry-store.js";
+import { prepareSessionBackgroundEntryChanges } from "./session-accessor.sqlite-identity.js";
 import {
   withSqliteSessionImportStage,
   type SqliteSessionImportStage,
@@ -118,6 +119,11 @@ function importSqliteSessionRowsInTransaction(
     allowStoredAliases: true,
     previousEntry: currentEntry ?? null,
   });
+  prepareSessionBackgroundEntryChanges(
+    database,
+    new Map([[resolved.sessionKey, currentEntry]]),
+    new Map([[resolved.sessionKey, importedEntry]]),
+  )();
   // Only trusted SQLite handoffs can transfer ownership and hash exact ordered rows;
   // parsing, deduping, or trusting JSON ownership would break the migration boundary.
   if (params.readExactTranscriptRows) {

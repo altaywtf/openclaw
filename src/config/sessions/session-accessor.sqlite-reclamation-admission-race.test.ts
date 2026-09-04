@@ -2,22 +2,35 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import * as sqliteTransaction from "../../infra/sqlite-transaction.js";
+import {
+  isSessionBackgroundTargetRetired,
+  releaseSessionBackgroundTarget,
+  retainSessionBackgroundTarget,
+  type SessionBackgroundTarget,
+} from "../../sessions/session-background-custody.js";
 import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
 import { onSessionIdentityMutation } from "../../sessions/session-lifecycle-events.js";
-import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
+import {
+  closeOpenClawAgentDatabaseByPath,
+  closeOpenClawAgentDatabasesForTest,
+} from "../../state/openclaw-agent-db.js";
 import {
   deleteSessionEntryLifecycle,
   loadSessionEntry,
   loadTranscriptEvents,
   replaceSessionEntry,
+  replaceSessionEntrySync,
 } from "./session-accessor.js";
+import { loadSessionEntryWithDatabase } from "./session-accessor.sqlite-entry.js";
 import { replaceTranscriptEvents } from "./session-accessor.sqlite-transcript-write.js";
 
 const archiveMaterializationHook = vi.hoisted(() => ({
   beforeMaterialize: undefined as (() => Promise<void>) | undefined,
   beforeReclaim: undefined as (() => Promise<void>) | undefined,
   beforeCommitRequest: undefined as (() => void) | undefined,
+  afterCommitRequest: undefined as (() => void) | undefined,
 }));
 
 vi.mock("./session-accessor.sqlite-reclamation.js", async (importOriginal) => {
@@ -46,6 +59,7 @@ vi.mock("./session-accessor.sqlite-archive.js", async (importOriginal) => {
           ? () => {
               archiveMaterializationHook.beforeCommitRequest?.();
               params.onCommitRequest?.();
+              archiveMaterializationHook.afterCommitRequest?.();
             }
           : undefined,
       }),
@@ -59,6 +73,23 @@ vi.mock("./session-accessor.sqlite-archive.js", async (importOriginal) => {
 });
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const backgroundTargets: SessionBackgroundTarget[] = [];
+
+function captureBackgroundTarget(storePath: string, sessionKey: string): SessionBackgroundTarget {
+  const { entry, databaseClaim } = loadSessionEntryWithDatabase({ storePath, sessionKey });
+  const target: SessionBackgroundTarget = {
+    agentId: "main",
+    sessionKey,
+    sessionId: entry?.sessionId,
+    lifecycleRevision: entry?.lifecycleRevision,
+    lifecycleGeneration: getAgentEventLifecycleGeneration(),
+    abortController: new AbortController(),
+    databaseClaim,
+  };
+  retainSessionBackgroundTarget(target);
+  backgroundTargets.push(target);
+  return target;
+}
 
 describe("SQLite reclamation admission races", () => {
   let storePath: string;
@@ -72,9 +103,90 @@ describe("SQLite reclamation admission races", () => {
     archiveMaterializationHook.beforeMaterialize = undefined;
     archiveMaterializationHook.beforeReclaim = undefined;
     archiveMaterializationHook.beforeCommitRequest = undefined;
+    archiveMaterializationHook.afterCommitRequest = undefined;
+    for (const target of backgroundTargets.splice(0)) {
+      releaseSessionBackgroundTarget(target);
+    }
     vi.restoreAllMocks();
     closeOpenClawAgentDatabasesForTest();
   });
+
+  it.runIf(process.platform !== "win32").each([false, true])(
+    "publishes exact committed retirement without retiring a fresh subscriber (parent closed: %s)",
+    async (closeParent) => {
+      const sessionKey = "agent:main:postcommit-custody";
+      const directory = tempDirs.make("reclamation-closed-parent-");
+      const originalPath = path.join(directory, "original.sqlite");
+      const alias = path.join(directory, "alias.sqlite");
+      const scope = { agentId: "main", sessionKey, storePath: originalPath };
+      await replaceSessionEntry(scope, { sessionId: "same-identity", updatedAt: 1 });
+      const entry = loadSessionEntry(scope)!;
+      fs.symlinkSync(originalPath, alias);
+      loadSessionEntry({ ...scope, storePath: alias });
+      const previous = captureBackgroundTarget(alias, sessionKey);
+      let fresh: SessionBackgroundTarget | undefined;
+      archiveMaterializationHook.afterCommitRequest = () => {
+        // The real grant/join has completed; the Worker's result is still queued behind this callback.
+        expect(loadSessionEntry({ ...scope, storePath: alias })).toBeUndefined();
+        if (closeParent) {
+          expect(closeOpenClawAgentDatabaseByPath(originalPath)).toBe(true);
+        }
+        replaceSessionEntrySync({ ...scope, storePath: alias }, entry);
+        expect(loadSessionEntry({ ...scope, storePath: alias })).toEqual(entry);
+        fresh = captureBackgroundTarget(alias, sessionKey);
+      };
+      await expect(
+        deleteSessionEntryLifecycle({
+          archiveTranscript: false,
+          commitGuard: () => {},
+          storePath: originalPath,
+          target: { canonicalKey: sessionKey, storeKeys: [sessionKey] },
+        }),
+      ).resolves.toMatchObject({ deleted: true });
+      expect(fresh).toBeDefined();
+      expect(isSessionBackgroundTargetRetired(previous)).toBe(true);
+      expect(previous.abortController.signal.aborted).toBe(true);
+      expect(isSessionBackgroundTargetRetired(fresh!)).toBe(false);
+      expect(fresh!.abortController.signal.aborted).toBe(false);
+    },
+  );
+
+  it.runIf(process.platform !== "win32")(
+    "keeps worker reclamation on the opened database after an alias retarget",
+    async () => {
+      const sessionKey = "agent:main:retargeted-reclamation";
+      const sessionId = "retargeted-reclamation";
+      const directory = tempDirs.make("reclamation-alias-");
+      const originalPath = path.join(directory, "original.sqlite");
+      const replacementPath = path.join(directory, "replacement.sqlite");
+      const alias = path.join(directory, "alias.sqlite");
+      await replaceSessionEntry(
+        { sessionKey, storePath: originalPath },
+        { sessionId, updatedAt: 1 },
+      );
+      // Close/checkpoint before copying so both files start with the same durable row and revision.
+      closeOpenClawAgentDatabasesForTest();
+      fs.copyFileSync(originalPath, replacementPath);
+      fs.symlinkSync(originalPath, alias);
+      expect(loadSessionEntry({ sessionKey, storePath: alias })).toMatchObject({ sessionId });
+      archiveMaterializationHook.beforeReclaim = async () => {
+        fs.unlinkSync(alias);
+        fs.symlinkSync(replacementPath, alias);
+      };
+
+      await expect(
+        deleteSessionEntryLifecycle({
+          archiveTranscript: false,
+          storePath: alias,
+          target: { canonicalKey: sessionKey, storeKeys: [sessionKey] },
+        }),
+      ).resolves.toMatchObject({ deleted: true });
+      expect(loadSessionEntry({ sessionKey, storePath: originalPath })).toBeUndefined();
+      expect(loadSessionEntry({ sessionKey, storePath: replacementPath })).toMatchObject({
+        sessionId,
+      });
+    },
+  );
 
   it("publishes the committed deletion after a recovered commit barrier failure", async () => {
     const sessionKey = "agent:main:recovered-deletion";
@@ -119,9 +231,14 @@ describe("SQLite reclamation admission races", () => {
     }
   });
 
-  it.each([false, true])(
-    "preserves session data when caller authority closes during reclamation (history: %s)",
-    async (hasHistory) => {
+  it.each([
+    { hasHistory: false, checkpoint: "prepare" },
+    { hasHistory: true, checkpoint: "prepare" },
+    { hasHistory: false, checkpoint: "commit" },
+    { hasHistory: true, checkpoint: "commit" },
+  ])(
+    "preserves session data and custody when authority closes at $checkpoint (history: $hasHistory)",
+    async ({ hasHistory, checkpoint }) => {
       const sessionKey = "agent:main:revoked-deletion";
       const sessionId = "revoked-deletion-current";
       const historicalSessionId = "revoked-deletion-history";
@@ -139,10 +256,17 @@ describe("SQLite reclamation admission races", () => {
         { type: "session", id: sessionId, content: "retained current transcript" },
       ]);
       let authorized = true;
-      archiveMaterializationHook.beforeReclaim = async () => {
-        await Promise.resolve();
-        authorized = false;
-      };
+      const background = captureBackgroundTarget(storePath, sessionKey);
+      if (checkpoint === "prepare") {
+        archiveMaterializationHook.beforeReclaim = async () => {
+          await Promise.resolve();
+          authorized = false;
+        };
+      } else {
+        archiveMaterializationHook.beforeCommitRequest = () => {
+          authorized = false;
+        };
+      }
 
       await expect(
         deleteSessionEntryLifecycle({
@@ -157,6 +281,8 @@ describe("SQLite reclamation admission races", () => {
           target: { canonicalKey: sessionKey, storeKeys: [sessionKey] },
         }),
       ).rejects.toThrow("caller authority closed");
+      expect(isSessionBackgroundTargetRetired(background)).toBe(false);
+      expect(background.abortController.signal.aborted).toBe(false);
       expect(loadSessionEntry({ sessionKey, storePath })).toMatchObject({ sessionId });
       await expect(loadTranscriptEvents({ sessionKey, sessionId, storePath })).resolves.toEqual([
         expect.objectContaining({ id: sessionId, content: "retained current transcript" }),

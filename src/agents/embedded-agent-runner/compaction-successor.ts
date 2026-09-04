@@ -15,6 +15,7 @@ import {
   type SessionTranscriptRuntimeTarget,
 } from "../../config/sessions/session-accessor.js";
 import { resolveSessionStorePathForScope } from "../../config/sessions/session-store-path.js";
+import { normalizeStoreSessionKey } from "../../config/sessions/store-entry.js";
 import { SessionTranscriptWriterClaimReboundError } from "../../config/sessions/transcript-write-context.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -27,7 +28,8 @@ import { resolveStableSessionEndTranscript } from "../../gateway/session-transcr
 import { logVerbose } from "../../globals.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { runWithGatewayIndependentRootWorkContinuation } from "../../process/gateway-work-admission.js";
-import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
+import { normalizeAgentId, resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
+import { advanceSessionBackgroundTargets } from "../../sessions/session-background-custody.js";
 import { resolvePreferredSessionKeyForSessionIdMatches } from "../../sessions/session-id-resolution.js";
 import { resolveAgentRunSessionTarget } from "../run-session-target.js";
 import { captureSessionPlacementCompactionSuccessorAssertion } from "../session-placement-admission.js";
@@ -240,10 +242,19 @@ export async function acceptCompactionSuccessor(params: {
       {
         skipMaintenance: true,
         assertCommitAllowed,
-        onCommitted: (entry) => {
+        onCommitted: (entry, database) => {
           // Capture the actual commit before identity observers can abort the caller.
           // This sink records facts only; no authority checks or lifecycle hooks.
           committed = { ...successor, entry, previousSessionId: currentTarget.sessionId };
+          advanceSessionBackgroundTargets({
+            database,
+            agentId: normalizeAgentId(
+              currentTarget.agentId ?? resolveAgentIdFromSessionKey(currentTarget.sessionKey),
+            ),
+            sessionKey: normalizeStoreSessionKey(currentTarget.sessionKey),
+            previous: expected,
+            current: entry,
+          });
           params.onCommitted?.(committed);
         },
       },

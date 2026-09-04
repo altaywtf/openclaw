@@ -130,8 +130,8 @@ describe("updateSessionStoreAfterAgentRun", () => {
           .mockImplementation((scope, update, options) =>
             originalPatch(scope, update, {
               ...options,
-              onCommitted: (committed) => {
-                options?.onCommitted?.(committed);
+              onCommitted: (committed, database) => {
+                options?.onCommitted?.(committed, database);
                 if (scope.sessionKey !== sessionKey || scope.storePath !== storePath) {
                   return;
                 }

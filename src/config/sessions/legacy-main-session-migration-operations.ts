@@ -21,6 +21,7 @@ import {
   readExactSessionEntryRow,
   writeSessionEntry,
 } from "./session-accessor.sqlite-entry-store.js";
+import { prepareSessionBackgroundEntryChanges } from "./session-accessor.sqlite-identity.js";
 import { importSqliteSessionRows } from "./session-accessor.sqlite-import.js";
 import { deleteSessionEntryLifecycle } from "./session-accessor.sqlite-lifecycle.js";
 import { replaceSessionOwnerInTransaction } from "./session-accessor.sqlite-owner.js";
@@ -117,11 +118,17 @@ function writeMigratedSessionClaim(
   sessionKey: string,
   entry: SessionEntry,
 ): void {
+  const previous = readExactSessionEntryRowForCanonicalRepair(database, sessionKey)?.entry;
   writeSessionEntry(database, sessionKey, entry, {
     allowStoredAliases: true,
     previousEntry: null,
   });
   replaceSessionOwnerInTransaction(database, sessionKey, entry.owner);
+  prepareSessionBackgroundEntryChanges(
+    database,
+    new Map([[sessionKey, previous]]),
+    new Map([[sessionKey, entry]]),
+  )();
 }
 
 function mutateLegacySessionClaims<T>(
@@ -147,9 +154,25 @@ function mutateLegacySessionClaims<T>(
       runExclusiveSqliteSessionWrite(scope, async () => {
         assertCurrent();
         params.beforePersistentApply?.();
-        return runSqliteSessionDeletionTransaction(commit, scope, {
-          operationLabel: params.operationLabel,
-        });
+        return runSqliteSessionDeletionTransaction(
+          (database) => {
+            const result = commit(database);
+            const current = new Map(
+              params.claims.map(({ key }) => [
+                key,
+                readExactSessionEntryRowForCanonicalRepair(database, key)?.entry,
+              ]),
+            );
+            prepareSessionBackgroundEntryChanges(
+              database,
+              new Map(params.claims.map(({ key, entry }) => [key, entry])),
+              current,
+            )();
+            return result;
+          },
+          scope,
+          { operationLabel: params.operationLabel },
+        );
       }),
   );
 }
