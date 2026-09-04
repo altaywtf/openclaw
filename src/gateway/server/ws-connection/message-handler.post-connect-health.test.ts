@@ -2384,6 +2384,89 @@ describe("attachGatewayWsMessageHandler post-connect health refresh", () => {
 
 describe("resolvePinnedClientMetadata", () => {
   it.each([
+    ["win32", "windows", "Windows"],
+    ["darwin", "macos", "Mac"],
+  ])(
+    "accepts equivalent runtime alias %s as %s regardless of client mode",
+    (pairedPlatform, claimedPlatform, claimedDeviceFamily) => {
+      expect(
+        resolvePinnedClientMetadata({
+          clientId: "test",
+          clientMode: "test",
+          claimedPlatform,
+          claimedDeviceFamily,
+          pairedPlatform,
+          pairedDeviceFamily: undefined,
+        }),
+      ).toEqual({
+        platformMismatch: false,
+        deviceFamilyMismatch: false,
+        pinnedPlatform: claimedPlatform,
+        pinnedDeviceFamily: undefined,
+      });
+    },
+  );
+
+  it.each([
+    ["cli", "probe"],
+    ["gateway-client", "backend"],
+  ])("accepts the Windows runtime alias for affected caller %s/%s", (clientId, clientMode) => {
+    expect(
+      resolvePinnedClientMetadata({
+        clientId,
+        clientMode,
+        claimedPlatform: "windows",
+        claimedDeviceFamily: "Windows",
+        pairedPlatform: "win32",
+        pairedDeviceFamily: undefined,
+      }),
+    ).toMatchObject({
+      platformMismatch: false,
+      deviceFamilyMismatch: false,
+    });
+  });
+
+  it.each([
+    { pairedPlatform: "linux", claimedDeviceFamily: "Windows" },
+    { pairedPlatform: "win32", claimedDeviceFamily: "Linux" },
+    { pairedPlatform: "darwin", claimedDeviceFamily: "Windows" },
+  ])(
+    "keeps non-equivalent runtime tuples approval-bound: %j",
+    ({ pairedPlatform, claimedDeviceFamily }) => {
+      expect(
+        resolvePinnedClientMetadata({
+          clientId: "test",
+          clientMode: "test",
+          claimedPlatform: "windows",
+          claimedDeviceFamily,
+          pairedPlatform,
+          pairedDeviceFamily: undefined,
+        }),
+      ).toMatchObject({
+        platformMismatch: true,
+        deviceFamilyMismatch: false,
+      });
+    },
+  );
+
+  it("does not replace a conflicting family pin during a runtime-alias upgrade", () => {
+    expect(
+      resolvePinnedClientMetadata({
+        clientId: "openclaw-tui",
+        clientMode: "ui",
+        claimedPlatform: "windows",
+        claimedDeviceFamily: "Windows",
+        pairedPlatform: "win32",
+        pairedDeviceFamily: "Linux",
+      }),
+    ).toMatchObject({
+      platformMismatch: true,
+      deviceFamilyMismatch: true,
+      pinnedDeviceFamily: "Linux",
+    });
+  });
+
+  it.each([
     ["darwin", "macos"],
     ["win32", "windows"],
   ])(
