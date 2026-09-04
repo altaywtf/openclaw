@@ -570,6 +570,7 @@ See [BTW side questions](/tools/btw) for the full behavior.
     - Buttons and native autocomplete select an exact plugin-owned method. Each selection checks current permissions and plugin availability again.
     - Bare **`/login`** lists available OAuth providers, one button per provider, without starting sign-in. API-key-only and local setup connections stay under `/login <provider>`. Providers with several regional sign-in methods show a second choice.
     - Private chat completes the fixed-input flows: `/login codex`, `/login xai`, `/login minimax-global-oauth`, and `/login minimax-cn-oauth`. `/login openai` keeps its browser sign-in flow.
+    - `/login openrouter` sends a **Sign in with OpenRouter** browser action when the Gateway has a managed Tailscale Serve or Funnel HTTPS address. Approve access in your browser; OpenClaw receives the callback and confirms completion in the original chat. Serve requires the browser to have tailnet access. No redirect URL or API key is pasted into chat.
     - Methods that need a key, token, redirect URL, tenant, endpoint, confirmation, or local-runtime work return an exact **Control UI → Models** sign-in or setup action. Secrets never enter chat history.
     - **`/stop`** targets the active chat session to abort the current run.
 

@@ -228,7 +228,8 @@ async function runChannelProviderLogin(params: {
   runtime?: RuntimeEnv;
 }): Promise<ReplyPayload> {
   const flowKey = buildProviderLoginFlowKey(params.commandParams, params.choice.choiceId);
-  if (!params.commandParams.opts?.onBlockReply) {
+  const sendReply = params.commandParams.opts?.onBlockReply;
+  if (!sendReply) {
     return {
       text: `${params.choice.providerLabel} login needs a live private response path so the code can be shown before it expires. Use the Control UI or a private chat and send \`${formatProviderLoginCommand(params.choice)}\` again.`,
     };
@@ -252,6 +253,7 @@ async function runChannelProviderLogin(params: {
       runtime: params.runtime ?? defaultRuntime,
       signal: reservation.record.signal,
       sendMessage: async (text) => await emitLoginMessage(params.commandParams, text),
+      sendReply,
       unsupportedPromptMessage:
         "This provider needs input that chat cannot collect. Open Control UI → Models and choose Sign in.",
     });

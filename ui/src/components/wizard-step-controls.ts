@@ -175,20 +175,23 @@ function renderOption(
   </label>`;
 }
 
+function renderExternalLink(step: WizardStep) {
+  return step.externalUrl
+    ? html`<a
+        class="btn btn--sm wizard-step__external-link"
+        href=${step.externalUrl}
+        target="_blank"
+        rel="noreferrer"
+      >
+        ${t("modelSetup.wizard.openSignIn")}
+      </a>`
+    : nothing;
+}
+
 function renderContinueStep(props: WizardStepControlsProps) {
   const step = props.step;
   return html`
-    ${step.deviceCode ? nothing : renderMessage(props)}
-    ${step.externalUrl
-      ? html`<a
-          class="btn btn--sm wizard-step__external-link"
-          href=${step.externalUrl}
-          target="_blank"
-          rel="noreferrer"
-        >
-          ${t("modelSetup.wizard.openSignIn")}
-        </a>`
-      : nothing}
+    ${step.deviceCode ? nothing : renderMessage(props)} ${renderExternalLink(step)}
     ${renderDeviceCode(step)}
     ${renderAnswerButton(props, t("modelSetup.wizard.continue"), () => props.onAnswer(undefined))}
   `;
@@ -200,6 +203,7 @@ function renderProgressStep(props: WizardStepControlsProps) {
       <span class="wizard-step__spinner" aria-hidden="true"></span>
       ${renderMessage(props)}
     </div>
+    ${renderExternalLink(props.step)}
     ${props.leadingAction
       ? html`<div class="wizard-step__actions wizard-step__actions--split">
           ${props.leadingAction}

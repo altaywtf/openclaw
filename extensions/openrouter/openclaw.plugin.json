@@ -69,6 +69,7 @@
       "method": "oauth",
       "choiceId": "openrouter-oauth",
       "appGuidedAuth": "oauth",
+      "channelLogin": {},
       "choiceLabel": "OpenRouter OAuth",
       "choiceHint": "Browser sign-in",
       "groupId": "openrouter",

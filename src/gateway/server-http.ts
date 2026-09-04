@@ -128,6 +128,9 @@ const getPluginNodeCapabilityAuthModule = createLazyRuntimeModule(
   () => import("./server/plugin-node-capability-auth.js"),
 );
 const getHttpAuthUtilsModule = createLazyRuntimeModule(() => import("./http-auth-utils.js"));
+const getProviderBrowserAuthModule = createLazyRuntimeModule(
+  () => import("./provider-browser-auth.js"),
+);
 const getPluginRouteRuntimeScopesModule = createLazyRuntimeModule(
   () => import("./server/plugin-route-runtime-scopes.js"),
 );
@@ -448,6 +451,9 @@ export function createGatewayHttpServer(opts: {
         );
       }
 
+      addAdmittedStage(scopedRequestPath === "/oauth/provider/callback", async () =>
+        (await getProviderBrowserAuthModule()).handleProviderOAuthCallback(req, res),
+      );
       // Before hooks: an operator hooks.path of "/oauth" would otherwise claim
       // this exact GET and 405 every provider redirect. The claim is exact-path
       // and config-gated, so preceding hooks cannot shadow any hook route.

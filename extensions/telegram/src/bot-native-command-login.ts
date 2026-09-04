@@ -152,9 +152,9 @@ export async function executeTelegramLoginCommand(params: {
   const flowSignal = dispatch.opts.accountAbortSignal
     ? AbortSignal.any([reservation.record.signal, dispatch.opts.accountAbortSignal])
     : reservation.record.signal;
-  const deviceCodeDelivered = createDeferred<void>();
-  let deviceCodeWasDelivered = false;
-  // Device-code delivery releases Telegram's serialized chat lane. The
+  const signInActionDelivered = createDeferred<void>();
+  let signInActionWasDelivered = false;
+  // Sign-in action delivery releases Telegram's serialized chat lane. The
   // reservation and account signal still own polling through completion.
   const completion = (async () => {
     const sessionSwitchFailedMessage = formatProviderLoginSessionSwitchFailed(
@@ -174,12 +174,29 @@ export async function executeTelegramLoginCommand(params: {
         runtime: dispatch.runtime,
         signal: flowSignal,
         sendMessage: sendLoginMessage,
+        sendReply: async (reply) => {
+          flowSignal.throwIfAborted();
+          const { deliverReplies } = await dispatch.loadDeliveryRuntime();
+          const result = await deliverReplies({
+            replies: [reply],
+            ...dispatch.buildDeliveryBaseOptions({
+              sessionKeyForInternalHooks: dispatch.targetSessionKey,
+              policySessionKey: dispatch.targetSessionKey,
+            }),
+          });
+          flowSignal.throwIfAborted();
+          if (!result.delivered) {
+            throw new Error("Provider sign-in link could not be delivered.");
+          }
+          signInActionWasDelivered = true;
+          signInActionDelivered.resolve();
+        },
         sendDeviceCode: async (deviceCode) => {
           flowSignal.throwIfAborted();
           await sendLoginDeviceCode(deviceCode);
           flowSignal.throwIfAborted();
-          deviceCodeWasDelivered = true;
-          deviceCodeDelivered.resolve();
+          signInActionWasDelivered = true;
+          signInActionDelivered.resolve();
         },
         unsupportedPromptMessage:
           "This provider needs input that Telegram cannot collect. Open Control UI → Models and choose Sign in.",
@@ -278,6 +295,6 @@ export async function executeTelegramLoginCommand(params: {
       record: reservation.record,
     });
   });
-  await Promise.race([deviceCodeDelivered.promise, completion]);
-  return deviceCodeWasDelivered;
+  await Promise.race([signInActionDelivered.promise, completion]);
+  return signInActionWasDelivered;
 }

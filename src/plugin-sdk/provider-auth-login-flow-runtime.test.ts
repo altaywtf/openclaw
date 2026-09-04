@@ -3,6 +3,8 @@ import type {
   ModelsAuthLoginFlowOptions,
   ModelsAuthLoginFlowResult,
 } from "../commands/models/auth.js";
+import { prepareGatewayBrowserOrigin } from "../gateway/browser-origin.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import {
   buildProviderLoginChoicesReply,
   decideProviderLoginSessionAdoption,
@@ -91,6 +93,63 @@ describe("provider channel login runtime", () => {
         agent: "main",
       }),
     );
+  });
+
+  it("sends a typed browser action and keeps completion bound to its initiating login", async () => {
+    const clearOrigin = prepareGatewayBrowserOrigin({
+      origin: "https://gateway.example",
+      reachability: "tailnet",
+    });
+    const delivered = createDeferredCore<void>();
+    const controller = new AbortController();
+    const sendReply = vi.fn(async () => delivered.resolve());
+    const sendMessage = vi.fn(async () => {});
+    mocks.runModelsAuthLoginFlowCore.mockImplementationOnce(async (options) => {
+      await options.browserAuthorization!({
+        state: "bound-login",
+        timeoutMs: 60_000,
+        buildAuthorizationUrl: (redirectUrl) =>
+          `https://provider.example/login?redirect=${encodeURIComponent(redirectUrl)}`,
+      });
+      throw new Error("Cancelled login must not finish.");
+    });
+    try {
+      const running = runProviderChannelLoginFlow({
+        ...loginParams,
+        signal: controller.signal,
+        sendMessage,
+        sendReply,
+      });
+      const rejected = expect(running).rejects.toThrow("cancelled");
+      await delivered.promise;
+      expect(sendReply).toHaveBeenCalledWith(
+        expect.objectContaining({
+          presentationTextMode: "fallback",
+          presentation: {
+            blocks: [
+              { type: "text", text: expect.stringContaining("Return here after approving access") },
+              {
+                type: "buttons",
+                buttons: [
+                  {
+                    label: "Sign in with xAI (Grok)",
+                    action: {
+                      type: "url",
+                      url: expect.stringContaining("https://provider.example/login?"),
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        }),
+      );
+      expect(sendMessage).not.toHaveBeenCalled();
+      controller.abort(new Error("cancelled"));
+      await rejected;
+    } finally {
+      clearOrigin();
+    }
   });
 
   it("reports saved credentials when the running Gateway cannot refresh them", () => {

@@ -25,8 +25,9 @@ OpenAI-compatible, so OpenClaw talks to it over the same
 
         OpenClaw opens OpenRouter's browser sign-in flow (PKCE), exchanges the
         code for an OpenRouter API key, and stores it in the default
-        OpenRouter auth profile. On remote/headless hosts, OpenClaw prints the
-        sign-in URL and asks you to paste the redirect URL after signing in.
+        OpenRouter auth profile. When you run this command on a remote/headless
+        host, OpenClaw prints the sign-in URL and asks you to paste the redirect
+        URL after signing in.
       </Step>
       <Step title="(Optional) Switch to a specific model">
         Onboarding defaults to `openrouter/auto`. Pick a concrete model later:
@@ -316,6 +317,16 @@ OpenRouter uses a Bearer token from your API key. OpenRouter OAuth is a PKCE
 login flow that issues an OpenRouter API key, so OpenClaw stores the result in
 the same `openrouter:default` API-key auth profile used by manual API-key
 setup.
+
+In a private chat, run `/login openrouter` or choose OpenRouter from `/login`.
+OpenClaw sends a direct browser sign-in link. After you approve in OpenRouter,
+return to chat for the result. You do not need to paste a redirect URL or open
+the Control UI.
+
+Chat sign-in needs a secure Gateway address reachable from your browser, such
+as [Tailscale Serve](/gateway/tailscale). If that address is unavailable,
+OpenClaw explains how to enable browser sign-in. You can also use the CLI
+commands below.
 
 To sign in or rotate the stored key on an existing install without rerunning
 full onboarding:

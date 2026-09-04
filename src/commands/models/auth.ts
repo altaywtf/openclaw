@@ -45,7 +45,6 @@ import {
   createRuntimeConfigWriteApplication,
 } from "../../config/runtime-write-application.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { isRemoteEnvironment } from "../../infra/remote-env.js";
 import {
   applyProviderAuthConfigPatch,
   applyDefaultModel,
@@ -54,8 +53,9 @@ import {
   resolveProviderMatch,
 } from "../../plugins/provider-auth-choice-helpers.js";
 import { applyAuthProfileConfig } from "../../plugins/provider-auth-helpers.js";
+import { runProviderPluginAuthMethodUnpersisted } from "../../plugins/provider-auth-method.js";
 import { prepareProviderAuthProfilesForPersistence } from "../../plugins/provider-auth-persistence.js";
-import { createVpsAwareOAuthHandlers } from "../../plugins/provider-oauth-flow.js";
+import type { ProviderAuthContext } from "../../plugins/provider-authentication.types.js";
 import { resolvePluginProvidersCore } from "../../plugins/providers.runtime.js";
 import {
   resolvePluginSetupProviderCore,
@@ -722,10 +722,12 @@ async function runProviderAuthMethod(params: {
   isRemote?: boolean;
   signal?: AbortSignal;
   openUrl?: (url: string) => Promise<void>;
+  browserAuthorization?: ProviderAuthContext["oauth"]["authorize"];
   beforePersistentEffect?: () => void | Promise<void>;
 }): Promise<PendingModelsAuthLoginFlowResult> {
   params.signal?.throwIfAborted();
-  const result = await params.method.run({
+  const result = await runProviderPluginAuthMethodUnpersisted({
+    method: params.method,
     config: params.config,
     env: params.env ?? process.env,
     agentDir: params.agentDir,
@@ -733,17 +735,10 @@ async function runProviderAuthMethod(params: {
     prompter: params.prompter,
     runtime: params.runtime,
     allowSecretRefPrompt: false,
-    isRemote: params.isRemote ?? isRemoteEnvironment(),
+    isRemote: params.isRemote,
     signal: params.signal,
-    openUrl:
-      params.openUrl ??
-      (async (url) => {
-        const { openUrl } = await import("../onboard-helpers.js");
-        await openUrl(url);
-      }),
-    oauth: {
-      createVpsAwareHandlers: (runtimeParams) => createVpsAwareOAuthHandlers(runtimeParams),
-    },
+    openUrl: params.openUrl,
+    browserAuthorization: params.browserAuthorization,
   });
   params.signal?.throwIfAborted();
   // Provider caveats print as plain lines; sign-in never blocks on a notes step.
@@ -1118,6 +1113,7 @@ export type ModelsAuthLoginFlowOptions = LoginOptions & {
   isRemote?: boolean;
   signal?: AbortSignal;
   openUrl?: (url: string) => Promise<void>;
+  browserAuthorization?: ProviderAuthContext["oauth"]["authorize"];
   beforePersistentEffect?: () => void | Promise<void>;
   refreshAuthState?: (agentId: string) => Promise<ModelAuthRefreshOutcome>;
 };
@@ -1381,6 +1377,7 @@ export async function runModelsAuthLoginFlowCore(
     ...(opts.isRemote !== undefined ? { isRemote: opts.isRemote } : {}),
     ...(opts.signal ? { signal: opts.signal } : {}),
     ...(opts.openUrl ? { openUrl: opts.openUrl } : {}),
+    ...(opts.browserAuthorization ? { browserAuthorization: opts.browserAuthorization } : {}),
     ...(opts.beforePersistentEffect ? { beforePersistentEffect: opts.beforePersistentEffect } : {}),
   });
   return await finalizeProviderLogin(

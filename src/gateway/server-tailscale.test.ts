@@ -24,7 +24,7 @@ vi.mock("../infra/tailscale.js", () => ({
   hasTailscaleFunnelRouteForPort: mocks.hasTailscaleFunnelRouteForPort,
 }));
 
-import { getMcpAppChannelOrigin, prepareMcpAppChannelOrigin } from "./mcp-app-channel-origin.js";
+import { getGatewayBrowserOrigin, prepareGatewayBrowserOrigin } from "./browser-origin.js";
 import { startGatewayTailscaleExposure as startGatewayTailscaleExposureBase } from "./server-tailscale.js";
 
 const MANAGED_BACKEND_PORT = 19_000;
@@ -42,7 +42,7 @@ function createLogger() {
 }
 
 function resetMcpAppChannelOrigin() {
-  prepareMcpAppChannelOrigin({ origin: "https://reset.test", reachability: "tailnet" })();
+  prepareGatewayBrowserOrigin({ origin: "https://reset.test", reachability: "tailnet" })();
 }
 
 afterEach(() => {
@@ -224,12 +224,12 @@ describe("startGatewayTailscaleExposure", () => {
       logTailscale: createLogger(),
     });
 
-    expect(getMcpAppChannelOrigin()).toEqual({
+    expect(getGatewayBrowserOrigin()).toEqual({
       origin: "https://node.tailnet.ts.net",
       reachability: "tailnet",
     });
     await cleanup?.();
-    expect(getMcpAppChannelOrigin()).toBeUndefined();
+    expect(getGatewayBrowserOrigin()).toBeUndefined();
   });
 
   it("clears the published origin and warns when the foreground claim exits", async () => {
@@ -255,7 +255,7 @@ describe("startGatewayTailscaleExposure", () => {
     await vi.waitFor(() => {
       expect(logTailscale.warn).toHaveBeenCalledWith(expect.stringContaining("claim exited"));
     });
-    expect(getMcpAppChannelOrigin()).toBeUndefined();
+    expect(getGatewayBrowserOrigin()).toBeUndefined();
   });
 
   it("does not publish an origin for an externally preserved Funnel", async () => {
@@ -270,7 +270,7 @@ describe("startGatewayTailscaleExposure", () => {
     });
 
     expect(cleanup).toBeNull();
-    expect(getMcpAppChannelOrigin()).toBeUndefined();
+    expect(getGatewayBrowserOrigin()).toBeUndefined();
   });
 
   it("never consults the Funnel route helper when running in funnel mode", async () => {

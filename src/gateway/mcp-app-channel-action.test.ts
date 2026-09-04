@@ -16,8 +16,8 @@ vi.mock("./mcp-app-standalone.js", () => ({
   createMcpAppStandaloneTicket: mocks.createTicket,
 }));
 
+import { getGatewayBrowserOrigin, prepareGatewayBrowserOrigin } from "./browser-origin.js";
 import { materializeMcpAppChannelPresentation } from "./mcp-app-channel-action.js";
-import { getMcpAppChannelOrigin, prepareMcpAppChannelOrigin } from "./mcp-app-channel-origin.js";
 
 const nowMs = 1_800_000_000_000;
 const runtime = { sessionId: "runtime-session", mcpAppsEnabled: true };
@@ -31,7 +31,7 @@ const view = {
 };
 
 function resetMcpAppChannelOrigin() {
-  prepareMcpAppChannelOrigin({ origin: "https://reset.test", reachability: "tailnet" })();
+  prepareGatewayBrowserOrigin({ origin: "https://reset.test", reachability: "tailnet" })();
 }
 
 beforeEach(() => {
@@ -48,29 +48,29 @@ beforeEach(() => {
 
 describe("MCP App channel origin", () => {
   it("stores one lifecycle-owned Serve or Funnel snapshot", () => {
-    const clearServe = prepareMcpAppChannelOrigin({
+    const clearServe = prepareGatewayBrowserOrigin({
       origin: "https://node.tailnet.ts.net",
       reachability: "tailnet",
     });
-    const clearFunnel = prepareMcpAppChannelOrigin({
+    const clearFunnel = prepareGatewayBrowserOrigin({
       origin: "https://public.example.ts.net/",
       reachability: "internet",
     });
 
-    expect(getMcpAppChannelOrigin()).toEqual({
+    expect(getGatewayBrowserOrigin()).toEqual({
       origin: "https://public.example.ts.net",
       reachability: "internet",
     });
     clearServe();
-    expect(getMcpAppChannelOrigin()).toBeDefined();
+    expect(getGatewayBrowserOrigin()).toBeDefined();
     clearFunnel();
-    expect(getMcpAppChannelOrigin()).toBeUndefined();
+    expect(getGatewayBrowserOrigin()).toBeUndefined();
   });
 
   it.each(["http://node.test", "https://%75@node.test", "https://node.test/path"])(
     "rejects unsafe origin %s",
     (origin) => {
-      expect(() => prepareMcpAppChannelOrigin({ origin, reachability: "tailnet" })).toThrow(
+      expect(() => prepareGatewayBrowserOrigin({ origin, reachability: "tailnet" })).toThrow(
         "absolute HTTPS origin",
       );
     },
@@ -79,7 +79,7 @@ describe("MCP App channel origin", () => {
 
 describe("materializeMcpAppChannelPresentation", () => {
   it("mints late and emits only one typed action with an opaque ticket", () => {
-    prepareMcpAppChannelOrigin({
+    prepareGatewayBrowserOrigin({
       origin: "https://node.tailnet.ts.net",
       reachability: "tailnet",
     });
@@ -126,7 +126,7 @@ describe("materializeMcpAppChannelPresentation", () => {
     ["expired view", () => mocks.getView.mockReturnValue({ ...view, expiresAtMs: nowMs })],
     ["ticket capacity", () => mocks.createTicket.mockReturnValue(undefined)],
   ])("omits the action for %s", (_name, arrange) => {
-    prepareMcpAppChannelOrigin({
+    prepareGatewayBrowserOrigin({
       origin: "https://node.tailnet.ts.net",
       reachability: "tailnet",
     });

@@ -183,7 +183,7 @@ vi.mock("../../config/logging.js", () => ({
   logConfigUpdated: mocks.logConfigUpdated,
 }));
 
-vi.mock("../onboard-helpers.js", () => ({
+vi.mock("../../infra/browser-open.js", () => ({
   openUrl: mocks.openUrl,
 }));
 
@@ -511,6 +511,29 @@ describe("modelsAuthLoginCommand", () => {
       prompter: mocks.createClackPrompter(),
     });
   }
+
+  it("sends remote browser destinations to the client without an explicit opener override", async () => {
+    const clientOpenUrl = vi.fn(async () => {});
+    mocks.resolvePluginProvidersCore.mockReturnValue([
+      createProvider({
+        id: "example",
+        run: async (context) => {
+          await context.openUrl("https://provider.example/sign-in");
+          return { profiles: [] };
+        },
+      }),
+    ]);
+    await runModelsAuthLoginFlowCore({
+      provider: "example",
+      method: "oauth",
+      config: currentConfig,
+      runtime: createRuntime(),
+      prompter: createWizardPrompter({ openUrl: clientOpenUrl }),
+      isRemote: true,
+    });
+    expect(clientOpenUrl).toHaveBeenCalledWith("https://provider.example/sign-in");
+    expect(mocks.openUrl).not.toHaveBeenCalled();
+  });
 
   it("saves provider sign-in without choosing or testing a default", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch");

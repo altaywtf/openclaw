@@ -1,8 +1,4 @@
 // Tests Telegram native provider login command behavior.
-import {
-  createEmptyPluginRegistry,
-  withPluginRuntimeRegistryScope,
-} from "openclaw/plugin-sdk/channel-test-helpers";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type { ModelsAuthLoginFlowOptions } from "openclaw/plugin-sdk/provider-auth-login-flow-runtime";
@@ -10,15 +6,11 @@ import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import type { SessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TelegramLoginFlow } from "./bot-native-command-executors.test-support.js";
+import { registerLoginCommand } from "./bot-native-command-login.test-support.js";
+import { createTelegramGroupCommandContext } from "./bot-native-commands.fixture-test-support.js";
 import {
-  createTelegramGroupCommandContext,
-  stubTelegramProviderLoginFlow,
-} from "./bot-native-commands.fixture-test-support.js";
-import { registerTelegramNativeCommands } from "./bot-native-commands.js";
-import {
-  createCommandBot,
-  createNativeCommandTestParams,
   createPrivateCommandContext,
+  deliverReplies,
   resetNativeCommandMenuMocks,
 } from "./bot-native-commands.menu-test-support.js";
 import { telegramBotInfoForTest } from "./bot.create-telegram-bot.test-support.js";
@@ -60,65 +52,6 @@ vi.mock("openclaw/plugin-sdk/session-store-runtime", async () => {
     updateSessionStoreEntry: loginSessionMocks.updateSessionStoreEntry,
   };
 });
-
-type TelegramLoginResult = Awaited<ReturnType<TelegramLoginFlow>>;
-type LoginFlowResult = Partial<TelegramLoginResult> &
-  Pick<TelegramLoginResult, "providerId" | "methodId" | "profiles">;
-
-let loginAccountIndex = 0;
-
-function registerLoginCommand(params: {
-  cfg: OpenClawConfig;
-  loginFlow: (options: ModelsAuthLoginFlowOptions) => Promise<LoginFlowResult>;
-  accountId?: string;
-  allowFrom?: string[];
-  abortSignal?: AbortSignal;
-  runtime?: RuntimeEnv;
-}) {
-  const botHarness = createCommandBot();
-  const accountId = params.accountId ?? `login-test-${++loginAccountIndex}`;
-  const nativeParams = createNativeCommandTestParams(params.cfg, {
-    accountId,
-    bot: botHarness.bot,
-    allowFrom: params.allowFrom ?? ["200"],
-    ...(params.abortSignal
-      ? {
-          opts: {
-            token: "token",
-            accountAbortSignal: params.abortSignal,
-          },
-        }
-      : {}),
-    ...(params.runtime ? { runtime: params.runtime } : {}),
-  });
-  const sendMessageTelegram = vi.fn(async (_to, text) => {
-    const result = await botHarness.bot.api.sendMessage(100, text, {});
-    return { messageId: String(result.message_id), chatId: "100" };
-  });
-  const nativeCommandCallbackDispatcher = withPluginRuntimeRegistryScope(
-    createEmptyPluginRegistry(),
-    () =>
-      registerTelegramNativeCommands({
-        ...nativeParams,
-        telegramDeps: {
-          ...nativeParams.telegramDeps,
-          runProviderChannelLoginFlow: stubTelegramProviderLoginFlow(params.loginFlow),
-          sendMessageTelegram,
-        } as never,
-      }),
-  );
-  const handler = botHarness.commandHandlers.get("login");
-  if (!handler) {
-    throw new Error("expected login command handler to be registered");
-  }
-  return {
-    ...botHarness,
-    accountId,
-    handler,
-    nativeCommandCallbackDispatcher,
-    sendMessageTelegram,
-  };
-}
 
 describe("registerTelegramNativeCommands /login", () => {
   beforeEach(() => {
@@ -340,6 +273,72 @@ describe("registerTelegramNativeCommands /login", () => {
         "OpenAI login complete. Try your request again now.",
       ),
     );
+  });
+
+  it("releases the chat lane after a browser button is delivered, then reports completion", async () => {
+    const allowDelivery = createDeferred<void>();
+    const finishLogin = createDeferred<void>();
+    deliverReplies.mockImplementationOnce(async () => {
+      await allowDelivery.promise;
+      return { delivered: true };
+    });
+    const { handler, sendMessage } = registerLoginCommand({
+      cfg: {
+        commands: { native: true, ownerAllowFrom: ["200"] },
+        agents: { list: [{ id: "main" }] },
+      },
+      channelLoginFlow: async (flow) => {
+        await flow.sendReply!({
+          text: "Sign in: https://provider.example/login",
+          presentation: {
+            blocks: [
+              {
+                type: "buttons",
+                buttons: [
+                  {
+                    label: "Sign in",
+                    action: { type: "url", url: "https://provider.example/login" },
+                  },
+                ],
+              },
+            ],
+          },
+        });
+        await finishLogin.promise;
+        return {
+          providerId: "openrouter",
+          methodId: "oauth",
+          modelAccess: "already-visible",
+          authRefresh: "refreshed",
+          profiles: [{ profileId: "openrouter:default", provider: "openrouter", mode: "api_key" }],
+        };
+      },
+    });
+    let returned = false;
+    const task = handler(
+      createPrivateCommandContext({ match: "oauth/openrouter/openrouter", userId: 200 }),
+    ).then(() => {
+      returned = true;
+    });
+    try {
+      await vi.waitFor(() => expect(deliverReplies).toHaveBeenCalledOnce());
+      expect(returned).toBe(false);
+      allowDelivery.resolve();
+      await task;
+      expect(sendMessage).not.toHaveBeenCalled();
+      finishLogin.resolve();
+      await vi.waitFor(() =>
+        expect(sendMessage).toHaveBeenCalledWith(
+          100,
+          "OpenRouter login complete. Try your request again now.",
+          {},
+        ),
+      );
+    } finally {
+      allowDelivery.resolve();
+      finishLogin.resolve();
+      await task;
+    }
   });
 
   it("routes the login button through the non-blocking native login flow", async () => {

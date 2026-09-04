@@ -13,6 +13,8 @@ import { loadAuthProfileStoreWithoutExternalProfiles } from "../agents/auth-prof
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
+import { wizardStepAwaitsInput } from "../wizard/session.js";
+import { prepareGatewayBrowserOrigin } from "./browser-origin.js";
 import {
   connectGatewayClient,
   disconnectGatewayClient,
@@ -35,6 +37,12 @@ type CollisionProbe = {
   selectedAuthRelease: Promise<void>;
   workspaceAuthRuns: number;
   workspaceModuleLoads: number;
+};
+
+type CollisionPluginParams = {
+  id: string;
+  selected?: boolean;
+  authFlow: "device" | "hosted-browser";
 };
 
 type ImportProbe = {
@@ -83,7 +91,7 @@ function configureGatewayFixtureEnvironment(params: {
   delete process.env.OPENCLAW_DISABLE_BUNDLED_PLUGINS;
 }
 
-function pluginManifest(params: { id: string; selected?: boolean }) {
+function pluginManifest(params: CollisionPluginParams) {
   return {
     id: params.id,
     name: params.id,
@@ -97,7 +105,7 @@ function pluginManifest(params: { id: string; selected?: boolean }) {
               method: "oauth",
               choiceId: "collision-oauth",
               choiceLabel: "Collision OAuth",
-              appGuidedAuth: "device-code",
+              appGuidedAuth: params.authFlow === "hosted-browser" ? "oauth" : "device-code",
               channelLogin: { aliases: ["collision"] },
             },
           ],
@@ -107,9 +115,32 @@ function pluginManifest(params: { id: string; selected?: boolean }) {
   };
 }
 
-function pluginModule(params: { id: string; selected?: boolean }): string {
+function pluginModule(params: CollisionPluginParams): string {
   const counter = params.selected ? "selectedAuthRuns" : "workspaceAuthRuns";
   const profile = params.selected ? "selected" : "workspace";
+  const authentication =
+    params.authFlow === "hosted-browser"
+      ? `
+          const state = ${JSON.stringify(`${profile}-browser-state`)};
+          const authorization = await oauth.authorize({
+            state,
+            timeoutMs: 60000,
+            buildAuthorizationUrl(redirectUrl) {
+              const callback = new URL(redirectUrl);
+              callback.searchParams.set("state", state);
+              const url = new URL("https://provider.example/authorize");
+              url.searchParams.set("callback_url", callback.href);
+              return url.href;
+            },
+          });
+          const access = authorization.code + "-access";`
+      : `
+          await prompter.deviceCode?.({
+            title: "Collision OAuth",
+            code: ${JSON.stringify(params.selected ? "SELECTED-CODE" : "WORKSPACE-CODE")},
+            message: "https://example.invalid/device",
+          });
+          const access = ${JSON.stringify(`${profile}-access`)};`;
   return `
 const probe = globalThis[Symbol.for("openclaw.test.providerLoginOwnerCollision")];
 ${params.selected ? "" : "probe.workspaceModuleLoads += 1;"}
@@ -123,13 +154,9 @@ export default {
         id: "oauth",
         label: "OAuth",
         kind: "oauth",
-        async run({ prompter }) {
+        async run({ prompter, oauth }) {
           probe.${counter} += 1;
-          await prompter.deviceCode?.({
-            title: "Collision OAuth",
-            code: ${JSON.stringify(params.selected ? "SELECTED-CODE" : "WORKSPACE-CODE")},
-            message: "https://example.invalid/device",
-          });
+          ${authentication}
           ${params.selected ? "await probe.selectedAuthRelease;" : ""}
           return {
             defaultModel: "collision-provider/default",
@@ -139,7 +166,7 @@ export default {
               credential: {
                 type: "oauth",
                 provider: "collision-provider",
-                access: ${JSON.stringify(`${profile}-access`)},
+                access,
                 refresh: ${JSON.stringify(`${profile}-refresh`)},
                 expires: Date.now() + 60000,
               },
@@ -153,7 +180,7 @@ export default {
 `;
 }
 
-async function writePlugin(root: string, params: { id: string; selected?: boolean }) {
+async function writePlugin(root: string, params: CollisionPluginParams) {
   const pluginDir = path.join(root, params.id);
   await fs.mkdir(pluginDir, { recursive: true });
   await Promise.all([
@@ -302,10 +329,10 @@ afterEach(() => {
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 describe("openclaw.setup.auth.start owner binding", () => {
-  it(
-    "never loads a colliding workspace provider behind a bundled login choice",
+  it.each(["device", "hosted-browser"] as const)(
+    "persists the bundled %s login without loading a colliding workspace provider",
     { timeout: 90_000 },
-    async () => {
+    async (authFlow) => {
       const envSnapshot = captureEnv([...envKeys]);
       const tempHome = tempDirs.make("openclaw-provider-login-owner-");
       const stateDir = path.join(tempHome, ".openclaw");
@@ -327,13 +354,14 @@ describe("openclaw.setup.auth.start owner binding", () => {
       (globalThis as Record<PropertyKey, unknown>)[PROBE_KEY] = probe;
       let gateway: Awaited<ReturnType<typeof startGatewayWithClient>> | undefined;
       let otherClient: Awaited<ReturnType<typeof connectGatewayClient>> | undefined;
+      let clearBrowserOrigin: (() => void) | undefined;
 
       try {
         await Promise.all([
           fs.mkdir(stateDir, { recursive: true }),
           fs.mkdir(workspacePluginsDir, { recursive: true }),
-          writePlugin(bundledPluginsDir, { id: SELECTED_OWNER, selected: true }),
-          writePlugin(workspacePluginsDir, { id: WORKSPACE_OWNER }),
+          writePlugin(bundledPluginsDir, { id: SELECTED_OWNER, selected: true, authFlow }),
+          writePlugin(workspacePluginsDir, { id: WORKSPACE_OWNER, authFlow }),
         ]);
         configureGatewayFixtureEnvironment({
           tempHome,
@@ -365,6 +393,12 @@ describe("openclaw.setup.auth.start owner binding", () => {
           token,
           clientDisplayName: "provider-login-owner-proof",
         });
+        if (authFlow === "hosted-browser") {
+          clearBrowserOrigin = prepareGatewayBrowserOrigin({
+            origin: "https://gateway.example",
+            reachability: "tailnet",
+          });
+        }
         const started = await gateway.client.request<WizardStartResult>(
           "openclaw.setup.auth.start",
           {
@@ -374,13 +408,25 @@ describe("openclaw.setup.auth.start owner binding", () => {
           },
         );
         expect(started).toMatchObject({ done: false, status: "running" });
-        const deviceCode = await gateway.client.request<WizardNextResult>("wizard.next", {
+        const signIn = await gateway.client.request<WizardNextResult>("wizard.next", {
           sessionId: started.sessionId,
         });
-        expect(deviceCode.step).toMatchObject({
-          type: "note",
-          deviceCode: { code: "SELECTED-CODE" },
-        });
+        if (!signIn.step) {
+          throw new Error("Expected a provider sign-in step.");
+        }
+        if (authFlow === "hosted-browser") {
+          expect(signIn.step).toMatchObject({
+            type: "progress",
+            executor: "gateway",
+            externalUrl: expect.any(String),
+          });
+          expect(wizardStepAwaitsInput(signIn.step)).toBe(false);
+        } else {
+          expect(signIn.step).toMatchObject({
+            type: "note",
+            deviceCode: { code: "SELECTED-CODE" },
+          });
+        }
         expect(probe).toMatchObject({
           selectedAuthRuns: 1,
           workspaceAuthRuns: 0,
@@ -410,10 +456,39 @@ describe("openclaw.setup.auth.start owner binding", () => {
           raw: JSON.stringify({ messages: { responsePrefix: "concurrent-edit" } }),
           baseHash: liveConfig.hash,
         });
+        if (authFlow === "hosted-browser") {
+          if (!signIn.step.externalUrl) {
+            throw new Error("Expected a hosted browser sign-in URL.");
+          }
+          const authorizationUrl = new URL(signIn.step.externalUrl);
+          expect(authorizationUrl.origin).toBe("https://provider.example");
+          const redirectUrl = authorizationUrl.searchParams.get("callback_url");
+          if (!redirectUrl) {
+            throw new Error("Expected a hosted browser callback URL.");
+          }
+          const callbackUrl = new URL(redirectUrl);
+          expect(callbackUrl.origin).toBe("https://gateway.example");
+          expect(callbackUrl.pathname).toBe("/oauth/provider/callback");
+          expect(callbackUrl.searchParams.get("state")).toBe("selected-browser-state");
+          callbackUrl.searchParams.set("code", "selected-browser");
+          const localCallbackUrl = new URL(
+            `${callbackUrl.pathname}${callbackUrl.search}`,
+            `http://127.0.0.1:${gateway.port}`,
+          );
+          const response = await fetch(localCallbackUrl, { redirect: "error" });
+          expect(response.status).toBe(200);
+          expect(await response.text()).toContain("Sign-in response received.");
+          const replay = await fetch(localCallbackUrl, { redirect: "error" });
+          expect(replay.status).toBe(410);
+          await replay.body?.cancel();
+          expect(
+            loadAuthProfileStoreWithoutExternalProfiles(resolveAgentDir(cfg, "main")).profiles,
+          ).not.toHaveProperty("collision-provider:selected");
+        }
         releaseSelectedAuth();
         const completed = await gateway.client.request<WizardNextResult>("wizard.next", {
           sessionId: started.sessionId,
-          answer: { stepId: deviceCode.step?.id ?? "", value: null },
+          ...(authFlow === "device" ? { answer: { stepId: signIn.step.id, value: null } } : {}),
         });
         expect(completed.error).toBeUndefined();
         expect(completed).toMatchObject({ done: true, status: "done" });
@@ -426,11 +501,19 @@ describe("openclaw.setup.auth.start owner binding", () => {
         });
         expect(Object.keys(store.profiles)).toContain("collision-provider:selected");
         expect(Object.keys(store.profiles)).not.toContain("collision-provider:workspace");
+        expect(store.profiles["collision-provider:selected"]).toMatchObject({
+          type: "oauth",
+          provider: COLLISION_PROVIDER,
+          access: authFlow === "hosted-browser" ? "selected-browser-access" : "selected-access",
+          refresh: "selected-refresh",
+        });
         const configAfterLogin = JSON.parse(await fs.readFile(configPath, "utf8"));
         expect(configAfterLogin.agents?.defaults?.model).toBeUndefined();
         expect(configAfterLogin.agents?.defaults?.workspace).toBe(workspaceDir);
         expect(configAfterLogin.messages?.responsePrefix).toBe("concurrent-edit");
       } finally {
+        clearBrowserOrigin?.();
+        releaseSelectedAuth();
         if (otherClient) {
           await disconnectGatewayClient(otherClient);
         }

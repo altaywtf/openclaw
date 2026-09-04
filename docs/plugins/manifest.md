@@ -524,7 +524,8 @@ when the local service is reachable but no model qualifies for automatic setup.
 The availability probe is also read-only.
 
 `channelLogin` is an explicit offering, not a promise inferred from the auth
-method kind. The channel prompter accepts messages and device codes only. It
+method kind. The channel prompter accepts messages, device codes, and hosted
+browser sign-in actions. It
 stops and directs the owner to the Control UI if the provider asks for text,
 selection, or confirmation. Choice, provider, and alias collisions
 also stop with an explicit list of unambiguous `/login <choice>` commands.
@@ -533,6 +534,20 @@ Bare `/login` displays eligible OAuth and device-code providers instead of
 starting a login. Each provider has one button on channels that support command
 buttons; other surfaces show the same choices as commands you can copy. Core
 owns this menu, so channels do not maintain separate provider lists.
+
+Provider methods that accept a hosted callback can use
+`ctx.oauth.authorize({ state, timeoutMs, buildAuthorizationUrl })`. Core supplies
+the callback address, sends the browser action, and returns the validated
+`{ code, state }`. The plugin generates a fresh unpredictable state, keeps its
+PKCE verifier private, and owns the authorization URL and code exchange.
+Cancellation, expiry, and Gateway restart close the pending callback; a callback
+cannot start a new login or grant access to the Control UI.
+
+Hosted callbacks currently use the HTTPS address published by managed Tailscale
+Serve or Funnel. The browser must be able to reach that address; Serve requires
+tailnet access. Chat reports a missing secure address instead of sending a
+loopback link or requesting a redirect URL in chat. Local CLI callbacks and
+manual remote CLI completion remain available when no hosted capability exists.
 
 API-key and provider-setup methods do not appear in the bare `/login` menu.
 They remain available through explicit `/login <provider>` or

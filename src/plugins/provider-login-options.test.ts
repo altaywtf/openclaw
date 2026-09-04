@@ -201,7 +201,7 @@ describe("provider channel login choices", () => {
     expect(missingLoginChoices).toEqual([]);
   });
 
-  it("lists the trusted bundled fixed-input login surface", () => {
+  it("lists the trusted bundled chat-compatible login surface", () => {
     expect(listProviderChannelLoginChoices().filter((entry) => entry.mode === "chat")).toEqual([
       expect.objectContaining({ command: "codex", providerId: "openai", methodId: "device-code" }),
       expect.objectContaining({
@@ -212,6 +212,11 @@ describe("provider channel login choices", () => {
       expect.objectContaining({
         command: "minimax-global-oauth",
         providerId: "minimax-portal",
+        methodId: "oauth",
+      }),
+      expect.objectContaining({
+        command: "openrouter",
+        providerId: "openrouter",
         methodId: "oauth",
       }),
       expect.objectContaining({ command: "xai", providerId: "xai", methodId: "oauth" }),

@@ -272,6 +272,7 @@ export class WizardSession {
   private cancellationLocked = false;
   private settled = false;
   private pendingExternalUrl: string | undefined;
+  private externalUrlImmediate: ReturnType<typeof setImmediate> | undefined;
   private answerDeferred = new Map<
     string,
     {
@@ -396,6 +397,7 @@ export class WizardSession {
     this.error = "cancelled";
     this.abortController.abort(new WizardCancelledError());
     this.currentStep = null;
+    this.consumeExternalUrl();
     for (const [, pending] of this.answerDeferred) {
       // Reject all pending prompt promises so the runner can unwind through its
       // normal cancellation path.
@@ -427,11 +429,14 @@ export class WizardSession {
     if (this.status !== "running") {
       return;
     }
+    clearImmediate(this.externalUrlImmediate);
+    this.externalUrlImmediate = undefined;
     const step: WizardStep = {
       id: randomUUID(),
       type: "progress",
       message,
       executor: "gateway",
+      ...(this.pendingExternalUrl ? { externalUrl: this.pendingExternalUrl } : {}),
     };
     if (this.stepDeferred) {
       this.rememberDeliveredProgressStep(step.id);
@@ -459,10 +464,21 @@ export class WizardSession {
   }
 
   queueExternalUrl(url: string) {
+    if (this.status !== "running") {
+      return;
+    }
+    this.consumeExternalUrl();
     this.pendingExternalUrl = url;
+    // Let same-turn prompts consume the URL first; callback waits have no next prompt.
+    // Publish progress afterward so browser sign-in never needs an extra answer.
+    this.externalUrlImmediate = setImmediate(() => {
+      this.pushProgress("Complete sign-in in your browser.");
+    });
   }
 
   consumeExternalUrl(): string | undefined {
+    clearImmediate(this.externalUrlImmediate);
+    this.externalUrlImmediate = undefined;
     const url = this.pendingExternalUrl;
     this.pendingExternalUrl = undefined;
     return url;
@@ -487,6 +503,7 @@ export class WizardSession {
       }
     } finally {
       this.settled = true;
+      this.consumeExternalUrl();
       if (this.expiryTimer) {
         clearTimeout(this.expiryTimer);
       }

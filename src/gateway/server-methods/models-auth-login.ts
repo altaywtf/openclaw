@@ -53,7 +53,6 @@ export async function startModelsAuthLoginWizard(params: {
         prompter,
         signal,
         isRemote: true,
-        openUrl: async (url) => await prompter.openUrl?.(url),
         beforePersistentEffect: () => {
           signal.throwIfAborted();
           session.lockCancellation();

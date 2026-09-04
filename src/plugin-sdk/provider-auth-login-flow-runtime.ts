@@ -4,6 +4,10 @@ import type {
   ModelsAuthLoginFlowResult,
 } from "../commands/models/auth.js";
 import {
+  createProviderBrowserAuthSession,
+  ProviderBrowserSignInUnavailableError,
+} from "../gateway/provider-browser-auth.js";
+import {
   formatProviderLoginChoiceRef,
   formatProviderOAuthLoginRef,
   resolveProviderChannelLoginChoice,
@@ -240,29 +244,74 @@ export async function runProviderChannelLoginFlow(params: {
   config: OpenClawConfig;
   runtime: RuntimeEnv;
   sendMessage: (message: string) => Promise<void>;
+  sendReply?: (reply: ReplyPayload) => Promise<void> | void;
   sendDeviceCode?: NonNullable<ModelsAuthLoginFlowOptions["prompter"]["deviceCode"]>;
   signal?: AbortSignal;
   unsupportedPromptMessage: string;
 }): Promise<ModelsAuthLoginFlowResult> {
-  return await runModelsAuthLoginFlow({
-    provider: params.choice.providerId,
-    method: params.choice.methodId,
-    ownerPluginId: params.choice.pluginId,
-    credentialOnly: true,
-    agent: params.agentId,
-    ...(params.profileId ? { profileId: params.profileId } : {}),
-    config: params.config,
-    runtime: params.runtime,
+  const browser = createProviderBrowserAuthSession({
     signal: params.signal,
-    prompter: buildProviderChannelLoginPrompter({
-      sendMessage: params.sendMessage,
-      sendDeviceCode: params.sendDeviceCode,
-      signal: params.signal,
-      unsupportedPromptMessage: params.unsupportedPromptMessage,
-    }),
-    isRemote: true,
-    openUrl: async () => {},
+    openUrl: async (url) => {
+      const heading = `Sign in with ${params.choice.providerLabel}. Return here after approving access.`;
+      const reply: ReplyPayload = {
+        text: `${heading}\n${url}`,
+        presentationTextMode: "fallback",
+        presentation: {
+          blocks: [
+            { type: "text", text: heading },
+            {
+              type: "buttons",
+              buttons: [
+                {
+                  label: `Sign in with ${params.choice.providerLabel}`,
+                  action: { type: "url", url },
+                },
+              ],
+            },
+          ],
+        },
+      };
+      if (params.sendReply) {
+        await params.sendReply(reply);
+      } else {
+        await params.sendMessage(reply.text!);
+      }
+    },
   });
+  try {
+    return await runModelsAuthLoginFlow({
+      provider: params.choice.providerId,
+      method: params.choice.methodId,
+      ownerPluginId: params.choice.pluginId,
+      credentialOnly: true,
+      agent: params.agentId,
+      ...(params.profileId ? { profileId: params.profileId } : {}),
+      config: params.config,
+      runtime: params.runtime,
+      signal: browser.signal,
+      browserAuthorization: async (request) => {
+        try {
+          return await browser.authorize(request);
+        } catch (error) {
+          if (error instanceof ProviderBrowserSignInUnavailableError) {
+            await params.sendMessage(error.message);
+          }
+          throw error;
+        }
+      },
+      beforePersistentEffect: browser.assertCurrent,
+      prompter: buildProviderChannelLoginPrompter({
+        sendMessage: params.sendMessage,
+        sendDeviceCode: params.sendDeviceCode,
+        signal: browser.signal,
+        unsupportedPromptMessage: params.unsupportedPromptMessage,
+      }),
+      isRemote: true,
+      openUrl: async () => {},
+    });
+  } finally {
+    browser.close();
+  }
 }
 
 export function formatProviderLoginCommand(choice: ProviderChannelLoginChoice): string {
