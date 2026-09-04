@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Adds Mermaid chat diagrams and improves session dashboards, model selection, and reply recovery.
+- Preserves Apple Watch messages, quick replies, and delivery receipts across restarts, with recovery for older queues.
+- Aligns Android chat and appearance with the Control UI, expands the composer to six lines, and docks task progress above it.
+- Keeps connections and queued messages with their original Gateway, and improves realtime Talk playback and interruption.
+
 ## 2026.8.11
 
 - Choose one of eight session colors from existing session menus, with matching sidebar stripes and chat title dots; select Default to clear a color.

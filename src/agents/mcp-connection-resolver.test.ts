@@ -248,8 +248,7 @@ describe("mcp connection resolver helpers", () => {
     const previousExternalRestartPolicy = isGatewaySigusr1RestartExternallyAllowed();
 
     try {
-      // Model catalog provisioning is independent of plugin-owned MCP revocation.
-      // Keep Gateway refresh and background warmup observable without provider discovery.
+      // Keep Gateway refresh scheduling observable without starting provider discovery.
       const refreshPreparedModelRuntimeSnapshots = vi
         .spyOn(await import("./prepared-model-runtime.js"), "refreshPreparedModelRuntimeSnapshots")
         .mockResolvedValue(undefined);
@@ -283,8 +282,6 @@ describe("mcp connection resolver helpers", () => {
       }
       const sessionId = "gateway-plugin-disable-mcp-proof";
       const previousRuntime = await getOrCreateSessionMcpRuntime({
-        // Only configured MCP servers belong to this registry fixture.
-        manifestRegistry: { plugins: [] },
         sessionId,
         sessionKey: "agent:test:gateway-plugin-disable-mcp-proof",
         workspaceDir: process.cwd(),
@@ -430,7 +427,6 @@ describe("mcp connection resolver helpers", () => {
 
       const nextSessionId = "gateway-plugin-disable-brand-new-mcp-proof";
       const nextRuntime = await getOrCreateSessionMcpRuntime({
-        manifestRegistry: { plugins: [] },
         sessionId: nextSessionId,
         sessionKey: "agent:test:gateway-plugin-disable-brand-new-mcp-proof",
         workspaceDir: process.cwd(),

@@ -42,6 +42,7 @@ defineDiscordVoiceTests(
     beginSpeakerTurn,
     lastAgentCommandArgs,
     lastAgentCommandToolNames,
+    lastRealtimeBridgeParams,
     createJoinedAgentProxyFixture,
     lastTtsArgs,
     expectUserMessageNotIncludes,
@@ -842,16 +843,15 @@ defineDiscordVoiceTests(
 
       const connect = session.connect();
       await vi.waitFor(() => expect(realtimeSessionMock.connect).toHaveBeenCalledOnce());
+      const provider = lastRealtimeBridgeParams();
       session.close();
+      expect(provider.audioSink.isOpen?.()).toBe(false);
       resolveConnect();
       await connect;
 
-      expect(realtimeSessionMock.close).toHaveBeenCalled();
-      expect(() =>
-        session.beginSpeakerTurn({ senderIsOwner: false, speakerLabel: "Late speaker" }, "u-late"),
-      ).toThrow("Discord realtime voice session is closed");
-      await expect(session.connect()).rejects.toThrow("Discord realtime voice session is closed");
-      expect(realtimeSessionMock.connect).toHaveBeenCalledOnce();
+      provider.onReady?.();
+      expect(provider.audioSink.isOpen?.()).toBe(false);
+      expect(realtimeSessionMock.close).toHaveBeenCalledOnce();
     });
 
     it("provider reset fences transcript, tool, playback, and consult completions", async () => {

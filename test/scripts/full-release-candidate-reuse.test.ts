@@ -25,9 +25,12 @@ const NOW = Date.parse("2026-08-28T12:00:00Z");
 const EXPIRES_AT = "2026-09-04T12:00:00Z";
 const REPOSITORY = "openclaw/openclaw";
 const CONTRACT_SCRIPT = resolve("scripts/full-release-candidate-contract.mjs");
-const SCRIPT = resolve("scripts/full-release-candidate-reuse.mjs");
-// CLI subprocesses must share the fixture clock or fixed artifact expiries age out.
-const SCRIPT_ARGS = ["--import", `data:text/javascript,Date.now=()=>${NOW}`, SCRIPT];
+// CLI children must use the same clock as the fixed-expiry artifact fixtures.
+const SCRIPT_ARGS = [
+  "--import",
+  `data:text/javascript,Date.now=()=>${NOW}`,
+  resolve("scripts/full-release-candidate-reuse.mjs"),
+];
 const WORKFLOW_PATH = ".github/workflows/full-release-validation.yml";
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
@@ -158,13 +161,21 @@ function constituentArtifactReader(manifest: CandidateConstituentSource) {
   };
 }
 
-async function fixture() {
+async function fixture(now = NOW) {
   const manifest = fullReleaseCandidateManifestFixture();
+  // CLI children use the real clock; seal every artifact with the same fixture lifetime.
+  const expiresAt = new Date(now + 7 * 24 * 60 * 60 * 1000).toISOString();
+  manifest.package.artifact.expiresAt = expiresAt;
+  manifest.prepublishPluginRegistry.artifact.expiresAt = expiresAt;
+  manifest.sharedImage.artifact.expiresAt = expiresAt;
   const archive = await archiveWithManifest(manifest);
   return {
     archive,
     manifest,
-    metadata: artifactMetadata(archive),
+    metadata: artifactMetadata(archive, {
+      created_at: new Date(now - 2 * 60 * 60 * 1000).toISOString(),
+      expires_at: expiresAt,
+    }),
   };
 }
 
@@ -563,15 +574,17 @@ esac
 `,
     );
     chmodSync(ghPath, 0o755);
-    const { archive, manifest } = await fixture();
+    const now = Date.now();
+    const { manifest, metadata } = await fixture(now);
     const artifacts = Array.from({ length: 6 }, (_, index) => {
       const runId = 80 + index;
       const jobs = workflowJobs(manifest, { runId });
       jobs.jobs[1]!.conclusion = runId === 85 ? "success" : "failure";
       writeFileSync(join(responses, `run-${runId}.json`), JSON.stringify(workflowRun(runId)));
       writeFileSync(join(responses, `jobs-${runId}.json`), JSON.stringify([jobs]));
-      return artifactMetadata(archive, {
-        created_at: new Date(NOW - index * 1000).toISOString(),
+      return {
+        ...metadata,
+        created_at: new Date(now - index * 1000).toISOString(),
         id: 400 + index,
         workflow_run: {
           head_repository_id: 1,
@@ -579,7 +592,7 @@ esac
           id: runId,
           repository_id: 1,
         },
-      });
+      };
     });
     writeFileSync(inputPath, JSON.stringify(fullReleaseCandidateManifestFixture().request));
     writeFileSync(artifactListingPath, JSON.stringify({ artifacts }));
@@ -652,7 +665,7 @@ esac
 `,
     );
     chmodSync(ghPath, 0o755);
-    const { archive, manifest, metadata } = await fixture();
+    const { archive, manifest, metadata } = await fixture(Date.now());
     writeFileSync(inputPath, JSON.stringify(fullReleaseCandidateManifestFixture().request));
     writeFileSync(archivePath, archive);
     writeFileSync(artifactListingPath, JSON.stringify({ artifacts: [metadata] }));
