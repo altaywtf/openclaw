@@ -992,38 +992,53 @@ describe("renderModelProviders", () => {
     expect(onLogout).toHaveBeenCalledWith("openai", pendingLogout.targets);
   });
 
-  it("reorders profiles from the keyboard even while provider data refreshes", () => {
-    const onProfileOrderChange = vi.fn();
-    const container = mount(
-      props({
-        refreshing: true,
-        cards: [
-          card({
-            profiles: [
-              { profileId: "openai:one", type: "oauth", status: "ok", email: "one@example.com" },
-              { profileId: "openai:two", type: "oauth", status: "ok", email: "two@example.com" },
-            ],
-            profileProviderIds: {
-              "openai:one": "openai",
-              "openai:two": "openai",
-            },
-            profileOrders: { openai: ["openai:one", "openai:two"] },
-          }),
-        ],
-        onProfileOrderChange,
-      }),
-    );
-    const secondGrip = container.querySelectorAll<HTMLButtonElement>(
-      ".model-providers__profile-grip",
-    )[1];
+  it("retains keyboard focus across repeated profile moves while data refreshes", async () => {
+    let viewProps = props({
+      refreshing: true,
+      cards: [
+        card({
+          profiles: [
+            { profileId: "openai:one", type: "oauth", status: "ok", email: "one@example.com" },
+            { profileId: "openai:two", type: "oauth", status: "ok", email: "two@example.com" },
+            { profileId: "openai:three", type: "oauth", status: "ok", email: "three@example.com" },
+          ],
+          profileProviderIds: {
+            "openai:one": "openai",
+            "openai:two": "openai",
+            "openai:three": "openai",
+          },
+          profileOrders: { openai: ["openai:one", "openai:two", "openai:three"] },
+        }),
+      ],
+      onProfileOrderChange: (_cardId, provider, order) => {
+        if (!order) {
+          throw new Error("Expected a profile move");
+        }
+        viewProps = { ...viewProps, profileOrders: { [provider]: order } };
+        queueMicrotask(() => render(renderModelProviders(viewProps), container));
+      },
+    });
+    const container = mount(viewProps);
+    const firstGrip = container.querySelector<HTMLButtonElement>(".model-providers__profile-grip")!;
+    firstGrip.focus();
+    expect(firstGrip.disabled).toBe(false);
 
-    secondGrip?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
-
-    expect(secondGrip?.disabled).toBe(false);
-    expect(onProfileOrderChange).toHaveBeenCalledWith("openai", "openai", [
-      "openai:two",
-      "openai:one",
-    ]);
+    for (const expected of [
+      ["openai:two", "openai:one", "openai:three"],
+      ["openai:two", "openai:three", "openai:one"],
+    ]) {
+      document.activeElement?.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }),
+      );
+      await vi.waitFor(() => {
+        expect(
+          [...container.querySelectorAll<HTMLElement>(".model-providers__profile")].map(
+            (row) => row.dataset.profileId,
+          ),
+        ).toEqual(expected);
+        expect(document.activeElement === firstGrip).toBe(true);
+      });
+    }
   });
 
   it("uses the original config key for credential mutations", () => {

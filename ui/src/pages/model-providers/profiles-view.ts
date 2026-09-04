@@ -425,7 +425,19 @@ export function renderProviderProfiles(card: ModelProviderCard, props: ProviderP
                           return;
                         }
                         event.preventDefault();
+                        const grip = event.currentTarget;
+                        const restoreFocus =
+                          grip instanceof HTMLElement && document.activeElement === grip;
                         move(targetId, delta < 0 ? "before" : "after");
+                        if (restoreFocus) {
+                          // Lit moves keyed rows through removal/reinsertion, dropping focus.
+                          // Restore this grip after rendering without taking focus from another control.
+                          queueMicrotask(() => {
+                            if (grip.isConnected && document.activeElement === document.body) {
+                              grip.focus({ preventScroll: true });
+                            }
+                          });
+                        }
                       }}
                     >
                       ${icons.gripVertical}

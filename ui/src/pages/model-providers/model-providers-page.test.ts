@@ -664,6 +664,10 @@ describe("ModelProvidersPage agent scope", () => {
       updatedAt: 1,
     } as ModelProvidersData;
 
+    const initialProvider = page.data.authStatus!.providers[0]!;
+    initialProvider.profileOrder = ["openai:one", "openai:two"];
+    initialProvider.profileOrderStored = true;
+
     page.setProfileOrder("openai", "openai", null);
 
     await vi.waitFor(() =>
@@ -672,6 +676,11 @@ describe("ModelProvidersPage agent scope", () => {
         "openai:one",
       ]),
     );
+    expect(request).toHaveBeenCalledWith("models.authOrderSet", {
+      provider: "openai",
+      agentId: "main",
+    });
+    expect(page.data?.authStatus?.providers[0]?.profileOrderStored).not.toBe(true);
     await vi.waitFor(() => expect(page.profileOrders.openai).toBeUndefined());
   });
 
