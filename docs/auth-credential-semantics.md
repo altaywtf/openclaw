@@ -47,6 +47,43 @@ Token credentials (`type: "token"`) support inline `token` and/or `tokenRef`.
 2. For eligible profiles, token material may be resolved from the inline value or `tokenRef`.
 3. Unresolvable refs produce `unresolved_ref` in `models status --probe` output.
 
+## Saved setup replacements
+
+Model Setup saves a core-owned replacement credential before testing the selected
+model. It assigns a separate profile identity and keeps that credential pending.
+The existing credential, default model, and automatic profile order remain
+unchanged during the test.
+
+- A first sign-in for a provider becomes active immediately. Normal `/login`
+  also keeps its immediate-use behavior; it does not use this pending workflow.
+- A pending replacement is excluded from automatic selection, ordinary model
+  catalogs, active-profile status, and agent credential copies.
+- The confirmation turn explicitly selects the saved candidate. OAuth refresh
+  updates that candidate in its pending owner, not the active credential store.
+- A failed or cancelled confirmation keeps the candidate pending. Open Model
+  Setup and select **Saved … sign-in** to retry without signing in again.
+  The saved choice retains the provider connection settings needed for retry.
+- `openclaw models auth list` lists saved pending sign-ins separately.
+  `openclaw models auth logout <profile-id>` removes a saved candidate.
+- A successful confirmation writes the selected default with its exact profile
+  binding before activating the replacement. Gateway setup also waits for that
+  exact configuration to become active. This prevents a connection-specific key
+  from being sent through the previous endpoint.
+- A failed config write or runtime application leaves the replacement pending
+  and the previous credential available. The file may already contain the new
+  settings; check Model Setup instead of assuming the default stayed unchanged.
+- A restart-required result does not promise automatic credential activation.
+  Restart the Gateway, then choose the saved sign-in in Model Setup to verify
+  and activate it.
+
+This protection applies to credentials owned by OpenClaw. Native external CLI
+sign-in can change the external account immediately; OpenClaw does not represent
+that external account change as an inactive replacement.
+
+Pending credentials use separate reserved payload rows in the existing auth
+database tables. They are never stored as active credentials with a flag that
+older readers could ignore. See [Database schemas](/reference/database-schemas#pending-setup-credentials).
+
 ## Agent copy portability
 
 Agent auth inheritance is read-through. When an agent has no local profile, it resolves profiles from the shared auth store at runtime without copying secret material into its own credential store (`agents/<agentId>/agent/openclaw-agent.sqlite`). The shared store lives in `state/openclaw.sqlite` after `openclaw doctor --fix` performs the one-time relocation. Until then, doctor reports the legacy `agents/main/agent/openclaw-agent.sqlite` owner and leaves that agent undeletable.

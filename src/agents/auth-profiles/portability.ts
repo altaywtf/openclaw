@@ -4,6 +4,7 @@
  * duplicating unsafe OAuth refresh material.
  */
 import { AUTH_STORE_VERSION } from "./constants.js";
+import { stripPendingAuthProfileProjection } from "./profile-list.js";
 import type { AuthProfileCredential, AuthProfileSecretsStore, AuthProfileStore } from "./types.js";
 
 /** Reason a credential is or is not portable into an agent copy. */
@@ -61,11 +62,12 @@ export function isAuthProfileCredentialPortableForAgentCopy(
 }
 
 /** Builds an agent-copy store containing only portable credentials and their order. */
-export function buildPortableAuthProfileStoreForAgentCopy(store: AuthProfileStore): {
+export function buildPortableAuthProfileStoreForAgentCopy(inputStore: AuthProfileStore): {
   store: AuthProfileStore;
   copiedProfileIds: string[];
   skippedProfileIds: string[];
 } {
+  const store = stripPendingAuthProfileProjection(inputStore);
   const copiedProfileIds: string[] = [];
   const skippedProfileIds: string[] = [];
   const profiles = Object.fromEntries(

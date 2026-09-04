@@ -12,6 +12,7 @@ import {
   extractAgentRunText,
 } from "../agents/agent-run-result.js";
 import { resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
+import { projectExplicitPendingAuthProfile } from "../agents/auth-profiles/pending.js";
 import { loadAuthProfileStoreForRuntime } from "../agents/auth-profiles/store.js";
 import { resolveCliBackendConfig } from "../agents/cli-backends.js";
 import type { AgentExecutionAuthBinding } from "../agents/execution-auth-binding.js";
@@ -131,12 +132,16 @@ function resolveConfiguredProfileError(
     return undefined;
   }
   const loadStore = deps.loadAuthProfileStoreForRuntime ?? loadAuthProfileStoreForRuntime;
-  const store = loadStore(route.agentDir, {
-    readOnly: true,
-    allowKeychainPrompt: false,
-    config: route.runConfig,
-    externalCliProviderIds: [route.provider],
-  });
+  const store = projectExplicitPendingAuthProfile(
+    loadStore(route.agentDir, {
+      readOnly: true,
+      allowKeychainPrompt: false,
+      config: route.runConfig,
+      externalCliProviderIds: [route.provider],
+    }),
+    profileId,
+    route.agentDir,
+  );
   const credential = store.profiles[profileId];
   if (!credential) {
     return `No credentials found for the configured setup profile "${profileId}".`;

@@ -51,6 +51,7 @@ import {
   mergeAuthProfileStores,
 } from "./persisted.js";
 import { resolveAuthProfilePortability } from "./portability.js";
+import { stripPendingAuthProfileProjection } from "./profile-list.js";
 import {
   getRuntimeExternalCliProfileIds,
   mergeRuntimeExternalProfileReferences,
@@ -1406,13 +1407,14 @@ export function clearRuntimeAuthProfileStoreSnapshot(agentDir?: string): boolean
 }
 
 function saveAuthProfileStoreInTransaction(
-  store: AuthProfileStore,
+  inputStore: AuthProfileStore,
   agentDir: string | undefined,
   options: SaveAuthProfileStoreOptions | undefined,
   database: AuthProfileDatabase,
   owner: AuthProfileStoreOwner | PreparedAuthProfileStoreOwner,
   publishFromSuppliedStore = false,
 ): RuntimeSnapshotPublication {
+  const store = stripPendingAuthProfileProjection(inputStore);
   // Shared-state rows are global: never scope their persistence or runtime snapshots to an
   // agent, or shared credentials are published and cached as agent-local state.
   const persistenceAgentDir = "agentId" in database ? agentDir : undefined;

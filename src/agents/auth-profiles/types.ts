@@ -155,6 +155,8 @@ export type AuthProfileStore = AuthProfileSecretsStore &
     runtimeExternalProfileIds?: string[];
     /** True when the runtime external profile set was freshly resolved, even if empty. */
     runtimeExternalProfileIdsAuthoritative?: boolean;
+    /** Explicit-request projection provenance, never persisted as activation state. */
+    runtimePendingProfileIds?: string[];
   };
 
 /** Internal effective-store ownership metadata; never exposed through the plugin SDK. */

@@ -228,6 +228,12 @@ export async function removeProviderAuthProfilesWithLock(params: {
     if (updated === null) {
       return null;
     }
+    const { removePendingAuthProfiles } = await import("./pending.js");
+    removePendingAuthProfiles({
+      agentDir: owner,
+      provider: params.provider,
+      profileIds: params.profileIds,
+    });
   }
   return updated;
 }
@@ -257,10 +263,15 @@ export async function removeAuthProfilesWithLock(params: {
   agentDir?: string;
 }): Promise<AuthProfileStore | null> {
   const profileIds = new Set(params.profileIds);
-  return await updateAuthProfileStoreWithLock({
+  const updated = await updateAuthProfileStoreWithLock({
     agentDir: params.agentDir,
     updater: (store) => removeProfileReferences(store, profileIds),
   });
+  if (updated) {
+    const { removePendingAuthProfiles } = await import("./pending.js");
+    removePendingAuthProfiles(params);
+  }
+  return updated;
 }
 
 /**
@@ -275,11 +286,15 @@ export async function removeAuthProfilesAcrossOwnerStores(params: {
   const profilesByOwner = new Map<string | undefined, Set<string>>([
     [params.agentDir, new Set(params.profileIds)],
   ]);
+  const { resolvePendingAuthProfileSelection } = await import("./pending.js");
   for (const profileId of params.profileIds) {
-    const ownerAgentDir = resolvePersistedAuthProfileOwnerAgentDir({
-      agentDir: params.agentDir,
-      profileId,
-    });
+    const pending = resolvePendingAuthProfileSelection(profileId, params.agentDir);
+    const ownerAgentDir = pending
+      ? pending.agentDir
+      : resolvePersistedAuthProfileOwnerAgentDir({
+          agentDir: params.agentDir,
+          profileId,
+        });
     const ownerProfiles = profilesByOwner.get(ownerAgentDir) ?? new Set<string>();
     ownerProfiles.add(profileId);
     profilesByOwner.set(ownerAgentDir, ownerProfiles);

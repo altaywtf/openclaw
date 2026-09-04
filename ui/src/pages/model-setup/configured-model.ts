@@ -55,7 +55,9 @@ function findConfiguredCandidate(
   result: SystemAgentSetupDetectResult,
   modelRef: string,
 ): Candidate | undefined {
-  return result.candidates.find((candidate) => candidate.modelRef === modelRef);
+  return result.candidates.find(
+    (candidate) => !candidate.kind.startsWith("saved-auth:") && candidate.modelRef === modelRef,
+  );
 }
 
 function configuredModelDetail(candidate: Candidate | undefined, modelRef: string): string {

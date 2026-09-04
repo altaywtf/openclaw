@@ -19,6 +19,7 @@ import {
   normalizeAuthEmailToken,
   normalizeAuthIdentityToken,
 } from "./oauth-shared.js";
+import { stripPendingAuthProfileProjection } from "./profile-list.js";
 import {
   getRuntimeExternalCliProfileIds,
   setRuntimeExternalCliProfileIds,
@@ -610,10 +611,12 @@ function reconcileMainStoreOAuthProfileDrift(params: {
 
 /** Merges two auth profile stores, preserving valid runtime external profile metadata. */
 export function mergeAuthProfileStores(
-  base: RuntimeAuthProfileStore,
-  override: RuntimeAuthProfileStore,
+  inputBase: RuntimeAuthProfileStore,
+  inputOverride: RuntimeAuthProfileStore,
   options?: { preserveBaseRuntimeExternalProfiles?: boolean },
 ): RuntimeAuthProfileStore {
+  const base = stripPendingAuthProfileProjection(inputBase);
+  const override = stripPendingAuthProfileProjection(inputOverride);
   if (
     Object.keys(override.profiles).length === 0 &&
     !override.order &&
@@ -748,12 +751,13 @@ export function mergeAuthProfileStores(
 
 /** Builds the persisted secrets store, stripping resolved literals when refs exist. */
 export function buildPersistedAuthProfileSecretsStore(
-  store: AuthProfileStore,
+  inputStore: AuthProfileStore,
   shouldPersistProfile?: (params: {
     profileId: string;
     credential: AuthProfileCredential;
   }) => boolean,
 ): AuthProfileSecretsStore {
+  const store = stripPendingAuthProfileProjection(inputStore);
   const profiles = Object.fromEntries(
     Object.entries(store.profiles).flatMap(([profileId, credential]) => {
       if (shouldPersistProfile && !shouldPersistProfile({ profileId, credential })) {

@@ -22,7 +22,12 @@ import {
 } from "./provider-auth-choices.js";
 import { applyAuthProfileConfig } from "./provider-auth-helpers.js";
 import { runProviderPluginAuthMethodUnpersisted } from "./provider-auth-method.js";
-import { persistProviderAuthProfileBatch } from "./provider-auth-persistence.js";
+import {
+  buildPendingAuthProfileSetup,
+  persistProviderAuthProfileBatch,
+  persistProviderAuthSetupCandidates,
+  prepareProviderAuthSetupResult,
+} from "./provider-auth-persistence.js";
 import { resolveProviderInstallCatalogEntry } from "./provider-install-catalog.js";
 import type {
   ProviderAuthMethod,
@@ -283,13 +288,26 @@ export async function runProviderPluginAuthMethod(params: {
   secretInputMode?: ProviderAuthOptionBag["secretInputMode"];
   allowSecretRefPrompt?: boolean;
   opts?: Partial<ProviderAuthOptionBag>;
-}): Promise<{ config: OpenClawConfig; defaultModel?: string; credentialsSaved: boolean }> {
+  setupCandidate?: {
+    baseConfig: OpenClawConfig;
+    modelRef?: string;
+    providerId: string;
+    pluginId: string;
+    authChoice: string;
+  };
+}): Promise<{
+  config: OpenClawConfig;
+  defaultModel?: string;
+  credentialsSaved: boolean;
+  profiles: ProviderAuthResult["profiles"];
+}> {
   const prepared = await prepareProviderPluginAuthMethod(params);
   await prepared.persistAuthProfiles();
 
   return {
     config: prepared.config,
     credentialsSaved: prepared.authProfiles.length > 0,
+    profiles: prepared.authProfiles,
     ...(prepared.defaultModel ? { defaultModel: prepared.defaultModel } : {}),
   };
 }
@@ -308,7 +326,7 @@ async function prepareProviderPluginAuthMethod(
     params.workspaceDir ??
     resolveAgentWorkspaceDir(params.config, agentId) ??
     resolveDefaultAgentWorkspaceDir();
-  const result = await runProviderPluginAuthMethodUnpersisted({
+  const authResult = await runProviderPluginAuthMethodUnpersisted({
     config: params.config,
     env: params.env,
     runtime: params.runtime,
@@ -322,6 +340,7 @@ async function prepareProviderPluginAuthMethod(
     allowSecretRefPrompt: params.allowSecretRefPrompt,
     opts: params.opts,
   });
+  const result = params.setupCandidate ? prepareProviderAuthSetupResult(authResult) : authResult;
 
   if (result.notes?.length) {
     await params.prompter.note(result.notes.join("\n"), "Provider notes");
@@ -340,13 +359,36 @@ async function prepareProviderPluginAuthMethod(
       return;
     }
     await params.beforePersistentEffect?.();
-    await persistProviderAuthProfileBatch({
-      profiles,
-      config: nextConfig,
-      agentDir,
-      ...(params.env ? { env: params.env } : {}),
-      ...(params.env?.OPENCLAW_STATE_DIR ? { stateDir: params.env.OPENCLAW_STATE_DIR } : {}),
-    });
+    if (params.setupCandidate) {
+      const modelRef = params.setupCandidate.modelRef ?? defaultModel ?? params.method.starterModel;
+      if (!modelRef && profiles.length > 0) {
+        throw new Error("This provider did not return a model for retryable setup.");
+      }
+      if (profiles.length === 0) {
+        profilesPersisted = true;
+        return;
+      }
+      persistProviderAuthSetupCandidates({
+        profiles,
+        baseConfig: params.setupCandidate.baseConfig,
+        config: nextConfig,
+        agentDir,
+        env: params.env,
+        setup: buildPendingAuthProfileSetup({
+          ...params.setupCandidate,
+          modelRef: modelRef!,
+          config: nextConfig,
+        }),
+      });
+    } else {
+      await persistProviderAuthProfileBatch({
+        profiles,
+        config: nextConfig,
+        agentDir,
+        ...(params.env ? { env: params.env } : {}),
+        ...(params.env?.OPENCLAW_STATE_DIR ? { stateDir: params.env.OPENCLAW_STATE_DIR } : {}),
+      });
+    }
     profilesPersisted = true;
   };
 

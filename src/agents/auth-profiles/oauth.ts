@@ -21,6 +21,7 @@ import {
   resolveProviderOAuthCredentialWithPlugin,
 } from "../../plugins/provider-runtime.runtime.js";
 import { secretRefKey } from "../../secrets/ref-contract.js";
+import { resolveSecretRefString } from "../../secrets/resolve.js";
 import { resolveAuthProfileSecretOwnerId } from "../../secrets/runtime-auth-profile-owner.js";
 import {
   findActiveDegradedSecretOwner,
@@ -37,6 +38,7 @@ import { formatAuthDoctorHint } from "./doctor.js";
 import { readExternalCliBootstrapCredential } from "./external-cli-sync.js";
 import { createOAuthManager, OAuthManagerRefreshError } from "./oauth-manager.js";
 import { OAuthRefreshFailureError } from "./oauth-refresh-failure.js";
+import { assertPendingAuthProfileCurrent, resolvePendingAuthProfileSelection } from "./pending.js";
 import { assertNoOAuthSecretRefPolicyViolations } from "./policy.js";
 import { clearLastGoodProfileWithLock } from "./profiles.js";
 import { suggestOAuthProfileIdForLegacyDefault } from "./repair.js";
@@ -385,6 +387,67 @@ export async function resolveApiKeyForProfile(
   params: ResolveApiKeyForProfileParams,
 ): Promise<ResolveApiKeyForProfileResult | null> {
   const { cfg, store, profileId } = params;
+  if (store.runtimePendingProfileIds?.includes(profileId)) {
+    const pending = resolvePendingAuthProfileSelection(profileId, params.agentDir);
+    if (!pending) {
+      throw new Error("The explicitly selected pending sign-in is no longer available.");
+    }
+    const credential = pending.credential;
+    assertPendingAuthProfileCurrent(pending, credential);
+    if (
+      !isProfileConfigCompatible({
+        cfg,
+        profileId,
+        provider: credential.provider,
+        mode: credential.type,
+      })
+    ) {
+      return null;
+    }
+    if (credential.type === "oauth") {
+      const resolved = await oauthManager.resolveOAuthAccess({
+        ...params,
+        credential,
+        pending,
+      });
+      return resolved
+        ? buildApiKeyProfileResult({
+            apiKey: resolved.apiKey,
+            provider: resolved.credential.provider,
+            profileId,
+            profileType: "oauth",
+            credential: resolved.credential,
+          })
+        : null;
+    }
+    if (!evaluateStoredCredentialEligibility({ credential }).eligible) {
+      return null;
+    }
+    const config = cfg ?? getRuntimeConfig();
+    const ref =
+      credential.type === "api_key"
+        ? coerceSecretRef(credential.keyRef, config.secrets?.defaults)
+        : coerceSecretRef(credential.tokenRef, config.secrets?.defaults);
+    const apiKey = ref
+      ? await resolveSecretRefString(ref, { config, env: pending.owner.env })
+      : credential.type === "api_key"
+        ? credential.key
+        : credential.token;
+    if (!apiKey) {
+      return null;
+    }
+    assertPendingAuthProfileCurrent(pending, credential);
+    return buildApiKeyProfileResult({
+      apiKey,
+      provider: credential.provider,
+      profileId,
+      profileType: credential.type,
+      credential:
+        credential.type === "api_key"
+          ? { ...credential, key: apiKey }
+          : { ...credential, token: apiKey },
+    });
+  }
   const storedProfile = store.profiles[profileId];
   if (!storedProfile) {
     return null;

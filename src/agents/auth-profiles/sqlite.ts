@@ -89,6 +89,17 @@ function prepareAuthProfileSharedOwner(env: NodeJS.ProcessEnv) {
   };
 }
 
+export function prepareAuthProfileReadOwner(
+  agentDir?: string,
+  env: NodeJS.ProcessEnv = process.env,
+): PreparedAuthProfileStoreOwner {
+  const shared = prepareAuthProfileSharedOwner(env);
+  return {
+    ...shared,
+    databasePath: resolveAuthProfileDatabaseOptions(agentDir, shared.env).path,
+  };
+}
+
 type AuthProfileDatabaseTarget =
   | { kind: "agent"; agentId: string; path: string; env: NodeJS.ProcessEnv }
   | { kind: "shared-state"; path: string; env: NodeJS.ProcessEnv };
@@ -100,6 +111,16 @@ const PRIMARY_ROW_KEY = "primary";
 // in STATE_SECRET_CONFIG_STATE_KEY_PREFIXES so git backups never carry them.
 const SHARED_STORE_STATE_KEY = "authProfiles.store";
 const SHARED_STATE_STATE_KEY = "authProfiles.state";
+const SHARED_PENDING_STATE_KEY = "authProfiles.pending";
+type AuthProfilePayloadKind = "store" | "state" | "pending";
+
+function sharedAuthPayloadKey(kind: AuthProfilePayloadKind): string {
+  return kind === "pending"
+    ? SHARED_PENDING_STATE_KEY
+    : kind === "store"
+      ? SHARED_STORE_STATE_KEY
+      : SHARED_STATE_STATE_KEY;
+}
 
 // These run inside the module's own transactions; opening another would nest.
 function readSharedAuthKvCell(db: DatabaseSync, stateKey: string): string | undefined {
@@ -253,13 +274,13 @@ function resolveAuthProfileDatabaseKind(
 
 function inspectAuthProfileTable(
   db: DatabaseSync,
-  target: "store" | "state",
+  target: AuthProfilePayloadKind,
   databaseKind: AuthProfileDatabaseTarget["kind"],
 ): PersistedAuthProfileStoreInspection | null {
   const tableName =
     databaseKind === "shared-state"
       ? "config_machine_state"
-      : target === "store"
+      : target !== "state"
         ? "auth_profile_store"
         : "auth_profile_state";
   const schemaObject = db
@@ -275,7 +296,7 @@ function inspectAuthProfileTable(
 
 function inspectAuthProfileJsonCell(
   db: DatabaseSync,
-  target: "store" | "state",
+  target: AuthProfilePayloadKind,
   databaseKind: AuthProfileDatabaseTarget["kind"],
 ): PersistedAuthProfileStoreInspection {
   const tableInspection = inspectAuthProfileTable(db, target, databaseKind);
@@ -284,21 +305,18 @@ function inspectAuthProfileJsonCell(
   }
   let raw: string;
   if (databaseKind === "shared-state") {
-    const cell = readSharedAuthKvCell(
-      db,
-      target === "store" ? SHARED_STORE_STATE_KEY : SHARED_STATE_STATE_KEY,
-    );
+    const cell = readSharedAuthKvCell(db, sharedAuthPayloadKey(target));
     if (cell === undefined) {
       return { status: "missing", reason: "row" };
     }
     raw = cell;
-  } else if (target === "store") {
+  } else if (target !== "state") {
     const row = executeSqliteQueryTakeFirstSync(
       db,
       getAgentAuthProfileKysely(db)
         .selectFrom("auth_profile_store")
         .select("store_json")
-        .where("store_key", "=", PRIMARY_ROW_KEY),
+        .where("store_key", "=", target === "pending" ? "pending" : PRIMARY_ROW_KEY),
     );
     if (!row) {
       return { status: "missing", reason: "row" };
@@ -420,7 +438,7 @@ function acquireAuthProfileReadDatabase(
 
 export function inspectAuthProfileJsonCellReadOnly(
   databaseTarget: Pick<AuthProfileDatabaseTarget, "kind" | "path">,
-  target: "store" | "state",
+  target: AuthProfilePayloadKind,
 ): PersistedAuthProfileStoreInspection {
   if (databaseTarget.kind === "shared-state") {
     try {
@@ -455,15 +473,17 @@ export function inspectAuthProfileJsonCellReadOnly(
 export function inspectPersistedAuthProfileStoreRaw(
   agentDir?: string,
   database?: Pick<AuthProfileDatabase, "db">,
+  kind: "store" | "pending" = "store",
+  env: NodeJS.ProcessEnv = process.env,
 ): PersistedAuthProfileStoreInspection {
   if (database) {
     return inspectAuthProfileJsonCell(
       database.db,
-      "store",
+      kind,
       resolveAuthProfileDatabaseKind(agentDir, database),
     );
   }
-  return inspectAuthProfileJsonCellReadOnly(resolveAuthProfileDatabaseOptions(agentDir), "store");
+  return inspectAuthProfileJsonCellReadOnly(resolveAuthProfileDatabaseOptions(agentDir, env), kind);
 }
 
 /** Distinguishes an absent auth-state row from state that could not be read. */
@@ -505,23 +525,24 @@ export function inspectPersistedSharedAuthProfileStateRaw(
 export function readPersistedAuthProfileStoreRaw(
   agentDir?: string,
   database?: AuthProfileDatabase,
+  kind: "store" | "pending" = "store",
 ): unknown {
   if (database) {
     if (resolveAuthProfileDatabaseKind(agentDir, database) === "shared-state") {
-      return parseJsonCell(readSharedAuthKvCell(database.db, SHARED_STORE_STATE_KEY));
+      return parseJsonCell(readSharedAuthKvCell(database.db, sharedAuthPayloadKey(kind)));
     }
     const row = executeSqliteQueryTakeFirstSync(
       database.db,
       getAgentAuthProfileKysely(database.db)
         .selectFrom("auth_profile_store")
         .select("store_json")
-        .where("store_key", "=", PRIMARY_ROW_KEY),
+        .where("store_key", "=", kind === "pending" ? "pending" : PRIMARY_ROW_KEY),
     );
     return parseJsonCell(row?.store_json);
   }
   const result = inspectAuthProfileJsonCellReadOnly(
     resolveAuthProfileDatabaseOptions(agentDir),
-    "store",
+    kind,
   );
   return result.status === "readable" ? result.raw : null;
 }
@@ -568,11 +589,12 @@ export function writePersistedAuthProfileStoreRaw(
   payload: unknown,
   agentDir?: string,
   database?: AuthProfileDatabase,
+  kind: "store" | "pending" = "store",
 ): void {
   const databaseKind = resolveAuthProfileDatabaseKind(agentDir, database);
   const write = (target: AuthProfileDatabase) => {
     if (databaseKind === "shared-state") {
-      writeSharedAuthKvCell(target.db, SHARED_STORE_STATE_KEY, JSON.stringify(payload));
+      writeSharedAuthKvCell(target.db, sharedAuthPayloadKey(kind), JSON.stringify(payload));
       return;
     }
     executeSqliteQuerySync(
@@ -580,7 +602,7 @@ export function writePersistedAuthProfileStoreRaw(
       getAgentAuthProfileKysely(target.db)
         .insertInto("auth_profile_store")
         .values({
-          store_key: PRIMARY_ROW_KEY,
+          store_key: kind === "pending" ? "pending" : PRIMARY_ROW_KEY,
           store_json: JSON.stringify(payload),
           updated_at: Date.now(),
         })
@@ -603,18 +625,19 @@ export function writePersistedAuthProfileStoreRaw(
 export function deletePersistedAuthProfileStoreRaw(
   agentDir?: string,
   database?: AuthProfileDatabase,
+  kind: "store" | "pending" = "store",
 ): void {
   const databaseKind = resolveAuthProfileDatabaseKind(agentDir, database);
   const remove = (target: AuthProfileDatabase) => {
     if (databaseKind === "shared-state") {
-      deleteSharedAuthKvCell(target.db, SHARED_STORE_STATE_KEY);
+      deleteSharedAuthKvCell(target.db, sharedAuthPayloadKey(kind));
       return;
     }
     executeSqliteQuerySync(
       target.db,
       getAgentAuthProfileKysely(target.db)
         .deleteFrom("auth_profile_store")
-        .where("store_key", "=", PRIMARY_ROW_KEY),
+        .where("store_key", "=", kind === "pending" ? "pending" : PRIMARY_ROW_KEY),
     );
   };
   if (database) {

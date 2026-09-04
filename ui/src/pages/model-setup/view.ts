@@ -95,7 +95,8 @@ function renderCandidateRows(props: ModelSetupViewProps, result: SystemAgentSetu
   const candidates = result.configuredModel
     ? result.candidates.filter(
         (candidate) =>
-          candidate.kind !== "existing-model" && candidate.modelRef !== result.configuredModel,
+          candidate.kind.startsWith("saved-auth:") ||
+          (candidate.kind !== "existing-model" && candidate.modelRef !== result.configuredModel),
       )
     : result.candidates;
   if (candidates.length === 0) {

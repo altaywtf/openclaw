@@ -428,8 +428,10 @@ export class FirstRunSetup {
     }
     for (const candidate of detection.candidates) {
       const targetId = activationTargetId(candidate.kind, candidate.modelRef);
+      // Saved replacements need a new explicit choice, not an automatic first-run retry.
       if (
         candidate.credentials === false ||
+        candidate.kind.startsWith("saved-auth:") ||
         (detection.configuredModel &&
           (candidate.kind === "existing-model" || candidate.modelRef === detection.configuredModel))
       ) {

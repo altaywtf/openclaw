@@ -326,6 +326,49 @@ describe("openclaw.setup provider resolution", () => {
     expect(wizardSessions.has(sessionId)).toBe(false);
   });
 
+  it("lets the real wizard cancel verification after a credential has been saved", async () => {
+    const { wizardSessions, context } = makeContext();
+    const sessionId = "saved-credential-cancel";
+    const saved = createDeferredCore<void>();
+    const cancelled = createDeferredCore<void>();
+    setupInferenceMocks.activateSetupInference.mockImplementationOnce(async (params) => {
+      await params.beforePersistentEffect?.("credential");
+      const progress = params.prompter.progress("Verifying saved sign-in");
+      saved.resolve();
+      await new Promise<void>((resolve) => {
+        params.signal.addEventListener(
+          "abort",
+          () => {
+            cancelled.resolve();
+            resolve();
+          },
+          { once: true },
+        );
+      });
+      progress.stop();
+      return { ok: false, status: "unavailable", error: "Provider login was cancelled." };
+    });
+    await systemAgentHandler("openclaw.setup.activate.start")({
+      params: { sessionId, kind: "api-key", authChoice: "fixture", apiKey: "fixture-key" },
+      respond: () => undefined,
+      context,
+    } as never);
+    await saved.promise;
+    const session = expectDefined(trackedWizardSession(wizardSessions, sessionId), "setup wizard");
+    const response = makeRespond();
+    await expectDefined(
+      wizardHandlers["wizard.cancel"],
+      "wizard cancel",
+    )({
+      params: { sessionId },
+      respond: response.respond,
+      context,
+    } as never);
+    await cancelled.promise;
+    expect(session.getStatus()).toBe("cancelled");
+    await whenAdmittedWizardSessionSettled(session);
+  });
+
   it.each([
     ["missing", null],
     ["retryable", { config, retrySelection: true }],

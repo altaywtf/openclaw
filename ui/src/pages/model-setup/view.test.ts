@@ -734,6 +734,37 @@ describe("renderModelSetup", () => {
     expect(text(container)).toContain("Selected model OpenAI gpt-5.6-sol");
   });
 
+  it("keeps a saved replacement for the current model clickable", () => {
+    const saved = {
+      kind: "saved-auth:fixture%3Acandidate" as const,
+      brandId: "fixture",
+      label: "Saved Fixture sign-in",
+      detail: "Not active. Verify without signing in again.",
+      modelRef: "fixture/model",
+      recommended: false,
+    };
+    const onActivateCandidate = vi.fn();
+    const container = mount(
+      props({
+        page: {
+          phase: "ready",
+          result: {
+            ...detected,
+            configuredModel: saved.modelRef,
+            setupComplete: true,
+            candidates: [saved],
+          },
+        },
+        onActivateCandidate,
+      }),
+    );
+    const row = container.querySelector('[data-candidate-kind="saved-auth:fixture%3Acandidate"]');
+    expect(text(container.querySelector(".model-setup__current")!)).not.toContain(saved.detail);
+    expect(row).not.toBeNull();
+    row!.querySelector<HTMLButtonElement>("button")!.click();
+    expect(onActivateCandidate).toHaveBeenCalledWith(saved);
+  });
+
   it("renders connection verification progress", () => {
     const container = mount(
       props({

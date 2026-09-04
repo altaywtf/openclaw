@@ -17,8 +17,10 @@ vi.mock("../plugins/enable.js", async (importOriginal) => ({
   enablePluginWithCapabilityConsent: async (config: OpenClawConfig) => ({ enabled: true, config }),
 }));
 
-vi.mock("../plugins/provider-auth-persistence.js", () => ({
+vi.mock("../plugins/provider-auth-persistence.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../plugins/provider-auth-persistence.js")>()),
   persistProviderAuthProfileBatch: mocks.persist,
+  persistProviderAuthSetupCandidates: mocks.persist,
 }));
 
 vi.mock("./setup-inference-turn.js", () => ({
@@ -158,7 +160,11 @@ describe("provider setup activation", () => {
     expect(result).toMatchObject({ ok: true, modelRef: "fixture/chosen" });
     expect(mocks.turn).toHaveBeenCalledOnce();
     expect(mocks.turn.mock.calls[0]?.[0].route.modelLabel).toBe("fixture/chosen");
-    expect(config.agents?.defaults?.model).toBe("fixture/chosen");
+    const profileId = mocks.persist.mock.calls[0]?.[0].profiles[0]?.profileId;
+    expect(mocks.turn.mock.calls[0]?.[0].route.authProfileId).toBe(profileId);
+    expect(config.agents?.defaults?.model).toBe(
+      profileId ? `fixture/chosen@${profileId}` : "fixture/chosen",
+    );
   });
 
   it("rejects a model from another provider without testing or changing the default", async () => {

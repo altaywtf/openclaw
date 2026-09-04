@@ -79,9 +79,12 @@ export async function verifyGatewaySetupInference(params: {
 }
 
 export async function activateGatewaySetupInference(
-  params: Omit<ActivateSetupInferenceParams, "onRuntimeApplication">,
+  params: Omit<ActivateSetupInferenceParams, "onRuntimeApplication" | "onCredentialActivation">,
 ): Promise<ActivateSetupInferenceResult> {
   let application: ReturnType<typeof createRuntimeConfigWriteApplication> | undefined;
+  let credentialActivation:
+    | Parameters<NonNullable<ActivateSetupInferenceParams["onCredentialActivation"]>>[0]
+    | undefined;
   let applied: RuntimeConfigWriteApplicationStatus | undefined;
   let result: ActivateSetupInferenceResult;
   try {
@@ -92,6 +95,9 @@ export async function activateGatewaySetupInference(
         onRuntimeApplication: (receipt) => {
           application = receipt;
         },
+        onCredentialActivation: (activation) => {
+          credentialActivation = activation;
+        },
       });
     });
   } finally {
@@ -100,6 +106,32 @@ export async function activateGatewaySetupInference(
     if (application) {
       applied = application.claimed ? await application.result : "unclaimed";
     }
+  }
+  if (result.ok && credentialActivation) {
+    if (
+      result.gatewayRestartRequired ||
+      applied === "applied-restart-required" ||
+      applied === "restart-pending"
+    ) {
+      return {
+        ...result,
+        gatewayRestartRequired: true,
+        lines: [
+          ...result.lines,
+          "Connection settings are saved; the replacement sign-in remains pending. Restart the Gateway, then choose the saved sign-in in Model Setup to verify and activate it.",
+        ],
+      };
+    }
+    const activation = credentialActivation;
+    const beforeCommit = () => {
+      if (applied !== "applied" || getRuntimeConfigAppliedHash() !== activation.sourceConfigHash) {
+        throw new Error(
+          "Connection settings were saved, but the replacement sign-in remains pending because the Gateway did not apply that configuration. Check Model Setup and retry the saved sign-in.",
+        );
+      }
+    };
+    beforeCommit();
+    await activation.activate(beforeCommit);
   }
   if (!result.ok || applied === undefined || applied === "applied") {
     return result;

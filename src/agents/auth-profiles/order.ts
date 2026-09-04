@@ -295,6 +295,9 @@ export function resolveAuthProfileOrderWithMetadata(
   }
 
   const isValidProfile = (profileId: string): boolean => {
+    if (store.runtimePendingProfileIds?.includes(profileId)) {
+      return false;
+    }
     const eligibility = resolveAuthProfileEligibility({
       cfg,
       authAliasLookupParams: params.authAliasLookupParams,

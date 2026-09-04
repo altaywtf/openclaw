@@ -1,6 +1,7 @@
 import { resolveProviderAuthProfileId } from "../../../plugins/provider-runtime.js";
 import type { AuthProfileStore } from "../../auth-profiles.js";
 import { resolveExternalCliAuthOverlayScopeFromSelection } from "../../auth-profiles/external-cli-auth-selection.js";
+import { projectExplicitPendingAuthProfile } from "../../auth-profiles/pending.js";
 import type { AgentHarness } from "../../harness/types.js";
 import {
   ensureAuthProfileStore,
@@ -105,7 +106,7 @@ export async function prepareEmbeddedRunAuthPlan(params: {
   }
   params.markStage?.("scope");
 
-  const attemptAuthProfileStore = usesOpenAIAuthRouting
+  let attemptAuthProfileStore = usesOpenAIAuthRouting
     ? loadEmbeddedRunAuthProfileStore({
         agentDir: params.agentDir,
         config: runParams.config,
@@ -129,6 +130,11 @@ export async function prepareEmbeddedRunAuthPlan(params: {
 
   const requestedProfileId = runParams.authProfileId?.trim() || undefined;
   const lockedProfileId = runParams.authProfileIdSource === "user" ? requestedProfileId : undefined;
+  attemptAuthProfileStore = projectExplicitPendingAuthProfile(
+    attemptAuthProfileStore,
+    lockedProfileId,
+    params.agentDir,
+  );
   const preferredProfileId =
     externalCliAuthScope.ignoreAutoPreferredProfile && !lockedProfileId
       ? undefined

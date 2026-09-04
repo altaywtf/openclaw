@@ -2,7 +2,8 @@ import { parseProviderModelRef } from "@openclaw/model-catalog-core/model-catalo
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import { normalizeOptionalAgentRuntimeId } from "../agents/agent-runtime-id.js";
 import { resolveAmbientOwnerAgentId } from "../agents/agent-scope-config.js";
-import { resolveAgentEffectiveModelPrimary } from "../agents/agent-scope.js";
+import { resolveAgentDir, resolveAgentEffectiveModelPrimary } from "../agents/agent-scope.js";
+import { listPendingAuthProfileSetups } from "../agents/auth-profiles/pending.js";
 import { areRuntimeModelRefsEquivalent } from "../agents/model-runtime-aliases.js";
 import { resolveModelRuntimePolicy } from "../agents/model-runtime-policy.js";
 import { detectAmbientInferenceBackends } from "../commands/onboard-inference-ambient.js";
@@ -119,9 +120,28 @@ export async function detectSetupInference(
     agentId,
   );
   const { workspace } = manual;
+  const savedCandidates: SetupInferenceCandidate[] = listPendingAuthProfileSetups(
+    resolveAgentDir(cfg, targetAgentId),
+  ).flatMap(({ profileId, setup }) => {
+    const choice = authChoices.find(
+      (entry) => entry.choiceId === setup.authChoice && entry.pluginId === setup.pluginId,
+    );
+    return choice
+      ? [
+          {
+            kind: `saved-auth:${encodeURIComponent(profileId)}` as const,
+            brandId: setup.providerId,
+            label: `Saved ${choice.choiceLabel} sign-in`,
+            detail: "Not active. Verify this model to use it; no new sign-in is needed.",
+            modelRef: setup.modelRef,
+            recommended: false,
+          },
+        ]
+      : [];
+  });
   const partial: SetupInferenceDetection = {
     ...manual,
-    candidates: [],
+    candidates: savedCandidates,
     unavailableCandidates: [],
     recommendedInstalls: listRecommendedToolInstalls(),
   };
@@ -177,6 +197,7 @@ export async function detectSetupInference(
       resolveCandidatePresentation(candidate, authChoices),
     ),
   );
+  candidates.push(...savedCandidates);
   const discoveryChoices = authChoices.filter(
     (choice) =>
       choice.appGuidedDiscovery === true && supportsSetupTextInference(choice.onboardingScopes),

@@ -228,6 +228,10 @@ export function prepareAgentRuntimeAuth(
     );
   }
   const store = params.authProfileStore;
+  const pendingProfileId =
+    userPinnedProfileId && store?.runtimePendingProfileIds?.includes(userPinnedProfileId)
+      ? userPinnedProfileId
+      : undefined;
   const authProfileSelectionProvider = harnessOwnsOpenAIAuth ? "openai" : params.provider;
   if (userPinnedProfileId) {
     const eligibility = store
@@ -400,22 +404,28 @@ export function prepareAgentRuntimeAuth(
     fallbackDirectSource && configuredAuthMode && !providerBindingSuppressesProfiles
       ? undefined
       : selectedConfiguredAuthMode;
-  const ownership = selectedProfileId
+  // A replacement probe must prove that credential, not succeed through an active fallback.
+  const ownership = pendingProfileId
     ? {
-        reason: "provider-binding" as const,
-        source: resolveProfile(params, selectedProfileId, { ignoreCooldown: true }),
+        reason: "user-lock" as const,
+        source: resolveProfile(params, pendingProfileId),
       }
-    : configuredAwsSdkAuth
+    : selectedProfileId
       ? {
-          reason: "configured-auth" as const,
-          source: directSource("aws-sdk", "aws-sdk"),
+          reason: "provider-binding" as const,
+          source: resolveProfile(params, selectedProfileId, { ignoreCooldown: true }),
         }
-      : providerBindingSuppressesProfiles
+      : configuredAwsSdkAuth
         ? {
             reason: "configured-auth" as const,
-            source: directSource(selectedConfiguredAuthMode),
+            source: directSource("aws-sdk", "aws-sdk"),
           }
-        : undefined;
+        : providerBindingSuppressesProfiles
+          ? {
+              reason: "configured-auth" as const,
+              source: directSource(selectedConfiguredAuthMode),
+            }
+          : undefined;
   const sourcePlan = buildProviderModelAuthSourcePlan({
     ...(ownership ? { ownership } : {}),
     profiles: resolvedOrderedProfileIds.map((profileId) => resolveProfile(params, profileId)),

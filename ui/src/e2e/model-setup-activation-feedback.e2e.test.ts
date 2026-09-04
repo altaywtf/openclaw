@@ -37,6 +37,96 @@ async function viewportIntersection(target: Locator): Promise<number> {
 }
 
 suite.define(() => {
+  it.each([false, true])(
+    "retries a saved sign-in without another login (first-run: %s)",
+    async (firstRun) => {
+      await suite.withPage(
+        {
+          locale: "en-US",
+          serviceWorkers: "block",
+          viewport: { width: 1280, height: 800 },
+          ...(artifactDir ? { recordVideo: { dir: artifactDir } } : {}),
+        },
+        async ({ page }) => {
+          const kind = "saved-auth:fixture%3Acandidate";
+          const modelRef = "fixture/current-model";
+          const gateway = await installMockGateway(page, {
+            featureMethods: [
+              ...defaultControlUiFeatureMethods,
+              "openclaw.setup.detect",
+              "openclaw.setup.verify",
+              "openclaw.setup.activate.start",
+              "wizard.next",
+            ],
+            methodResponses: {
+              "openclaw.setup.detect": {
+                configuredModel: modelRef,
+                candidates: [
+                  {
+                    kind,
+                    label: "Saved Fixture sign-in",
+                    detail: "Not active. Verify this model to use it; no new sign-in is needed.",
+                    modelRef,
+                    recommended: false,
+                  },
+                ],
+                manualProviders: [],
+                authOptions: [],
+                workspace: "/tmp/openclaw-e2e",
+                setupComplete: true,
+              },
+              "openclaw.setup.activate.start": {
+                sessionId: "saved-sign-in-retry",
+                done: false,
+                status: "running",
+              },
+              "openclaw.setup.verify": {
+                ok: false,
+                status: "auth",
+                error: "Existing sign-in needs attention.",
+              },
+              "wizard.next": {
+                done: true,
+                status: "error",
+                error: "This saved sign-in cannot use the selected model yet.",
+              },
+            },
+          });
+          await page.goto(
+            `${suite.server.baseUrl}settings/model-setup${firstRun ? "?firstRun=1" : ""}`,
+          );
+          const row = page.locator(`[data-candidate-kind="${kind}"]`);
+          await row.getByText("Saved Fixture sign-in", { exact: true }).waitFor();
+          expect(await page.locator(".model-setup__current").textContent()).not.toContain(
+            "Not active.",
+          );
+          if (firstRun) {
+            await page.getByText("Existing sign-in needs attention.").waitFor();
+          }
+          expect(await gateway.getRequests("openclaw.setup.activate.start")).toHaveLength(0);
+          if (artifactDir) {
+            await page.screenshot({ path: path.join(artifactDir, "saved-sign-in-ready.png") });
+          }
+          await row.getByRole("button").click();
+          const request = await gateway.waitForRequest("openclaw.setup.activate.start");
+          expect(request.params).toMatchObject({ kind, modelRef });
+          expect(request.params).not.toHaveProperty("apiKey");
+          expect(await gateway.getRequests("openclaw.setup.auth.start")).toHaveLength(0);
+          await page
+            .locator("openclaw-modal-dialog")
+            .getByText("This saved sign-in cannot use the selected model yet.", { exact: true })
+            .waitFor();
+          if (artifactDir) {
+            await page.screenshot({
+              path: path.join(artifactDir, "saved-sign-in-retry.png"),
+              animations: "disabled",
+            });
+          }
+        },
+      );
+    },
+  );
+
   it("bootstraps chat after leaving direct Model Setup despite unavailable auth status", async () => {
     await suite.withPage(
       { locale: "en-US", serviceWorkers: "block", viewport: { width: 1280, height: 800 } },

@@ -25,6 +25,7 @@ import {
 } from "./auth-profiles.js";
 import { assertAuthProfileMigrationReady } from "./auth-profiles/legacy-source-diagnostic.js";
 import { OAuthRefreshFailureError } from "./auth-profiles/oauth-refresh-failure.js";
+import { projectExplicitPendingAuthProfile } from "./auth-profiles/pending.js";
 import { isNonSecretApiKeyMarker } from "./model-auth-markers.js";
 import { assertAuthModeAllowedForModel, isAuthModeAllowedForModel } from "./model-auth-openai.js";
 import * as authConfig from "./model-auth-provider-config.js";
@@ -205,7 +206,9 @@ export async function resolveApiKeyForProviderCore(params: {
     if (awsSdkProfileAuth) {
       return awsSdkProfileAuth;
     }
-    const store = getScopedStore(profileId);
+    const store = params.lockedProfile
+      ? projectExplicitPendingAuthProfile(getScopedStore(profileId), profileId, agentDir)
+      : getScopedStore(profileId);
     assertAuthProfileNotRetired({
       profileId,
       deprecatedProfileIds: getDeprecatedProfileIds(),

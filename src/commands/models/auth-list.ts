@@ -10,6 +10,7 @@ import {
   type ProfileUsageStats,
 } from "../../agents/auth-profiles.js";
 import { buildAuthProfileUnusableHint } from "../../agents/auth-profiles/oauth-refresh-failure.js";
+import { listPendingAuthProfileSetups } from "../../agents/auth-profiles/pending.js";
 import { resolveProviderIdForAuth } from "../../agents/provider-auth-aliases.js";
 import { type RuntimeEnv, writeRuntimeJson } from "../../runtime.js";
 import { shortenHomePath } from "../../utils.js";
@@ -157,6 +158,15 @@ export async function modelsAuthListCommand(
     .filter((profile) => providerFilter.matches(profile))
     .toSorted((a, b) => a.provider.localeCompare(b.provider) || a.id.localeCompare(b.id));
 
+  const pendingProfiles = listPendingAuthProfileSetups(agentDir)
+    .map(({ profileId, setup }) => ({
+      id: profileId,
+      provider: setup.providerId,
+      model: setup.modelRef,
+      status: "pending",
+      retry: "Open Model Setup and choose the saved sign-in.",
+    }))
+    .filter((profile) => !providerFilter.provider || profile.provider === providerFilter.provider);
   if (opts.json) {
     writeRuntimeJson(runtime, {
       agentId,
@@ -164,6 +174,7 @@ export async function modelsAuthListCommand(
       authStatePath: shortenHomePath(resolveAuthStatePathForDisplay(agentDir)),
       provider: providerFilter.provider ?? null,
       profiles,
+      ...(pendingProfiles.length > 0 ? { pendingProfiles } : {}),
     });
     return;
   }
@@ -175,10 +186,16 @@ export async function modelsAuthListCommand(
   }
   if (profiles.length === 0) {
     runtime.log("Profiles: (none)");
-    return;
+  } else {
+    runtime.log("Profiles:");
+    for (const profile of profiles) {
+      runtime.log(formatProfileLine(profile));
+    }
   }
-  runtime.log("Profiles:");
-  for (const profile of profiles) {
-    runtime.log(formatProfileLine(profile));
+  if (pendingProfiles.length > 0) {
+    runtime.log("Saved sign-ins awaiting verification:");
+    for (const profile of pendingProfiles) {
+      runtime.log(`- ${profile.provider}: ${profile.model} [${profile.id}] — ${profile.retry}`);
+    }
   }
 }

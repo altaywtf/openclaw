@@ -5,7 +5,23 @@
  */
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
 import { resolveProviderIdForAuth } from "../provider-auth-aliases.js";
-import type { AuthProfileStore } from "./types.js";
+import type { AuthProfileStore, RuntimeAuthProfileStore } from "./types.js";
+
+export function stripPendingAuthProfileProjection(
+  store: RuntimeAuthProfileStore,
+): RuntimeAuthProfileStore {
+  if (!store.runtimePendingProfileIds?.length) {
+    return store;
+  }
+  const pendingIds = new Set(store.runtimePendingProfileIds);
+  const { runtimePendingProfileIds: _pending, ...active } = store;
+  return {
+    ...active,
+    profiles: Object.fromEntries(
+      Object.entries(store.profiles).filter(([profileId]) => !pendingIds.has(profileId)),
+    ),
+  };
+}
 
 /** Deduplicates profile ids while preserving first-seen order. */
 export function dedupeProfileIds(profileIds: string[]): string[] {
@@ -16,7 +32,11 @@ export function dedupeProfileIds(profileIds: string[]): string[] {
 export function listProfilesForProvider(store: AuthProfileStore, provider: string): string[] {
   const providerKey = resolveProviderIdForAuth(provider);
   return Object.entries(store.profiles)
-    .filter(([, cred]) => resolveProviderIdForAuth(cred.provider) === providerKey)
+    .filter(
+      ([profileId, cred]) =>
+        !store.runtimePendingProfileIds?.includes(profileId) &&
+        resolveProviderIdForAuth(cred.provider) === providerKey,
+    )
     .map(([id]) => id);
 }
 

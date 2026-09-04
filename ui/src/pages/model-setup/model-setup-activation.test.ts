@@ -32,6 +32,54 @@ describe("ModelSetupPage first-run activation ownership", () => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
+  it("waits for an explicit saved-sign-in retry even during first-run setup", async () => {
+    const { context, client, request } = createFirstRunContext();
+    const saved = candidate("saved-auth:fixture%3Acandidate", "fixture/model");
+    const result = {
+      ...detection,
+      configuredModel: saved.modelRef,
+      setupComplete: true,
+      candidates: [saved],
+    };
+    request.mockImplementation(async (method) => {
+      if (method === "openclaw.setup.detect") {
+        return result;
+      }
+      if (method === "openclaw.setup.verify") {
+        return { ok: false, status: "auth", error: "Existing sign-in needs attention." };
+      }
+      if (method === "openclaw.setup.activate.start") {
+        return { done: true, status: "done", modelActivation: { modelRef: saved.modelRef } };
+      }
+      throw new Error(`Unexpected method ${method}`);
+    });
+    const { page } = await mountPage(context, {
+      state: { phase: "ready", result },
+      client,
+      firstRun: true,
+    });
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+    await page.updateComplete;
+    expect(request.mock.calls.some(([method]) => method === "openclaw.setup.activate.start")).toBe(
+      false,
+    );
+    const retry = page.querySelector<HTMLButtonElement>(
+      '[data-candidate-kind="saved-auth:fixture%3Acandidate"] button',
+    );
+    expect(retry).not.toBeNull();
+    retry!.click();
+    await waitForFast(() =>
+      expect(request).toHaveBeenCalledWith(
+        "openclaw.setup.activate.start",
+        expect.objectContaining({ kind: saved.kind, modelRef: saved.modelRef }),
+      ),
+    );
+    expect(request.mock.calls.some(([method]) => method === "openclaw.setup.auth.start")).toBe(
+      false,
+    );
+  });
   it("keeps first-run activation owned through an equivalent route-data refresh", async () => {
     const { context, client, request } = createFirstRunContext();
     const response = createDeferred<unknown>();

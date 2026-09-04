@@ -5,6 +5,7 @@ import {
   listProfilesForProvider,
   removeAuthProfilesAcrossOwnerStores,
 } from "../../agents/auth-profiles.js";
+import { resolvePendingAuthProfileSelection } from "../../agents/auth-profiles/pending.js";
 import { resolveProviderEntryApiKeyProfileReference } from "../../agents/model-auth-provider-config.js";
 import { formatCliCommand } from "../../cli/command-format.js";
 import { logConfigUpdated } from "../../config/logging.js";
@@ -60,7 +61,9 @@ export async function modelsAuthLogoutCommand(
   // External CLI overlays (Claude/Codex CLI) are not ours to delete, so the
   // removable set is exactly the persisted store.
   const store = ensureAuthProfileStoreWithoutExternalProfiles(agentDir);
-  const credential = store.profiles[profileId];
+  const credential =
+    store.profiles[profileId] ??
+    resolvePendingAuthProfileSelection(profileId, agentDir)?.credential;
   if (!credential) {
     throw new Error(
       `Auth profile "${profileId}" not found for agent "${agentId}". Run ${formatCliCommand(`openclaw models auth list --agent ${agentId}`)} to see saved profile ids.`,

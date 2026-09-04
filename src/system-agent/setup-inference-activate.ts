@@ -4,6 +4,12 @@
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import { resolveAmbientOwnerAgentId } from "../agents/agent-scope-config.js";
 import { resolveAgentDir } from "../agents/agent-scope.js";
+import {
+  preparePendingAuthProfileProbe,
+  promotePendingAuthProfile,
+  validatePendingAuthProfileProbe,
+  withPendingAuthProfileProbe,
+} from "../agents/auth-profiles/pending.js";
 import { resolveCliRuntimeCanonicalProvider } from "../agents/cli-backends.js";
 import {
   ANTHROPIC_API_DEFAULT_MODEL_REF,
@@ -15,6 +21,7 @@ import {
 import { applyAutoLocalModelLean } from "../config/local-model-lean-auto.js";
 import { applyMergePatch, createMergePatch } from "../config/merge-patch.js";
 import { normalizeAgentModelRefForConfig } from "../config/model-input.js";
+import { hashRuntimeConfigValue } from "../config/runtime-snapshot.js";
 import {
   attachRuntimeConfigWriteApplication,
   createRuntimeConfigWriteApplication,
@@ -30,7 +37,11 @@ import { resolveUserPath } from "../utils.js";
 import { createPluginCapabilityConsentPrompter } from "../wizard/plugin-capability-consent.js";
 import { WizardCancelledError, WizardNavigationError } from "../wizard/prompts.js";
 import { appendSystemAgentAuditEntry } from "./audit.js";
-import { resolveSystemAgentConfiguredRouteFromConfig } from "./inference-route.js";
+import {
+  projectInferenceRoute,
+  resolveSystemAgentConfiguredRouteFromConfig,
+  sameDefaultInferenceRoute,
+} from "./inference-route.js";
 import { createQuickstartNotePrompter } from "./setup-apply.js";
 import {
   type ActivateSetupInferenceParams,
@@ -50,6 +61,7 @@ import {
   type StageFailure,
   stageProviderAuthCandidate,
   stageProviderAutoCandidate,
+  stageSavedAuthCandidate,
 } from "./setup-inference-credentials.js";
 import {
   loadSetupInferencePluginGeneration,
@@ -193,6 +205,15 @@ async function stageCodexCandidate(ctx: StageContext): Promise<StagedCandidate |
 
 async function stageCandidate(ctx: StageContext): Promise<StagedCandidate | StageFailure> {
   const { params, cfg } = ctx;
+  if (params.kind.startsWith("saved-auth:")) {
+    let profileId: string;
+    try {
+      profileId = decodeURIComponent(params.kind.slice("saved-auth:".length));
+    } catch {
+      return { error: "Invalid saved sign-in choice. Open Model Setup and choose again." };
+    }
+    return await stageSavedAuthCandidate(ctx, profileId);
+  }
   const providerAutoChoiceId = parseProviderAutoSetupChoiceId(params.kind);
   if (providerAutoChoiceId) {
     return await stageProviderAutoCandidate(ctx, providerAutoChoiceId);
@@ -316,9 +337,9 @@ async function activateSetupInferenceUnredacted(
       ? resolveUserPath(params.workspace)
       : resolveSetupInferenceWorkspace(snapshot),
     credentialsSaved: false,
-    beforePersistentEffect: async () => {
+    beforePersistentEffect: async (effect) => {
       throwIfSetupInferenceCancelled(params);
-      await params.beforePersistentEffect?.();
+      await params.beforePersistentEffect?.(effect);
       throwIfSetupInferenceCancelled(params);
     },
   };
@@ -340,6 +361,7 @@ async function activateSetupInferenceUnredacted(
       model: staged.modelRef,
       ...(params.agentId ? { targetAgentId: ctx.routeAgentId } : {}),
       ...(staged.agentRuntimeId ? { agentRuntimeId: staged.agentRuntimeId } : {}),
+      ...(staged.authProfileId ? { authProfileId: staged.authProfileId } : {}),
     });
   const provider = parseRef(staged.modelRef).provider;
   const buildCandidate = async (base: OpenClawConfig) => {
@@ -372,39 +394,75 @@ async function activateSetupInferenceUnredacted(
     });
   }
   throwIfSetupInferenceCancelled(params);
-  const progress = params.prompter?.progress("Testing your AI connection…");
-  let turn: Awaited<ReturnType<typeof runSetupInferenceTurn>>;
-  try {
-    const runTurn = () =>
-      runSetupInferenceTurn({
-        route,
-        deps,
-        requireExecutionOwner: false,
-        ...(params.signal ? { signal: params.signal } : {}),
-      });
-    // A freshly installed Codex package is only visible to a generation loaded after the install.
-    turn =
-      staged.agentRuntimeId === "codex"
-        ? await withPluginRuntimeGenerationScope(
-            loadSetupInferencePluginGeneration({
-              config: candidate.config,
-              workspaceDir: ctx.workspace,
-              selection: {
-                provider: route.provider,
-                modelId: route.model,
-                runtime: "codex",
-                agentId: route.agentId,
-              },
-            }),
-            runTurn,
+  const { pendingProof, verifiedRoute, turn, progress } = await withPendingAuthProfileProbe(
+    { profileId: staged.authProfileId, agentDir: ctx.agentDir, signal: params.signal },
+    async () => {
+      const probe = staged.authProfileId
+        ? await preparePendingAuthProfileProbe({
+            profileId: staged.authProfileId,
+            agentDir: ctx.agentDir,
+            config: candidate.config,
+          })
+        : undefined;
+      const testedRoute = probe
+        ? await projectInferenceRoute(
+            applyMergePatch(
+              snapshot.sourceConfig,
+              createMergePatch(cfg, candidate.config),
+            ) as OpenClawConfig,
+            requestedAgentId,
+            { loadAuthProfileStoreForRuntime: deps.loadAuthProfileStoreForRuntime },
           )
-        : await runTurn();
-    throwIfSetupInferenceCancelled(params);
-  } finally {
-    progress?.stop();
-  }
+        : undefined;
+      throwIfSetupInferenceCancelled(params);
+      const testProgress = params.prompter?.progress("Testing your AI connection…");
+      let result: Awaited<ReturnType<typeof runSetupInferenceTurn>>;
+      try {
+        const runTurn = () =>
+          runSetupInferenceTurn({
+            route,
+            deps,
+            requireExecutionOwner: Boolean(staged.authProfileId),
+            ...(params.signal ? { signal: params.signal } : {}),
+          });
+        // A freshly installed Codex package is only visible to a generation loaded after the install.
+        result =
+          staged.agentRuntimeId === "codex"
+            ? await withPluginRuntimeGenerationScope(
+                loadSetupInferencePluginGeneration({
+                  config: candidate.config,
+                  workspaceDir: ctx.workspace,
+                  selection: {
+                    provider: route.provider,
+                    modelId: route.model,
+                    runtime: "codex",
+                    agentId: route.agentId,
+                  },
+                }),
+                runTurn,
+              )
+            : await runTurn();
+        throwIfSetupInferenceCancelled(params);
+      } finally {
+        testProgress?.stop();
+      }
+      return {
+        pendingProof: probe,
+        verifiedRoute: testedRoute,
+        turn: result,
+        progress: testProgress,
+      };
+    },
+  );
   if (!turn.ok) {
-    return failure(turn);
+    return failure(
+      pendingProof
+        ? {
+            ...turn,
+            error: `${turn.error} The saved sign-in is not active. Open Model Setup and choose the saved sign-in to retry without signing in again.`,
+          }
+        : turn,
+    );
   }
   let gatewayRestartRequired = false;
   let leanAnnounced = false;
@@ -428,17 +486,72 @@ async function activateSetupInferenceUnredacted(
         : {}),
       transform: async (current) => {
         const next = await buildCandidate(current);
+        if (
+          verifiedRoute &&
+          !sameDefaultInferenceRoute(
+            verifiedRoute,
+            await projectInferenceRoute(next.config, requestedAgentId, {
+              loadAuthProfileStoreForRuntime: deps.loadAuthProfileStoreForRuntime,
+            }),
+          )
+        ) {
+          throw new Error(
+            "Connection settings changed during verification. Choose the saved sign-in in Model Setup to test the current connection.",
+          );
+        }
+        if (pendingProof) {
+          await validatePendingAuthProfileProbe({
+            proof: pendingProof,
+            verifiedAuth: turn.auth,
+            config: next.config,
+          });
+        }
         throwIfSetupInferenceCancelled(params);
         params.onCommitStarted?.(current);
         leanAnnounced = next.leanEnabled;
         return { nextConfig: next.config };
       },
+    }).catch((error: unknown) => {
+      if (!ctx.credentialsSaved) {
+        throw error;
+      }
+      throw new Error(
+        `${pendingProof ? "The saved replacement sign-in remains pending" : "Credentials are saved"}, but the default update could not be confirmed. Check Model Setup before retrying. ${formatErrorMessage(error)}`,
+        { cause: error },
+      );
     });
     gatewayRestartRequired = committed.followUp.requiresRestart;
+    if (pendingProof) {
+      const activate = async (beforeCommit?: () => void) => {
+        throwIfSetupInferenceCancelled(params);
+        await promotePendingAuthProfile({
+          proof: pendingProof,
+          verifiedAuth: turn.auth,
+          config: committed.nextConfig,
+          beforeCommit: () => {
+            throwIfSetupInferenceCancelled(params);
+            beforeCommit?.();
+          },
+        });
+      };
+      if (params.onCredentialActivation) {
+        params.onCredentialActivation({
+          sourceConfigHash: hashRuntimeConfigValue(committed.nextConfig),
+          activate,
+        });
+      } else if (!gatewayRestartRequired) {
+        await activate();
+      }
+    }
   }
   let lines = [
     `Inference verified: ${staged.modelRef}`,
     ...(leanAnnounced ? [AUTO_LOCAL_MODEL_LEAN_ANNOUNCEMENT] : []),
+    ...(pendingProof && gatewayRestartRequired
+      ? [
+          "Connection settings are saved; the replacement sign-in is still pending. Restart the Gateway, then choose the saved sign-in in Model Setup to verify and activate it.",
+        ]
+      : []),
   ];
   if (params.surface === "gateway" && params.recordSetupAudit !== false) {
     const after = await readSnapshot().catch(() => null);

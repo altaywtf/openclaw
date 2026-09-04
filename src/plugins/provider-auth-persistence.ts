@@ -1,5 +1,11 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { persistAuthProfileBatch } from "../agents/auth-profiles.js";
+import { buildAuthProfileId } from "../agents/auth-profiles/identity.js";
+import {
+  saveAuthProfileCandidates,
+  type PendingAuthProfileSetup,
+} from "../agents/auth-profiles/pending.js";
+import { createMergePatch } from "../config/merge-patch.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isValidEnvSecretRefId, type SecretRef } from "../config/types.secrets.js";
 import { registerSecretValueForRedaction } from "../logging/secret-redaction-registry.js";
@@ -9,7 +15,7 @@ import {
   readSecretStoreValue,
   writeSecretStoreEntry,
 } from "../secrets/store/secret-store.js";
-import type { ProviderAuthProfile } from "./provider-authentication.types.js";
+import type { ProviderAuthProfile, ProviderAuthResult } from "./provider-authentication.types.js";
 
 const STORE_SCOPE = { kind: "team" } as const;
 const STORE_NAME_DIGEST_LENGTH = 24;
@@ -32,6 +38,76 @@ type PersistProviderAuthProfileBatchParams = Omit<
   config: OpenClawConfig;
   env?: NodeJS.ProcessEnv;
 };
+
+export function buildPendingAuthProfileSetup(params: {
+  baseConfig: OpenClawConfig;
+  config: OpenClawConfig;
+  modelRef: string;
+  providerId: string;
+  pluginId: string;
+  authChoice: string;
+}): PendingAuthProfileSetup {
+  const patch = createMergePatch(params.baseConfig, params.config) as Partial<OpenClawConfig>;
+  return {
+    modelRef: params.modelRef,
+    providerId: params.providerId,
+    pluginId: params.pluginId,
+    authChoice: params.authChoice,
+    connectionPatch: {
+      ...(patch.models ? { models: patch.models } : {}),
+      ...(patch.plugins ? { plugins: patch.plugins } : {}),
+    },
+  };
+}
+
+export function prepareProviderAuthSetupResult(result: ProviderAuthResult): ProviderAuthResult {
+  // Setup owns these immutable instance IDs. Re-login allocates a new ID;
+  // deleted candidates are never recreated for retained probes or refreshes.
+  const { auth: _auth, ...configPatch } = result.configPatch ?? {};
+  return {
+    ...result,
+    ...(result.configPatch ? { configPatch } : {}),
+    profiles: result.profiles.map((profile) => ({
+      ...profile,
+      profileId: buildAuthProfileId({
+        providerId: profile.credential.provider,
+        profileName: randomUUID(),
+      }),
+    })),
+  };
+}
+
+export function persistProviderAuthSetupCandidates(params: {
+  profiles: readonly ProviderAuthProfile[];
+  baseConfig: OpenClawConfig;
+  config: OpenClawConfig;
+  agentDir?: string;
+  env?: NodeJS.ProcessEnv;
+  setup: PendingAuthProfileSetup;
+}): ProviderAuthProfile[] {
+  const prepared = prepareProviderAuthProfilesForPersistence(params);
+  try {
+    saveAuthProfileCandidates({
+      profiles: prepared.profiles,
+      baseConfig: params.baseConfig,
+      agentDir: params.agentDir,
+      env: params.env,
+      setup: params.setup,
+    });
+  } catch (error) {
+    try {
+      prepared.rollback();
+    } catch (rollbackError) {
+      throw new AggregateError(
+        [error, rollbackError],
+        "Setup credential persistence failed and protected-store rollback could not be confirmed.",
+        { cause: rollbackError },
+      );
+    }
+    throw error;
+  }
+  return prepared.profiles;
+}
 
 function resolveStoreName(profile: ProviderAuthProfile): string {
   const storage = profile.secretStorage;

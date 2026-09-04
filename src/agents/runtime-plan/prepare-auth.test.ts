@@ -125,6 +125,40 @@ function allCooldownOpenAIStore(): AuthProfileStore {
 }
 
 describe("prepareAgentRuntimeAuthPlan", () => {
+  it.each(["generic", "routed"] as const)(
+    "keeps an explicitly selected pending credential exclusive on %s routes",
+    (route) => {
+      const provider = route === "generic" ? "fixture" : "openai";
+      const activeId = `${provider}:active`;
+      const pendingId = `${provider}:pending`;
+      const store = authStore({
+        [activeId]: apiKeyProfile(provider, "active-key"),
+        [pendingId]: apiKeyProfile(provider, "pending-key"),
+      });
+      store.runtimePendingProfileIds = [pendingId];
+      const params =
+        route === "generic" ? { provider, modelId: "fixture-model" } : openAIPlatformAuthFixture();
+      const explicit = prepareAgentRuntimeAuth({
+        ...params,
+        env: {},
+        authProfileStore: store,
+        sessionAuthProfileId: pendingId,
+        sessionAuthProfileSource: "user",
+      });
+      expect(explicit.attempts.map((attempt) => attempt.profileId)).toEqual([pendingId]);
+      expect(explicit.plan.forwardedAuthProfileCandidateIds).toEqual([pendingId]);
+
+      const automatic = prepareAgentRuntimeAuth({
+        ...params,
+        env: {},
+        authProfileStore: store,
+        sessionAuthProfileId: pendingId,
+        sessionAuthProfileSource: "auto",
+      });
+      expect(automatic.attempts.map((attempt) => attempt.profileId)).toEqual([activeId]);
+    },
+  );
+
   it("carries prepared provider aliases into generic auth planning", () => {
     const plan = prepareAgentRuntimeAuthPlan({
       provider: "legacy-provider",

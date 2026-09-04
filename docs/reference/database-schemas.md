@@ -314,6 +314,30 @@ Schema 13 makes `cron_jobs.job_json`, `cron_jobs.state_json`, and `subagent_runs
 
 The shared-state `auth_profile_stores` and `auth_profile_state` singletons move into `config_machine_state` under `authProfiles.store` and `authProfiles.state`; per-agent auth tables remain unchanged. Because these rows contain credentials, secret-redacted Git backups omit the `authProfiles.` machine-state prefix.
 
+### Pending setup credentials
+
+Saved replacement credentials use existing keyed payload storage, without a SQL
+schema or version change:
+
+- Shared owner: `config_machine_state.state_key = 'authProfiles.pending'`.
+- Agent-local owner: `auth_profile_store.store_key = 'pending'`.
+
+The pending payload contains credential profiles and the provider connection
+patch needed to retry setup. Active profiles remain in `authProfiles.store` or
+the agent table's `primary` row. Older readers and active-only writers do not
+read, activate, or replace the reserved pending row. The existing `authProfiles.`
+prefix and per-agent auth-table backup exclusions also cover pending secrets.
+This does not change the general unsupported-downgrade policy.
+
+Only an explicit setup confirmation may activate a pending replacement.
+OAuth refresh writes back to its pending owner; it does not promote a profile.
+After the config commit succeeds, activation moves the exact verified candidate
+into the active payload under the auth-store transaction. Gateway setup also
+requires confirmation that the committed configuration is serving; failed or
+restart-required application leaves the candidate pending for explicit retry.
+The old credential remains intact. Ordinary copying and automatic selection use
+only the active projection.
+
 ### State schema 11
 
 Schema 11 removes the `skill_lifecycle` and `skill_workshop_proposal_origin_runs` tables. Archived-skill lifecycle state is discarded during the upgrade: previously archived Workshop skills return to the active collection, where weekly collection review judges them by content. The origin-run rows were a never-read projection; canonical proposal provenance stays in `skill_workshop_proposals.record_json`. Recorded skill usage and collection-review state are preserved.
