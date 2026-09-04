@@ -527,10 +527,14 @@ pending native synchronization only after Codex emits the matching terminal
 interruption, transport ambiguity, or a non-terminal response leaves the
 pending state intact and normal continuation fails closed.
 
-History-copy and model-executing workflows also fail closed while native
-history is synchronizing. State-only goal, model, and fast controls remain
-available. `/codex compact` delegates to the active host compaction owner so it
-can finish or reconcile the transition rather than bypassing it.
+History-copy workflows and normal source-session inference also fail closed
+while native history is synchronizing. A host-isolated context-engine recovery
+turn may finish against its isolated projected transcript while leaving native
+synchronization pending. The next normal source-session turn completes the
+required native preflight before starting inference. State-only goal, model,
+and fast controls remain available. `/codex compact` delegates to the active
+host compaction owner so it can finish or reconcile the transition rather than
+bypassing it.
 
 Native manual compact operations start Codex compaction with
 `thread/compact/start`.
