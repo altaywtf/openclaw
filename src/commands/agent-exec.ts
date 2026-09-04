@@ -39,6 +39,7 @@ type AgentExecCommandResult = {
 
 type AgentExecCommandDeps = {
   abortSignal?: AbortSignal;
+  assertSourceCurrent?: () => void;
   stdin?: AsyncIterable<unknown>;
   process?: EmbeddedStateSignalProcess;
   gatewayLockOptions?: GatewayLockOptions;
@@ -358,6 +359,7 @@ export async function agentExecCommand(
     };
     const invoke = async () => {
       abortSignal?.throwIfAborted();
+      deps.assertSourceCurrent?.();
       return await runAgent(
         {
           message: prompt,
@@ -374,6 +376,7 @@ export async function agentExecCommand(
           cleanupCliLiveSessionOnRunEnd: true,
           oneShotCliRun: true,
           abortSignal,
+          assertSourceCurrent: deps.assertSourceCurrent,
           onModelFallbackExhausted: () => {
             fallbackExhausted = true;
           },

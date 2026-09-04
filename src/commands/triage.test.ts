@@ -121,6 +121,44 @@ describe("triageCommand", () => {
     expect(mocks.agentExecCommand.mock.calls[0]?.[0]).toContain("listener never became healthy");
   });
 
+  it("fences the selected embedded effect after source loss without watchdog cancellation", async () => {
+    await fs.writeFile(
+      path.join(stateDir, "openclaw.json"),
+      JSON.stringify({ agents: { defaults: { model: "openai/gpt-5.6-luna" } } }),
+    );
+    mocks.verifySetupInference.mockResolvedValue({ ok: true });
+    const controller = new AbortController();
+    let current = true;
+    let effectCount = 0;
+    mocks.agentExecCommand.mockImplementation(async (_prompt, _options, _runtime, deps) => {
+      await Promise.resolve();
+      current = false;
+      deps.assertSourceCurrent?.();
+      effectCount += 1;
+      return { exitCode: 0 };
+    });
+    await expect(
+      triageCommand(
+        createTriageRuntime(),
+        {},
+        {
+          signal: controller.signal,
+          assertCurrent: () => {
+            if (!current) throw new Error("repair claim lost");
+          },
+          failure: {
+            kind: "update",
+            phase: "build",
+            error: "original failure",
+            gateway: "preserve",
+          },
+        },
+      ),
+    ).rejects.toThrow("repair claim lost");
+    expect(controller.signal.aborted).toBe(false);
+    expect(effectCount).toBe(0);
+  });
+
   it.each(["nested", "codex-shell", "external", "cancelled"])(
     "does not auto-triage %s commands",
     async (kind) => {

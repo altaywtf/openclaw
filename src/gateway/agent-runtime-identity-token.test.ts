@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createExecutionIdentityAdmissionToken } from "../audit/execution-identity-admission.js";
 import {
   claimAgentRunDelegatedAuthority,
+  claimAgentRunApprovalAuthority,
   releaseAgentRunDelegatedAuthority,
   resetAgentRunRegistryForTest,
   rotateAgentRunRegistryLifecycleGeneration,
@@ -149,6 +150,54 @@ describe("agent runtime identity token", () => {
         validateDelegatedAuthority(runtimeToken, replacementIdentity.delegatedAuthority),
     ).toBe(false);
   });
+
+  it.each(["parent", "approval"])(
+    "rejects serialized %s authority immediately when its source closes",
+    async (kind) => {
+      useTempHome();
+      const runtimeToken = await importRuntimeTokenModule();
+      const admissionOwner = await import("../agents/admitted-run-context.js");
+      let current = true;
+      const prepared = admissionOwner.prepareAgentRunAdmission({
+        cfg: {},
+        facts: {
+          runId: "source-token",
+          agentId: "main",
+          ingress: { kind: "system", boundary: "test", state: "present" },
+        },
+        operationalRunInstance: admissionOwner.createOperationalRunInstanceRef("source-token"),
+        assertSourceCurrent: () => {
+          if (!current) throw new Error("source closed");
+        },
+      });
+      try {
+        const admitted = await prepared.admit("embedded");
+        const token = await runtimeToken.mintAgentRuntimeIdentityToken({
+          agentId: "main",
+          sessionKey: "session-1",
+          operationalRunInstance: admitted.operationalRunInstance,
+          ...(kind === "approval"
+            ? {
+                approvalAuthority: claimAgentRunApprovalAuthority(
+                  admissionOwner.getAdmittedRunDelegatedAuthority(admitted)!,
+                  [new AbortController().signal],
+                ),
+              }
+            : {}),
+        });
+        const copied = await runtimeToken.verifyAgentRuntimeIdentityToken(token);
+        expect(copied).toBeDefined();
+        expect(validateDelegatedAuthority(runtimeToken, copied!.delegatedAuthority)).toBe(true);
+        current = false;
+        // No host capability call, abort, or timer runs before the RPC-side check.
+        expect(validateDelegatedAuthority(runtimeToken, copied!.delegatedAuthority)).toBe(false);
+        current = true;
+        expect(validateDelegatedAuthority(runtimeToken, copied!.delegatedAuthority)).toBe(false);
+      } finally {
+        prepared.close();
+      }
+    },
+  );
 
   it("persists the local signing secret so tokens verify across processes", async () => {
     useTempHome();

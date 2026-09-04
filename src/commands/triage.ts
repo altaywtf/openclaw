@@ -496,7 +496,9 @@ export async function triageCommand(
       prompt,
       agentOptions,
       runtime,
-      automatic ? { abortSignal: automatic.signal } : {},
+      automatic && !automatic.diagnosticOnly
+        ? { abortSignal: automatic.signal, assertSourceCurrent: automatic.assertCurrent }
+        : {},
     );
   });
   if (result.exitCode !== 0) {

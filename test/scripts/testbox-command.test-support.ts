@@ -59,6 +59,7 @@ if (JSON.stringify(args) === JSON.stringify(['pnpm', 'install', '--frozen-lockfi
   return {
     bin,
     payload,
+    modules,
     readEvents() {
       return existsSync(events)
         ? readFileSync(events, "utf8")

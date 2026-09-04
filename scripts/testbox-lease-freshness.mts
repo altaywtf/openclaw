@@ -20,6 +20,8 @@ const ENVIRONMENT_INPUTS = [
   ".node-version",
   "scripts/crabbox-wrapper.mjs",
   "scripts/crabbox-wrapper.mts",
+  "scripts/crabbox-source-capsule.mts",
+  "scripts/crabbox-source-receiver.mts",
 ];
 
 function optionValue(args: readonly string[], name: string, fallback = "") {

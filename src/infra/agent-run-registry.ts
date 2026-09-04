@@ -46,6 +46,8 @@ type AgentRunContext = {
   lastActiveAt?: number;
   /** Exact approval authority owned by this operational execution. */
   delegatedAuthority?: AgentRunDelegatedAuthority;
+  /** Exact in-process source owner, intentionally absent from serialized authority. */
+  assertSourceCurrent?: () => void;
   approvalLeases?: AgentRunApprovalLeases;
 };
 
@@ -102,6 +104,7 @@ export function rotateAgentRunRegistryLifecycleGeneration(): string {
     const authority = context.delegatedAuthority;
     if (authority) {
       delete context.delegatedAuthority;
+      delete context.assertSourceCurrent;
       notifyDelegatedAuthorityClosed(state, authority);
     }
   }
@@ -427,6 +430,7 @@ export function getAgentRunContextOwnerStatus(
 /** Claims approval authority for the exact admitted operational execution. */
 export function claimAgentRunDelegatedAuthority(
   operationalRunInstance: Readonly<{ instanceId: string; runId: string }>,
+  assertSourceCurrent?: () => void,
 ): AgentRunDelegatedAuthority {
   const instanceId = operationalRunInstance.instanceId.trim();
   const runId = operationalRunInstance.runId.trim();
@@ -434,11 +438,20 @@ export function claimAgentRunDelegatedAuthority(
     throw new Error("agent run delegated authority requires an operational run instance");
   }
   const state = getAgentRunRegistryState();
-  const lifecycleGeneration = state.lifecycleGeneration;
   const currentInstance =
     operationalRunInstance.instanceId === instanceId && operationalRunInstance.runId === runId
       ? operationalRunInstance
       : Object.freeze({ instanceId, runId });
+  const bound = state.contexts.get(runId);
+  // Check the binding before callbacks or liveness validation can retire it.
+  if (
+    bound?.delegatedAuthority?.operationalRunInstance.instanceId === instanceId &&
+    bound.assertSourceCurrent !== assertSourceCurrent
+  ) {
+    throw new Error("agent run source authority is already bound");
+  }
+  assertSourceCurrent?.();
+  const lifecycleGeneration = state.lifecycleGeneration;
   const active = getActiveAgentRunDelegatedAuthority(currentInstance);
   if (active) {
     return active;
@@ -474,6 +487,7 @@ export function claimAgentRunDelegatedAuthority(
     throw new Error("agent run delegated authority lost its lifecycle during admission");
   }
   context.delegatedAuthority = authority;
+  context.assertSourceCurrent = assertSourceCurrent;
   return authority;
 }
 
@@ -483,17 +497,36 @@ export function getActiveAgentRunDelegatedAuthority(
 ): AgentRunDelegatedAuthority | undefined {
   const context = getAgentRunRegistryState().contexts.get(operationalRunInstance.runId);
   const authority = context?.delegatedAuthority;
-  return authority &&
-    authority.operationalRunInstance.instanceId === operationalRunInstance.instanceId &&
-    authority.operationalRunInstance.runId === operationalRunInstance.runId &&
+  if (
+    !context ||
+    !authority ||
+    authority.operationalRunInstance.instanceId !== operationalRunInstance.instanceId ||
+    authority.operationalRunInstance.runId !== operationalRunInstance.runId ||
     // A clear request is projection state; the exact live claim still owns authority.
     getAgentRunContextOwnerStatus(
       operationalRunInstance.runId,
       authority.claimId,
       authority.lifecycleGeneration,
-    ) !== undefined
-    ? authority
-    : undefined;
+    ) === undefined
+  ) {
+    return undefined;
+  }
+  try {
+    context.assertSourceCurrent?.();
+    return getAgentRunContext(operationalRunInstance.runId) === context &&
+      context.delegatedAuthority === authority &&
+      getAgentRunContextOwnerStatus(
+        operationalRunInstance.runId,
+        authority.claimId,
+        authority.lifecycleGeneration,
+      ) !== undefined
+      ? authority
+      : undefined;
+  } catch {
+    // A copied approval cannot outlive its source; retire the exact owner at detection.
+    releaseAgentRunContext(operationalRunInstance.runId, authority.claimId);
+    return undefined;
+  }
 }
 
 export function validateAgentRunDelegatedAuthority(authority: AgentRunDelegatedAuthority): boolean {
@@ -525,13 +558,23 @@ export function claimAgentRunApprovalAuthority(
 
 /** Compare-releases only the exact authority owned by one admitted execution. */
 export function releaseAgentRunDelegatedAuthority(authority: AgentRunDelegatedAuthority): boolean {
-  if (!validateAgentRunDelegatedAuthority(authority)) {
+  const { runId, instanceId } = authority.operationalRunInstance;
+  const context = getAgentRunContext(runId);
+  const active = context?.delegatedAuthority;
+  // Cleanup compares ownership without asking a revoked source for permission to retire.
+  if (
+    !context ||
+    !active ||
+    active.operationalRunInstance.instanceId !== instanceId ||
+    active.lifecycleGeneration !== authority.lifecycleGeneration ||
+    getAgentRunContextOwnerStatus(runId, active.claimId, active.lifecycleGeneration) === undefined
+  ) {
     return false;
   }
-  const leases = getAgentRunContext(authority.operationalRunInstance.runId)?.approvalLeases;
-  if (!leases?.release(authority.claimId)) {
-    releaseAgentRunContext(authority.operationalRunInstance.runId, authority.claimId);
+  if (active.claimId !== authority.claimId) {
+    return context.approvalLeases?.release(authority.claimId) === true;
   }
+  releaseAgentRunContext(runId, authority.claimId);
   return true;
 }
 
@@ -714,6 +757,7 @@ export function releaseAgentRunContext(runId: string, claimId: string | undefine
   const authority = context?.delegatedAuthority;
   if (context && authority?.claimId === claimId) {
     delete context.delegatedAuthority;
+    delete context.assertSourceCurrent;
     notifyDelegatedAuthorityClosed(state, authority);
   }
   owners.sweepProtectedClaimIds.delete(claimId);

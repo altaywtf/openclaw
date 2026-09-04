@@ -26,6 +26,11 @@ import { fileURLToPath } from "node:url";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { crabboxProviderChain, normalizeCrabboxWorkload } from "./crabbox-routing-policy.mts";
 import {
+  prepareCrabboxSourceCapsule,
+  type CrabboxSourceCapsule,
+} from "./crabbox-source-capsule.mts";
+import { remoteSourceBootstrap } from "./crabbox-source-receiver.mts";
+import {
   canonicalProviderName,
   isProviderAdvertised,
   parseProvidersFromHelp,
@@ -55,7 +60,6 @@ type DoctorResult = { ok: boolean; provider: string; checks: DoctorCheck[] };
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CRABBOX_METADATA_PROBE_TIMEOUT_MS = 5_000;
 const MAX_TIMING_JSON_LINE_CHARS = 1024 * 1024;
-const REMOTE_CHANGED_GATE_BUNDLE_FILE = ".openclaw-crabbox-changed-gate.bundle";
 // A cold Crabbox (first call after an upgrade, or one on a loaded machine) can
 // exceed the snappy default probe timeout while it renders `run --help` or does
 // first-run init. Retry the metadata probes once with this generous timeout so a
@@ -291,6 +295,7 @@ const awsMacosPackageManagerScriptTargets = new Set([
   "scripts/restart-mac.sh",
 ]);
 const minimumBlacksmithCrabboxVersion = [0, 22, 0];
+const minimumSourceCapsuleCrabboxVersion = [0, 37, 0];
 const minimumBrokeredDaytonaCrabboxVersion = [0, 40, 0];
 const shellControlCommandPrefixes = new Set([
   "if",
@@ -692,8 +697,34 @@ function parseCommandInvocation(helpText: string, commandArgs: string[]) {
     }
   }
 
+  const fileScript = optionEntries.findLast(({ name }) => name === "script");
+  const stdinScript = optionEntries.findLast(({ name }) => name === "script-stdin");
+  // Go stops at any invalid boolean; loadRunScript rejects two active sources.
+  // Preserve those errors without reading or normalizing either input locally.
+  const invalidStdin = optionEntries.some(
+    ({ name, index, value }) =>
+      name === "script-stdin" &&
+      commandArgs[index]?.includes("=") &&
+      !/^(?:1|t|T|true|TRUE|True|0|f|F|false|FALSE|False)$/u.test(value),
+  );
+  const stdinEnabled = Boolean(
+    stdinScript &&
+    (!commandArgs[stdinScript.index]?.includes("=") ||
+      /^(?:1|t|T|true|TRUE|True)$/u.test(stdinScript.value)),
+  );
+  const scriptRequested = !invalidStdin && Boolean(fileScript?.value || stdinEnabled);
+  const script =
+    invalidStdin || (fileScript?.value && stdinEnabled)
+      ? undefined
+      : fileScript?.value
+        ? fileScript
+        : stdinEnabled
+          ? stdinScript
+          : undefined;
   return {
     args: commandArgs,
+    scriptRequested,
+    script,
     commandArgs: start >= 0 ? commandArgs.slice(start) : [],
     optionEntries,
     options,
@@ -2514,36 +2545,6 @@ function remoteAliasForChangedGateBase(base: string) {
   return gitOutput(["check-ref-format", alias]).status === 0 ? alias : "";
 }
 
-function remoteGitBootstrapForChangedGate(changedGateBase: string, changedGateAlias: string) {
-  const quotedBase = shellQuote(changedGateBase);
-  const quotedAlias = shellQuote(changedGateAlias);
-  const quotedBundleFile = shellQuote(REMOTE_CHANGED_GATE_BUNDLE_FILE);
-  return [
-    `openclaw_changed_gate_base=${quotedBase};`,
-    `openclaw_changed_gate_alias=${quotedAlias};`,
-    'if ! command -v git >/dev/null 2>&1; then echo "git is required for OpenClaw remote changed-gate sync" >&2; exit 2; fi;',
-    `openclaw_changed_gate_bundle=${quotedBundleFile};`,
-    'if [ ! -f "$openclaw_changed_gate_bundle" ]; then echo "missing changed-gate bundle: $openclaw_changed_gate_bundle" >&2; exit 2; fi;',
-    'openclaw_changed_gate_bundle_tmp="$(mktemp /tmp/openclaw-changed-gate.XXXXXX)" || exit 2;',
-    "trap 'rm -f \"$openclaw_changed_gate_bundle_tmp\"' EXIT HUP INT TERM;",
-    'cp "$openclaw_changed_gate_bundle" "$openclaw_changed_gate_bundle_tmp" || exit 2;',
-    // Interrupted rsync leaves bundle.XXXXXX beside the destination; never expose transport residue to lane classification.
-    'rm -rf -- "$openclaw_changed_gate_bundle" "$openclaw_changed_gate_bundle".* || exit 2;',
-    "rm -rf .git || exit 2;",
-    "git init -q || exit 2;",
-    "git remote add origin https://github.com/openclaw/openclaw.git 2>/dev/null || git remote set-url origin https://github.com/openclaw/openclaw.git || exit 2;",
-    'git fetch -q --depth=2 origin "$openclaw_changed_gate_base:refs/remotes/origin/main" || exit 2;',
-    'if [ -n "$openclaw_changed_gate_alias" ]; then git update-ref "$openclaw_changed_gate_alias" refs/remotes/origin/main || exit 2; fi;',
-    'if [ ! -f "$openclaw_changed_gate_bundle_tmp" ]; then echo "changed-gate bundle disappeared before import" >&2; exit 2; fi;',
-    "openclaw_changed_gate_target=refs/remotes/origin/main;",
-    'if [ -s "$openclaw_changed_gate_bundle_tmp" ]; then git fetch -q "$openclaw_changed_gate_bundle_tmp" HEAD:refs/heads/openclaw-changed-gate-tree || exit 2; openclaw_changed_gate_tree="$(git rev-parse refs/heads/openclaw-changed-gate-tree^{tree})" || exit 2; openclaw_changed_gate_head="$(git -c user.name=OpenClaw -c user.email=ci@openclaw.local commit-tree "$openclaw_changed_gate_tree" -p refs/remotes/origin/main -m remote-changed-gate-tree)" || exit 2; git update-ref refs/heads/openclaw-changed-gate-head "$openclaw_changed_gate_head" || exit 2; openclaw_changed_gate_target=refs/heads/openclaw-changed-gate-head; fi;',
-    'rm -f "$openclaw_changed_gate_bundle_tmp" || exit 2;',
-    "trap - EXIT HUP INT TERM;",
-    'git reset --hard --quiet "$openclaw_changed_gate_target" || exit 2;',
-    "git clean -fd -q || exit 2",
-  ].join(" ");
-}
-
 function injectRemoteChangedGateEnvironment(invocation: CommandInvocation, facts: RunFacts) {
   if (invocation.args[0] !== "run" || isNativeWindowsRemoteTarget(invocation.args)) {
     return invocation.args;
@@ -2688,8 +2689,7 @@ function injectRemotePosixHydratedNodeModulesBootstrap(invocation: CommandInvoca
   if (
     invocation.args[0] !== "run" ||
     isWindowsRemoteTarget(invocation.args) ||
-    invocation.options.has("script") ||
-    invocation.options.has("script-stdin") ||
+    invocation.script ||
     invocation.start < 0
   ) {
     return invocation.args;
@@ -2698,26 +2698,6 @@ function injectRemotePosixHydratedNodeModulesBootstrap(invocation: CommandInvoca
   return replaceRunCommandWithShell(
     invocation,
     `${remotePosixHydratedNodeModulesBootstrap()} ${renderRunShellCommand(invocation)}`,
-  );
-}
-
-function injectRemoteChangedGateGitBootstrap(
-  commandArgs: string[],
-  changedGateBase: string,
-  changedGateAlias: string,
-) {
-  if (!changedGateBase || commandArgs[0] !== "run" || isWindowsRemoteTarget(commandArgs)) {
-    return commandArgs;
-  }
-
-  const invocation = parseCommandInvocation(help.text, commandArgs);
-  if (invocation.start < 0) {
-    return commandArgs;
-  }
-
-  return replaceRunCommandWithShell(
-    invocation,
-    `${remoteGitBootstrapForChangedGate(changedGateBase, changedGateAlias)} && ${renderRunShellCommand(invocation)}`,
   );
 }
 
@@ -2746,7 +2726,11 @@ function remotePosixJsEnvBootstrap() {
   ];
 }
 
-function remoteAwsMacosJsBootstrap({ packageManager = false, bun = false } = {}) {
+function remoteAwsMacosJsBootstrap({
+  packageManager = false,
+  bun = false,
+  sourceBootstrap = "",
+} = {}) {
   const nodeVersion = process.env.OPENCLAW_CRABBOX_MACOS_NODE_VERSION?.trim() || "24.19.0";
   const bootstrap = [
     "openclaw_crabbox_bootstrap_macos_js() {",
@@ -2798,6 +2782,7 @@ function remoteAwsMacosJsBootstrap({ packageManager = false, bun = false } = {})
     "fi;",
     "node --version >&2 || return 1;",
     ...remotePosixJsEnvBootstrap(),
+    ...(sourceBootstrap ? [`${sourceBootstrap} || return $?;`] : []),
   ];
   if (packageManager) {
     bootstrap.push(
@@ -2850,7 +2835,7 @@ function remoteAwsMacosJsBootstrap({ packageManager = false, bun = false } = {})
   return bootstrap.join(" ");
 }
 
-function remoteWsl2JsBootstrap({ packageManager = false } = {}) {
+function remoteWsl2JsBootstrap({ packageManager = false, sourceBootstrap = "" } = {}) {
   const nodeVersion = process.env.OPENCLAW_CRABBOX_WSL2_NODE_VERSION?.trim() || "24.19.0";
   const bootstrap = [
     "openclaw_crabbox_bootstrap_wsl2_js() {",
@@ -2898,6 +2883,7 @@ function remoteWsl2JsBootstrap({ packageManager = false } = {}) {
     "fi;",
     "node --version >&2 || return 1;",
     ...remotePosixJsEnvBootstrap(),
+    ...(sourceBootstrap ? [`${sourceBootstrap} || return $?;`] : []),
   ];
   if (packageManager) {
     bootstrap.push(
@@ -3203,8 +3189,7 @@ function prepareRemoteWsl2JsBootstrapScript(
   run: CommandInvocation,
   facts: RunFacts,
   provider: string,
-  changedGateBase: string,
-  changedGateAlias: string,
+  sourceBootstrap: string,
 ) {
   const runtimeEntrypoint = awsMacosBunEntrypoints.has(facts.runtimeEntrypoint)
     ? ""
@@ -3225,7 +3210,8 @@ function prepareRemoteWsl2JsBootstrapScript(
   const originalShellCommand = facts.scopedEnvCommand?.shellCommand ?? renderRunShellCommand(run);
   const script = `${remoteWsl2JsBootstrap({
     packageManager: facts.packageManager,
-  })} || exit $?\n${facts.changedGate && changedGateBase ? `${remoteGitBootstrapForChangedGate(changedGateBase, changedGateAlias)} || exit $?\n` : ""}{ ${originalShellCommand}\n}\n`;
+    sourceBootstrap,
+  })} || exit $?\n{ ${originalShellCommand}\n}\n`;
   writeFileSync(scriptPath, script, "utf8");
   chmodSync(scriptPath, 0o700);
 
@@ -3246,10 +3232,11 @@ function injectRemoteAwsMacosJsBootstrap(
   run: CommandInvocation,
   facts: RunFacts,
   provider: string,
+  sourceBootstrap: string,
 ) {
   if (
     !isAwsMacosRemoteTarget(run.args, provider) ||
-    (!facts.runtimeEntrypoint && !facts.packageManager && !facts.bun)
+    (!facts.runtimeEntrypoint && !facts.packageManager && !facts.bun && !sourceBootstrap)
   ) {
     return run.args;
   }
@@ -3262,6 +3249,7 @@ function injectRemoteAwsMacosJsBootstrap(
   const shellCommand = `${remoteAwsMacosJsBootstrap({
     packageManager: facts.packageManager,
     bun: facts.bun,
+    sourceBootstrap,
   })} && { ${originalShellCommand}\n}`;
   return replaceRunCommandWithShell(run, shellCommand);
 }
@@ -3313,24 +3301,30 @@ function injectRemoteAwsMacosSwiftBootstrap(
   );
 }
 
-function replaceRunFlagWithScript(commandArgs: string[], flagName: string, scriptPath: string) {
-  const invocation = parseCommandInvocation(help.text, commandArgs);
-  const normalizedName = commandOptionName(flagName);
-  const normalizedArgs = [...commandArgs];
-  for (const { index, name } of invocation.optionEntries) {
-    if (name === normalizedName) {
-      normalizedArgs.splice(index, 1, "--script", scriptPath);
-      return normalizedArgs;
+function replaceRunScript(invocation: CommandInvocation, scriptPath: string) {
+  const normalizedArgs = invocation.args.slice(0, invocation.optionEnd);
+  // One generated file replaces all valid source flags: a later empty file or
+  // an earlier true stdin flag must not override/conflict with the verifier.
+  for (const { name, index } of invocation.optionEntries.toReversed()) {
+    if (name === "script" || name === "script-stdin") {
+      normalizedArgs.splice(
+        index,
+        name === "script" && !invocation.args[index]?.includes("=") ? 2 : 1,
+      );
     }
   }
-  return normalizedArgs;
+  return [
+    ...normalizedArgs,
+    "--script",
+    scriptPath,
+    ...invocation.args.slice(invocation.optionEnd),
+  ];
 }
 
 function prepareAwsMacosScriptStdinBootstrap(commandArgs: string[], providerName: string) {
-  if (
-    !isAwsMacosRemoteTarget(commandArgs, providerName) ||
-    !parseCommandInvocation(help.text, commandArgs).options.has("script-stdin")
-  ) {
+  const invocation = parseCommandInvocation(help.text, commandArgs);
+  const scriptOption = invocation.script;
+  if (!isAwsMacosRemoteTarget(commandArgs, providerName) || scriptOption?.name !== "script-stdin") {
     return { args: commandArgs, cleanup: () => {}, prepared: false };
   }
 
@@ -3340,7 +3334,7 @@ function prepareAwsMacosScriptStdinBootstrap(commandArgs: string[], providerName
   writeFileSync(scriptPath, createAwsMacosScriptStdinWrapper(script), "utf8");
   chmodSync(scriptPath, 0o700);
   return {
-    args: replaceRunFlagWithScript(commandArgs, "--script-stdin", scriptPath),
+    args: replaceRunScript(invocation, scriptPath),
     cleanup: () => rmSync(scriptRoot, { recursive: true, force: true }),
     prepared: true,
   };
@@ -3348,12 +3342,16 @@ function prepareAwsMacosScriptStdinBootstrap(commandArgs: string[], providerName
 
 function createAwsMacosScriptStdinWrapper(script: string) {
   const requirements = awsMacosScriptBootstrapRequirements(script);
+  return wrapRemoteScript(script, remoteAwsMacosScriptBootstrap(requirements));
+}
+
+function wrapRemoteScript(script: string, bootstrap: string) {
   if (!script.startsWith("#!")) {
-    return `${remoteAwsMacosScriptBootstrap(requirements)} || exit $?\n${script}`;
+    return `${bootstrap} || exit $?\n${script}`;
   }
   const delimiterValue = uniqueHereDocDelimiter(script);
   return [
-    `${remoteAwsMacosScriptBootstrap(requirements)} || exit $?`,
+    `${bootstrap} || exit $?`,
     'tmp_script="$(mktemp "${TMPDIR:-/tmp}/openclaw-crabbox-script.XXXXXX")" || exit $?',
     'cleanup_openclaw_crabbox_script() { rm -f "$tmp_script"; }',
     "trap cleanup_openclaw_crabbox_script EXIT",
@@ -3421,7 +3419,17 @@ function isWorktreeClean() {
   return status.status === 0 && status.stdout === "";
 }
 
-function shouldUseFullCheckoutForRemoteSync(commandArgs: string[], _providerName: string) {
+function needsSourceCapsule(commandArgs: string[], providerName: string) {
+  return (
+    commandArgs[0] === "run" &&
+    !hasOption(commandArgs, "--no-sync") &&
+    !isNativeWindowsRemoteTarget(commandArgs) &&
+    (canonicalProviderName(providerName) === "blacksmith-testbox" ||
+      analyzeRemoteCommand(parseCommandInvocation(help.text, commandArgs)).changedGate)
+  );
+}
+
+function shouldUseFullCheckoutForRemoteSync(commandArgs: string[], providerName: string) {
   if (commandArgs[0] !== "run") {
     return false;
   }
@@ -3429,12 +3437,12 @@ function shouldUseFullCheckoutForRemoteSync(commandArgs: string[], _providerName
     return false;
   }
 
+  if (needsSourceCapsule(commandArgs, providerName)) {
+    return true;
+  }
   const changedGate = isChangedGateCommand(
     parseCommandInvocation(help.text, commandArgs).commandArgs,
   );
-  if (changedGate && !isNativeWindowsRemoteTarget(commandArgs)) {
-    return true;
-  }
   return isWorktreeClean() && (isSparseCheckout() || changedGate);
 }
 
@@ -3509,30 +3517,11 @@ function assertFullCheckoutSyncDisk(root: string) {
   );
 }
 
-function currentWorktreeTree(syncRoot: string) {
-  const indexDir = mkdtempSync(resolve(syncRoot, "openclaw-crabbox-index-"));
-  const indexPath = resolve(indexDir, "index");
-  const indexEnv = { GIT_INDEX_FILE: indexPath };
-  try {
-    const read = gitOutput(["read-tree", "HEAD"], indexEnv);
-    const add = gitOutput(["add", "-A", "--", "."], indexEnv);
-    const tree = gitOutput(["write-tree"], indexEnv);
-    if (read.status !== 0 || add.status !== 0 || tree.status !== 0 || !tree.stdout) {
-      throw new Error(read.text || add.text || tree.text || "git write-tree failed");
-    }
-    return tree.stdout;
-  } finally {
-    rmSync(indexDir, { recursive: true, force: true });
-  }
-}
-
-function prepareFullCheckoutForSync(options: { changedGateBase?: string } = {}) {
+function prepareFullCheckoutForSync() {
   const syncRoot = fullCheckoutSyncRoot();
   assertFullCheckoutSyncDisk(syncRoot);
-  const changedGateTree = options.changedGateBase ? currentWorktreeTree(syncRoot) : "";
   const dir = mkdtempSync(resolve(syncRoot, "openclaw-crabbox-sync-"));
   let active = false;
-  let resolvedChangedGateBase = options.changedGateBase ?? "";
 
   function create() {
     const add = gitOutput(["worktree", "add", "--detach", dir, "HEAD"]);
@@ -3548,96 +3537,12 @@ function prepareFullCheckoutForSync(options: { changedGateBase?: string } = {}) 
       active = false;
       throw new Error(`git sparse-checkout disable failed: ${disableSparse.text}`);
     }
-
-    if (options.changedGateBase) {
-      const bundlePath = resolve(dir, REMOTE_CHANGED_GATE_BUNDLE_FILE);
-      let bundleTempDir;
-      try {
-        bundleTempDir = mkdtempSync(resolve(syncRoot, "openclaw-crabbox-bundle-"));
-        const bundleTempPath = resolve(bundleTempDir, "changed-gate.bundle");
-        const base = gitOutput(["-C", dir, "rev-parse", options.changedGateBase]);
-        const baseTree = gitOutput(["-C", dir, "rev-parse", `${options.changedGateBase}^{tree}`]);
-        if (base.status !== 0 || baseTree.status !== 0 || !base.stdout || !baseTree.stdout) {
-          throw new Error(`git rev-parse failed: ${base.text || baseTree.text}`);
-        }
-        resolvedChangedGateBase = base.stdout;
-        if (changedGateTree === baseTree.stdout) {
-          writeFileSync(bundleTempPath, "", "utf8");
-        } else {
-          // The receiver fetches a shallow base. Restrict exclusions to its tree,
-          // not older objects reachable only through the producer's full history.
-          const transportCommit = gitOutput([
-            "-C",
-            dir,
-            "-c",
-            "user.name=OpenClaw",
-            "-c",
-            "user.email=ci@openclaw.local",
-            "commit-tree",
-            changedGateTree,
-            "-p",
-            base.stdout,
-            "-m",
-            "remote-changed-gate-tree",
-          ]);
-          if (transportCommit.status !== 0 || !transportCommit.stdout) {
-            throw new Error(transportCommit.text || "git commit-tree failed");
-          }
-          const updateHead = gitOutput(["-C", dir, "update-ref", "HEAD", transportCommit.stdout]);
-          if (updateHead.status !== 0) {
-            throw new Error(updateHead.text || "git update-ref HEAD failed");
-          }
-          const range = `${base.stdout}..HEAD`;
-          const shallowPath = resolve(bundleTempDir, "shallow");
-          writeFileSync(shallowPath, `${base.stdout}\n`, "utf8");
-          const bundle = gitOutput(["-C", dir, "bundle", "create", bundleTempPath, range], {
-            GIT_SHALLOW_FILE: shallowPath,
-          });
-          if (bundle.status !== 0) {
-            throw new Error(bundle.text || `git bundle exited with status ${bundle.status}`);
-          }
-        }
-        // HEAD controls this checkout path and may make it a symlink. Remove the
-        // entry, then atomically install the private temp file without following it.
-        rmSync(bundlePath, { recursive: true, force: true });
-        renameSync(bundleTempPath, bundlePath);
-      } catch (error) {
-        cleanupFullCheckout(dir, active);
-        active = false;
-        const message = error instanceof Error ? error.message : String(error);
-        throw new Error(`git bundle for changed-gate sync failed: ${message}`, { cause: error });
-      } finally {
-        if (bundleTempDir) {
-          rmSync(bundleTempDir, { recursive: true, force: true });
-        }
-      }
-      const reset = gitOutput(["-C", dir, "reset", "--mixed", "--quiet", options.changedGateBase]);
-      if (reset.status !== 0) {
-        cleanupFullCheckout(dir, active);
-        active = false;
-        throw new Error(`git reset for changed-gate sync failed: ${reset.text}`);
-      }
-      const stageBundle = gitOutput([
-        "-C",
-        dir,
-        "add",
-        "-f",
-        "--",
-        REMOTE_CHANGED_GATE_BUNDLE_FILE,
-      ]);
-      if (stageBundle.status !== 0) {
-        cleanupFullCheckout(dir, active);
-        active = false;
-        throw new Error(`git add for changed-gate bundle failed: ${stageBundle.text}`);
-      }
-    }
   }
 
   create();
 
   return {
     dir,
-    changedGateBase: resolvedChangedGateBase,
     restoreIfMissing() {
       try {
         if (statSync(dir).isDirectory()) {
@@ -3757,33 +3662,24 @@ function injectFullCheckoutLeaseReclaim(commandArgs: string[]) {
   return normalizedArgs;
 }
 
-function injectRemoteTestboxBootstrap(commandArgs: string[], providerName: string) {
-  if (commandArgs[0] !== "run" || canonicalProviderName(providerName) !== "blacksmith-testbox") {
-    return commandArgs;
-  }
-  const invocation = parseCommandInvocation(help.text, commandArgs);
-  if (invocation.start < 0) {
-    return commandArgs;
-  }
-  const snapshot = `if [ -n "$(git status --porcelain=v1)" ]; then git add -A && git -c user.name=OpenClaw -c user.email=ci@openclaw.local -c commit.gpgsign=false commit --no-verify -qm remote-testbox-sync || exit $?; fi >&2; `;
-  // Hydration predates sync. Reconcile against the final candidate before any payload,
-  // including shell compounds; preparation must leave payload stdout untouched.
-  return replaceRunCommandWithShell(
-    invocation,
-    `${snapshot}export CI=true; corepack pnpm install --frozen-lockfile >&2 || exit $?; ${renderRunShellCommand(invocation)}`,
-  );
-}
-
 function applyRunTransforms(
   initialInvocation: CommandInvocation,
   initialFacts: RunFacts,
   options: {
     changedGateAlias: string;
-    changedGateBase: string;
+    capsule: CrabboxSourceCapsule | null;
     childCwd: string;
     provider: string;
   },
 ) {
+  let sourceBootstrap = options.capsule
+    ? remoteSourceBootstrap(options.capsule, options.changedGateAlias)
+    : "";
+  if (sourceBootstrap && canonicalProviderName(options.provider) === "blacksmith-testbox") {
+    // Reconcile dependencies only after the receiver verifies the candidate.
+    // Preparation must not contaminate payload stdout.
+    sourceBootstrap += " || exit $?; export CI=true; corepack pnpm install --frozen-lockfile >&2";
+  }
   const markedArgs = injectRemoteChangedGateEnvironment(initialInvocation, initialFacts);
   const localArgs =
     options.childCwd === repoRoot ? markedArgs : absolutizeLocalRunPaths(markedArgs);
@@ -3794,40 +3690,75 @@ function applyRunTransforms(
     invocation,
     facts,
     options.provider,
-    options.changedGateBase,
-    options.changedGateAlias,
+    sourceBootstrap,
   );
   let transformedArgs = wsl2ScriptBootstrap.args;
-  invocation = parseCommandInvocation(help.text, transformedArgs);
-  transformedArgs = injectRemoteAwsMacosJsBootstrap(invocation, facts, options.provider);
-  invocation = parseCommandInvocation(help.text, transformedArgs);
-  transformedArgs = injectRemoteAwsMacosSwiftBootstrap(
-    invocation,
-    facts,
-    options.provider,
-    facts.swift,
-  );
-  invocation = parseCommandInvocation(help.text, transformedArgs);
-  transformedArgs = injectRemoteWindowsHydratedNodeModulesBootstrap(
-    invocation,
-    facts,
-    options.provider,
-  );
-  // Reconstruction wraps preparation so Corepack sees the candidate's packageManager.
-  transformedArgs = injectRemoteTestboxBootstrap(transformedArgs, options.provider);
-  if (options.childCwd !== repoRoot) {
-    transformedArgs = injectRemoteChangedGateGitBootstrap(
-      transformedArgs,
-      options.changedGateBase,
-      options.changedGateAlias,
+  let sourceScriptCleanup = () => {};
+  try {
+    if (sourceBootstrap && !wsl2ScriptBootstrap.prepared) {
+      invocation = parseCommandInvocation(help.text, transformedArgs);
+      const scriptOption = invocation.script;
+      if (scriptOption) {
+        const script = readFileSync(
+          scriptOption.name === "script" ? resolve(repoRoot, scriptOption.value) : 0,
+          "utf8",
+        );
+        const scriptRoot = mkdtempSync(resolve(tmpdir(), "openclaw-crabbox-source-script-"));
+        const scriptPath = resolve(scriptRoot, "script.sh");
+        sourceScriptCleanup = () => rmSync(scriptRoot, { recursive: true, force: true });
+        writeFileSync(
+          scriptPath,
+          wrapRemoteScript(script, `${sourceBootstrap} || exit $?\nexport CI=true`),
+        );
+        chmodSync(scriptPath, 0o700);
+        transformedArgs = replaceRunScript(invocation, scriptPath);
+      } else if (
+        invocation.start >= 0 &&
+        !isAwsMacosRemoteTarget(transformedArgs, options.provider)
+      ) {
+        transformedArgs = replaceRunCommandWithShell(
+          invocation,
+          `${sourceBootstrap} || exit $?; ${renderRunShellCommand(invocation)}`,
+        );
+      }
+    }
+    invocation = parseCommandInvocation(help.text, transformedArgs);
+    transformedArgs = injectRemoteAwsMacosJsBootstrap(
+      invocation,
+      facts,
+      options.provider,
+      sourceBootstrap,
     );
+    invocation = parseCommandInvocation(help.text, transformedArgs);
+    transformedArgs = injectRemoteAwsMacosSwiftBootstrap(
+      invocation,
+      facts,
+      options.provider,
+      facts.swift,
+    );
+    invocation = parseCommandInvocation(help.text, transformedArgs);
+    transformedArgs = injectRemoteWindowsHydratedNodeModulesBootstrap(
+      invocation,
+      facts,
+      options.provider,
+    );
+    invocation = parseCommandInvocation(help.text, transformedArgs);
+    transformedArgs = injectRemotePosixHydratedNodeModulesBootstrap(invocation);
+    return {
+      args: transformedArgs,
+      wsl2ScriptBootstrap: {
+        ...wsl2ScriptBootstrap,
+        cleanup() {
+          wsl2ScriptBootstrap.cleanup();
+          sourceScriptCleanup();
+        },
+      },
+    };
+  } catch (error) {
+    wsl2ScriptBootstrap.cleanup();
+    sourceScriptCleanup();
+    throw error;
   }
-  invocation = parseCommandInvocation(help.text, transformedArgs);
-  transformedArgs = injectRemotePosixHydratedNodeModulesBootstrap(invocation);
-  return {
-    args: transformedArgs,
-    wsl2ScriptBootstrap,
-  };
 }
 
 const version = probeCrabboxMetadata(binary, ["--version"]);
@@ -3925,7 +3856,28 @@ if (provider && !isProviderAdvertised(provider, providers)) {
   process.exit(2);
 }
 
+if (
+  needsSourceCapsule(normalizedArgs, provider) &&
+  !satisfiesMinimumCrabboxVersion(version.text, minimumSourceCapsuleCrabboxVersion)
+) {
+  console.error(
+    `[crabbox] source capsule requires Crabbox >= ${formatVersionTuple(minimumSourceCapsuleCrabboxVersion)} for sync-plan --json; update Crabbox and rerun.`,
+  );
+  console.error(`[crabbox] selected binary reported version=${version.text || "unknown"}.`);
+  process.exit(2);
+}
+
 if (canonicalProvider === "blacksmith-testbox") {
+  // The delegated provider rejects uploaded scripts before acquiring a lease.
+  if (
+    normalizedArgs[0] === "run" &&
+    parseCommandInvocation(help.text, normalizedArgs).scriptRequested
+  ) {
+    console.error(
+      "[crabbox] provider=blacksmith-testbox does not support --script or --script-stdin. Run a synced script as trailing argv, use --shell, or choose an SSH provider for uploaded scripts.",
+    );
+    process.exit(2);
+  }
   // Testbox owns sync; reject before lease or checkout side effects.
   if (normalizedArgs[0] === "run" && hasOption(normalizedArgs, "--no-sync")) {
     console.error(
@@ -4004,7 +3956,7 @@ let cleanupChildCwd = () => {};
 let fullCheckout = null;
 let stopFullCheckoutKeepalive = () => {};
 let cleanupDone = false;
-let remoteChangedGateBase = "";
+let sourceCapsule: CrabboxSourceCapsule | null = null;
 let remoteChangedGateAlias = "";
 let capturedBlacksmithLeaseId = "";
 const scriptBootstrap = prepareAwsMacosScriptStdinBootstrap(normalizedArgs, provider);
@@ -4017,26 +3969,55 @@ try {
     const facts = analyzeRemoteCommand(invocation);
     const changedGate = facts.changedGate ? changedGateBaseForCommand(facts.commandArgs) : null;
     const changedGateBase = changedGate?.resolvedBase ?? "";
-    const checkout = prepareFullCheckoutForSync({ changedGateBase });
+    const needsCapsule = needsSourceCapsule(normalizedArgs, provider);
+    if (needsCapsule) {
+      const syncRoot = fullCheckoutSyncRoot();
+      assertFullCheckoutSyncDisk(syncRoot);
+      sourceCapsule = prepareCrabboxSourceCapsule({
+        repoRoot,
+        syncRoot,
+        syncPlan: spawnInvocation(
+          binary,
+          ["sync-plan", "--json", "--limit", "2147483647"],
+          process.env,
+          process.platform,
+        ),
+        base: changedGateBase || changedGateBaseForCommand([]).resolvedBase,
+      });
+    }
+    const capsule = sourceCapsule;
+    const checkout = capsule
+      ? {
+          dir: capsule.directory,
+          cleanup: capsule.cleanup,
+          exists: () => pathExists(capsule.directory),
+          restoreIfMissing() {
+            if (!pathExists(capsule.directory)) {
+              throw new Error("frozen source checkout disappeared; rerun from the local candidate");
+            }
+            return false;
+          },
+        }
+      : prepareFullCheckoutForSync();
     fullCheckout = checkout;
     normalizedArgs = injectFullCheckoutLeaseReclaim(normalizedArgs);
     // Crabbox claims Git's physical top-level. Match it so macOS /var aliases
     // restore to the invoking repository instead of the disposable checkout.
     childCwd = realpathSync(checkout.dir);
     cleanupChildCwd = () => checkout.cleanup();
-    remoteChangedGateBase = checkout.changedGateBase;
     remoteChangedGateAlias = changedGate?.remoteAlias ?? "";
     console.error(
       `[crabbox] isolated checkout sync; syncing from temporary full checkout ${checkout.dir}`,
     );
-    if (checkout.changedGateBase) {
+    if (facts.changedGate && capsule) {
       console.error(
-        `[crabbox] remote changed gate detected; overlaying the local worktree as changes from ${checkout.changedGateBase}`,
+        `[crabbox] remote changed gate detected; overlaying the local worktree as changes from ${capsule.baseSha}`,
       );
     }
   }
 } catch (error) {
   scriptBootstrap.cleanup();
+  sourceCapsule?.cleanup();
   throw error;
 }
 
@@ -4091,6 +4072,9 @@ if (normalizedArgs[0] === "run" && isBrokeredWsl2RemoteTarget(normalizedArgs, pr
 }
 
 const childEnv = { ...process.env };
+if (sourceCapsule?.configPath) {
+  childEnv.CRABBOX_CONFIG = sourceCapsule.configPath;
+}
 if (canonicalProvider === "blacksmith-testbox" && !childEnv.CI) {
   childEnv.CI = "true";
 }
@@ -4119,7 +4103,7 @@ if (
 try {
   const transformed = applyRunTransforms(invocation, commandFacts, {
     changedGateAlias: remoteChangedGateAlias,
-    changedGateBase: remoteChangedGateBase,
+    capsule: sourceCapsule,
     childCwd,
     provider,
   });

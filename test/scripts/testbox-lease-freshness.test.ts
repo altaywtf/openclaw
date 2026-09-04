@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   prepareTestboxLeaseFreshness,
@@ -24,45 +24,6 @@ const fingerprint = {
 };
 
 describe("Testbox lease freshness", () => {
-  it("rejects reuse after only the wrapper implementation changes", () => {
-    const root = tempDirs.make("openclaw-testbox-freshness-");
-    const repoRoot = join(root, "repo");
-    mkdirSync(join(repoRoot, "scripts"), { recursive: true });
-    const implementation = join(repoRoot, "scripts/crabbox-wrapper.mts");
-    writeFileSync(implementation, "// initial implementation\n");
-    const git = (args: string[]) =>
-      execFileSync("git", args, {
-        cwd: repoRoot,
-        env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
-        stdio: "pipe",
-      });
-    git(["init", "-q"]);
-    git(["add", "."]);
-    git([
-      "-c",
-      "user.name=Fixture",
-      "-c",
-      "user.email=fixture@example.invalid",
-      "-c",
-      "commit.gpgsign=false",
-      "commit",
-      "-qm",
-      "fixture",
-    ]);
-    git(["update-ref", "refs/remotes/origin/main", "HEAD"]);
-    const request = {
-      args: ["run", "--id", "tbx_fixture"],
-      provider: "blacksmith-testbox",
-      repoRoot,
-      env: { OPENCLAW_TESTBOX_LEASE_STATE_DIR: join(root, "receipts") },
-    };
-    recordTestboxLeaseFreshness(prepareTestboxLeaseFreshness(request));
-    writeFileSync(join(repoRoot, "source.txt"), "source-only edits may reuse\n");
-    expect(() => prepareTestboxLeaseFreshness(request)).not.toThrow();
-    writeFileSync(implementation, "// changed bootstrap implementation\n");
-    expect(() => prepareTestboxLeaseFreshness(request)).toThrow("environmentDigest");
-  });
-
   it("reuses a lease when hydrated inputs still match", () => {
     expect(testboxLeaseStaleReasons(fingerprint, { ...fingerprint })).toEqual([]);
   });
@@ -82,5 +43,54 @@ describe("Testbox lease freshness", () => {
     expect(testboxLeaseStaleReasons({ ...fingerprint, version: 2 }, fingerprint)).toEqual([
       "state schema",
     ]);
+  });
+
+  it("invalidates saved proof when executable source-sync owners change", () => {
+    const root = tempDirs.make("openclaw-testbox-freshness-");
+    mkdirSync(path.join(root, "scripts"));
+    const owners = [
+      "crabbox-wrapper.mjs",
+      "crabbox-wrapper.mts",
+      "crabbox-source-capsule.mts",
+      "crabbox-source-receiver.mts",
+    ];
+    for (const owner of owners) {
+      writeFileSync(path.join(root, "scripts", owner), "original\n");
+    }
+    const git = (args: string[]) =>
+      execFileSync("git", args, {
+        cwd: root,
+        stdio: "pipe",
+        env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+      });
+    git(["init", "-q"]);
+    git(["add", "scripts"]);
+    git([
+      "-c",
+      "user.name=Fixture",
+      "-c",
+      "user.email=fixture@example.invalid",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "-qm",
+      "fixture",
+    ]);
+    const prepare = () =>
+      prepareTestboxLeaseFreshness({
+        args: ["run", "--id", "tbx_fixture"],
+        env: { OPENCLAW_TESTBOX_LEASE_STATE_DIR: path.join(root, "proof") },
+        provider: "blacksmith-testbox",
+        repoRoot: root,
+      });
+    recordTestboxLeaseFreshness(prepare());
+    writeFileSync(path.join(root, "unrelated-source.ts"), "source change\n");
+    expect(() => prepare()).not.toThrow();
+    for (const owner of owners) {
+      const file = path.join(root, "scripts", owner);
+      writeFileSync(file, "changed executable owner\n");
+      expect(() => prepare(), owner).toThrow("environmentDigest");
+      writeFileSync(file, "original\n");
+    }
   });
 });

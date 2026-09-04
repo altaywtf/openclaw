@@ -51,6 +51,7 @@ function prepareAgentCommandRunAdmission(params: {
   operationalRunInstance: OperationalRunInstanceRef;
   runId: string;
   onAdmitted?: Parameters<typeof prepareAgentRunAdmission>[0]["onAdmitted"];
+  assertSourceCurrent?: () => void;
 }) {
   return prepareAgentCommandRunAdmissionWithSpawnFacts(params);
 }
@@ -83,6 +84,7 @@ function prepareAgentCommandRunAdmissionWithSpawnFacts(
     }),
     ...(params.admission ? { recovery: params.admission } : {}),
     ...(params.onAdmitted ? { onAdmitted: params.onAdmitted } : {}),
+    assertSourceCurrent: params.assertSourceCurrent,
   });
 }
 
@@ -166,6 +168,7 @@ export function prepareAgentCommandExecutionIdentity(params: {
     ingress: params.ingress,
     operationalRunInstance,
     runId: prepared.runId,
+    assertSourceCurrent: opts.assertSourceCurrent,
     onAdmitted: async (admittedRunContext) => {
       await opts.onAdmittedRunContext?.(admittedRunContext);
       admittedContext = admittedRunContext;
@@ -221,6 +224,7 @@ export function sanitizePublicAgentCommandIngressOpts(
     mainRestartRecoveryAttempt: undefined,
     executionIdentityAdmission: undefined,
     operationalRunInstance: undefined,
+    assertSourceCurrent: undefined,
     cronCreatorAuthorityCapability: undefined,
     onAdmittedRunContext: undefined,
     onPostAdmittedRunContext: undefined,
