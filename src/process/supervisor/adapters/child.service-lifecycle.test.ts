@@ -7,11 +7,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { waitForPidFile } from "../../../../test/helpers/process-wait.js";
 import { useAutoCleanupTempDirTracker } from "../../../../test/helpers/temp-dir.js";
 import { killPidIfAlive } from "../../../test-utils/process-tree.js";
+import { GRACEFUL_CANCEL_TIMEOUT_MS } from "../cancellation-policy.js";
 import { createProcessSupervisor } from "../supervisor.js";
 import { createChildAdapter } from "./child.js";
 
 const activePids = new Set<number>();
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const PROCESS_STATE_TIMEOUT_MS = 5_000;
 
 function isAlive(pid: number): boolean {
   try {
@@ -31,7 +33,10 @@ function isAlive(pid: number): boolean {
   }
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
+async function waitFor(
+  predicate: () => boolean,
+  timeoutMs = PROCESS_STATE_TIMEOUT_MS,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
     if (Date.now() >= deadline) {
@@ -215,7 +220,12 @@ describe.skipIf(process.platform === "win32")("service-managed child lifecycle",
       // Observe the anchor's TERM before its unchanged grace; neither the timeout
       // result nor the failed join may disable its independent group cleanup.
       await waitForPidFile(termPath, 5_000, realDelay);
-      await waitFor(() => !isAlive(startedPid));
+      // This command ignores TERM: its full grace must precede the OS exit
+      // observation budget, rather than racing the same five-second deadline.
+      await waitFor(
+        () => !isAlive(startedPid),
+        GRACEFUL_CANCEL_TIMEOUT_MS + PROCESS_STATE_TIMEOUT_MS,
+      );
     } finally {
       vi.useRealTimers();
       supervisor.cancel(runId);
