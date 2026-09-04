@@ -35,6 +35,14 @@ final class DashboardManager {
         let windowID: ObjectIdentifier?
     }
 
+    private final class ProfileObservation {
+        let id = UUID()
+        var task: Task<Void, Never>?
+        var snapshot: GatewayConnection.PushDelivery?
+        var revision: UInt64 = 0
+        var needsRefresh = false
+    }
+
     @ObservationIgnored private var controller: DashboardWindowController?
     @ObservationIgnored private var mainTarget = DashboardGatewayTarget.primary
     @ObservationIgnored private var auxiliaryWindows: [UUID: AuxiliaryWindowInstance] = [:]
@@ -52,6 +60,7 @@ final class DashboardManager {
     @ObservationIgnored private var windowLifetime: UInt64 = 0
     @ObservationIgnored private var gatewaySnapshotGeneration: UInt64 = 0
     @ObservationIgnored private var profileCredentialsNeedRefresh = false
+    @ObservationIgnored private var profileObservations: [DashboardGatewayTarget: ProfileObservation] = [:]
     @ObservationIgnored private let authTokenProvider: @Sendable (GatewayConnection.Config) async -> String?
     @ObservationIgnored private let connectionProvider: @Sendable (DashboardGatewayTarget) async -> GatewayConnection
     @ObservationIgnored private let browserIdentityURLProvider:
@@ -154,6 +163,12 @@ final class DashboardManager {
                     Task { @MainActor [weak self] in self?.updateFrontmostDashboardTarget() }
                 }
             }
+        }
+    }
+
+    isolated deinit {
+        for observation in self.profileObservations.values {
+            observation.task?.cancel()
         }
     }
 
@@ -486,6 +501,7 @@ final class DashboardManager {
         for controller in controllers {
             controller.closeDashboard()
         }
+        self.synchronizeProfileObservations()
         self.frontmostDashboardTarget = nil
     }
 
@@ -542,6 +558,7 @@ final class DashboardManager {
     }
 
     private func refreshGatewaySnapshots() async {
+        self.synchronizeProfileObservations()
         self.gatewaySnapshotGeneration &+= 1
         let generation = self.gatewaySnapshotGeneration
         guard var entries = try? await self.loadGatewayEntries(),
@@ -550,12 +567,21 @@ final class DashboardManager {
         let profileTargets = Set(self.dashboardControllers().map(\.target).filter { $0 != .primary })
         for target in profileTargets.sorted(by: { $0.bridgeID < $1.bridgeID }) {
             let hasEntry = entries.contains { $0.id == target.bridgeID }
-            guard self.profileCredentialsNeedRefresh || !hasEntry else { continue }
+            let observation = self.profileObservations[target]
+            let needsRefresh = self.profileCredentialsNeedRefresh || observation?.needsRefresh == true
+            guard needsRefresh || !hasEntry else { continue }
+            let snapshot = observation?.snapshot
+            let revision = observation?.revision
+            // Lookup may outlive a close or picker switch; only surviving shells
+            // on this target may receive its refreshed document.
+            let windows = self.dashboardControllers().filter { $0.target == target }.compactMap(\.controller.window)
             let resolved: (configuration: WindowConfiguration, endpoint: GatewayConnection.EndpointSnapshot)
             do {
                 resolved = try await self.windowConfiguration(for: target)
             } catch {
                 guard self.gatewaySnapshotGeneration == generation else { return }
+                guard self.profileObservations[target] === observation, observation?.revision == revision,
+                      snapshot?.isCurrent != false else { continue }
                 if error as? MacGatewayProfileError == .profileNotFound,
                    let current = self.dashboardControllers().first(where: { $0.target == target })
                 {
@@ -565,6 +591,8 @@ final class DashboardManager {
                 continue
             }
             guard self.gatewaySnapshotGeneration == generation else { return }
+            guard self.profileObservations[target] === observation, observation?.revision == revision,
+                  snapshot?.isCurrent != false else { continue }
             let (configuration, endpoint) = resolved
             if !hasEntry {
                 // Primary-row deduplication is display policy, not profile removal.
@@ -577,8 +605,10 @@ final class DashboardManager {
                     canPromote: endpoint.config.token?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty != nil,
                     health: .unknown))
             }
-            for (_, controller) in self.dashboardControllers().filter({ $0.target == target }) {
-                if self.profileCredentialsNeedRefresh, self.requiresIsolatedDashboardDocument(
+            for window in windows {
+                guard let controller = self.controller(in: window, for: target),
+                      controller.isWindowOpen else { continue }
+                if needsRefresh, self.requiresIsolatedDashboardDocument(
                     controller, configuration: configuration, endpoint: endpoint, comparePrimaryRoute: false)
                 {
                     self.replaceWindowController(
@@ -588,6 +618,7 @@ final class DashboardManager {
                         present: false)
                 }
             }
+            observation?.needsRefresh = false
         }
         self.gatewayEntries = entries
         self.profileCredentialsNeedRefresh = false
@@ -762,6 +793,52 @@ final class DashboardManager {
 }
 
 extension DashboardManager {
+    private func synchronizeProfileObservations() {
+        guard self.observesGatewayChanges, self.automaticGatewayProfileRefreshEnabled else { return }
+        let targets = Set(self.dashboardControllers().map(\.target).filter { $0 != .primary })
+        for target in self.profileObservations.keys where !targets.contains(target) {
+            self.profileObservations.removeValue(forKey: target)?.task?.cancel()
+        }
+        for target in targets where self.profileObservations[target] == nil {
+            let observation = ProfileObservation()
+            self.profileObservations[target] = observation
+            let id = observation.id
+            let provider = self.connectionProvider
+            observation.task = Task { [weak self] in
+                let connection = await provider(target)
+                guard !Task.isCancelled, self?.profileObservations[target]?.id == id else { return }
+                await GatewayPushSubscription.consume(connection: connection) { [weak self] delivery in
+                    self?.handleProfilePush(delivery, target: target, observationID: id)
+                }
+            }
+        }
+    }
+
+    private func handleProfilePush(
+        _ delivery: GatewayConnection.PushDelivery,
+        target: DashboardGatewayTarget,
+        observationID: UUID)
+    {
+        guard let observation = self.profileObservations[target], observation.id == observationID else { return }
+        if let push = delivery.push {
+            guard case .snapshot = push else { return }
+            observation.snapshot = delivery
+            observation.needsRefresh = true
+        } else {
+            guard observation.snapshot.map({ $0.serverLease == delivery.serverLease }) != false else { return }
+            observation.snapshot = nil
+            observation.needsRefresh = false
+        }
+        // Retire only this profile's awaited announcement. Another profile's
+        // pending refresh must still finish while this connection is offline.
+        observation.revision &+= 1
+        guard delivery.push != nil else { return }
+        Task { @MainActor [weak self] in
+            guard self?.profileObservations[target]?.id == observationID, delivery.isCurrent else { return }
+            await self?.refreshGatewaySnapshots()
+        }
+    }
+
     private func makePrimaryController(
         url: URL,
         auth: DashboardWindowAuth,
@@ -1359,6 +1436,7 @@ extension DashboardManager {
     }
 
     private func updateFrontmostDashboardTarget() {
+        self.synchronizeProfileObservations()
         self.frontmostDashboardTarget = self.frontmostDashboard()?.target
     }
 

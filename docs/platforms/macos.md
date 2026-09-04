@@ -112,6 +112,9 @@ keeps its configured transport, including SSH, and its credentials are not sent
 to the public dashboard or sign-in provider. Shared-secret Gateways without a
 personal sign-in route continue to use the shared owner profile.
 
+Open windows for saved Gateway profiles follow sign-in route changes after a
+reconnect. An unchanged route keeps the current dashboard and its navigation.
+
 Opening the embedded dashboard at its default Chat landing restores the last
 page you visited, such as **Usage**, for that Gateway origin. Explicit session
 links and navigation requests take precedence over the remembered page, and

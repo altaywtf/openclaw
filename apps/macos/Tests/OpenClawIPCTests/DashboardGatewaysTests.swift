@@ -1111,7 +1111,14 @@ extension DashboardManagerGatewayTargetTests {
             (reconnect ? "reconnected" : "primary"))
     }
 
-    @Test(arguments: ["primary-endpoint", "primary-reconnect", "profile-credentials", "picker", "close"])
+    @Test(arguments: [
+        "primary-endpoint",
+        "primary-reconnect",
+        "profile-credentials",
+        "profile-reconnect",
+        "picker",
+        "close",
+    ])
     func `loading document actions follow only the surviving window selection`(_ scenario: String) async throws {
         let responseGate = DashboardWindowOwnershipPresentationGate()
         let html = """
@@ -1125,6 +1132,8 @@ extension DashboardManagerGatewayTargetTests {
           event.preventDefault(); history.pushState({}, '', event.detail.path);
           window.commandEvents.push('navigation');
         });
+        window.__OPENCLAW_NATIVE_COMMANDS_READY__ = true;
+        window.dispatchEvent(new Event('openclaw:native-commands-state'));
         </script></body></html>
         """
         let server = try await DashboardHTTPFixture.start(
@@ -1139,9 +1148,23 @@ extension DashboardManagerGatewayTargetTests {
             Task { await responseGate.release() }
         }
         let source = GatewayConnectionEndpointSource(url: server.websocketURL(), token: "before")
-        let profile = scenario == "profile-credentials" || scenario == "picker" || scenario == "close"
+        let profile = scenario.hasPrefix("profile-") || scenario == "picker" || scenario == "close"
+        let identity = scenario == "profile-reconnect" ? try DashboardIdentityFixture(
+            announcement: nil, source: source) : nil
         let manager = DashboardManager._testMake(
-            observeGatewayChanges: scenario == "profile-credentials",
+            connectionProvider: { target in
+                if let identity { return identity.connection }
+                switch target {
+                case .primary: return GatewayConnection.shared
+                case let .profile(id): return await MacGatewayConnectionFleet.shared.connection(profileID: id)
+                }
+            },
+            browserIdentityURLProvider: { _, config in
+                guard let identity else { return nil }
+                let announcement = try await identity.connection.controlUiBrowserIdentityURL(config: config)
+                return announcement == nil ? nil : server.url()
+            },
+            observeGatewayChanges: scenario.hasPrefix("profile-"),
             primaryEndpointProvider: { _ in
                 scenario == "picker"
                     ? GatewayConnection.EndpointSnapshot(
@@ -1152,61 +1175,74 @@ extension DashboardManagerGatewayTargetTests {
             profileEndpointProvider: { _ in source.snapshot() },
             gatewayEntriesProvider: { DashboardGatewayTestEntries.withProfiles(["secondary"]) })
         defer { manager.close() }
-        await manager._testOpenWindow(for: profile ? .profile("secondary") : .primary)
-        await responseGate.waitUntilRequested()
-        let original = try #require(manager._testAuxiliaryWindows().first?.controller)
-        let window = try #require(original.window)
-        #expect(original.webView.isLoading)
-        #expect(original.canDeliverNativeCommands)
-        manager.dispatchNativeCommand(.newSession)
-        manager.dispatchNativeCommand(.commandPalette)
-        manager.dispatchNativeCommand(.commandPalette)
-        #expect(original._testPendingNativeCommands == [.newSession, .commandPalette, .commandPalette])
-        let path = "/chat/main/dashboard/preserved"
-        original.dispatchNativeNavigation(DashboardNativeNavigation(
-            path: path, search: nil, fallbackURL: server.url(path)))
-        let intent = original.windowIntentGeneration
+        do {
+            await manager._testOpenWindow(for: profile ? .profile("secondary") : .primary)
+            await responseGate.waitUntilRequested()
+            let original = try #require(manager._testAuxiliaryWindows().first?.controller)
+            let window = try #require(original.window)
+            #expect(original.webView.isLoading)
+            #expect(original.canDeliverNativeCommands)
+            manager.dispatchNativeCommand(.newSession)
+            manager.dispatchNativeCommand(.commandPalette)
+            manager.dispatchNativeCommand(.commandPalette)
+            #expect(original._testPendingNativeCommands == [.newSession, .commandPalette, .commandPalette])
+            let path = "/chat/main/dashboard/preserved"
+            original.dispatchNativeNavigation(DashboardNativeNavigation(
+                path: path, search: nil, fallbackURL: server.url(path)))
+            let intent = original.windowIntentGeneration
 
-        switch scenario {
-        case "close":
-            window.performClose(nil)
-            #expect(original._testPendingNativeCommands.isEmpty)
-            #expect(original._testPendingNativeNavigation == nil)
-            #expect(manager._testAuxiliaryWindows().isEmpty)
-            return
-        case "picker":
-            manager.handleGatewayRequest(.select(.primary), from: original)
-        case "profile-credentials":
-            source.setEndpoint(GatewayConnection.EndpointSnapshot(
-                config: (url: server.websocketURL(), token: "after", password: nil), routeAuthority: nil))
-            NotificationCenter.default.post(name: MacGatewayProfileStore.didChangeNotification, object: nil)
-        default:
-            if scenario == "primary-reconnect" {
-                await manager.handleEndpointState(.connecting(mode: .remote, detail: "Reconnecting"))
+            switch scenario {
+            case "close":
+                window.performClose(nil)
+                #expect(original._testPendingNativeCommands.isEmpty)
+                #expect(original._testPendingNativeNavigation == nil)
+                #expect(manager._testAuxiliaryWindows().isEmpty)
+                await identity?.connection.shutdown()
+                return
+            case "picker":
+                manager.handleGatewayRequest(.select(.primary), from: original)
+            case "profile-credentials":
+                source.setEndpoint(GatewayConnection.EndpointSnapshot(
+                    config: (url: server.websocketURL(), token: "after", password: nil), routeAuthority: nil))
+                NotificationCenter.default.post(name: MacGatewayProfileStore.didChangeNotification, object: nil)
+            case "profile-reconnect":
+                try await identity?.reconnect(announcement: "https://renewed.example.test/")
+            default:
+                if scenario == "primary-reconnect" {
+                    await manager.handleEndpointState(.connecting(mode: .remote, detail: "Reconnecting"))
+                }
+                await manager.handleEndpointState(.ready(
+                    mode: .remote,
+                    url: replacementServer.websocketURL(),
+                    token: "after",
+                    password: nil,
+                    routeRevision: 2))
             }
-            await manager.handleEndpointState(.ready(
-                mode: .remote, url: replacementServer.websocketURL(), token: "after", password: nil, routeRevision: 2))
+            let replacementDeadline = ContinuousClock.now + .seconds(5)
+            while window.windowController === original, ContinuousClock.now < replacementDeadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            let replacement = try #require(window.windowController as? DashboardWindowController)
+            #expect(replacement !== original)
+            #expect(replacement.window === window)
+            if scenario != "picker" { #expect(replacement.windowIntentGeneration == intent) }
+            await responseGate.release()
+            let deadline = ContinuousClock.now + .seconds(5)
+            let expected = scenario == "picker" ? [] :
+                ["new-session", "palette", "palette"] + (scenario.hasPrefix("profile-") ? ["navigation"] : [])
+            var events: [String] = []
+            repeat {
+                events = await (try? replacement.webView.evaluateJavaScript("window.commandEvents") as? [String]) ?? []
+                if !replacement.webView.isLoading, replacement.canDeliverNativeCommands, events == expected { break }
+                try await Task.sleep(for: .milliseconds(10))
+            } while ContinuousClock.now < deadline
+            #expect(events == expected)
+            #expect(replacement.webView.url?.path == (scenario.hasPrefix("profile-") ? path : "/"))
+        } catch {
+            await identity?.connection.shutdown()
+            throw error
         }
-        let replacementDeadline = ContinuousClock.now + .seconds(5)
-        while window.windowController === original, ContinuousClock.now < replacementDeadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        let replacement = try #require(window.windowController as? DashboardWindowController)
-        #expect(replacement !== original)
-        #expect(replacement.window === window)
-        if scenario != "picker" { #expect(replacement.windowIntentGeneration == intent) }
-        await responseGate.release()
-        let deadline = ContinuousClock.now + .seconds(5)
-        let expected = scenario == "picker" ? [] :
-            ["new-session", "palette", "palette"] + (scenario == "profile-credentials" ? ["navigation"] : [])
-        var events: [String] = []
-        repeat {
-            events = await (try? replacement.webView.evaluateJavaScript("window.commandEvents") as? [String]) ?? []
-            if !replacement.webView.isLoading, replacement.canDeliverNativeCommands, events == expected { break }
-            try await Task.sleep(for: .milliseconds(10))
-        } while ContinuousClock.now < deadline
-        #expect(events == expected)
-        #expect(replacement.webView.url?.path == (scenario == "profile-credentials" ? path : "/"))
+        await identity?.connection.shutdown()
     }
 }
 

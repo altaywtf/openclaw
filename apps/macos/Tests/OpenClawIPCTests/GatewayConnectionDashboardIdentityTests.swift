@@ -5,7 +5,7 @@ import Testing
 @testable import OpenClaw
 @testable import OpenClawKit
 
-private struct DashboardIdentityFixture: Sendable {
+struct DashboardIdentityFixture: Sendable {
     let config: GatewayConnection.Config
     let source: GatewayConnectionEndpointSource
     let announcement: LockIsolated<String?>
@@ -14,10 +14,14 @@ private struct DashboardIdentityFixture: Sendable {
     let connection: GatewayConnection
     let session: GatewayTestWebSocketSession
 
-    init(announcement: String?, endpointGate: GatewayConnectionSuspensionGate? = nil) throws {
-        let config: GatewayConnection.Config = try (
+    init(
+        announcement: String?,
+        endpointGate: GatewayConnectionSuspensionGate? = nil,
+        source: GatewayConnectionEndpointSource? = nil) throws
+    {
+        let config: GatewayConnection.Config = try source?.snapshot().config ?? (
             #require(URL(string: "ws://127.0.0.1:28901")), "synthetic-owner-token", nil)
-        let source = GatewayConnectionEndpointSource(endpoint: .init(
+        let source = source ?? GatewayConnectionEndpointSource(endpoint: .init(
             config: config, routeAuthority: 1, revision: 1))
         let announcement = LockIsolated(announcement)
         let requests = LockIsolated<[String]>([])
@@ -53,13 +57,29 @@ private struct DashboardIdentityFixture: Sendable {
         self.requests = requests
         self.suspendEndpoint = suspendEndpoint
         self.session = session
+        let currentEndpointRevision: (@Sendable () -> UInt64)? =
+            source.snapshot().revision == nil ? nil : { @Sendable in source.snapshot().revision! }
         self.connection = GatewayConnection(
             testEndpointProvider: {
                 if suspendEndpoint.value { await endpointGate?.suspend() }
                 return source.snapshot()
             },
-            currentEndpointRevision: { source.snapshot().revision! },
+            currentEndpointRevision: currentEndpointRevision,
             sessionBox: WebSocketSessionBox(session: session))
+    }
+
+    func reconnect(announcement: String?) async throws {
+        let lease = try #require(await self.connection.captureServerLease())
+        self.announcement.withValue { $0 = announcement }
+        self.session.latestTask()?.emitReceiveFailure()
+        let deadline = ContinuousClock.now + .seconds(3)
+        while self.connection.serverLeaseMatchesCurrentState(lease), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try #require(!self.connection.serverLeaseMatchesCurrentState(lease))
+        _ = try await self.connection.request(method: "health", params: nil)
+        try #require(try await self.connection.controlUiBrowserIdentityURL(config: self.config)?.absoluteString ==
+            announcement)
     }
 }
 
@@ -150,6 +170,127 @@ struct GatewayConnectionDashboardIdentityTests {
             announcement)
         #expect(fixture.requests.value == ["health"])
         await fixture.connection.shutdown()
+    }
+
+    @Test(arguments: ["closed", "switched", "retired", "other-retired"])
+    @MainActor
+    func `late profile reconciliation cannot replace a retired window or connection`(_ action: String) async throws {
+        try await TestIsolation.withIsolatedState {
+            _ = AppKitTestSupport.application
+            let originalURL = try #require(URL(string: "https://team.example.test/"))
+            let endpointGate = GatewayConnectionSuspensionGate()
+            let fixture = try DashboardIdentityFixture(
+                announcement: originalURL.absoluteString, endpointGate: endpointGate)
+            let otherEndpointGate = GatewayConnectionSuspensionGate()
+            let other = try DashboardIdentityFixture(
+                announcement: "https://other.example.test/", endpointGate: otherEndpointGate)
+            let target = DashboardGatewayTarget.profile("held-identity")
+            let otherTarget = DashboardGatewayTarget.profile("other-identity")
+            let gate = DashboardWindowOwnershipPresentationGate()
+            let held = LockIsolated(false)
+            let returned = LockIsolated(false)
+            let manager = DashboardManager._testMake(
+                connectionProvider: { $0 == target ? fixture.connection : other.connection },
+                browserIdentityURLProvider: { selected, config in
+                    let connection = selected == target ? fixture.connection : other.connection
+                    let url = try await connection.controlUiBrowserIdentityURL(config: config)
+                    if selected == target, url?.host == "renewed.example.test" {
+                        held.setValue(true)
+                        await gate.waitForRelease()
+                        returned.setValue(true)
+                    }
+                    return url
+                },
+                observeGatewayChanges: true,
+                profileEndpointProvider: { profileID in
+                    profileID == "held-identity" ? fixture.source.snapshot() : other.source.snapshot()
+                },
+                gatewayEntriesProvider: {
+                    [target, otherTarget].map {
+                        DashboardGatewayEntry(
+                            id: $0.bridgeID,
+                            name: $0.bridgeID,
+                            kind: "remote",
+                            isPrimary: false,
+                            canPromote: true,
+                            health: .unknown)
+                    }
+                })
+            let result: Result<Void, Error>
+            do {
+                await manager._testOpenWindow(for: target)
+                await manager._testOpenWindow(for: otherTarget)
+                let original = try #require(manager._testAuxiliaryWindows().first { $0.target == target }?.controller)
+                let originalWindow = try #require(original.window)
+                let unrelated = try #require(manager._testAuxiliaryWindows().first { $0.target == otherTarget }?
+                    .controller)
+                let unrelatedLease = try #require(await other.connection.captureServerLease())
+                try await fixture.reconnect(announcement: "https://renewed.example.test/")
+                let requested = ContinuousClock.now + .seconds(5)
+                while !held.value, ContinuousClock.now < requested {
+                    try await Task.sleep(for: .milliseconds(10))
+                }
+                try #require(held.value, "A fresh profile snapshot must reach dashboard reconciliation")
+                switch action {
+                case "closed": originalWindow.performClose(nil)
+                case "switched": await manager._testSwitchTarget(otherTarget, in: original)
+                case "other-retired":
+                    other.suspendEndpoint.setValue(true)
+                    await other.connection.shutdown()
+                default:
+                    fixture.suspendEndpoint.setValue(true)
+                    await fixture.connection.shutdown()
+                }
+                await gate.release()
+                // Observe delayed work after release; absence at the release boundary alone proves nothing.
+                let settled = ContinuousClock.now + .seconds(5)
+                while ContinuousClock.now < settled {
+                    let current = manager._testAuxiliaryWindows()
+                    let survivor = current.first { $0.controller.window === originalWindow }
+                    try #require(current.contains { $0.controller === unrelated && $0.target == otherTarget })
+                    switch action {
+                    case "closed": try #require(survivor == nil)
+                    case "switched": try #require(survivor?.target == otherTarget)
+                    case "other-retired": break
+                    default: try #require(survivor?.controller === original && original.currentURL == originalURL)
+                    }
+                    try await Task.sleep(for: .milliseconds(20))
+                }
+                #expect(returned.value)
+                if action == "other-retired" {
+                    let replacement = try #require(originalWindow.windowController as? DashboardWindowController)
+                    #expect(replacement !== original)
+                    #expect(replacement.currentURL.absoluteString == "https://renewed.example.test/")
+                    #expect(!other.connection.serverLeaseMatchesCurrentState(unrelatedLease))
+                }
+                if action == "retired" {
+                    fixture.announcement.setValue(nil)
+                    fixture.suspendEndpoint.setValue(false)
+                    await endpointGate.open()
+                    _ = try await fixture.connection.request(method: "health", params: nil)
+                    let recovered = ContinuousClock.now + .seconds(5)
+                    while originalWindow.windowController === original, ContinuousClock.now < recovered {
+                        try await Task.sleep(for: .milliseconds(10))
+                    }
+                    let replacement = try #require(originalWindow.windowController as? DashboardWindowController)
+                    #expect(replacement !== original)
+                    #expect(!replacement.auth.usesBrowserIdentity)
+                    #expect(replacement.auth.token == fixture.config.token)
+                }
+                result = .success(())
+            } catch {
+                result = .failure(error)
+            }
+            manager.close()
+            await gate.release()
+            fixture.suspendEndpoint.setValue(false)
+            await endpointGate.open()
+            other.suspendEndpoint.setValue(false)
+            await otherEndpointGate.open()
+            await fixture.connection.shutdown()
+            await other.connection.shutdown()
+            try result.get()
+        }
     }
 
     @Test(arguments: [
