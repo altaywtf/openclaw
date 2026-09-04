@@ -16,6 +16,9 @@ import {
 import { resolveAdmittedRunActiveAssertion } from "../../admitted-run-context.js";
 import { listActiveProcessSessionReferences } from "../../bash-process-references.js";
 import { resolveProcessToolScopeKey } from "../../bash-process-scope.js";
+import { withHarnessContextEngineCompaction } from "../../harness/compaction.js";
+import type { AgentHarnessContextEngineCompactionTransaction } from "../../harness/types.js";
+import type { PreparedModelRuntimeSnapshot } from "../../prepared-model-runtime.js";
 import { SessionManager } from "../../sessions/session-manager.js";
 import { buildEmbeddedCompactionRuntimeContext } from "../compaction-runtime-context.js";
 import {
@@ -59,6 +62,7 @@ export type EmbeddedRunCompactionRecoveryInput = CompactionRuntime & {
   provider: string;
   modelId: string;
   harnessRuntime: string;
+  preparedModelRuntime?: PreparedModelRuntimeSnapshot;
   thinkLevel: Parameters<typeof buildEmbeddedCompactionRuntimeContext>[0]["thinkLevel"];
   authProfileId?: string;
   authProfileIdSource: "auto" | "user";
@@ -184,96 +188,142 @@ export async function compactEmbeddedRunForRecovery(
     runtimeContext,
     runtimeSettings,
   };
-  let result: CompactionResult;
-  try {
-    const compact = bindContextEngineCompaction(input.contextEngine);
-    result = await compactContextEngineWithSafetyTimeout(
-      {
-        info: input.contextEngine.info,
-        compact: inheritRuntimeCompactionDelegate(compact, (backendParams) =>
-          owner.withTranscriptWrites(backendParams.abortSignal, () => {
-            // The watchdog may copy runtimeContext to install its progress callback.
-            // Attach private facts to the object the delegate actually receives.
-            if (backendParams.runtimeContext) {
-              attachCompactionAccountingRecorder(backendParams.runtimeContext, {
-                memoryTranscript: owner.sessionManager
-                  ? {
-                      sessionManager: owner.sessionManager,
-                      sessionTarget: activeSession.target,
-                      assertActive: () => {
-                        backendParams.abortSignal?.throwIfAborted();
-                        owner.assertActive();
-                      },
-                    }
-                  : undefined,
-                recordUsage: (usage) => mergeUsageIntoAccumulator(input.usageAccumulator, usage),
-                recordCompaction: (tokensAfter) => {
-                  observedCompactions += 1;
-                  input.state.observeContextAccounting({ kind: "compaction", tokensAfter });
-                },
-              });
-            }
-            return compact(backendParams);
-          }),
-        ),
-      },
-      compactParams,
-      resolveCompactionTimeoutMs(runParams.config),
-      runParams.abortSignal,
-    );
-  } catch (error) {
-    // Only a live owner's backend failure is recoverable. Caller cancellation,
-    // replacement, and claim loss must never become a truncation/retry request.
+  const runRecoveryCompaction = async (
+    harnessTransaction?: AgentHarnessContextEngineCompactionTransaction,
+  ) => {
+    let compactionResult: CompactionResult;
+    try {
+      const compact = bindContextEngineCompaction(input.contextEngine);
+      compactionResult = await compactContextEngineWithSafetyTimeout(
+        {
+          info: input.contextEngine.info,
+          compact: inheritRuntimeCompactionDelegate(compact, (backendParams) =>
+            owner.withTranscriptWrites(backendParams.abortSignal, async () => {
+              // The watchdog may copy runtimeContext to install its progress callback.
+              // Attach private facts to the object the delegate actually receives.
+              const restoreRecorder = backendParams.runtimeContext
+                ? attachCompactionAccountingRecorder(backendParams.runtimeContext, {
+                    memoryTranscript: owner.sessionManager
+                      ? {
+                          sessionManager: owner.sessionManager,
+                          sessionTarget: activeSession.target,
+                          assertActive: () => {
+                            backendParams.abortSignal?.throwIfAborted();
+                            owner.assertActive();
+                          },
+                        }
+                      : undefined,
+                    recordUsage: (usage) =>
+                      mergeUsageIntoAccumulator(input.usageAccumulator, usage),
+                    recordCompaction: (tokensAfter) => {
+                      observedCompactions += 1;
+                      input.state.observeContextAccounting({ kind: "compaction", tokensAfter });
+                    },
+                    onCompactionCommitted: () => harnessTransaction?.markProducerCommitted(),
+                  })
+                : undefined;
+              try {
+                return await compact(backendParams);
+              } finally {
+                restoreRecorder?.();
+              }
+            }),
+          ),
+        },
+        compactParams,
+        resolveCompactionTimeoutMs(runParams.config),
+        runParams.abortSignal,
+      );
+    } catch (error) {
+      // Only a live owner's backend failure is recoverable. Caller cancellation,
+      // replacement, and claim loss must never become a truncation/retry request.
+      owner.assertActive();
+      log.warn(
+        `contextEngine.compact() threw during ${reason} for ${input.provider}/${input.modelId}: ${String(error)}`,
+      );
+      compactionResult = { ok: false, compacted: false, reason: String(error) };
+    }
+    if (observedCompactions > 0 && !compactionResult.compacted) {
+      // Post-commit failure is not an unperformed compaction. Retry the observed
+      // current context, but never adopt a failed backend's successor proposal.
+      compactionResult = {
+        ok: compactionResult.ok,
+        compacted: true,
+        reason: compactionResult.reason,
+      };
+    }
+    if (observedCompactions > 0 || (compactionResult.ok && compactionResult.compacted)) {
+      harnessTransaction?.markProducerCommitted();
+    } else {
+      harnessTransaction?.rollbackBeforeProducerCommit();
+    }
+    const successor = resolveCompactionSuccessorTranscript(compactionResult);
+    const target = compactionResult.result?.sessionTarget;
+    const sameTarget =
+      (!successor.sessionId || successor.sessionId === activeSession.id) &&
+      (!successor.sessionFile || successor.sessionFile === activeSession.file) &&
+      (!target?.agentId || target.agentId === activeSession.target?.agentId) &&
+      (!target?.sessionKey || target.sessionKey === activeSession.target?.sessionKey) &&
+      (!target?.storePath || target.storePath === activeSession.target?.storePath);
+    const reportedTokens = compactionResult.result?.tokensAfter;
+    const tokensAfter =
+      typeof reportedTokens === "number" && Number.isFinite(reportedTokens) && reportedTokens >= 0
+        ? Math.floor(reportedTokens)
+        : undefined;
+    const recordTokensAfter = () => {
+      input.state.lastCompactionTokensAfter = tokensAfter;
+      input.state.currentContextSnapshot = { tokens: tokensAfter };
+    };
+    if (compactionResult.compacted && observedCompactions === 0) {
+      // Opaque engines report completion on return. Stock commits are already
+      // recorded before hooks; their late result must not replace a newer context.
+      // A proposed successor's token snapshot transfers only on host acceptance.
+      input.state.observeContextAccounting({
+        kind: "compaction",
+        tokensAfter: sameTarget ? tokensAfter : undefined,
+      });
+    }
     owner.assertActive();
-    log.warn(
-      `contextEngine.compact() threw during ${reason} for ${input.provider}/${input.modelId}: ${String(error)}`,
-    );
-    result = { ok: false, compacted: false, reason: String(error) };
-  }
-  if (observedCompactions > 0 && !result.compacted) {
-    // Post-commit failure is not an unperformed compaction. Retry the observed
-    // current context, but never adopt a failed backend's successor proposal.
-    result = { ok: result.ok, compacted: true, reason: result.reason };
-  }
-  const successor = resolveCompactionSuccessorTranscript(result);
-  const target = result.result?.sessionTarget;
-  const sameTarget =
-    (!successor.sessionId || successor.sessionId === activeSession.id) &&
-    (!successor.sessionFile || successor.sessionFile === activeSession.file) &&
-    (!target?.agentId || target.agentId === activeSession.target?.agentId) &&
-    (!target?.sessionKey || target.sessionKey === activeSession.target?.sessionKey) &&
-    (!target?.storePath || target.storePath === activeSession.target?.storePath);
-  const reportedTokens = result.result?.tokensAfter;
-  const tokensAfter =
-    typeof reportedTokens === "number" && Number.isFinite(reportedTokens) && reportedTokens >= 0
-      ? Math.floor(reportedTokens)
-      : undefined;
-  const recordTokensAfter = () => {
-    input.state.lastCompactionTokensAfter = tokensAfter;
-    input.state.currentContextSnapshot = { tokens: tokensAfter };
+    // Stock compaction already updated this exact buffer; resolving its unchanged
+    // portable identity would unnecessarily consult a borrowed durable session.
+    const retainMemoryTranscript =
+      owner.sessionManager &&
+      sameTarget &&
+      (target?.threadId === undefined || target.threadId === activeSession.target.threadId);
+    const onAccepted = sameTarget ? undefined : recordTokensAfter;
+    const adoptedPreviousSessionId =
+      compactionResult.ok && compactionResult.compacted && !retainMemoryTranscript
+        ? harnessTransaction
+          ? await input.adoptCompactionTranscript(compactionResult, onAccepted, harnessTransaction)
+          : await input.adoptCompactionTranscript(compactionResult, onAccepted)
+        : undefined;
+    return { result: compactionResult, previousSessionId: adoptedPreviousSessionId };
   };
-  if (result.compacted && observedCompactions === 0) {
-    // Opaque engines report completion on return. Stock commits are already
-    // recorded before hooks; their late result must not replace a newer context.
-    // A proposed successor's token snapshot transfers only on host acceptance.
-    input.state.observeContextAccounting({
-      kind: "compaction",
-      tokensAfter: sameTarget ? tokensAfter : undefined,
+  let recoveryResult: Awaited<ReturnType<typeof runRecoveryCompaction>>;
+  if (input.harnessRuntime === "openclaw") {
+    recoveryResult = await runRecoveryCompaction();
+  } else {
+    const preparedModelRuntime = input.preparedModelRuntime;
+    if (!preparedModelRuntime) {
+      throw new Error(
+        `Agent harness ${input.harnessRuntime} context-engine compaction owner is unavailable`,
+      );
+    }
+    recoveryResult = await withHarnessContextEngineCompaction({
+      harnessRuntime: input.harnessRuntime,
+      preparedModelRuntime,
+      compaction: {
+        agentId: activeSession.target.agentId,
+        sessionId: activeSession.id,
+        sessionKey: activeSession.target.sessionKey,
+        storePath: activeSession.target.storePath,
+        requiresNativeCompactionSync: input.contextEngine.info.ownsCompaction === true,
+      },
+      run: runRecoveryCompaction,
     });
   }
-  owner.assertActive();
-  // Stock compaction already updated this exact buffer; resolving its unchanged
-  // portable identity would unnecessarily consult a borrowed durable session.
-  const retainMemoryTranscript =
-    owner.sessionManager &&
-    sameTarget &&
-    (target?.threadId === undefined || target.threadId === activeSession.target.threadId);
-  const previousSessionId =
-    result.ok && result.compacted && !retainMemoryTranscript
-      ? await input.adoptCompactionTranscript(result, sameTarget ? undefined : recordTokensAfter)
-      : undefined;
   input.assertRecoveryActive();
-  return { result, runtimeContext, runtimeSettings, previousSessionId };
+  return { ...recoveryResult, runtimeContext, runtimeSettings };
 }
 
 export function createEmbeddedRunCompactionRuntime(input: {
@@ -414,6 +464,7 @@ export function createEmbeddedRunCompactionRuntime(input: {
   const adoptCompactionTranscript = async (
     compactResult: CompactionResult,
     onAccepted?: () => void,
+    harnessTransaction?: AgentHarnessContextEngineCompactionTransaction,
   ): Promise<string | undefined> => {
     assertRecoveryActive();
     const currentTarget = getPreparedTarget();
@@ -441,6 +492,7 @@ export function createEmbeddedRunCompactionRuntime(input: {
       currentSessionFile: sessionPromptState.sessionFile,
       currentTarget,
       result: compactResult,
+      ...(harnessTransaction ? { harnessTransaction } : {}),
       expectedEntry: {
         sessionId: currentTarget.sessionId,
         lifecycleRevision: writerFence?.expectedLifecycleRevision,

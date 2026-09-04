@@ -75,7 +75,8 @@ export async function withHarnessContextEngineCompaction<T>(params: {
   if (!id || id === "openclaw") {
     return await params.run();
   }
-  const registry = params.preparedModelRuntime.pluginRegistry;
+  const preparedModelRuntime = params.preparedModelRuntime;
+  const registry = preparedModelRuntime.pluginRegistry;
   const registration = registry?.agentHarnesses.find(({ harness }) => harness.id === id);
   if (!registry || !registration) {
     throw new Error(`Agent harness ${id} context-engine compaction owner is unavailable`);
@@ -91,7 +92,7 @@ export async function withHarnessContextEngineCompaction<T>(params: {
   const assertCurrent = () => {
     if (
       !active ||
-      !params.preparedModelRuntime.isCurrent() ||
+      !preparedModelRuntime.isCurrent() ||
       !lifecycle() ||
       !registry.agentHarnesses.includes(registration) ||
       registration.harness.withContextEngineCompaction !== prepare

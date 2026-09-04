@@ -15,6 +15,7 @@ import {
   prepareSystemAgentRunAdmission,
   type PreparedAgentRunAdmission,
 } from "../admitted-run-context.js";
+import type { AgentHarnessContextEngineCompactionTransaction } from "../harness/types.js";
 import type { AgentRuntimeAuthPlan } from "../runtime-plan/types.js";
 import { SessionManager } from "../sessions/session-manager.js";
 import { normalizeUsage } from "../usage.js";
@@ -45,9 +46,19 @@ const completionMocks = vi.hoisted(() => ({
 const compactRuntimeMocks = vi.hoisted(() => ({
   compactEmbeddedAgentSessionOnDemand: vi.fn(),
 }));
+const harnessCompactionMocks = vi.hoisted(() => ({
+  withHarnessContextEngineCompaction: vi.fn(),
+}));
 
 vi.mock("../simple-completion-runtime.js", () => completionMocks);
 vi.mock("./compact.runtime.js", () => compactRuntimeMocks);
+vi.mock("../harness/compaction.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../harness/compaction.js")>();
+  return {
+    ...actual,
+    withHarnessContextEngineCompaction: harnessCompactionMocks.withHarnessContextEngineCompaction,
+  };
+});
 
 // Keep this dedicated leaf on the compaction composition boundary. Runtime/auth/lane policy is
 // covered at its direct owners so this shard never reloads the complete public runner graph.
@@ -168,6 +179,12 @@ function makeRecoveryInput(
 describe("compactEmbeddedRunForRecovery", () => {
   beforeEach(() => {
     compactRuntimeMocks.compactEmbeddedAgentSessionOnDemand.mockReset();
+    harnessCompactionMocks.withHarnessContextEngineCompaction.mockReset();
+    harnessCompactionMocks.withHarnessContextEngineCompaction.mockImplementation(
+      async (params: {
+        run: (transaction?: AgentHarnessContextEngineCompactionTransaction) => Promise<unknown>;
+      }) => await params.run(),
+    );
     completionMocks.prepareSimpleCompletionModelForAgent.mockReset();
     completionMocks.completeWithPreparedSimpleCompletionModel.mockReset();
     completionMocks.resolveSimpleCompletionSelectionForAgent.mockReset();
@@ -265,6 +282,196 @@ describe("compactEmbeddedRunForRecovery", () => {
         promptCache,
       },
     });
+  });
+
+  it("commits recovery compaction and successor adoption in one harness transaction", async () => {
+    const phases: string[] = [];
+    let producerCommitted = false;
+    const transaction: AgentHarnessContextEngineCompactionTransaction = {
+      markProducerCommitted: vi.fn(() => {
+        if (!producerCommitted) {
+          phases.push("producer-committed");
+          producerCommitted = true;
+        }
+      }),
+      rollbackBeforeProducerCommit: vi.fn(() => phases.push("host-rollback")),
+      prepareSuccessor: vi.fn((sessionId) => {
+        phases.push(`prepare:${sessionId}`);
+        return {
+          commit: () => phases.push("host-commit"),
+          rollback: () => phases.push("host-rollback"),
+          complete: () => phases.push("host-complete"),
+        };
+      }),
+    };
+    harnessCompactionMocks.withHarnessContextEngineCompaction.mockImplementationOnce(
+      async (params: {
+        compaction: Record<string, unknown>;
+        harnessRuntime?: string;
+        run: (transaction?: AgentHarnessContextEngineCompactionTransaction) => Promise<unknown>;
+      }) => {
+        expect(params).toMatchObject({
+          harnessRuntime: "codex",
+          compaction: {
+            agentId: "main",
+            sessionId: "session-1",
+            sessionKey: baseRunParams.sessionKey,
+            requiresNativeCompactionSync: true,
+          },
+        });
+        phases.push("transaction-open");
+        return await params.run(transaction);
+      },
+    );
+    const compact = vi.fn<ContextEngine["compact"]>(async ({ runtimeContext }) => {
+      phases.push("producer");
+      readCompactionAccountingRecorder(runtimeContext)?.onCompactionCommitted?.();
+      return {
+        ok: true,
+        compacted: true,
+        result: {
+          sessionId: "session-2",
+          tokensBefore: 4_097,
+          tokensAfter: 3_000,
+        },
+      };
+    });
+    const adoptCompactionTranscript = vi.fn(
+      async (
+        _result: Awaited<ReturnType<ContextEngine["compact"]>>,
+        onAccepted?: () => void,
+        harnessTransaction?: AgentHarnessContextEngineCompactionTransaction,
+      ) => {
+        if (!harnessTransaction) {
+          throw new Error("recovery successor adoption requires the harness transaction");
+        }
+        const mutation = harnessTransaction.prepareSuccessor("session-2");
+        mutation.commit();
+        onAccepted?.();
+        mutation.complete();
+        return "session-1";
+      },
+    );
+    const input = makeRecoveryInput({
+      contextEngine: makeContextEngine(compact),
+      harnessRuntime: "codex",
+      preparedModelRuntime: {} as never,
+      adoptCompactionTranscript,
+    });
+
+    await expect(
+      compactEmbeddedRunForRecovery(input, {
+        tokenBudget: 4_096,
+        trigger: "overflow",
+        diagId: "diag-transaction",
+        attempt: 1,
+        maxAttempts: 2,
+      }),
+    ).resolves.toMatchObject({ previousSessionId: "session-1" });
+
+    expect(harnessCompactionMocks.withHarnessContextEngineCompaction).toHaveBeenCalledOnce();
+    expect(transaction.markProducerCommitted).toHaveBeenCalled();
+    expect(transaction.rollbackBeforeProducerCommit).not.toHaveBeenCalled();
+    expect(adoptCompactionTranscript).toHaveBeenCalledWith(
+      expect.objectContaining({ ok: true, compacted: true }),
+      expect.any(Function),
+      transaction,
+    );
+    expect(phases).toEqual([
+      "transaction-open",
+      "producer",
+      "producer-committed",
+      "prepare:session-2",
+      "host-commit",
+      "host-complete",
+    ]);
+  });
+
+  it("rolls back the harness transition when recovery compaction does not commit", async () => {
+    const transaction: AgentHarnessContextEngineCompactionTransaction = {
+      markProducerCommitted: vi.fn(),
+      rollbackBeforeProducerCommit: vi.fn(),
+      prepareSuccessor: vi.fn(() => {
+        throw new Error("a failed producer cannot prepare a successor");
+      }),
+    };
+    harnessCompactionMocks.withHarnessContextEngineCompaction.mockImplementationOnce(
+      async (params: {
+        run: (transaction?: AgentHarnessContextEngineCompactionTransaction) => Promise<unknown>;
+      }) => await params.run(transaction),
+    );
+    const adoptCompactionTranscript = vi.fn(async () => undefined);
+    const input = makeRecoveryInput({
+      contextEngine: makeContextEngine(
+        vi.fn(async () => ({ ok: false, compacted: false, reason: "producer rejected" })),
+      ),
+      harnessRuntime: "codex",
+      preparedModelRuntime: {} as never,
+      adoptCompactionTranscript,
+    });
+
+    await expect(
+      compactEmbeddedRunForRecovery(input, {
+        tokenBudget: 4_096,
+        trigger: "timeout_recovery",
+        diagId: "diag-rollback",
+        attempt: 1,
+        maxAttempts: 2,
+      }),
+    ).resolves.toMatchObject({
+      result: { ok: false, compacted: false, reason: "producer rejected" },
+    });
+
+    expect(transaction.markProducerCommitted).not.toHaveBeenCalled();
+    expect(transaction.rollbackBeforeProducerCommit).toHaveBeenCalledOnce();
+    expect(transaction.prepareSuccessor).not.toHaveBeenCalled();
+    expect(adoptCompactionTranscript).not.toHaveBeenCalled();
+  });
+
+  it("keeps harness ownership committed after an observed recovery replacement", async () => {
+    const transaction: AgentHarnessContextEngineCompactionTransaction = {
+      markProducerCommitted: vi.fn(),
+      rollbackBeforeProducerCommit: vi.fn(),
+      prepareSuccessor: vi.fn(() => {
+        throw new Error("a failed result cannot prepare a successor");
+      }),
+    };
+    harnessCompactionMocks.withHarnessContextEngineCompaction.mockImplementationOnce(
+      async (params: {
+        run: (transaction?: AgentHarnessContextEngineCompactionTransaction) => Promise<unknown>;
+      }) => await params.run(transaction),
+    );
+    const compact = vi.fn<ContextEngine["compact"]>(async ({ runtimeContext }) => {
+      readCompactionAccountingRecorder(runtimeContext)?.recordCompaction(40);
+      return { ok: false, compacted: false, reason: "backend failed after replacement" };
+    });
+
+    await expect(
+      compactEmbeddedRunForRecovery(
+        makeRecoveryInput({
+          contextEngine: makeContextEngine(compact),
+          harnessRuntime: "codex",
+          preparedModelRuntime: {} as never,
+        }),
+        {
+          tokenBudget: 4_096,
+          trigger: "overflow",
+          diagId: "diag-post-commit-failure",
+          attempt: 1,
+          maxAttempts: 2,
+        },
+      ),
+    ).resolves.toMatchObject({
+      result: {
+        ok: false,
+        compacted: true,
+        reason: "backend failed after replacement",
+      },
+    });
+
+    expect(transaction.markProducerCommitted).toHaveBeenCalledOnce();
+    expect(transaction.rollbackBeforeProducerCommit).not.toHaveBeenCalled();
+    expect(transaction.prepareSuccessor).not.toHaveBeenCalled();
   });
 
   it.each(["overflow", "timeout_recovery"] as const)(

@@ -19,6 +19,7 @@ import {
   hashCodexAppServerBindingFingerprint,
   readCodexAppServerThreadBinding,
   reclaimCurrentCodexSessionGeneration,
+  reconcileCurrentCodexSessionGeneration,
   type StoredCodexAppServerBinding,
 } from "./session-binding.js";
 
@@ -957,6 +958,139 @@ describe("Codex app-server binding store", () => {
     });
   });
 
+  it.each(["explicit rollback", "producer failure"] as const)(
+    "restores the exact pre-transition binding after %s",
+    async (outcome) => {
+      const { state, values } = createStateStore();
+      const store = createCodexAppServerBindingStore(state);
+      const identity = {
+        kind: "session" as const,
+        agentId: "main",
+        sessionId: "session-current",
+        sessionKey: `agent:main:telegram:rollback:${outcome}`,
+      };
+      const previous: StoredCodexAppServerBinding = {
+        version: 1,
+        state: "active",
+        sessionId: identity.sessionId,
+        binding: { threadId: "thread-current", cwd: "/repo" },
+      };
+      state.register(bindingStoreKey(identity), previous);
+
+      const compacting = store.withContextEngineCompaction(
+        identity,
+        true,
+        () => {},
+        async (transaction) => {
+          if (outcome === "explicit rollback") {
+            transaction?.rollbackBeforeProducerCommit();
+            return;
+          }
+          throw new Error("producer failed before commit");
+        },
+      );
+      if (outcome === "producer failure") {
+        await expect(compacting).rejects.toThrow("producer failed before commit");
+      } else {
+        await compacting;
+      }
+
+      expect(values.get(bindingStoreKey(identity))).toEqual(previous);
+      expect(store.read(identity)).not.toHaveProperty("nativeCompactionSyncPending");
+    },
+  );
+
+  it.each([
+    { label: "ordinary", supervision: false },
+    { label: "supervised", supervision: true },
+  ])(
+    "refreshes $label host lineage after waiting on a transition lease",
+    async ({ supervision }) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-09-04T12:00:00.000Z"));
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-codex-lineage-refresh-"));
+      const storePath = path.join(root, "sessions.json");
+      const { state, values } = createStateStore();
+      const store = createCodexAppServerBindingStore(state);
+      const predecessor = {
+        kind: "session" as const,
+        agentId: "main",
+        sessionId: "session-p",
+        sessionKey: `agent:main:telegram:lineage:${supervision ? "supervised" : "ordinary"}`,
+      };
+      const successorId = "session-s";
+      const binding = supervision
+        ? {
+            threadId: "thread-native",
+            cwd: "/repo",
+            connectionScope: "supervision" as const,
+            supervisionSourceThreadId: "thread-source",
+            preserveNativeModel: true as const,
+            conversationSourceTransferComplete: true as const,
+            model: "gpt-5.6",
+            modelProvider: "openai",
+          }
+        : { threadId: "thread-native", cwd: "/repo" };
+      try {
+        await upsertSessionEntry({
+          agentId: predecessor.agentId,
+          sessionKey: predecessor.sessionKey,
+          storePath,
+          entry: { sessionId: predecessor.sessionId, updatedAt: 1 },
+        });
+        state.register(bindingStoreKey(predecessor), {
+          version: 2,
+          state: "compaction-transition",
+          transitionId: `transition-${supervision ? "supervised" : "ordinary"}`,
+          fromSessionId: predecessor.sessionId,
+          toSessionId: successorId,
+          previous: {
+            version: 1,
+            state: "active",
+            sessionId: predecessor.sessionId,
+            binding,
+          },
+          nativeCompactionSyncPending: true,
+          lease: { token: "live-owner", expiresAt: Date.now() + 500 },
+        });
+
+        const reconciliation = reconcileCurrentCodexSessionGeneration({
+          bindingStore: store,
+          identity: predecessor,
+          config: { session: { store: storePath } },
+        });
+        await upsertSessionEntry({
+          agentId: predecessor.agentId,
+          sessionKey: predecessor.sessionKey,
+          storePath,
+          entry: {
+            sessionId: successorId,
+            previousSessionId: predecessor.sessionId,
+            updatedAt: 2,
+          },
+        });
+        await vi.advanceTimersByTimeAsync(1_000);
+
+        await expect(reconciliation).resolves.toEqual({
+          kind: "successor",
+          sessionId: successorId,
+        });
+        expect(values.get(bindingStoreKey(predecessor))).toMatchObject({
+          version: 1,
+          state: "active",
+          sessionId: successorId,
+          binding: {
+            threadId: "thread-native",
+            nativeCompactionSyncPending: true,
+            ...(supervision ? { connectionScope: "supervision" } : {}),
+          },
+        });
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it.each([
     {
       label: "ordinary predecessor",
@@ -1067,7 +1201,6 @@ describe("Codex app-server binding store", () => {
   );
 
   it("reports a live transition lease as busy without changing durable state", async () => {
-    vi.useFakeTimers();
     const { state, values } = createStateStore();
     const identity = {
       kind: "session" as const,
@@ -1095,12 +1228,9 @@ describe("Codex app-server binding store", () => {
       transition.previous.binding,
     );
     expect(() => restarted.read(identity)).toThrow("compaction transition is unresolved");
-    const reconciliation = restarted.reconcileSessionGeneration(identity, {
-      sessionId: identity.sessionId,
-    });
-    await vi.advanceTimersByTimeAsync(120_000);
-
-    await expect(reconciliation).resolves.toEqual({ kind: "busy" });
+    await expect(
+      restarted.reconcileSessionGeneration(identity, { sessionId: identity.sessionId }),
+    ).resolves.toEqual({ kind: "busy" });
     expect(values.get(bindingStoreKey(identity))).toEqual(transition);
   });
 
