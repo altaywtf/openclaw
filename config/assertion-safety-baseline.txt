@@ -411,7 +411,7 @@ extensions/discord/src/security-audit.ts	12
 extensions/discord/src/send.components.ts	3
 extensions/discord/src/send.messages.ts	2
 extensions/discord/src/send.outbound.ts	2
-extensions/discord/src/send.shared.ts	4
+extensions/discord/src/send.shared.ts	2
 extensions/discord/src/send.webhook.ts	1
 extensions/discord/src/setup-account-state.ts	1
 extensions/discord/src/setup-core.ts	1
@@ -1384,7 +1384,7 @@ extensions/workboard/doctor-contract-api.ts	4
 extensions/workboard/src/cli.ts	2
 extensions/workboard/src/command.ts	1
 extensions/workboard/src/gateway-helpers.ts	1
-extensions/workboard/src/sqlite-store.ts	44
+extensions/workboard/src/sqlite-store.ts	38
 extensions/workboard/src/store-automation.ts	1
 extensions/workboard/src/store-card-helpers.ts	1
 extensions/workboard/src/store-core.ts	5
@@ -1473,7 +1473,7 @@ packages/ai/src/providers/openai-chatgpt-responses.ts	27
 packages/ai/src/providers/openai-completions-tool-calls.ts	5
 packages/ai/src/providers/openai-completions.ts	10
 packages/ai/src/providers/openai-reasoning-effort.ts	6
-packages/ai/src/providers/openai-responses-shared.ts	7
+packages/ai/src/providers/openai-responses-shared.ts	6
 packages/ai/src/providers/openai-responses-tools.ts	2
 packages/ai/src/providers/openai-responses.ts	1
 packages/ai/src/providers/openai-tool-schema-compat.ts	6
@@ -1594,7 +1594,7 @@ src/acp/control-plane/manager.runtime-resume-state.ts	2
 src/acp/control-plane/manager.ts	1
 src/acp/control-plane/manager.utils.ts	1
 src/acp/control-plane/runtime-options.ts	2
-src/acp/event-ledger.ts	8
+src/acp/event-ledger.ts	5
 src/acp/event-ledger.types.ts	1
 src/acp/event-mapper.ts	1
 src/acp/permission-relay.ts	1
@@ -1771,7 +1771,7 @@ src/agents/embedded-agent-runner/run/attempt-context-summary.ts	2
 src/agents/embedded-agent-runner/run/attempt-execution-phase.ts	1
 src/agents/embedded-agent-runner/run/attempt-finalize.ts	3
 src/agents/embedded-agent-runner/run/attempt-history.ts	17
-src/agents/embedded-agent-runner/run/attempt-llm-boundary.ts	19
+src/agents/embedded-agent-runner/run/attempt-llm-boundary.ts	18
 src/agents/embedded-agent-runner/run/attempt-normalization.ts	1
 src/agents/embedded-agent-runner/run/attempt-prompt-build.ts	1
 src/agents/embedded-agent-runner/run/attempt-prompt-helpers.ts	4

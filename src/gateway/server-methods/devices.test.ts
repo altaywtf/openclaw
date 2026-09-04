@@ -324,34 +324,70 @@ describe("deviceHandlers", () => {
     expect(disconnect).toHaveBeenCalledWith("device-1");
   });
 
-  it("reconciles device worker authority before reporting pairing removal", async () => {
-    removePairedDeviceMock.mockResolvedValue({ deviceId: "device-1" });
-    const opts = createOptions("device.pair.remove", { deviceId: "device-1" });
-    const order: string[] = [];
-    const workerEnvironmentService = {};
-    bindDeviceWorkerReconciliation(workerEnvironmentService, async () => {
-      order.push("environment");
-      return ["environment-1"];
-    });
-    const reconcileActive = vi.fn(async () => {
-      order.push("placement");
-    });
-    Object.assign(opts.context, {
-      workerEnvironmentService,
-      workerPlacementDispatchService: { reconcileActive },
-    });
-    vi.mocked(opts.respond).mockImplementation(() => {
-      order.push("respond");
-    });
+  it.each([false, true])(
+    "reconciles removed device workers even if the caller retires during removal: %s",
+    async (callerRetired) => {
+      const opts = createOptions(
+        "device.pair.remove",
+        { deviceId: "device-1" },
+        { client: createClient(["operator.admin"], "admin-device", { isDeviceTokenAuth: true }) },
+      );
+      const client = Object.assign(expectDefined(opts.client, "device removal caller"), {
+        invalidated: false,
+        socket: { close: vi.fn() },
+      });
+      removePairedDeviceMock.mockImplementationOnce(async () => {
+        client.invalidated = callerRetired;
+        return { deviceId: "device-1" };
+      });
+      const policyResponse = registerGatewayPolicyResponse(
+        "device.pair.remove",
+        client,
+        opts.respond,
+      );
+      const order: string[] = [];
+      const workerEnvironmentService = {};
+      bindDeviceWorkerReconciliation(workerEnvironmentService, async () => {
+        order.push("environment");
+        return ["environment-1"];
+      });
+      const reconcileActive = vi.fn(async () => {
+        order.push("placement");
+      });
+      Object.assign(opts.context, {
+        workerEnvironmentService,
+        workerPlacementDispatchService: { reconcileActive },
+        invalidateClientsForDevice: vi.fn(() => order.push("invalidate")),
+        disconnectClientsForDevice: vi.fn(() => order.push("disconnect")),
+      });
+      vi.mocked(opts.respond).mockImplementation(() => {
+        order.push("respond");
+      });
 
-    await expectDefined(
-      deviceHandlers["device.pair.remove"],
-      'deviceHandlers["device.pair.remove"] test invariant',
-    )(opts);
-
-    expect(reconcileActive).toHaveBeenCalledWith("environment-1");
-    expect(order).toEqual(["environment", "placement", "respond"]);
-  });
+      try {
+        const removal = expectDefined(
+          deviceHandlers["device.pair.remove"],
+          'deviceHandlers["device.pair.remove"] test invariant',
+        )(opts);
+        if (callerRetired) {
+          await expect(removal).rejects.toThrow("client authorization is no longer active");
+          expect(opts.respond).not.toHaveBeenCalled();
+        } else {
+          await removal;
+        }
+        expect(reconcileActive).toHaveBeenCalledWith("environment-1");
+        expect(order).toEqual([
+          "invalidate",
+          "environment",
+          "placement",
+          ...(callerRetired ? [] : ["respond"]),
+          "disconnect",
+        ]);
+      } finally {
+        policyResponse?.finish();
+      }
+    },
+  );
 
   it.each(["device.pair.remove", "device.token.revoke"])(
     "reconciles removed workers when the requester is revoked during %s",
