@@ -1,10 +1,11 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   GATEWAY_SERVER_CAPS,
   type HelloOk,
 } from "../../../../packages/gateway-protocol/src/index.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { resolveGatewayAuth } from "../../auth-resolve.js";
+import { prepareTailscalePublishedOrigin } from "../../tailscale-published-origin.js";
 
 // Hello update-scope tests cover authenticated role/scope and recovery ownership projection.
 
@@ -152,25 +153,39 @@ function expectRedactedHelloSnapshot(context: ReturnType<typeof makeContext>) {
 }
 
 describe("sendGatewayHello update detail scope", () => {
+  afterEach(() => {
+    prepareTailscalePublishedOrigin({ origin: "https://reset.test", mode: "serve" })();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
   it.each([
     { mode: "trusted-proxy", tailscale: "off", expected: true },
+    { mode: "trusted-proxy", tailscale: "serve", allowTailscale: true, expected: true },
     { mode: "token", tailscale: "serve", expected: true },
+    { mode: "token", tailscale: "serve", publicOrigin: undefined, expected: true },
     { mode: "password", tailscale: "serve", allowTailscale: true, expected: true },
     { mode: "password", tailscale: "serve", expected: false },
     { mode: "token", tailscale: "serve", allowTailscale: false, expected: false },
     { mode: "token", tailscale: "off", expected: false },
     { mode: "password", tailscale: "funnel", allowTailscale: true, expected: false },
     { mode: "none", tailscale: "off", expected: false },
+    { mode: "none", tailscale: "serve", expected: false },
   ] as const)(
     "advertises the personal dashboard for resolved $mode auth with $tailscale",
     async ({ mode, tailscale, expected, ...options }) => {
+      if (tailscale !== "off") {
+        prepareTailscalePublishedOrigin({
+          origin: "https://gateway.tailnet.ts.net",
+          mode: tailscale,
+        });
+      }
       const config: OpenClawConfig = {
         gateway: {
-          publicOrigin: "https://team.example.test",
+          publicOrigin:
+            "publicOrigin" in options ? options.publicOrigin : "https://team.example.test",
           auth: {
             mode,
             ...("allowTailscale" in options ? { allowTailscale: options.allowTailscale } : {}),
@@ -191,10 +206,27 @@ describe("sendGatewayHello update detail scope", () => {
       };
       await sendGatewayHello(context as never, state as never, {});
       expect(helloSnapshot(context)?.controlUiIdentityUrl).toBe(
-        expected ? "https://team.example.test/team/" : undefined,
+        expected
+          ? mode === "trusted-proxy"
+            ? "https://team.example.test/team/"
+            : "https://gateway.tailnet.ts.net/team/"
+          : undefined,
       );
     },
   );
+
+  it("does not advertise configured Serve identity without a live route claim", async () => {
+    const context = makeContext("operator", ["operator.read"]);
+    context.configSnapshot = {
+      gateway: { publicOrigin: "https://other.example.test", tailscale: { mode: "serve" } },
+    };
+    const state = {
+      ...makeState("operator", ["operator.read"]),
+      resolvedAuth: { mode: "token", allowTailscale: true },
+    };
+    await sendGatewayHello(context as never, state as never, {});
+    expect(helloSnapshot(context)).not.toHaveProperty("controlUiIdentityUrl");
+  });
 
   it.each([
     { role: "node", origin: "https://team.example.test", enabled: true },

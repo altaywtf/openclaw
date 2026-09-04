@@ -102,8 +102,10 @@ unknown values stay on stable app builds.
 
 ## Open dashboard links
 
-For a remote Gateway with an HTTPS `gateway.publicOrigin` and identity-aware
-authentication, the app opens the dashboard at that public address. Complete
+For a remote Gateway with identity-aware authentication, the app opens the
+dashboard at its sign-in address: HTTPS `gateway.publicOrigin` for trusted-proxy
+authentication, or the active managed Tailscale Serve address when Tailscale
+identity is enabled. Serve does not require `gateway.publicOrigin`. Complete
 the sign-in inside the dashboard window; your existing Gateway profile then
 owns the displayed identity and chat attribution. The native device connection
 keeps its configured transport, including SSH, and its credentials are not sent
