@@ -3421,7 +3421,10 @@ jobs:
 
       - name: Prove real plugin-worker owner fencing
         if: matrix.task == 'lint'
-        run: node scripts/run-vitest.mjs src/agents/prepared-model-catalog-worker.integration.test.ts
+        run: |
+          pnpm format src/agents/prepared-model-catalog-worker.integration.test.ts
+          git diff -- src/agents/prepared-model-catalog-worker.integration.test.ts
+          node scripts/run-vitest.mjs src/agents/prepared-model-catalog-worker.integration.test.ts
 
       - name: Run check shard
         env:
