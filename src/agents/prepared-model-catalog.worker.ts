@@ -259,7 +259,7 @@ export async function runPreparedModelCatalogWorkerRequest(
         config: value.input.config,
         env: value.input.env ?? process.env,
         ...(request.profileIds ? { profileIds: request.profileIds } : {}),
-        providerIds: request.providerIds,
+        providerIds: request.providerIds ?? listExternalCliSyncProviderIds(),
         pluginGeneration: prepared.pluginGeneration,
       });
       return {
@@ -270,7 +270,9 @@ export async function runPreparedModelCatalogWorkerRequest(
         // Native-login facts are not in the durable store; a scoped refresh must re-record them
         // or the owner merge drops that runtime until a full rebuild.
         providerAuth: {
-          ...resolveSyntheticAuth(request.providerIds).providerAuth,
+          ...resolveSyntheticAuth(
+            request.providerIds ?? [...value.providerIds, ...syntheticAuthProviderRefs],
+          ).providerAuth,
           ...resolveProviderAuthFacts(
             resolveAgentCredentialMapFromStore(authStore, { config: value.input.config }),
           ),
@@ -406,8 +408,9 @@ function isWorkerRequest(value: unknown): value is PreparedModelWorkerRequest {
     isRecord(value) &&
     (value.kind === "catalog" ||
       (value.kind === "auth-refresh" &&
-        Array.isArray(value.providerIds) &&
-        value.providerIds.every((providerId) => typeof providerId === "string") &&
+        (value.providerIds === undefined ||
+          (Array.isArray(value.providerIds) &&
+            value.providerIds.every((providerId) => typeof providerId === "string"))) &&
         (value.profileIds === undefined ||
           (Array.isArray(value.profileIds) &&
             value.profileIds.every((profileId) => typeof profileId === "string")))))

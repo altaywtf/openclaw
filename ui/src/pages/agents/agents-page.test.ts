@@ -446,7 +446,7 @@ describe("AgentsPage gateway lifecycle", () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce({ models: oldModels })
-      .mockResolvedValueOnce({ models: nextModels })
+      .mockResolvedValueOnce({ models: nextModels, refreshFailed: true })
       .mockResolvedValueOnce({ models: refreshedModels });
     const page = document.createElement("openclaw-agents-page") as TestAgentsPage;
     page.routeData = { panel: "overview" } as AgentsRouteData;
@@ -459,9 +459,11 @@ describe("AgentsPage gateway lifecycle", () => {
     page.ensureModelCatalog();
     await waitForFast(() => expect(page.chatModelCatalog).toEqual(nextModels));
     expect(request).toHaveBeenNthCalledWith(2, "models.list", mainModelsList);
+    expect(page.chatModelCatalogError).toContain("showing previous choices");
 
     page.ensureModelCatalog({ refresh: true });
     await waitForFast(() => expect(page.chatModelCatalog).toEqual(refreshedModels));
+    expect(page.chatModelCatalogError).toBeNull();
     expect(request.mock.calls[2]?.[1]).toMatchObject({ refresh: true });
   });
 

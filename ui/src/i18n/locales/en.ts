@@ -5800,6 +5800,7 @@ export const en: TranslationMap & {
         "This model can chat, but it cannot use tools. Choose another model for files, commands, web, or media tasks.",
       loadingModels: "Loading models…",
       modelsUnavailable: "Models unavailable",
+      modelsRefreshFailed: "Could not refresh models; showing previous choices.",
       noModelsAvailable: "No models available",
       emptyModelsAction: "Manage models",
       providerModels: "{provider} models",

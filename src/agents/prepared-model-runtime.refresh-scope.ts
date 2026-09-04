@@ -4,6 +4,8 @@ import {
   listConfiguredOwnerInputs,
   normalizePreparedModelRuntimeInput,
   ownerKey,
+  prepareModelRuntimeOwner,
+  retirePreparedModelRuntimeOwner,
 } from "./prepared-model-runtime.owner.js";
 import type {
   PreparedModelRuntimeInput,
@@ -12,7 +14,7 @@ import type {
 } from "./prepared-model-runtime.types.js";
 
 /** Whether a refresh scope must replace this owner rather than retain it. */
-export function isPreparedModelRuntimeOwnerInRefreshScope(
+function isPreparedModelRuntimeOwnerInRefreshScope(
   owner: PreparedModelRuntimeOwner,
   agentIds: ReadonlySet<string> | undefined,
 ): boolean {
@@ -28,7 +30,7 @@ export function isPreparedModelRuntimeOwnerInRefreshScope(
 }
 
 /** Builds configured inputs while preserving the startup-selected default workspace. */
-export function listConfiguredRefreshInputs(
+function listConfiguredRefreshInputs(
   config: OpenClawConfig,
   options: PreparedModelRuntimeRefreshOptions,
   owners: Map<string, PreparedModelRuntimeOwner>,
@@ -74,6 +76,43 @@ export function listConfiguredRefreshInputs(
     );
   }
   return inputs;
+}
+
+export function prepareConfiguredRefreshOwners(
+  config: OpenClawConfig,
+  options: PreparedModelRuntimeRefreshOptions,
+  owners: Map<string, PreparedModelRuntimeOwner>,
+  gatewayLifecycleActive: boolean,
+): Array<{ input: PreparedModelRuntimeInput; owner: PreparedModelRuntimeOwner }> {
+  const inputs = new Map<string, PreparedModelRuntimeInput>();
+  for (const input of listConfiguredRefreshInputs(config, options, owners)) {
+    if (options.agentIds && input.agentId && !options.agentIds.has(input.agentId)) {
+      continue;
+    }
+    const key = ownerKey(input);
+    if (!inputs.has(key)) {
+      inputs.set(key, input);
+    }
+  }
+  for (const [key, owner] of owners) {
+    if (!isPreparedModelRuntimeOwnerInRefreshScope(owner, options.agentIds)) {
+      continue;
+    }
+    if (!inputs.has(key) && (gatewayLifecycleActive || owner.provenance === "configured")) {
+      retirePreparedModelRuntimeOwner(owner);
+      owners.delete(key);
+    }
+  }
+  return [...inputs].map(([key, input]) => {
+    const existing = owners.get(key);
+    // Configured owners replace independent leases so a late lease release cannot retire them.
+    const owner = prepareModelRuntimeOwner(
+      input,
+      "configured",
+      existing?.provenance === "configured" ? existing : undefined,
+    );
+    return { input, owner };
+  });
 }
 
 /** Invalidates scoped owners and optionally advances retained owners to a new config stamp. */

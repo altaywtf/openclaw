@@ -12,13 +12,12 @@ export function renderChatModelCatalogState(
   hasOptions: boolean,
   hasSelectableOptions: boolean,
   onModelSetup?: () => void,
-  errorLabel = t("chat.modelControls.modelsUnavailable"),
+  errorLabel = t(
+    hasOptions ? "chat.modelControls.modelsRefreshFailed" : "chat.modelControls.modelsUnavailable",
+  ),
   retryTarget?: { disabled: boolean; groupId: string; onRetry: (groupId: string) => unknown },
 ) {
   if (!state || (state.status === "ready" && hasSelectableOptions)) {
-    return nothing;
-  }
-  if (state.status === "error" && hasOptions) {
     return nothing;
   }
   const label =

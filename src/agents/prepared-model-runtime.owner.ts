@@ -88,6 +88,7 @@ export function prepareModelRuntimeOwner(
   // preparation whose previous snapshot is still attached. Neither snapshot owns these facts.
   return Object.assign(existing ?? { generation: 0, needsRefresh: true }, {
     input,
+    catalogInventory: {},
     catalogOwner: preparePublishedModelCatalogOwnerIdentity(input),
     environmentFingerprint: effectiveEnvironmentFingerprint(input),
     provenance,
@@ -510,6 +511,7 @@ export async function publishPreparedModelRuntimeOwnerBatch(params: {
     return {
       input,
       catalogOwner: owner.catalogOwner,
+      catalogInventory: owner.catalogInventory,
       pluginGeneration: owner.pendingPluginGeneration,
       prepareInboundPluginRegistry: owner.provenance === "configured",
       isGenerationCurrent,
@@ -655,6 +657,7 @@ export async function publishModelRuntimeSnapshot(
       {
         input,
         catalogOwner: owner.catalogOwner,
+        catalogInventory: owner.catalogInventory,
         isGenerationCurrent,
         isBuildCurrent: isGenerationCurrent,
         prepareInboundPluginRegistry: provenance === "configured",

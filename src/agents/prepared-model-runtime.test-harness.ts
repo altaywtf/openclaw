@@ -102,6 +102,7 @@ const preparedModelRuntimeMocks = vi.hoisted(() => ({
     authStore: { version: 1, profiles: {} },
     providerAuth: {},
   })),
+  closePreparedModelCatalogWorker: vi.fn(async () => {}),
   runtimeSyntheticAuthProviderRefs: [] as string[],
   resolveAmbientCredentials: vi.fn((..._args: unknown[]) => ({})),
   resolveStaticCatalogModel: vi.fn<StaticCatalogResolver>(() => undefined),
@@ -138,6 +139,7 @@ vi.mock("./prepared-model-catalog-worker.js", () => ({
     ...args: Parameters<typeof preparedModelRuntimeMocks.createPreparedModelCatalogWorkerInput>
   ) => preparedModelRuntimeMocks.createPreparedModelCatalogWorkerInput(...args),
   createPreparedModelCatalogWorker: () => ({
+    close: preparedModelRuntimeMocks.closePreparedModelCatalogWorker,
     // Mirror the real worker boundary: a completed catalog is marked full and carries the auth
     // generation it was discovered with, or the fail-closed metadata guard rejects it.
     loadCatalog: async (
@@ -473,8 +475,9 @@ export function resetPreparedModelRuntimeHarness(state: OpenClawTestState): void
   });
   preparedModelRuntimeMocks.runPreparedModelAuthWorker.mockReset().mockImplementation(async () => ({
     authStore: preparedModelRuntimeMocks.preparedAuthStore ?? { version: 1, profiles: {} },
-    providerAuth: {},
+    providerAuth: resolveProviderAuthFacts(preparedModelRuntimeMocks.authStorage.getAll()),
   }));
+  preparedModelRuntimeMocks.closePreparedModelCatalogWorker.mockReset().mockResolvedValue();
   preparedModelRuntimeMocks.runtimeSyntheticAuthProviderRefs = [];
   preparedModelRuntimeMocks.resolveAmbientCredentials
     .mockReset()

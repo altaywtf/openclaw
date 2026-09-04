@@ -1,5 +1,5 @@
 // Credential-side staging for one setup candidate: sign in through the provider's own method,
-// save what it returns, and hand back the starter model plus the provider-configured config.
+// save what it returns, and hand back the selected model plus the provider-configured config.
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import { normalizeAgentModelRefForConfig } from "../config/model-input.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -49,6 +49,7 @@ export type StageContext = {
   routeAgentId: string;
   agentDir: string;
   workspace: string;
+  credentialsSaved: boolean;
   beforePersistentEffect: () => Promise<void>;
 };
 
@@ -99,13 +100,22 @@ async function loadProviderAuthMethod(
   });
 }
 
-function resolveStarterModel(
-  label: string,
-  result: { defaultModel?: string },
-): string | StageFailure {
-  const modelRef = result.defaultModel ? normalizeAgentModelRefForConfig(result.defaultModel) : "";
+function resolveSetupModel(params: {
+  label: string;
+  providerId: string;
+  defaultModel?: string;
+  modelRef?: string;
+}): string | StageFailure {
+  const selected = params.modelRef?.trim() || params.defaultModel;
+  const modelRef = selected ? normalizeAgentModelRefForConfig(selected) : "";
   if (!modelRef || !parseRef(modelRef).model) {
-    return { error: `${label} does not expose a starter model for app-guided setup.` };
+    return { error: `${params.label} does not expose a starter model for app-guided setup.` };
+  }
+  const provider = params.defaultModel
+    ? parseRef(normalizeAgentModelRefForConfig(params.defaultModel)).provider
+    : params.providerId;
+  if (normalizeProviderId(parseRef(modelRef).provider) !== normalizeProviderId(provider)) {
+    return { error: `${modelRef} is not compatible with the ${params.label} inference route.` };
   }
   return modelRef;
 }
@@ -227,6 +237,7 @@ export async function stageProviderAutoCandidate(
       config,
       agentDir: ctx.agentDir,
     });
+    ctx.credentialsSaved = true;
   }
   return { modelRef, agentRuntimeId: "openclaw", config };
 }
@@ -313,6 +324,12 @@ export async function stageProviderAuthCandidate(
     workspaceDir: ctx.workspace,
     beforePersistentEffect: ctx.beforePersistentEffect,
   };
+  const stageModel = (result: { config: OpenClawConfig; defaultModel?: string }) => {
+    const modelRef = resolveSetupModel({ ...loaded, ...result, modelRef: params.modelRef });
+    return typeof modelRef === "string"
+      ? { modelRef, agentRuntimeId: "openclaw", config: result.config }
+      : modelRef;
+  };
   try {
     if (interactive) {
       if (!params.prompter) {
@@ -329,19 +346,18 @@ export async function stageProviderAuthCandidate(
         }),
         params.signal,
       );
+      ctx.credentialsSaved = login.credentialsSaved;
       throwIfSetupInferenceCancelled(params);
       if (choice.appGuidedDiscovery !== true) {
-        const modelRef = resolveStarterModel(loaded.label, login);
-        return typeof modelRef === "string"
-          ? { modelRef, agentRuntimeId: "openclaw", config: login.config }
-          : modelRef;
+        return stageModel(login);
       }
       const guidedSetup = method.appGuidedSetup;
       if (!guidedSetup) {
         return { error: unavailable };
       }
-      const candidate = login.defaultModel
-        ? { modelRef: login.defaultModel }
+      const selected = params.modelRef?.trim() || login.defaultModel;
+      const candidate = selected
+        ? { modelRef: selected }
         : await guidedSetup.detect({
             config: login.config,
             env: process.env,
@@ -353,15 +369,25 @@ export async function stageProviderAuthCandidate(
           error: `${loaded.label} setup completed, but no compatible model was found. Add a compatible model and try again.`,
         };
       }
+      const selectedModelRef = resolveSetupModel({
+        ...loaded,
+        defaultModel: login.defaultModel,
+        modelRef: candidate.modelRef,
+      });
+      if (typeof selectedModelRef !== "string") {
+        return selectedModelRef;
+      }
       const prepared = await guidedSetup.prepare({
         config: login.config,
         env: process.env,
         workspaceDir: ctx.workspace,
-        modelRef: candidate.modelRef,
+        modelRef: selectedModelRef,
         ...(params.signal ? { signal: params.signal } : {}),
       });
-      const modelRef = prepared ? resolveStarterModel(loaded.label, prepared) : undefined;
-      if (!prepared || typeof modelRef !== "string" || modelRef !== candidate.modelRef) {
+      const modelRef = prepared?.defaultModel
+        ? normalizeAgentModelRefForConfig(prepared.defaultModel)
+        : undefined;
+      if (!prepared || modelRef !== selectedModelRef) {
         return { error: `${loaded.label} could not prepare its detected model. Try setup again.` };
       }
       const config = applyProviderPluginAuthMethodResultConfig({
@@ -374,6 +400,7 @@ export async function stageProviderAuthCandidate(
           config,
           agentDir: ctx.agentDir,
         });
+        ctx.credentialsSaved = true;
       }
       return { modelRef, agentRuntimeId: "openclaw", config };
     }
@@ -386,17 +413,12 @@ export async function stageProviderAuthCandidate(
         allowSecretRefPrompt: false,
         opts: { token: apiKey!, tokenProvider: loaded.providerId },
       });
-      const modelRef = resolveStarterModel(loaded.label, saved);
-      return typeof modelRef === "string"
-        ? { modelRef, agentRuntimeId: "openclaw", config: saved.config }
-        : modelRef;
+      ctx.credentialsSaved = saved.credentialsSaved;
+      return stageModel(saved);
     }
     await ctx.beforePersistentEffect();
     const manual = await runProviderManualSecretMethod(ctx, choice, method, loaded.config, apiKey!);
-    const modelRef = resolveStarterModel(loaded.label, manual.result);
-    return typeof modelRef === "string"
-      ? { modelRef, agentRuntimeId: "openclaw", config: manual.config }
-      : modelRef;
+    return stageModel({ ...manual.result, config: manual.config });
   } catch (error) {
     if (error instanceof SetupInferenceCancelledError || params.signal?.aborted) {
       return { error: "Provider login was cancelled." };

@@ -2,8 +2,10 @@
 import { toStringifiedError } from "@openclaw/normalization-core/error-coercion";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { captureRemoteModelCatalogSnapshot } from "../model-catalog/remote-overlay.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
 import { registerRuntimeAuthProfileStoreMutationListener } from "./auth-profiles/runtime-snapshots.js";
+import { resolveLegacyInheritedAuthDir } from "./legacy-inherited-auth-dir.js";
 import {
   PreparedModelRuntimeAuthPublicationOwner,
   type PreparedModelRuntimeAuthMutation,
@@ -18,7 +20,6 @@ import {
   PreparedModelRuntimeOwnerRetention,
   PreparedModelRuntimePublicationSupersededError,
   advancePreparedModelRuntimeOwnerConfig,
-  prepareModelRuntimeOwner,
   createPreparedModelRuntimeReplacement,
   hasSameLifecycleInput,
   normalizeOptionalDir,
@@ -45,8 +46,7 @@ import {
   resetPreparedModelRuntimePublicationListenersForTest,
 } from "./prepared-model-runtime.publication-events.js";
 import {
-  isPreparedModelRuntimeOwnerInRefreshScope,
-  listConfiguredRefreshInputs,
+  prepareConfiguredRefreshOwners,
   resolveSafeRefreshAgentIds,
   updateOwnersForScopedRefresh,
 } from "./prepared-model-runtime.refresh-scope.js";
@@ -424,48 +424,15 @@ async function refreshPreparedModelRuntimeSnapshotsNow(
   options: PreparedModelRuntimeRefreshOptions,
   isPublicationCurrent: () => boolean,
 ): Promise<void> {
+  captureRemoteModelCatalogSnapshot();
   retainedGatewayRunOwners.clear(owners);
   gatewayLifecycleActive ||= options.gatewayLifecycle === true;
   const staleError = new Error("prepared model runtime owner is stale after config publication");
   updateOwnersForScopedRefresh(owners, options.agentIds, staleError, {
     retainedConfig: config,
   });
-  const entries: Array<{ owner?: PreparedModelRuntimeOwner; input: PreparedModelRuntimeInput }> =
-    [];
-  const knownKeys = new Set<string>();
-  for (const input of listConfiguredRefreshInputs(config, options, owners)) {
-    if (options.agentIds && input.agentId && !options.agentIds.has(input.agentId)) {
-      continue;
-    }
-    const key = ownerKey(input);
-    if (knownKeys.has(key)) {
-      continue;
-    }
-    knownKeys.add(key);
-    const owner = owners.get(key);
-    entries.push({ owner, input });
-  }
-  for (const [key, owner] of owners) {
-    if (!isPreparedModelRuntimeOwnerInRefreshScope(owner, options.agentIds)) {
-      continue;
-    }
-    if (!knownKeys.has(key) && (gatewayLifecycleActive || owner.provenance === "configured")) {
-      retirePreparedModelRuntimeOwner(owner);
-      owners.delete(key);
-    }
-  }
-  const candidates = entries.map(({ owner: existing, input }) => {
-    // Dynamic and standalone owners have different lifetime contracts. A configured publication
-    // must replace them so an older lease release cannot remove the committed generation.
-    const owner = prepareModelRuntimeOwner(
-      input,
-      "configured",
-      existing?.provenance === "configured" ? existing : undefined,
-    );
-    return { input, owner };
-  });
   await publishPreparedModelRuntimeOwnerBatch({
-    entries: candidates,
+    entries: prepareConfiguredRefreshOwners(config, options, owners, gatewayLifecycleActive),
     owners,
     agentBuildCompletions,
     buildTimeoutMs: modelRuntimeBuildTimeoutMs,
@@ -558,6 +525,17 @@ export function refreshPreparedModelRuntimeSnapshots(
       // The final queue check, dispatch rebuild, and replacement resolution are one synchronous
       // commit. A mutation before it is adopted; a mutation after it starts a new auth transaction.
       commitReplacement,
+      async () => {
+        if (!isPublicationCurrent()) {
+          return;
+        }
+        publicationAgentIds = undefined;
+        await refreshPreparedModelRuntimeSnapshotsNow(
+          currentConfig,
+          { ...options, agentIds: publicationAgentIds },
+          isPublicationCurrent,
+        );
+      },
     );
   }).then(commitReplacement, (error: unknown) => {
     const refreshError = toStringifiedError(error);
@@ -575,20 +553,36 @@ function enqueuePreparedModelRuntimePublication(task: () => Promise<void>): Prom
   return publication;
 }
 
-async function drainPendingAuthMutations(commit?: () => void): Promise<void> {
+function hasChangedInheritedAuthTopology(owner: PreparedModelRuntimeOwner): boolean {
+  return (
+    owner.provenance === "configured" &&
+    owner.input.inheritedAuthDir !==
+      normalizeOptionalDir(resolveLegacyInheritedAuthDir(owner.input.config, owner.input.env))
+  );
+}
+
+async function drainPendingAuthMutations(
+  commit?: () => void,
+  replaceConfiguredOwners?: () => Promise<void>,
+): Promise<void> {
   await authPublication.drain({
     owners,
-    publish: async (entries, profileSetChanged) =>
+    publish: async (entries) => {
+      if (entries.some(({ owner }) => hasChangedInheritedAuthTopology(owner))) {
+        // A pending config publication owns the accepted config and rebuild options. Repair
+        // inside its drain; queuing another replacement here would wait on this same queue.
+        await replaceConfiguredOwners?.();
+        return;
+      }
       await publishPreparedModelRuntimeOwnerBatch({
         entries,
         owners,
         agentBuildCompletions,
         buildTimeoutMs: modelRuntimeBuildTimeoutMs,
         reusePluginGenerations: true,
-        // A changed profile set can add or remove providers, so it births discovery; a token
-        // rotation keeps the same inventory and only republishes auth facts.
-        discoverFullCatalog: gatewayLifecycleActive && profileSetChanged,
-      }),
+        discoverFullCatalog: gatewayLifecycleActive,
+      });
+    },
     publishOwners: (publishedOwners) => replyDispatchPublication.replace(publishedOwners),
     commit,
     onOwnerFailure: (error) => {
@@ -616,6 +610,9 @@ function invalidateForAuthMutation(event: PreparedModelRuntimeAuthMutation): voi
       continue;
     }
     invalidatedOwners.push(owner);
+    if (normalizedEvent.profileSetChanged) {
+      owner.catalogInventory = {};
+    }
     retirePreparedModelRuntimeOwner(owner);
     owner.generation += 1;
     owner.needsRefresh = true;
@@ -638,34 +635,40 @@ function invalidateForAuthMutation(event: PreparedModelRuntimeAuthMutation): voi
     notifyPreparedModelRuntimePublication({ phase: "invalidated" });
     return;
   }
-  if (!authPublication.claimPublication(transaction)) {
+  const topologyOwner = invalidatedOwners.find(hasChangedInheritedAuthTopology);
+  if (!topologyOwner && !authPublication.claimPublication(transaction)) {
     notifyPreparedModelRuntimePublication({ phase: "invalidated" });
     return;
   }
-  const publication = enqueuePreparedModelRuntimePublication(async () => {
-    // A pending replacement gate means a queued config publication owns the next generation:
-    // it drains queued auth mutations against the new config and rebuilds/announces the
-    // dispatch publication. Rebuilding here would revive stale owners with the old config or
-    // throw on them, emitting a spurious failed/published event that wedges chat metadata.
-    if (pendingModelRuntimeReplacement) {
-      authPublication.adoptTransaction(transaction, pendingModelRuntimeReplacement.gateId);
-      return;
-    }
-    await drainPendingAuthMutations(() => {
-      // Admission waits on this publication, so it must rebuild static content only. A profile-set
-      // change leaves a stale flag for the explicit catalog-read path to consume later.
-      if (pendingModelRuntimeReplacement) {
-        authPublication.adoptTransaction(transaction, pendingModelRuntimeReplacement.gateId);
-        return;
-      }
-      if (!authPublication.resolve(transaction, owners)) {
-        return;
-      }
-      if (configuredOwnersAreRequestVisible(owners)) {
-        notifyPreparedModelRuntimePublication({ phase: "published" });
-      }
-    });
-  });
+  const publication = topologyOwner
+    ? refreshPreparedModelRuntimeSnapshots(topologyOwner.input.config, {
+        allowGatewaySubagentBinding: topologyOwner.input.allowGatewaySubagentBinding,
+        ...(topologyOwner.snapshot
+          ? { pluginMetadataSnapshot: topologyOwner.snapshot.metadataSnapshot }
+          : {}),
+      })
+    : enqueuePreparedModelRuntimePublication(async () => {
+        // A pending replacement gate means a queued config publication owns the next generation:
+        // it drains queued auth mutations against the new config and rebuilds/announces the
+        // dispatch publication. Rebuilding here would revive stale owners with the old config or
+        // throw on them, emitting a spurious failed/published event that wedges chat metadata.
+        if (pendingModelRuntimeReplacement) {
+          authPublication.adoptTransaction(transaction, pendingModelRuntimeReplacement.gateId);
+          return;
+        }
+        await drainPendingAuthMutations(() => {
+          if (pendingModelRuntimeReplacement) {
+            authPublication.adoptTransaction(transaction, pendingModelRuntimeReplacement.gateId);
+            return;
+          }
+          if (!authPublication.resolve(transaction, owners)) {
+            return;
+          }
+          if (configuredOwnersAreRequestVisible(owners)) {
+            notifyPreparedModelRuntimePublication({ phase: "published" });
+          }
+        });
+      });
   notifyPreparedModelRuntimePublication({ phase: "invalidated" });
   void publication.catch((error: unknown) => {
     if (!authPublication.isCurrent(transaction)) {

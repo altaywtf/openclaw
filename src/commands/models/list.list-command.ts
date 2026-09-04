@@ -118,12 +118,13 @@ export async function modelsListCommand(
   const { agentId, agentDir } = resolveModelsTargetAgent(cfg, opts.agent, {
     kind: "read",
   });
+  const includeFullCatalog = Boolean(opts.all || parsedProviderFilter);
   const preparedCatalog = await loadPreparedGatewayModelCatalogSnapshot({
     agentId,
     agentDir,
     getConfig: () => cfg,
-    readOnly: !opts.all,
-    ...(opts.all ? { refreshFullCatalog: true } : {}),
+    readOnly: !includeFullCatalog,
+    ...(includeFullCatalog ? { refreshFullCatalog: true } : {}),
   });
   const providerAliasCanonicalizer = createModelCatalogProviderAliasCanonicalizer({
     cfg,
@@ -157,7 +158,7 @@ export async function modelsListCommand(
   const result = await buildModelsListResult({
     source: { kind: "prepared", catalog: preparedCatalog },
     agentId,
-    params: { view: opts.all ? "all" : "default" },
+    params: { view: includeFullCatalog ? "all" : "default" },
   });
   const configuredTags = new Map(entries.map((entry) => [entry.key, [...entry.tags]] as const));
   const catalog = indexCliCatalog(preparedCatalog);

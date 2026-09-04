@@ -7040,7 +7040,7 @@ describe("chat model controls", () => {
 
   it.each([
     { status: "offline", catalogState: "offline", triggerLabel: "GPT-5.6 Sol" },
-    { status: "error", catalogState: null, triggerLabel: "GPT-5.6 Sol" },
+    { status: "error", catalogState: "error", triggerLabel: "GPT-5.6 Sol" },
   ] as const)(
     "renders $status over a stale all-cold catalog",
     ({ status, catalogState, triggerLabel }) => {
@@ -7075,6 +7075,8 @@ describe("chat model controls", () => {
       expect(container.querySelector('[data-chat-model-setup="true"]')).toBeNull();
       if (status === "offline") {
         expect(container.querySelector(".chat-controls__effort-picker")).toBeNull();
+      } else {
+        expect(container.textContent).toContain("showing previous choices");
       }
     },
   );
@@ -7244,7 +7246,7 @@ describe("chat model controls", () => {
     expect(container.querySelector("[data-chat-model-context-badge]")).toBeNull();
   });
 
-  it("requests live wildcard discovery when the model picker opens", () => {
+  it("requests the current catalog when the model picker opens", () => {
     const { state } = createOpenAiHeaderState();
     const onModelPickerOpen = vi.fn();
     const container = renderModelControls(state, { onModelPickerOpen });
@@ -7257,29 +7259,50 @@ describe("chat model controls", () => {
     expect(onModelPickerOpen).toHaveBeenCalledOnce();
   });
 
-  it("keeps the model picker geometry stable when its open catalog resolves", () => {
-    const { state } = createOpenAiHeaderState();
-    const container = renderModelControls(state, {
-      modelCatalog: [],
-      modelCatalogState: { hasSnapshot: false, status: "loading" },
-      modelPickerOpen: true,
-      modelsLoading: true,
-    });
-    const picker = container.querySelector<HTMLDetailsElement>(".chat-controls__model-picker");
-    const effort = container.querySelector<HTMLDetailsElement>(".chat-controls__effort-picker");
-    expect(picker?.open).toBe(true);
-    expect(effort?.getAttribute("aria-hidden")).toBe("true");
-    expect(effort?.hasAttribute("inert")).toBe(true);
+  it.each(["ready", "error"] as const)(
+    "keeps usable effort controls with a %s catalog",
+    (status) => {
+      const { state } = createOpenAiHeaderState();
+      const container = renderModelControls(state, {
+        modelCatalog: [],
+        modelCatalogState: { hasSnapshot: false, status: "loading" },
+        modelPickerOpen: true,
+        modelsLoading: true,
+      });
+      const picker = container.querySelector<HTMLDetailsElement>(".chat-controls__model-picker");
+      const effort = container.querySelector<HTMLDetailsElement>(".chat-controls__effort-picker");
+      expect(picker?.open).toBe(true);
+      expect(effort?.getAttribute("aria-hidden")).toBe("true");
+      expect(effort?.hasAttribute("inert")).toBe(true);
 
-    renderModelControls(state, { modelPickerOpen: true }, container);
+      renderModelControls(
+        state,
+        {
+          modelPickerOpen: true,
+          modelCatalogState: { hasSnapshot: true, status },
+        },
+        container,
+      );
 
-    expect(container.querySelector(".chat-controls__model-picker")).toBe(picker);
-    expect(picker?.open).toBe(true);
-    expect(container.querySelector(".chat-controls__effort-picker")).toBe(effort);
-    expect(effort?.getAttribute("aria-hidden")).toBe("false");
-    expect(effort?.hasAttribute("inert")).toBe(false);
-    expect(effort?.textContent).toContain("Medium");
-  });
+      expect(container.querySelector(".chat-controls__model-picker")).toBe(picker);
+      expect(picker?.open).toBe(true);
+      expect(container.querySelector(".chat-controls__effort-picker")).toBe(effort);
+      expect(effort?.getAttribute("aria-hidden")).toBe("false");
+      expect(effort?.hasAttribute("inert")).toBe(false);
+      expect(effort?.textContent).toContain("Medium");
+
+      renderModelControls(
+        state,
+        {
+          modelPickerOpen: false,
+          modelCatalogState: { hasSnapshot: true, status },
+        },
+        container,
+      );
+      expect(container.querySelector(".chat-controls__effort-picker")).toBe(effort);
+      expect(effort?.getAttribute("aria-hidden")).toBe("false");
+    },
+  );
 
   it("keeps model enabled while write-only access disables effort controls", () => {
     const { state } = createOpenAiHeaderState();

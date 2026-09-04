@@ -1,9 +1,23 @@
 import { describe, expect, it, vi } from "vitest";
 import { GatewayPendingRequests } from "../../../../packages/gateway-client/src/pending-request.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
+import { createTestGatewayClient } from "../../test-helpers/gateway-client.ts";
 import { loadModelProviderCost, loadModelProvidersData, loadModelProviderUsage } from "./load.ts";
 
 describe("loadModelProvidersData", () => {
+  it("shows a recorded discovery failure without discarding models and clears it on recovery", async () => {
+    const models = [{ id: "model", name: "Model", provider: "test" }];
+    const request = vi.fn().mockResolvedValue({ models, refreshFailed: true });
+    const client = createTestGatewayClient(request);
+    const failed = await loadModelProvidersData(client, { agentId: "main" });
+    expect(failed.models).toEqual(models);
+    expect(failed.catalogError).toContain("showing previous choices");
+    request.mockResolvedValue({ models });
+    const recovered = await loadModelProvidersData(client, { agentId: "main" });
+    expect(recovered.models).toEqual(models);
+    expect(recovered.catalogError).toBeNull();
+  });
+
   it("keeps full catalog discovery out of the initial page load", async () => {
     const request = vi.fn(async (method: string, _params?: unknown) => {
       switch (method) {

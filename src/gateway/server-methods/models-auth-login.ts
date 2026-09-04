@@ -47,7 +47,6 @@ export async function startModelsAuthLoginWizard(params: {
         method: choice.methodId,
         ownerPluginId: choice.pluginId,
         credentialOnly: true,
-        setDefault: config.agents?.defaults?.model === undefined,
         ...(params.agentId ? { agent: params.agentId } : {}),
         config,
         runtime: gatewayWizardStepRuntime,
@@ -71,9 +70,6 @@ export async function startModelsAuthLoginWizard(params: {
         throw new Error(
           `${choice.choiceLabel} sign-in succeeded, but OpenClaw could not enable its models. Retry after the current config change finishes.`,
         );
-      }
-      if (result.defaultModel) {
-        session.setModelActivation({ modelRef: result.defaultModel });
       }
     },
   });

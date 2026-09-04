@@ -75,6 +75,60 @@ describe("prepared fixture containment", () => {
 });
 
 describe("prepared build candidate lifetime", () => {
+  it.each(["failure", "supersession", "timeout"] as const)(
+    "closes retained-catalog workers when a batch ends in %s",
+    async (outcome) => {
+      let current = true;
+      const auth = { authStore: { version: 1, profiles: {} }, providerAuth: {} };
+      const secondAuth = createDeferred<typeof auth>();
+      mocks.runPreparedModelAuthWorker
+        .mockResolvedValueOnce(auth)
+        .mockImplementationOnce(() => secondAuth.promise);
+      const candidates = ["first", "second"].map((agentId) => {
+        const input = { config: {}, agentDir: state.agentDir(agentId), readOnly: true };
+        return {
+          input,
+          catalogOwner: preparePublishedModelCatalogOwnerIdentity(input),
+          catalogInventory: { snapshot: { entries: [], routeVariants: [] } },
+          isGenerationCurrent: () => current,
+          isBuildCurrent: () => current,
+        };
+      });
+      const build = startSerializedSnapshotBuildBatch(
+        candidates,
+        new Map(),
+        outcome === "timeout" ? 100 : 1_000,
+      );
+      const rejection = expect(build.pending).rejects.toThrow(
+        outcome === "failure"
+          ? "auth unavailable"
+          : outcome === "timeout"
+            ? "timed out"
+            : "superseded",
+      );
+      try {
+        await vi.waitFor(() => expect(mocks.runPreparedModelAuthWorker).toHaveBeenCalledTimes(2));
+        const closedBeforeEnd = mocks.closePreparedModelCatalogWorker.mock.calls.length;
+        if (outcome === "failure") {
+          secondAuth.reject(new Error("auth unavailable"));
+        } else if (outcome === "supersession") {
+          current = false;
+          secondAuth.resolve(auth);
+        } else {
+          await rejection;
+          secondAuth.resolve(auth);
+        }
+        await rejection;
+        await build.completion;
+        expect(closedBeforeEnd).toBe(0);
+        expect(mocks.closePreparedModelCatalogWorker).toHaveBeenCalledTimes(2);
+      } finally {
+        secondAuth.resolve(auth);
+        await build.completion;
+      }
+    },
+  );
+
   it("fails a timed-out publication without overlapping its late build with a retry", async () => {
     getPreparedModelRuntimeTestApi().setModelRuntimeBuildTimeoutMsForTest(1);
     const build = createDeferred<{ entries: []; routeVariants: [] }>();
@@ -83,6 +137,7 @@ describe("prepared build candidate lifetime", () => {
     const candidate = {
       input: { ...input, readOnly: true },
       catalogOwner: preparePublishedModelCatalogOwnerIdentity({ ...input, readOnly: true }),
+      catalogInventory: {},
     };
     const first = startSerializedSnapshotBuildBatch([candidate], new Map(), 1_000);
     try {
@@ -142,6 +197,7 @@ describe("prepared build candidate lifetime", () => {
     const candidate = {
       input,
       catalogOwner: preparePublishedModelCatalogOwnerIdentity(input),
+      catalogInventory: {},
       ...(generation === undefined ? {} : { isGenerationCurrent: () => generation }),
       ...(build === undefined ? {} : { isBuildCurrent: () => build }),
     };
@@ -174,6 +230,7 @@ describe("prepared build candidate lifetime", () => {
       const candidate = {
         input,
         catalogOwner: preparePublishedModelCatalogOwnerIdentity(input),
+        catalogInventory: {},
         isGenerationCurrent: () => false,
         isBuildCurrent: () => false,
         ...(checkpoint === "before" ? { isPreparationCurrent: () => false } : {}),

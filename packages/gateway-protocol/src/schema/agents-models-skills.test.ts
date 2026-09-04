@@ -295,6 +295,11 @@ describe("Models auth params schemas", () => {
 });
 
 describe("ModelsListResultSchema", () => {
+  it("reports refresh failure without exposing internal error text", () => {
+    expectAccepted(ModelsListResultSchema, { models: [], refreshFailed: true });
+    expectRejected(ModelsListResultSchema, { models: [], refreshFailed: "internal error" });
+  });
+
   it("accepts closed unavailability reasons and epoch-millisecond retry times", () => {
     const model = { id: "test-model", name: "Test Model", provider: "custom", available: false };
     for (const unavailableReason of ["missing-auth", "auth-failed", "cooldown"]) {

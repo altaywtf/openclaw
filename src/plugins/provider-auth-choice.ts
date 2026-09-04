@@ -325,12 +325,13 @@ export async function runProviderPluginAuthMethod(params: {
   secretInputMode?: ProviderAuthOptionBag["secretInputMode"];
   allowSecretRefPrompt?: boolean;
   opts?: Partial<ProviderAuthOptionBag>;
-}): Promise<{ config: OpenClawConfig; defaultModel?: string }> {
+}): Promise<{ config: OpenClawConfig; defaultModel?: string; credentialsSaved: boolean }> {
   const prepared = await prepareProviderPluginAuthMethod(params);
   await prepared.persistAuthProfiles();
 
   return {
     config: prepared.config,
+    credentialsSaved: prepared.authProfiles.length > 0,
     ...(prepared.defaultModel ? { defaultModel: prepared.defaultModel } : {}),
   };
 }

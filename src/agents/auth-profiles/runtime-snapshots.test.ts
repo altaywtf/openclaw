@@ -69,6 +69,26 @@ function expectOpenAICodexSnapshotCredential(
 }
 
 describe("runtime auth profile snapshots", () => {
+  it("announces native credential changes for a non-main owner without a cached store", () => {
+    const listener = vi.fn();
+    const unsubscribe = registerRuntimeAuthProfileStoreMutationListener(listener);
+    try {
+      noteRuntimeAuthProfileStorePersistedMutation("/tmp/native-login-agent", {
+        credentialsChanged: true,
+        profileSetChanged: true,
+        stateChanged: false,
+        profileIds: [],
+      });
+      expect(listener).toHaveBeenCalledExactlyOnceWith({
+        agentDir: "/tmp/native-login-agent",
+        affectsInheritedStores: false,
+        profileSetChanged: true,
+      });
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it("carries the canonical database identity through snapshot enumeration", () => {
     const databasePath = "/tmp/openclaw-auth-runtime-enumeration/custom.sqlite";
     const store = createStore("enumerated");
@@ -217,6 +237,39 @@ describe("runtime auth profile snapshots", () => {
       clearRuntimeAuthProfileStoreSnapshots();
     }
   });
+
+  it.each(["rotation", "account", "api-key"] as const)(
+    "distinguishes %s changes from a new profile inventory",
+    (change) => {
+      const agentDir = "/tmp/openclaw-auth-inventory";
+      const initial = createStore("initial");
+      setRuntimeAuthProfileStoreSnapshot(initial, agentDir);
+      const listener = vi.fn();
+      const unregister = registerRuntimeAuthProfileStoreMutationListener(listener);
+      try {
+        const next = createStore("rotated");
+        const credential = expectDefined(next.profiles["openai:default"], "next credential");
+        if (change === "account" && credential.type === "oauth") {
+          credential.accountId = "another-account";
+        } else if (change === "api-key") {
+          next.profiles["openai:default"] = {
+            type: "api_key",
+            provider: "openai",
+            key: "new-api-key",
+          };
+        }
+        setRuntimeAuthProfileStoreSnapshot(next, agentDir);
+        expect(listener).toHaveBeenCalledExactlyOnceWith({
+          agentDir,
+          affectsInheritedStores: false,
+          profileSetChanged: change !== "rotation",
+        });
+      } finally {
+        unregister();
+        clearRuntimeAuthProfileStoreSnapshots();
+      }
+    },
+  );
 
   it("notifies when provider credential order changes", () => {
     const agentDir = "/tmp/openclaw-auth-runtime-order";

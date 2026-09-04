@@ -339,6 +339,7 @@ export const ModelCatalogProviderOutcomeSchema = closedObject({
 
 export const ModelsListResultSchema = closedObject({
   models: Type.Array(ModelChoiceSchema),
+  refreshFailed: Type.Optional(Type.Boolean()),
   providerOutcomes: Type.Optional(Type.Array(ModelCatalogProviderOutcomeSchema)),
 });
 

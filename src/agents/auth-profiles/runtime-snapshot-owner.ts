@@ -1,6 +1,9 @@
 /** Canonical owner identity and nonpublishing auth snapshot composition. */
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { stableStringify } from "@openclaw/normalization-core";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { sha256Base64Url } from "../../infra/crypto-digest.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { cloneAuthProfileStore } from "./clone.js";
 import { AUTH_STORE_VERSION } from "./constants.js";
@@ -269,6 +272,30 @@ export function runtimeAuthCredentialState(
     .filter(([, store]) => Object.keys(store.profiles).length > 0)
     .map(([key, store]) => [key, store.profiles] as const)
     .toSorted(([left], [right]) => left.localeCompare(right));
+}
+
+export function authProfileCatalogChanged(
+  previous: Readonly<Record<string, unknown>>,
+  next: Readonly<Record<string, unknown>>,
+): boolean {
+  return fingerprintAuthProfileCatalog(previous) !== fingerprintAuthProfileCatalog(next);
+}
+
+export function fingerprintAuthProfileCatalog(profiles: Readonly<Record<string, unknown>>): string {
+  const inventory = Object.fromEntries(
+    Object.entries(profiles).map(([profileId, profile]) => {
+      if (!isRecord(profile) || profile.type !== "oauth") {
+        return [profileId, profile];
+      }
+      const identity = { ...profile };
+      delete identity.access;
+      delete identity.refresh;
+      delete identity.expires;
+      delete identity.idToken;
+      return [profileId, identity];
+    }),
+  );
+  return sha256Base64Url(stableStringify(inventory));
 }
 
 export function runtimeAuthOwnerState(

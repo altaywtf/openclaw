@@ -72,6 +72,7 @@ type ApiKeyProviderCapabilities = {
 };
 type ModelsListResult = {
   models: ModelChoice[];
+  refreshFailed?: boolean;
   providerOutcomes?: ReturnType<typeof projectProviderCatalogOutcomes>;
 };
 type PreparedModelsListResult = {
@@ -477,9 +478,10 @@ export async function prepareModelsListResult(
   const { providerOutcomes } = snapshot;
   const routeVariants = snapshot.routeVariants.filter((entry) => isVisibleProvider(entry.provider));
   const publicProviderOutcomes = projectProviderCatalogOutcomes(providerOutcomes);
-  const outcomeProjection = publicProviderOutcomes?.length
-    ? { providerOutcomes: publicProviderOutcomes }
-    : {};
+  const outcomeProjection = {
+    ...(publicProviderOutcomes?.length ? { providerOutcomes: publicProviderOutcomes } : {}),
+    ...(snapshot.refreshFailed ? { refreshFailed: true } : {}),
+  };
   const preparedProviderAuth = preparedProjectionOwner?.providerAuth;
   const preparedRuntimeAuthMaterializations = preparedProjectionOwner?.authMaterializations;
   // A complete catalog and its synthetic-auth probe results cross the worker boundary together.

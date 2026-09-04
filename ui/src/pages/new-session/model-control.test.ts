@@ -134,7 +134,7 @@ describe("new-session model runtime", () => {
     expect(container.querySelector("[data-chat-model-target-group]")).toBeNull();
   });
 
-  it("does not reload a ready catalog when the picker opens", async () => {
+  it("reads the published snapshot without discovery when a ready picker opens", async () => {
     const fast = { id: "fast", name: "Fast", provider: "openai" };
     const { context, request } = contextWith([fast]);
     const control = new NewSessionModelControl(() => undefined);
@@ -147,12 +147,22 @@ describe("new-session model runtime", () => {
       ).not.toBeNull(),
     );
     request.mockClear();
+    request.mockResolvedValue({ models: [fast, { ...fast, id: "new", name: "New" }] });
 
     const container = renderControl(control, context);
     const picker = container.querySelector<HTMLDetailsElement>(".chat-controls__model-picker");
     picker!.open = true;
 
-    expect(request).not.toHaveBeenCalled();
+    await waitForFast(() =>
+      expect(
+        renderControl(control, context).querySelector('[data-chat-model-option="openai/new"]'),
+      ).not.toBeNull(),
+    );
+    expect(request).toHaveBeenCalledExactlyOnceWith(
+      "models.list",
+      { view: "configured", agentId: "main" },
+      { signal: expect.any(AbortSignal) },
+    );
     expect(
       renderControl(control, context).querySelector('[data-chat-model-option="openai/fast"]'),
     ).not.toBeNull();
@@ -649,9 +659,9 @@ describe("new-session model runtime", () => {
     await vi.waitFor(() =>
       expect(
         renderControl(control, context, "main", agent).querySelector(
-          "[data-chat-model-catalog-state]",
+          '[data-chat-model-catalog-state="error"]',
         ),
-      ).toBeNull(),
+      ).not.toBeNull(),
     );
     let container = renderControl(control, context, "main", agent);
     expect(container.querySelector('[data-chat-model-select="true"]')?.textContent).toContain(
@@ -760,8 +770,8 @@ describe("new-session model runtime", () => {
     refresh.reject(new Error("refresh failed"));
     await vi.waitFor(() =>
       expect(
-        renderControl(control, context).querySelector("[data-chat-model-catalog-state]"),
-      ).toBeNull(),
+        renderControl(control, context).querySelector('[data-chat-model-catalog-state="error"]'),
+      ).not.toBeNull(),
     );
     container = renderControl(control, context);
     expect(container.querySelectorAll("[data-chat-model-option]")).toHaveLength(2);

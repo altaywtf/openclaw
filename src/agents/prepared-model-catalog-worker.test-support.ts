@@ -104,6 +104,7 @@ export function writeFixturePlugin(params: {
   pluginVersion?: string;
   builtPluginVersion?: string;
   nativeCatalog?: boolean;
+  nativeAuth?: boolean;
 }): string {
   const pluginDir = path.join(params.root, "plugin");
   fs.mkdirSync(pluginDir, { recursive: true });
@@ -121,6 +122,7 @@ export function writeFixturePlugin(params: {
     harnessId: HARNESS_ID,
     unrelatedId: UNRELATED_SYNTHETIC_AUTH_ID,
     pluginVersion: params.pluginVersion ?? "v1",
+    nativeAuth: params.nativeAuth,
   });
   fs.writeFileSync(
     pluginFile,
@@ -139,7 +141,9 @@ module.exports = {
         nativeCatalogObserved = true;
         return [{
           provider: ${JSON.stringify(PROVIDER_ID)},
-          id: "account-scoped-model",
+          id: fs.existsSync(${JSON.stringify(path.join(params.root, "native-account.txt"))})
+            ? fs.readFileSync(${JSON.stringify(path.join(params.root, "native-account.txt"))}, "utf8").trim()
+            : "account-scoped-model",
           name: "Account scoped model",
           ${catalogRoute}
         }, {
@@ -164,7 +168,7 @@ module.exports = {
         auth: [],
         resolveSyntheticAuth() {
           fs.appendFileSync(${JSON.stringify(syntheticAuthProbePath)}, id + "\\n");
-          return authenticated
+          return ${params.nativeAuth !== false} && authenticated
             ? { apiKey: "discovered-native-login-not-real", source: "fixture native login", mode: "oauth" }
             : undefined;
         },
@@ -186,6 +190,7 @@ module.exports = {
             type: "oauth",
             provider: ${JSON.stringify(PROVIDER_ID)},
             access: ${JSON.stringify(params.pluginVersion ?? "v1")} + ":" + credentialMarker,
+            accountId: fs.existsSync(credentialPath + ".account") ? fs.readFileSync(credentialPath + ".account", "utf8") : "fixture-account",
             refresh: "refresh-" + credentialMarker + "-not-real",
             expires: Date.now() + 60_000,
           },
@@ -468,6 +473,7 @@ export async function expectNativeHarnessModelsPublishedFromWorker(params: {
         {
           input,
           catalogOwner: preparePublishedModelCatalogOwnerIdentity(input),
+          catalogInventory: {},
           isGenerationCurrent: () => current,
           isBuildCurrent: () => current,
         },

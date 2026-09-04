@@ -627,6 +627,7 @@ export type ModelCatalogProviderOutcome =
 export type ModelCatalogResult = {
   models: ModelCatalogEntry[];
   providerOutcomes?: ModelCatalogProviderOutcome[];
+  refreshFailed?: boolean;
 };
 
 export type ToolCatalogProfile =

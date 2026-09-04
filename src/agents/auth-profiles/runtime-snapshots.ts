@@ -16,6 +16,7 @@ import {
   clearRuntimeAuthMaterializationsAtDatabasePath,
 } from "./runtime-materializations.js";
 import {
+  authProfileCatalogChanged,
   captureRuntimeAuthProfileLegacyCandidates,
   cloneRuntimeAuthProfileLegacyCandidates,
   captureRuntimeAuthSharedOwner,
@@ -163,10 +164,7 @@ function authProfileSetChanged(
   previous: RuntimeAuthProfileStore | undefined,
   next: RuntimeAuthProfileStore | undefined,
 ): boolean {
-  return !isDeepStrictEqual(
-    Object.keys(previous?.profiles ?? {}).toSorted(),
-    Object.keys(next?.profiles ?? {}).toSorted(),
-  );
+  return authProfileCatalogChanged(previous?.profiles ?? {}, next?.profiles ?? {});
 }
 
 /** Observes credential snapshot changes at their lifecycle publication edge. */
@@ -547,13 +545,17 @@ export function noteRuntimeAuthProfileStorePersistedMutation(
   }
   recordRuntimeAuthProfileStorePersistedMutation(ownerKey, mutation);
   const mainKey = owner?.sharedDatabasePath ?? resolveRuntimeStoreKey(undefined);
-  if (ownerKey !== mainKey || (!mutation.credentialsChanged && !mutation.profileSetChanged)) {
+  if (!mutation.credentialsChanged && !mutation.profileSetChanged) {
     return;
   }
   let deletedDerivedSnapshot = false;
   const sharedOwner = owner ?? captureRuntimeAuthSharedOwner();
   for (const [key, entry] of runtimeAuthStoreSnapshots) {
-    if (key !== mainKey && runtimeAuthProfileSnapshotSharesOwner(entry.owner, sharedOwner)) {
+    if (
+      ownerKey === mainKey &&
+      key !== mainKey &&
+      runtimeAuthProfileSnapshotSharesOwner(entry.owner, sharedOwner)
+    ) {
       runtimeAuthStoreSnapshots.delete(key);
       runtimeAuthStoreSnapshotRevisions.delete(key);
       deletedDerivedSnapshot = true;
@@ -562,9 +564,7 @@ export function noteRuntimeAuthProfileStorePersistedMutation(
   if (deletedDerivedSnapshot) {
     advanceRuntimeAuthStoreSnapshotsRevision();
   }
-  if (mutation.credentialsChanged || mutation.profileSetChanged) {
-    notifyRuntimeAuthStoreMutation(agentDir, mutation.profileSetChanged === true);
-  }
+  notifyRuntimeAuthStoreMutation(agentDir, mutation.profileSetChanged === true);
 }
 
 /** Stable token for credential ownership without coupling to usage bookkeeping. */

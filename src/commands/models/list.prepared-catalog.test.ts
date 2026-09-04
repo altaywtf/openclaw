@@ -85,6 +85,32 @@ beforeEach(() => {
 });
 
 describe("models list prepared catalog boundary", () => {
+  it("discovers the full provider inventory without requiring --all", async () => {
+    mocks.buildModelsListResult.mockResolvedValue({
+      models: [
+        {
+          provider: "anthropic",
+          id: "discovered-model",
+          name: "Discovered Model",
+          available: true,
+        },
+        { provider: "another", id: "other-model", name: "Other Model", available: true },
+      ],
+    });
+    await modelsListCommand({ provider: "anthropic", json: true }, runtime);
+    expect(mocks.loadPreparedGatewayModelCatalogSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ readOnly: false, refreshFullCatalog: true }),
+    );
+    expect(mocks.buildModelsListResult).toHaveBeenCalledWith(
+      expect.objectContaining({ params: { view: "all" } }),
+    );
+    expect(mocks.printModelTable).toHaveBeenCalledWith(
+      [expect.objectContaining({ key: "anthropic/discovered-model" })],
+      runtime,
+      { provider: "anthropic", json: true },
+    );
+  });
+
   it("renders the public prepared owner projection and never assembles a CLI catalog", async () => {
     await modelsListCommand({ all: true, json: true }, runtime);
 

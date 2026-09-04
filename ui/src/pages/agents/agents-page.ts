@@ -43,7 +43,7 @@ import {
   canCallGatewayMethod,
   type GatewayMethodOperatorScope,
 } from "../../lib/gateway-methods.ts";
-import { loadModelCatalog } from "../../lib/model-catalog-store.ts";
+import { loadModelCatalog, modelCatalogRefreshError } from "../../lib/model-catalog-store.ts";
 import { parseAgentSessionKey } from "../../lib/sessions/session-key.ts";
 import { GatewayPageController } from "../../lit/gateway-page-controller.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
@@ -612,13 +612,12 @@ class AgentsPage
     }
     const request = { client, generation, agentId };
     this.chatModelCatalogRequest = request;
-    this.chatModelCatalogError = null;
     void loadModelCatalog(client, { agentId, ...(options.refresh ? { refresh: true } : {}) })
       .then((result) => {
         if (this.isCurrentRequest(client, generation, agentId)) {
           this.chatModelCatalog = result.models;
           this.chatModelCatalogAgentId = agentId;
-          this.chatModelCatalogError = null;
+          this.chatModelCatalogError = modelCatalogRefreshError(result);
         }
       })
       .catch((error: unknown) => {

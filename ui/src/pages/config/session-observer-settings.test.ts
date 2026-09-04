@@ -30,30 +30,45 @@ describe("session observer settings patches", () => {
     });
   });
 
-  it("keeps auto and disabled selectable when explicit models are unavailable", () => {
-    const container = document.createElement("div");
-    render(
-      renderSessionObserverSettings({
-        enabled: true,
-        utilityModel: undefined,
-        resolvedUtilityModel: { status: "unavailable" },
-        models: [{ id: "gpt-mini", name: "GPT Mini", provider: "openai" }],
-        modelsUnavailable: true,
-        disabled: false,
-        onEnabledChange: () => undefined,
-        onUtilityModelChange: () => undefined,
-      }),
-      container,
-    );
+  it.each([
+    {
+      modelsUnavailable: true,
+      modelsRefreshError: null,
+      message: "Explicit model catalog unavailable",
+    },
+    {
+      modelsUnavailable: false,
+      modelsRefreshError: "Could not refresh models; showing previous choices.",
+      message: "showing previous choices",
+    },
+  ])(
+    "keeps auto and disabled selectable when catalog warning is $message",
+    ({ modelsUnavailable, modelsRefreshError, message }) => {
+      const container = document.createElement("div");
+      render(
+        renderSessionObserverSettings({
+          enabled: true,
+          utilityModel: undefined,
+          resolvedUtilityModel: { status: "unavailable" },
+          models: [{ id: "gpt-mini", name: "GPT Mini", provider: "openai" }],
+          modelsUnavailable,
+          modelsRefreshError,
+          disabled: false,
+          onEnabledChange: () => undefined,
+          onUtilityModelChange: () => undefined,
+        }),
+        container,
+      );
 
-    const select = container.querySelector("wa-select.model-picker__select");
-    const options = [...(select?.querySelectorAll("wa-option") ?? [])];
-    const option = (label: string) =>
-      options.find((candidate) => candidate.textContent?.trim() === label);
-    expect(select?.hasAttribute("disabled")).toBe(false);
-    expect(option("Auto (provider default)")?.hasAttribute("disabled")).toBe(false);
-    expect(option("Disabled")?.hasAttribute("disabled")).toBe(false);
-    expect(option("GPT Mini")?.hasAttribute("disabled")).toBe(true);
-    expect(container.textContent).toContain("Explicit model catalog unavailable");
-  });
+      const select = container.querySelector("wa-select.model-picker__select");
+      const options = [...(select?.querySelectorAll("wa-option") ?? [])];
+      const option = (label: string) =>
+        options.find((candidate) => candidate.textContent?.trim() === label);
+      expect(select?.hasAttribute("disabled")).toBe(false);
+      expect(option("Auto (provider default)")?.hasAttribute("disabled")).toBe(false);
+      expect(option("Disabled")?.hasAttribute("disabled")).toBe(false);
+      expect(option("GPT Mini")?.hasAttribute("disabled")).toBe(modelsUnavailable);
+      expect(container.textContent).toContain(message);
+    },
+  );
 });

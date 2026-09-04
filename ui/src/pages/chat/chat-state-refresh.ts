@@ -9,7 +9,7 @@ import {
 } from "../../lib/chat/chat-metadata-store.ts";
 import { formatUiError } from "../../lib/format-error.ts";
 import { loadModelAuthStatus } from "../../lib/model-auth.ts";
-import { loadModelCatalog } from "../../lib/model-catalog-store.ts";
+import { loadModelCatalog, modelCatalogRefreshError } from "../../lib/model-catalog-store.ts";
 import { isSessionRunActive } from "../../lib/session-run-state.ts";
 import { reconcileSessionHistory } from "../../lib/sessions/reconcile.ts";
 import {
@@ -248,13 +248,12 @@ export async function loadChatModelCatalog(
     host.modelCatalogRequestVersion === requestVersion &&
     resolveChatAgentId(host) === agentId;
   host.chatModelsLoading = host.chatModelCatalog.length === 0;
-  host.chatModelCatalogError = null;
   host.requestUpdate?.();
   try {
     const result = await loadModelCatalog(client, { agentId: agentId ?? "" });
     if (ownsRequest()) {
       host.chatModelCatalog = result.models;
-      host.chatModelCatalogError = null;
+      host.chatModelCatalogError = modelCatalogRefreshError(result);
       if (opts.refreshSessionList) {
         // An explicit refresh can change session model metadata; converge through the session owner.
         void refreshCurrentChatSessionList(host).catch(() => undefined);

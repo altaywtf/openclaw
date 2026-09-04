@@ -48,7 +48,7 @@ import { resolveControlUiServerQueueMode } from "../../lib/chat/follow-up-mode.t
 import { formatUiError } from "../../lib/format-error.ts";
 import { isMissingOperatorReadScopeError } from "../../lib/gateway-errors.ts";
 import { canCallGatewayMethod } from "../../lib/gateway-methods.ts";
-import { loadModelCatalog } from "../../lib/model-catalog-store.ts";
+import { loadModelCatalog, modelCatalogRefreshError } from "../../lib/model-catalog-store.ts";
 import { resolveScrollBehavior } from "../../lib/scroll-behavior.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 import { PollController } from "../../lit/poll-controller.ts";
@@ -272,6 +272,7 @@ export class ConfigPage extends OpenClawLightDomElement {
   @state() private systemInfoUnavailable = false;
   @state() private sessionObserverModels: ModelCatalogEntry[] = [];
   @state() private sessionObserverModelsUnavailable = false;
+  @state() private sessionObserverModelsRefreshError: string | null = null;
   private mediaDeviceWatch: (() => void) | null = null;
   @state() private microphoneDevices: RealtimeTalkInputDevice[] = [];
   @state() private microphonePermissionRequired = true;
@@ -809,12 +810,13 @@ export class ConfigPage extends OpenClawLightDomElement {
       this.context.gateway.snapshot.client === client &&
       this.context.agentSelection.state.selectedId === agentId;
     const promise = loadModelCatalog(client, { agentId, preparedOnly: true })
-      .then(({ models }) => {
+      .then((result) => {
         if (isCurrent()) {
-          this.sessionObserverModels = models;
+          this.sessionObserverModels = result.models;
           this.sessionObserverModelsClient = client;
           this.sessionObserverModelsAgentId = agentId;
           this.sessionObserverModelsUnavailable = false;
+          this.sessionObserverModelsRefreshError = modelCatalogRefreshError(result);
         }
       })
       .catch(() => {
@@ -836,6 +838,7 @@ export class ConfigPage extends OpenClawLightDomElement {
     this.sessionObserverModelsClient = null;
     this.sessionObserverModelsAgentId = null;
     this.sessionObserverModelsUnavailable = unavailable;
+    this.sessionObserverModelsRefreshError = null;
   }
 
   private setFormMode(mode: ConfigFormMode) {
@@ -1269,6 +1272,7 @@ export class ConfigPage extends OpenClawLightDomElement {
       sessionObserverResolvedModel: this.systemInfo?.defaultAgentUtilityModel,
       sessionObserverModels: this.sessionObserverModels,
       sessionObserverModelsUnavailable: this.sessionObserverModelsUnavailable,
+      sessionObserverModelsRefreshError: this.sessionObserverModelsRefreshError,
       sessionObserverDisabled: sessionObserverBusy,
       setSessionObserverEnabled: (enabled) => {
         void runtimeConfig.patch({

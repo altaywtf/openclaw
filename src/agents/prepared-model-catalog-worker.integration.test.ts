@@ -52,6 +52,7 @@ import {
   getPreparedModelRuntimeSnapshot,
   refreshPreparedModelRuntimeSnapshots,
 } from "./prepared-model-runtime.js";
+import type { PreparedModelRuntimeOwner } from "./prepared-model-runtime.types.js";
 import { AuthStorage } from "./sessions/auth-storage.js";
 import {
   markPluginMetadataSnapshotProvided,
@@ -66,6 +67,7 @@ function createCatalogFixture(
   envOverride: NodeJS.ProcessEnv = {},
   options?: {
     builtPluginVersion?: string;
+    nativeAuth?: boolean;
   },
 ) {
   const root = makeTempDir("openclaw-model-catalog-worker-");
@@ -194,6 +196,7 @@ async function createStaticSnapshot(
       {
         input,
         catalogOwner: preparePublishedModelCatalogOwnerIdentity(input),
+        catalogInventory: {},
         isGenerationCurrent: isCurrent,
         isBuildCurrent: isCurrent,
         prepareInboundPluginRegistry: options?.prepareInboundPluginRegistry,
@@ -307,6 +310,7 @@ describe("prepared model catalog worker boundary", () => {
         {
           input,
           catalogOwner: preparePublishedModelCatalogOwnerIdentity(input),
+          catalogInventory: {},
           isGenerationCurrent: isCurrent,
           isBuildCurrent: isCurrent,
         },
@@ -742,6 +746,116 @@ describe("prepared model catalog worker boundary", () => {
       removed.projected.authStore?.profiles[`${DURABLE_AUTH_PROVIDER_ID}:default`],
     ).toBeUndefined();
   });
+
+  it.each(["token renewal", "external account", "native account"])(
+    "keeps catalog auth coherent across %s changes",
+    async (change) => {
+      const nativeAuth = change === "native account";
+      const accountChanged = change === "external account";
+      const fixture = createCatalogFixture(0, {}, { nativeAuth });
+      const nativeAccountPath = path.join(fixture.root, "native-account.txt");
+      if (nativeAuth) {
+        fs.writeFileSync(nativeAccountPath, "account-a-model", "utf8");
+      }
+      const input = {
+        agentId: "main",
+        agentDir: fixture.agentDir,
+        inheritedAuthDir: fixture.agentDir,
+        workspaceDir: fixture.workspaceDir,
+        config: fixture.config,
+        env: fixture.env,
+      };
+      const catalogInventory: PreparedModelRuntimeOwner["catalogInventory"] = {};
+      let generation = 0;
+      retireAfterTest(() => {
+        generation += 1;
+      });
+      const publish = async () => {
+        const candidateGeneration = ++generation;
+        replaceRuntimeAuthProfileStoreSnapshots([
+          {
+            agentDir: fixture.agentDir,
+            store: {
+              version: 1,
+              profiles: {
+                [`${PROVIDER_ID}:api`]: {
+                  type: "api_key",
+                  provider: PROVIDER_ID,
+                  key: "fixture-key",
+                },
+              },
+            },
+          },
+        ]);
+        return (
+          await startSerializedSnapshotBuildBatch(
+            [
+              {
+                input,
+                catalogOwner: preparePublishedModelCatalogOwnerIdentity(input),
+                catalogInventory,
+                isGenerationCurrent: () => generation === candidateGeneration,
+                isBuildCurrent: () => generation === candidateGeneration,
+              },
+            ],
+            new Map(),
+            30_000,
+          ).pending
+        )[0]!;
+      };
+      const original = await publish();
+      expect(original.snapshot.providerAuth[PROVIDER_ID]).toEqual({ mode: "api_key" });
+      const originalCatalog = await original.snapshot.loadFullModelCatalog!();
+      if (nativeAuth) {
+        expect(originalCatalog.entries).toContainEqual(
+          expect.objectContaining({ id: "account-a-model" }),
+        );
+        fs.writeFileSync(nativeAccountPath, "account-b-model", "utf8");
+      }
+      if (accountChanged) {
+        fs.writeFileSync(`${fixture.externalAuthPath}.account`, "second-account", "utf8");
+      }
+      const refreshed = await publish();
+      if (accountChanged || nativeAuth) {
+        expect(refreshed.snapshot.readFullModelCatalog!()).toBeUndefined();
+        const rediscovered = await refreshed.snapshot.loadFullModelCatalog!();
+        expect(
+          getPreparedModelFullCatalogAuth(rediscovered)?.authStore.profiles[
+            EXTERNAL_AUTH_PROFILE_ID
+          ],
+        ).toMatchObject({ accountId: accountChanged ? "second-account" : "fixture-account" });
+        if (nativeAuth) {
+          expect(rediscovered.entries).toContainEqual(
+            expect.objectContaining({ id: "account-b-model" }),
+          );
+          expect(rediscovered.entries).not.toContainEqual(
+            expect.objectContaining({ id: "account-a-model" }),
+          );
+        }
+        expect(fs.readFileSync(fixture.marker, "utf8")).toBe("start\ndone\nstart\ndone\n");
+        return;
+      }
+      expect(
+        getPreparedModelFullCatalogAuth(refreshed.snapshot.readFullModelCatalog!()!)?.authStore
+          .profiles[EXTERNAL_AUTH_PROFILE_ID],
+      ).toMatchObject({ access: "v1:A" });
+      expect(fs.readFileSync(fixture.marker, "utf8")).toBe("start\ndone\n");
+
+      writeFixturePlugin({ root: fixture.root, spinMs: 0, pluginVersion: "v2" });
+      fs.writeFileSync(fixture.externalAuthPath, "B", "utf8");
+      const auth = await loadPreparedModelRuntimeAuth(refreshed.snapshot, {
+        providerIds: [PROVIDER_ID],
+      });
+      expect(auth?.authStore.profiles[EXTERNAL_AUTH_PROFILE_ID]).toMatchObject({ access: "v1:B" });
+      const catalog = await refreshed.snapshot.loadFullModelCatalog!({ refresh: true });
+      expect(catalog.entries).toContainEqual(
+        expect.objectContaining({ id: "plugin-generation-v1" }),
+      );
+      expect(catalog.entries).not.toContainEqual(
+        expect.objectContaining({ id: "plugin-generation-v2" }),
+      );
+    },
+  );
 
   it("refreshes plugin external auth without changing the prepared plugin generation", async () => {
     const fixture = await createStaticSnapshot(0);

@@ -57,6 +57,7 @@ import {
   setRuntimeExternalCliProfileIds,
 } from "./runtime-external-profile-references.js";
 import {
+  authProfileCatalogChanged,
   captureRuntimeAuthProfileLegacyCandidates,
   createEmptyAuthProfileStore,
   listRuntimeLocalProfileIds,
@@ -1450,10 +1451,7 @@ function saveAuthProfileStoreInTransaction(
   ].filter(
     (profileId) => !isDeepStrictEqual(existingProfiles[profileId], payload.profiles[profileId]),
   );
-  const profileSetChanged = changedProfileIds.some(
-    (profileId) =>
-      Object.hasOwn(existingProfiles, profileId) !== Object.hasOwn(payload.profiles, profileId),
-  );
+  const profileSetChanged = authProfileCatalogChanged(existingProfiles, payload.profiles);
   const credentialsChanged = !isDeepStrictEqual(existingRaw, payload);
   const statePayload = buildPersistedAuthProfileState(localStore);
   const stateChanged = !isDeepStrictEqual(
@@ -2122,10 +2120,7 @@ export function restoreAuthProfileStorePersistenceSnapshot(
       ].filter(
         (profileId) => !isDeepStrictEqual(beforeProfiles[profileId], restoredProfiles[profileId]),
       );
-      const profileSetChanged = changedProfileIds.some(
-        (profileId) =>
-          Object.hasOwn(beforeProfiles, profileId) !== Object.hasOwn(restoredProfiles, profileId),
-      );
+      const profileSetChanged = authProfileCatalogChanged(beforeProfiles, restoredProfiles);
       credentialsRestored =
         credentialsOwned && !isDeepStrictEqual(existingRaw, snapshot.credentialsRaw);
       stateRestored = stateOwned && !isDeepStrictEqual(existingState, snapshot.stateRaw);

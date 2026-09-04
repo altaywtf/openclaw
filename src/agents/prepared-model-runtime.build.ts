@@ -1,10 +1,12 @@
 import { performance } from "node:perf_hooks";
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
+import { toStringifiedError } from "@openclaw/normalization-core/error-coercion";
 import pLimit from "p-limit";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { runAbortableTimeout } from "../node-host/with-timeout.js";
 import { prepareModelCatalogThinkingPolicies } from "../plugins/provider-thinking.js";
 import { getPreparedRuntimeAuthMaterializations } from "./auth-profiles/runtime-materializations.js";
+import { fingerprintAuthProfileCatalog } from "./auth-profiles/runtime-snapshot-owner.js";
 import { collectConfiguredAgentHarnessRuntimes } from "./harness-runtimes.js";
 import type { ModelCatalogSnapshot } from "./model-catalog.types.js";
 import {
@@ -12,9 +14,11 @@ import {
   createPreparedModelCatalogWorkerInput,
 } from "./prepared-model-catalog-worker.js";
 import {
+  getPreparedModelFullCatalogAuth,
   setPreparedModelRuntimeAuthMaterializations,
   setPreparedModelRuntimeAuthLoader,
   setPreparedModelRuntimeAuthStore,
+  setPreparedModelFullCatalogAuth,
   type PreparedModelRuntimeAuth,
   type PreparedModelRuntimeAuthScope,
 } from "./prepared-model-runtime-auth.js";
@@ -28,7 +32,10 @@ import {
   prepareConfiguredRuntimeFactsBatch,
   prepareWorkspaceBuildGroup,
 } from "./prepared-model-runtime.facts.js";
-import { materializePreparedModelCatalog } from "./prepared-model-runtime.full-catalog.js";
+import {
+  markPreparedModelCatalogFull,
+  materializePreparedModelCatalog,
+} from "./prepared-model-runtime.full-catalog.js";
 import {
   createPreparedInboundRegistryLoader,
   preparedModelRuntimeWorkspaceFactsKey,
@@ -38,6 +45,7 @@ import { notifyPreparedModelRuntimePublication } from "./prepared-model-runtime.
 import type {
   PreparedModelRuntimeBuildStats,
   PreparedModelRuntimeInput,
+  PreparedModelRuntimeOwner,
   PreparedModelRuntimePluginGeneration,
   PreparedModelRuntimeSnapshot,
   PreparedModelRuntimeStores,
@@ -48,6 +56,7 @@ const MAX_CONCURRENT_FULL_MODEL_CATALOG_BUILDS = 1;
 const limitFullModelCatalogBuild = pLimit(MAX_CONCURRENT_FULL_MODEL_CATALOG_BUILDS);
 
 type PreparedModelRuntimeCatalogAccess = Readonly<{
+  modelCatalog: ModelCatalogSnapshot;
   close: () => Promise<void>;
   readFullModelCatalog: () => ModelCatalogSnapshot | undefined;
   loadFullModelCatalog: (options?: { refresh?: boolean }) => Promise<ModelCatalogSnapshot>;
@@ -56,6 +65,7 @@ type PreparedModelRuntimeCatalogAccess = Readonly<{
 type PreparedModelRuntimeBuildCandidate = Readonly<{
   input: PreparedModelRuntimeInput;
   catalogOwner: PreparedModelRuntimeSnapshot["catalogOwner"];
+  catalogInventory: PreparedModelRuntimeOwner["catalogInventory"];
   pluginGeneration?: PreparedModelRuntimePluginGeneration;
   prepareInboundPluginRegistry?: boolean;
   isGenerationCurrent?: () => boolean;
@@ -103,16 +113,22 @@ function groupBuildCandidates<K>(
   return groups;
 }
 
-function createFullModelCatalogAccess(params: {
+async function createFullModelCatalogAccess(params: {
   agentFacts: PreparedModelRuntimeAgentFacts;
+  staticCatalog: ModelCatalogSnapshot;
   pluginGeneration: PreparedModelRuntimePluginGeneration;
+  catalogInventory: PreparedModelRuntimeOwner["catalogInventory"];
   isCurrent: () => boolean;
-}): PreparedModelRuntimeCatalogAccess {
+}): Promise<PreparedModelRuntimeCatalogAccess> {
   const project = (catalog: ModelCatalogSnapshot) => {
     const projected = materializePreparedModelCatalog(
       catalog,
       params.agentFacts.runtimeCapabilityModels,
     );
+    Object.defineProperty(projected, "refreshFailed", {
+      enumerable: true,
+      get: () => params.catalogInventory.refreshFailed,
+    });
     prepareModelCatalogThinkingPolicies({
       catalog: projected,
       metadataSnapshot: params.pluginGeneration.pluginMetadataSnapshot,
@@ -122,7 +138,9 @@ function createFullModelCatalogAccess(params: {
   };
   const assertCurrent = () =>
     assertPreparedModelRuntimeInputCurrent(params.agentFacts.input, params.isCurrent);
-  let fullCatalog: ModelCatalogSnapshot | undefined;
+  let fullCatalog = params.catalogInventory.snapshot
+    ? project(params.catalogInventory.snapshot)
+    : undefined;
   let pending: Promise<ModelCatalogSnapshot> | undefined;
   let pendingAuth: { key: string; promise: Promise<PreparedModelRuntimeAuth> } | undefined;
   const workerInput = createPreparedModelCatalogWorkerInput({
@@ -144,13 +162,36 @@ function createFullModelCatalogAccess(params: {
       isCurrent: params.isCurrent,
     }));
   };
+  const close = async () => {
+    closed = true;
+    const activeWorker = worker;
+    worker = undefined;
+    await activeWorker?.close();
+  };
+  if (fullCatalog) {
+    try {
+      const auth = await getWorker().loadAuth();
+      assertCurrent();
+      if (
+        Object.values(auth.providerAuth).every((fact) => fact.runtime === undefined) &&
+        fingerprintAuthProfileCatalog(auth.authStore.profiles) ===
+          params.catalogInventory.authFingerprint
+      ) {
+        setPreparedModelFullCatalogAuth(fullCatalog, auth);
+      } else {
+        fullCatalog = undefined;
+        delete params.catalogInventory.snapshot;
+        delete params.catalogInventory.authFingerprint;
+        delete params.catalogInventory.refreshFailed;
+      }
+    } catch (error) {
+      await close();
+      throw error;
+    }
+  }
   return {
-    close: async () => {
-      closed = true;
-      const activeWorker = worker;
-      worker = undefined;
-      await activeWorker?.close?.();
-    },
+    modelCatalog: project(params.staticCatalog),
+    close,
     loadAuth: ({ providerIds, profileIds }) => {
       const cacheKey = [providerIds, profileIds ?? []]
         .map((ids) =>
@@ -202,9 +243,39 @@ function createFullModelCatalogAccess(params: {
         pending = build
           .then((catalog) => {
             assertCurrent();
+            const auth = getPreparedModelFullCatalogAuth(catalog)!;
+            // Native status proves login, not account identity; it cannot key cross-generation reuse.
+            const reusable = Object.values(auth.providerAuth).every(
+              (fact) => fact.runtime === undefined,
+            );
+            params.catalogInventory.snapshot = reusable
+              ? markPreparedModelCatalogFull({
+                  ...catalog,
+                  providerOutcomes: catalog.providerOutcomes?.filter(
+                    (outcome) => outcome.status !== "auth-rejected",
+                  ),
+                })
+              : undefined;
+            params.catalogInventory.authFingerprint = reusable
+              ? fingerprintAuthProfileCatalog(auth.authStore.profiles)
+              : undefined;
+            delete params.catalogInventory.refreshFailed;
             fullCatalog = project(catalog);
             notifyPreparedModelRuntimePublication({ phase: "catalog-published" });
             return fullCatalog;
+          })
+          .catch((error: unknown) => {
+            if (
+              params.isCurrent() &&
+              !(error instanceof PreparedModelRuntimePublicationSupersededError)
+            ) {
+              params.catalogInventory.refreshFailed = true;
+              notifyPreparedModelRuntimePublication({
+                phase: "catalog-failed",
+                error: toStringifiedError(error),
+              });
+            }
+            throw error;
           })
           .finally(() => {
             pending = undefined;
@@ -226,15 +297,6 @@ function createSnapshot(
   const { mediaCapabilityProviders, messageToolCatalog, pluginMetadataSnapshot, pluginRegistry } =
     pluginGeneration;
   const { configuredRuntimeModels, inlineProviderModels, templateModelRegistry } = catalogFacts;
-  const modelCatalog = materializePreparedModelCatalog(
-    catalogFacts.modelCatalog,
-    agentFacts.runtimeCapabilityModels,
-  );
-  prepareModelCatalogThinkingPolicies({
-    catalog: modelCatalog,
-    metadataSnapshot: pluginMetadataSnapshot,
-    providers: pluginRegistry?.providers,
-  });
   const createStores = (): PreparedModelRuntimeStores => {
     // Runtime API keys and session extensions mutate these objects. Fork them per run while the
     // credential map and parsed catalog remain owned by the lifecycle snapshot.
@@ -259,7 +321,7 @@ function createSnapshot(
     ...(pluginRegistry ? { pluginRegistry } : {}),
     ...(messageToolCatalog ? { messageToolCatalog } : {}),
     ...(mediaCapabilityProviders ? { mediaCapabilityProviders } : {}),
-    modelCatalog,
+    modelCatalog: catalogAccess.modelCatalog,
     readFullModelCatalog: catalogAccess.readFullModelCatalog,
     loadFullModelCatalog: catalogAccess.loadFullModelCatalog,
     configuredRuntimeModels,
@@ -417,30 +479,42 @@ async function buildSnapshotBatch(
     fullCatalogConcurrencyLimit: MAX_CONCURRENT_FULL_MODEL_CATALOG_BUILDS,
   });
   assertPreparedModelRuntimeCandidatesCurrent(candidates);
-  return candidates.map((candidate) => {
-    const { input } = candidate;
-    const { agentFacts, pluginGeneration } = requirePreparedInput(input);
-    const catalogFacts = preparedCatalogs.get(input);
-    if (!catalogFacts) {
-      throw new Error(`prepared model runtime snapshot facts missing for ${input.agentDir}`);
-    }
-    const catalogAccess = createFullModelCatalogAccess({
-      agentFacts,
-      pluginGeneration,
-      isCurrent: candidate.isGenerationCurrent ?? (() => false),
-    });
-    return {
-      snapshot: createSnapshot(
-        candidate.catalogOwner,
+  const results: PreparedModelRuntimeBuildResult[] = [];
+  const catalogs: PreparedModelRuntimeCatalogAccess[] = [];
+  try {
+    for (const candidate of candidates) {
+      const { input } = candidate;
+      const { agentFacts, pluginGeneration } = requirePreparedInput(input);
+      const catalogFacts = preparedCatalogs.get(input);
+      if (!catalogFacts) {
+        throw new Error(`prepared model runtime snapshot facts missing for ${input.agentDir}`);
+      }
+      const catalogAccess = await createFullModelCatalogAccess({
         agentFacts,
+        staticCatalog: catalogFacts.modelCatalog,
         pluginGeneration,
-        catalogFacts,
-        catalogAccess,
-      ),
-      pluginGeneration,
-      close: catalogAccess.close,
-    };
-  });
+        catalogInventory: candidate.catalogInventory,
+        isCurrent: candidate.isGenerationCurrent ?? (() => false),
+      });
+      catalogs.push(catalogAccess);
+      results.push({
+        snapshot: createSnapshot(
+          candidate.catalogOwner,
+          agentFacts,
+          pluginGeneration,
+          catalogFacts,
+          catalogAccess,
+        ),
+        pluginGeneration,
+        close: catalogAccess.close,
+      });
+    }
+    assertPreparedModelRuntimeCandidatesCurrent(candidates);
+    return results;
+  } catch (error) {
+    await Promise.all(catalogs.map((catalog) => catalog.close()));
+    throw error;
+  }
 }
 
 export function startSerializedSnapshotBuildBatch(
@@ -454,6 +528,12 @@ export function startSerializedSnapshotBuildBatch(
   completion: Promise<void>;
 } {
   const agentDirs = [...new Set(candidates.map(({ input }) => input.agentDir))];
+  let abandoned = false;
+  const guardedCandidates = candidates.map((candidate) => ({
+    ...candidate,
+    isGenerationCurrent: () => !abandoned && (candidate.isGenerationCurrent?.() ?? false),
+    isBuildCurrent: () => !abandoned && (candidate.isBuildCurrent?.() ?? true),
+  }));
   const previousBuildCompletions = agentDirs
     .map((agentDir) => agentBuildCompletions.get(agentDir))
     .filter((completion) => completion !== undefined);
@@ -464,7 +544,7 @@ export function startSerializedSnapshotBuildBatch(
       await Promise.all(previousBuildCompletions);
     }
     return {
-      actualBuild: buildSnapshotBatch(candidates, pluginMetadataSnapshot, onBuildStats),
+      actualBuild: buildSnapshotBatch(guardedCandidates, pluginMetadataSnapshot, onBuildStats),
     };
   })();
   const completion = startBuild
@@ -486,7 +566,10 @@ export function startSerializedSnapshotBuildBatch(
       async () => (await startBuild).actualBuild,
       buildTimeoutMs,
       "prepared model runtime publication",
-    ),
+    ).catch((error: unknown) => {
+      abandoned = true;
+      throw error;
+    }),
     completion,
   };
 }

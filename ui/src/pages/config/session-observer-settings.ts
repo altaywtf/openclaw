@@ -78,6 +78,7 @@ export function renderSessionObserverSettings(props: {
   resolvedUtilityModel: SystemInfoResult["defaultAgentUtilityModel"];
   models: readonly ModelCatalogEntry[];
   modelsUnavailable: boolean;
+  modelsRefreshError?: string | null;
   disabled: boolean;
   onEnabledChange: (enabled: boolean) => void;
   onUtilityModelChange: (selection: SessionObserverModelSelection) => void;
@@ -103,7 +104,7 @@ export function renderSessionObserverSettings(props: {
         title: t("configView.sessionObserver.modelPicker"),
         description: props.modelsUnavailable
           ? t("configView.sessionObserver.modelCatalogUnavailable")
-          : t("configView.sessionObserver.modelPickerHint"),
+          : (props.modelsRefreshError ?? t("configView.sessionObserver.modelPickerHint")),
         control: renderModelPicker({
           label: t("configView.sessionObserver.modelPicker"),
           value: selected,

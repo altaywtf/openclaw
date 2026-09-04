@@ -5,6 +5,7 @@ import type {
 import type { FastMode, GatewayAgentRow, ModelCatalogEntry } from "../../api/types.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import { t } from "../../i18n/index.ts";
+import { subscribeChatMetadata } from "../../lib/chat/chat-metadata-store.ts";
 import { buildQualifiedChatModelValue } from "../../lib/chat/model-ref.ts";
 import {
   isChatFastModeProviderSupported,
@@ -66,8 +67,10 @@ export class NewSessionModelControl {
     hasSnapshot: false,
     status: "idle",
   };
-  private metadataLoading = false;
+  private metadataRequest: AbortController | undefined;
+  private metadataUnsubscribe: (() => void) | undefined;
   private metadataClient: NewSessionMetadataClient | undefined;
+  private metadataHello: ApplicationContext["gateway"]["snapshot"]["hello"];
   private restoringPreference = false;
   private pendingPreference: NewSessionPreference | null | undefined;
   private pendingAgent: GatewayAgentRow | undefined;
@@ -180,29 +183,47 @@ export class NewSessionModelControl {
     if (this.pendingSelectionGeneration === this.selectionGeneration) {
       this.restorePreference(this.pendingPreference, this.pendingAgent, this.pendingContext);
     }
+    this.pendingPreference = undefined;
     this.restoringPreference = false;
     this.notify();
   }
 
   private startMetadataRequest(client: NewSessionMetadataClient, agentId: string) {
-    this.metadataLoading = true;
+    const snapshot = this.pendingContext?.gateway.snapshot;
+    if (snapshot?.phase !== "connected" || snapshot.client !== client) {
+      return;
+    }
+    this.metadataRequest?.abort();
+    const controller = new AbortController();
+    this.metadataRequest = controller;
+    const ownsRequest = () =>
+      this.metadataRequest === controller &&
+      this.metadataClient === client &&
+      this.agentId === agentId &&
+      this.pendingContext?.gateway.snapshot.phase === "connected" &&
+      this.pendingContext.gateway.snapshot.client === client &&
+      this.pendingContext.gateway.snapshot.hello === snapshot.hello;
     this.updateMetadataState({
       ...this.metadataState,
-      status: this.metadataState.hasSnapshot ? "ready" : "loading",
+      status: this.metadataState.hasSnapshot
+        ? this.metadataState.status === "error"
+          ? "error"
+          : "ready"
+        : "loading",
     });
-    void loadModelCatalog(client, { agentId }).then(
+    void loadModelCatalog(client, { agentId, signal: controller.signal }).then(
       (result) => {
-        if (this.metadataClient !== client || this.agentId !== agentId) {
+        if (!ownsRequest()) {
           return;
         }
-        this.metadataLoading = false;
-        this.publishMetadataCatalog(result.models, "ready");
+        this.metadataRequest = undefined;
+        this.publishMetadataCatalog(result.models, result.refreshFailed ? "error" : "ready");
       },
       () => {
-        if (this.metadataClient !== client || this.agentId !== agentId) {
+        if (!ownsRequest()) {
           return;
         }
-        this.metadataLoading = false;
+        this.metadataRequest = undefined;
         if (
           this.pendingSelectionGeneration === this.selectionGeneration &&
           this.pendingPreference
@@ -210,6 +231,7 @@ export class NewSessionModelControl {
           this.selected = this.pendingPreference.model ?? "";
           this.thinkingLevel = this.pendingPreference.thinkingLevel ?? "";
         }
+        this.pendingPreference = undefined;
         this.restoringPreference = false;
         this.updateMetadataState({ ...this.metadataState, status: "error" });
       },
@@ -218,7 +240,7 @@ export class NewSessionModelControl {
 
   private retryPickerCatalogs() {
     const metadataClient = this.metadataClient;
-    if (this.metadataState.status === "error" && metadataClient && this.agentId) {
+    if (!this.metadataRequest && metadataClient && this.agentId) {
       this.startMetadataRequest(metadataClient, this.agentId);
     }
     const targetDiscovery = this.catalogTargetDiscovery;
@@ -229,6 +251,13 @@ export class NewSessionModelControl {
     ) {
       this.startCatalogTargetRequest(targetDiscovery.owner);
     }
+  }
+
+  private clearMetadataSubscription() {
+    this.metadataUnsubscribe?.();
+    this.metadataUnsubscribe = undefined;
+    this.metadataRequest?.abort();
+    this.metadataRequest = undefined;
   }
 
   private catalogTargetGroups(): readonly ChatModelPickerTargetGroup[] | undefined {
@@ -254,10 +283,11 @@ export class NewSessionModelControl {
   }
 
   invalidate(resetSelection = false) {
-    this.metadataLoading = false;
+    this.clearMetadataSubscription();
     this.clearCatalogTargets();
     this.restoringPreference = false;
     if (resetSelection) {
+      this.selectionGeneration = 0;
       this.agentId = "";
       this.metadataClient = undefined;
       this.selected = "";
@@ -273,7 +303,7 @@ export class NewSessionModelControl {
     }
     this.updateMetadataState({
       ...this.metadataState,
-      status: this.metadataState.hasSnapshot ? "error" : "idle",
+      status: this.pendingContext?.gateway.snapshot.phase === "connected" ? "idle" : "offline",
     });
   }
 
@@ -290,14 +320,17 @@ export class NewSessionModelControl {
     const snapshot = context?.gateway.snapshot;
     const client = snapshot?.client;
     const normalizedAgentId = agentId.trim() ? normalizeAgentId(agentId) : "";
+    this.pendingContext = context;
     if (
       this.agentId !== normalizedAgentId ||
-      (this.metadataClient && this.metadataClient !== client)
+      (this.metadataClient && this.metadataClient !== client) ||
+      (this.metadataHello && this.metadataHello !== snapshot?.hello)
     ) {
       // A new client retires availability, but draft choices belong to the agent.
       // Gateway-owner changes clear those choices through invalidate(true).
-      this.metadataLoading = false;
+      this.clearMetadataSubscription();
       if (this.agentId !== normalizedAgentId) {
+        this.selectionGeneration = 0;
         this.selected = "";
         this.contextWindow = "";
         this.thinkingLevel = "";
@@ -311,30 +344,41 @@ export class NewSessionModelControl {
         status: "idle",
       };
     }
+    this.metadataHello = snapshot?.hello;
     const selectionGeneration = this.selectionGeneration;
     if (!context || snapshot?.phase !== "connected" || !client || !normalizedAgentId || !enabled) {
-      this.metadataLoading = false;
+      this.clearMetadataSubscription();
       this.metadataClient = undefined;
       this.restoringPreference = false;
-      if (context && snapshot?.phase !== "connected") {
-        this.metadataState = {
-          catalog: [],
-          hasSnapshot: false,
-          status: "offline",
-        };
-      }
+      this.metadataState = {
+        catalog: [],
+        hasSnapshot: false,
+        status: snapshot?.phase === "connected" ? "idle" : "offline",
+      };
       this.notify();
       return;
     }
     this.metadataClient = client;
-    this.pendingPreference = options.preference;
+    this.metadataUnsubscribe ??= subscribeChatMetadata(
+      client,
+      { agentId: normalizedAgentId },
+      (update) => {
+        if (
+          update.type === "invalidated" &&
+          this.metadataClient === client &&
+          this.agentId === normalizedAgentId
+        ) {
+          this.startMetadataRequest(client, normalizedAgentId);
+        }
+      },
+    );
+    this.pendingPreference = this.selectionGeneration === 0 ? options.preference : undefined;
     this.pendingAgent = options.agent;
-    this.pendingContext = context;
     this.pendingSelectionGeneration = selectionGeneration;
     this.restoringPreference = Boolean(
-      options.preference?.model || options.preference?.thinkingLevel,
+      this.pendingPreference?.model || this.pendingPreference?.thinkingLevel,
     );
-    if (this.metadataLoading) {
+    if (this.metadataRequest) {
       this.notify();
       return;
     }
@@ -367,6 +411,11 @@ export class NewSessionModelControl {
     context: ApplicationContext | undefined,
   ) {
     if (!preference) {
+      return;
+    }
+    if (this.metadataState.status === "error") {
+      this.selected = preference.model ?? "";
+      this.thinkingLevel = preference.thinkingLevel ?? "";
       return;
     }
     const selection = this.reconcileSelection(

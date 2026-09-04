@@ -495,6 +495,7 @@ export function renderSidebarPreferencesSection(props: ConfigProps) {
         resolvedUtilityModel: props.sessionObserverResolvedModel,
         models: props.sessionObserverModels ?? [],
         modelsUnavailable: props.sessionObserverModelsUnavailable === true,
+        modelsRefreshError: props.sessionObserverModelsRefreshError,
         disabled: props.sessionObserverDisabled === true,
         onEnabledChange: (enabled) => props.setSessionObserverEnabled?.(enabled),
         onUtilityModelChange: (selection) => props.setSessionObserverUtilityModel?.(selection),

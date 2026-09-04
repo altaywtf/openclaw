@@ -139,7 +139,18 @@ vi.mock("./prepared-model-catalog-worker.js", () => ({
     input: (agentFacts as { input: unknown }).input,
   }),
   createPreparedModelCatalogWorker: () => ({
-    loadCatalog: mocks.runPreparedModelCatalogWorker,
+    close: async () => {},
+    loadCatalog: async () => {
+      const { markPreparedModelCatalogFull } =
+        await import("./prepared-model-runtime.full-catalog.js");
+      const { setPreparedModelFullCatalogAuth } = await import("./prepared-model-runtime-auth.js");
+      const catalog = markPreparedModelCatalogFull(await mocks.runPreparedModelCatalogWorker());
+      setPreparedModelFullCatalogAuth(catalog, {
+        authStore: { version: 1, profiles: {} },
+        providerAuth: {},
+      });
+      return catalog;
+    },
     loadAuth: async () => ({ authStore: { version: 1, profiles: {} }, providerAuth: {} }),
   }),
 }));
@@ -641,9 +652,17 @@ describe("prepared model runtime Gateway catalog mode", () => {
     await expect(snapshot?.loadFullModelCatalog?.({ refresh: true })).rejects.toThrow(
       "refresh failed",
     );
-    expect(catalogPublicationEvents).toEqual(["catalog-published", "catalog-published"]);
+    expect(catalogPublicationEvents).toEqual([
+      "catalog-published",
+      "catalog-published",
+      "catalog-failed",
+    ]);
     unregisterCatalogPublication();
-    expect(snapshot?.readFullModelCatalog?.()).toEqual({ entries: [], routeVariants: [] });
+    expect(snapshot?.readFullModelCatalog?.()).toEqual({
+      entries: [],
+      routeVariants: [],
+      refreshFailed: true,
+    });
     expect(mocks.runPreparedModelCatalogWorker).toHaveBeenCalledTimes(4);
     expect(mocks.prepareStaticCatalog).toHaveBeenCalledOnce();
     expect(mocks.discoverModels).toHaveBeenCalledOnce();

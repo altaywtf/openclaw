@@ -396,7 +396,8 @@ export function renderChatModelControls(props: ChatModelControlsProps) {
   // A verified-empty catalog means there is nothing to reason about: the effort
   // picker would only steer a model that cannot be selected, so it hides with it.
   const hasResolvableModel =
-    managedCatalog.status === "ready" &&
+    managedCatalog.hasSnapshot &&
+    (managedCatalog.status === "ready" || managedCatalog.status === "error") &&
     (modelOptions.some((option) => !option.disabled) ||
       (props.modelSelectionLocked === true && activeModelOption !== undefined));
   const busy =

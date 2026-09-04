@@ -147,6 +147,11 @@ export type PreparedModelRuntimeBuildStats = Readonly<{
 
 export type PreparedModelRuntimeOwner = {
   input: PreparedModelRuntimeInput;
+  catalogInventory: {
+    snapshot?: ModelCatalogSnapshot;
+    authFingerprint?: string;
+    refreshFailed?: boolean;
+  };
   catalogOwner: PublishedModelCatalogOwnerCandidate["catalogOwner"];
   environmentFingerprint: string;
   provenance: "configured" | "standalone" | "explicit" | "run" | "ephemeral";

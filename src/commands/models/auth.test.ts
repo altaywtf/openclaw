@@ -11,6 +11,7 @@ import {
 } from "../../config/runtime-write-application.js";
 import type { ProviderAuthMethod, ProviderPlugin } from "../../plugins/types.js";
 import type { RuntimeEnv } from "../../runtime.js";
+import { WizardSession } from "../../wizard/session.js";
 
 type AuthRunCall = {
   agentDir?: string;
@@ -512,7 +513,7 @@ describe("modelsAuthLoginCommand", () => {
     });
   }
 
-  it("saves model-setup provider sign-in and sets its default without inference", async () => {
+  it("saves provider sign-in without choosing or testing a default", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch");
     useXaiOAuthLogin();
     runProviderAuth.mockReset();
@@ -537,7 +538,6 @@ describe("modelsAuthLoginCommand", () => {
       provider: "xai",
       method: "oauth",
       credentialOnly: true,
-      setDefault: true,
       config: currentConfig,
       runtime: createRuntime(),
       prompter: mocks.createClackPrompter(),
@@ -545,10 +545,8 @@ describe("modelsAuthLoginCommand", () => {
 
     expect(result.defaultModel).toBe("xai/grok-4.6");
     expect(mocks.upsertAuthProfileAfterLoginWithLock).toHaveBeenCalledOnce();
-    expect(currentConfig.agents?.defaults?.model).toEqual({ primary: "xai/grok-4.6" });
-    expect(currentConfig.agents?.defaults?.modelPolicy).toEqual({
-      allow: ["xai/grok-4.6", "xai/*"],
-    });
+    expect(currentConfig.agents?.defaults?.model).toBeUndefined();
+    expect(currentConfig.agents?.defaults?.modelPolicy).toBeUndefined();
     expect(fetchMock).not.toHaveBeenCalled();
     fetchMock.mockRestore();
   });
@@ -1879,6 +1877,108 @@ describe("modelsAuthLoginCommand", () => {
     expect(mocks.upsertAuthProfileAfterLoginWithLock).toHaveBeenCalledOnce();
   });
 
+  it("saves the provider connection without replaying unrelated setup settings", async () => {
+    currentConfig = {
+      agents: { defaults: { model: "openai/existing" } },
+      messages: { responsePrefix: "current" },
+    };
+    const providerConfig = {
+      baseUrl: "https://regional.example.invalid/v1",
+      api: "openai-responses" as const,
+      authHeader: true,
+      models: [],
+    };
+    runProviderAuth.mockResolvedValueOnce({
+      profiles: [
+        {
+          profileId: "openai:regional",
+          credential: { type: "api_key", provider: "openai", key: "test-key" },
+        },
+      ],
+      configPatch: {
+        models: { providers: { openai: providerConfig } },
+        agents: { defaults: { model: "openai/starter" } },
+        messages: { responsePrefix: "stale" },
+      },
+      defaultModel: "openai/starter",
+    });
+
+    await runModelsAuthLoginFlowCore({
+      provider: "openai",
+      method: "oauth",
+      credentialOnly: true,
+      config: currentConfig,
+      runtime: createRuntime(),
+      prompter: mocks.createClackPrompter(),
+    });
+
+    expect(currentConfig.models?.providers?.openai).toMatchObject(providerConfig);
+    expect(currentConfig.agents?.defaults?.model).toBe("openai/existing");
+    expect(currentConfig.messages?.responsePrefix).toBe("current");
+    expect(mocks.upsertAuthProfileAfterLoginWithLock).toHaveBeenCalledOnce();
+  });
+
+  it("finishes a saved login without waiting for a locked warning prompt", async () => {
+    currentConfig = {
+      agents: { defaults: { modelPolicy: { allow: ["openai/existing"] } } },
+    };
+    mocks.updateConfig.mockRejectedValueOnce(new Error("config changed"));
+    useXaiOAuthLogin();
+    const runtime = createRuntime();
+    const session = new WizardSession(async (prompter, signal, owner) => {
+      const result = await runModelsAuthLoginFlowCore({
+        provider: "xai",
+        method: "oauth",
+        credentialOnly: true,
+        config: currentConfig,
+        runtime,
+        prompter,
+        signal,
+        beforePersistentEffect: () => owner.lockCancellation(),
+      });
+      expect(result.modelAccess).toBe("failed");
+    });
+
+    const result = await session.next();
+    if (result.step) {
+      await session.answer(result.step.id, null);
+    }
+    await session.whenSettled();
+
+    expect(result).toMatchObject({ done: true, status: "done" });
+    expect(mocks.upsertAuthProfileAfterLoginWithLock).toHaveBeenCalledOnce();
+    expect(runtime.error).toHaveBeenCalledWith(expect.stringContaining("sign-in succeeded"));
+  });
+
+  it("reports saved credentials when the connection settings cannot be applied", async () => {
+    runProviderAuth.mockResolvedValueOnce({
+      profiles: [
+        {
+          profileId: "openai:regional",
+          credential: { type: "api_key", provider: "openai", key: "test-key" },
+        },
+      ],
+      configPatch: {
+        models: {
+          providers: { openai: { baseUrl: "https://regional.example.invalid/v1", models: [] } },
+        },
+      },
+    });
+    mocks.updateConfig.mockRejectedValueOnce(new Error("config changed"));
+
+    await expect(
+      runModelsAuthLoginFlowCore({
+        provider: "openai",
+        method: "oauth",
+        credentialOnly: true,
+        config: currentConfig,
+        runtime: createRuntime(),
+        prompter: mocks.createClackPrompter(),
+      }),
+    ).rejects.toThrow("Credentials saved, but provider settings could not be applied");
+    expect(mocks.upsertAuthProfileAfterLoginWithLock).toHaveBeenCalledOnce();
+  });
+
   it("enables every model from an explicitly authorized provider without changing the default", async () => {
     currentConfig = {
       agents: {
@@ -2071,10 +2171,7 @@ describe("modelsAuthLoginCommand", () => {
 
     expect(result.modelAccess).toBe("failed");
     expect(mocks.upsertAuthProfileAfterLoginWithLock).toHaveBeenCalledOnce();
-    expect(note).toHaveBeenCalledWith(
-      "Signed in to xai, but OpenClaw could not enable its models. Retry this sign-in after the current config change finishes.",
-      "Model access",
-    );
+    expect(note).not.toHaveBeenCalled();
     expect(currentConfig.agents?.defaults?.modelPolicy?.allow).toEqual(["openai/gpt-5.6-sol"]);
   });
 

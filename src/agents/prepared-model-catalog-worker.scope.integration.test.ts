@@ -89,6 +89,7 @@ describe("prepared model catalog worker plugin scope", () => {
           {
             input,
             catalogOwner: preparePublishedModelCatalogOwnerIdentity(input),
+            catalogInventory: {},
             isGenerationCurrent: () => current,
             isBuildCurrent: () => current,
           },

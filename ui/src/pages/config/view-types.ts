@@ -161,6 +161,7 @@ export type ConfigProps = {
   sessionObserverResolvedModel?: SystemInfoResult["defaultAgentUtilityModel"];
   sessionObserverModels?: readonly ModelCatalogEntry[];
   sessionObserverModelsUnavailable?: boolean;
+  sessionObserverModelsRefreshError?: string | null;
   sessionObserverDisabled?: boolean;
   setSessionObserverEnabled?: (enabled: boolean) => void;
   setSessionObserverUtilityModel?: (selection: SessionObserverModelSelection) => void;

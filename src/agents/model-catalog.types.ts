@@ -55,6 +55,7 @@ export type ModelCatalogEntry = {
 export type ModelCatalogSnapshot = {
   entries: ModelCatalogEntry[];
   routeVariants: ModelCatalogEntry[];
+  refreshFailed?: boolean;
   /** Provider-owned outcome of each live catalog request in this generation. */
   providerOutcomes?: readonly ProviderCatalogOutcome[];
   /** Static provider-hook rows captured alongside the full lifecycle generation. */

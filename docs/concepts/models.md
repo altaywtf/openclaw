@@ -83,13 +83,16 @@ Other selection rules:
 
 - Changing `agents.defaults.model.primary` does not rewrite existing session pins. If status reports `This session is pinned to X; config primary Y will apply to new/unpinned sessions.`, run `/model default` to clear the pin.
 - CLI default-model and allowlist pickers respect `models.mode: "replace"` by listing only `models.providers.*.models` instead of the full built-in catalog.
-- The Control UI starts from the Gateway's prepared configured model view, so opening chat does not start provider discovery. Opening or refreshing a model picker may discover models required by a trailing `provider/*` policy entry. Default and configured picker views hide catalog rows marked `deprecated` or `disabled` unless that exact model is configured as a primary, fallback, utility/tool model, alias/settings key, or exact policy entry. Hidden rows remain selectable by exact `provider/model` ref. The full built-in catalog, including hidden rows, is reserved for explicit browse views (`models.list` with `view: "all"`, or `openclaw models list --all`).
+- The Control UI reads the Gateway's published model catalog. Opening a picker does not start discovery, including for `provider/*` policy entries. Open pickers follow catalog updates without replacing draft messages or model selections. Default and configured picker views hide catalog rows marked `deprecated` or `disabled` unless that exact model is configured as a primary, fallback, utility/tool model, alias/settings key, or exact policy entry. Hidden rows remain selectable by exact `provider/model` ref. Full browse views (`models.list` with `view: "all"`, or `openclaw models list --all`) include those hidden rows.
 - Provider inventory UIs use `models.list` with `view: "provider-config"` to show source-authored `models.providers.*.models` rows without applying picker allowlists.
 
-Once the Gateway has discovered a provider inventory, model-selection hot reloads
-retain it without running discovery again. Aliases, policy, and runtime capabilities
-use the new configuration. Explicit catalog refresh replaces that inventory;
-changes to its provider, plugin, auth, environment, or workspace scope invalidate it.
+The Gateway discovers models in a worker at startup and after changes to the
+catalog's configuration, plugin, or account scope. Renewing a token for the same
+known account keeps the discovered models and updates their authentication facts
+without another discovery request. Native sign-ins that report no account identity
+require new discovery after authentication changes; login status alone cannot prove
+that the account stayed the same. Explicit refresh replaces the inventory. If discovery fails, existing
+choices remain available and the picker shows a warning until discovery succeeds.
 
 Full mechanics: [Model failover](/concepts/model-failover).
 
@@ -100,6 +103,12 @@ Full mechanics: [Model failover](/concepts/model-failover).
 - For tool-enabled agents or untrusted inputs, avoid older/weaker model tiers.
 
 ## Onboarding
+
+Provider sign-in and default-model selection are separate actions. Signing in
+through the Control UI saves the connection without changing the default model.
+App-guided setup tests only the model you select, or the provider's recommended
+model when you have not selected one. It saves that default only after one
+confirmation turn succeeds. A failed confirmation keeps the saved sign-in.
 
 ```bash
 openclaw onboard
@@ -306,7 +315,9 @@ no prompts, credentials, model usage, or configuration payload beyond the
 normal HTTP user agent and conditional cache headers.
 
 The downloaded bundle is stored in the shared SQLite state database and becomes
-visible after the next Gateway restart. Remote data can update or add models
+visible after the next Gateway restart. A running Gateway and its discovery
+workers keep one startup snapshot of remote rows and prices. Config and plugin
+reloads do not activate later downloads. Remote data can update or add models
 only for providers declared by installed plugin manifests. It cannot supply API
 base URLs or request headers, and a catalog older than the installed release's
 build stamp is ignored.

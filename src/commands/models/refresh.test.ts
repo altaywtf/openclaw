@@ -32,7 +32,7 @@ describe("models refresh", () => {
     });
     await modelsRefreshCommand({}, updatedRuntime);
     expect(updatedRuntime.log).toHaveBeenLastCalledWith(
-      "A running Gateway applies the updated catalog after its next restart.",
+      "Restart the Gateway to use downloaded catalog updates.",
     );
 
     const freshRuntime = runtime();
@@ -44,6 +44,9 @@ describe("models refresh", () => {
     });
     await modelsRefreshCommand({}, freshRuntime);
     expect(freshRuntime.log).toHaveBeenCalledWith(expect.stringContaining("refresh: fresh"));
+    expect(freshRuntime.log).toHaveBeenLastCalledWith(
+      "Restart the Gateway to use downloaded catalog updates.",
+    );
 
     const disabledRuntime = runtime();
     mocks.refresh.mockResolvedValueOnce({ status: "disabled", providers: 0, models: 0 });

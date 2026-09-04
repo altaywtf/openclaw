@@ -450,4 +450,17 @@ describe("gateway chat metadata lifecycle", () => {
     expect(mocks.fail).toHaveBeenCalledWith(publicationError);
     expect(mocks.refresh).toHaveBeenCalledOnce();
   });
+
+  it("reports catalog failure without blocking the next inventory publication", async () => {
+    const { lifecycle: pendingLifecycle } = createLifecycle(false);
+    const lifecycle = await pendingLifecycle;
+    await lifecycle.attachContext(context, []);
+    const modelListener = mocks.registerModelListener.mock.calls[0]?.[0];
+    const failure = new Error("catalog unavailable");
+    modelListener({ phase: "catalog-failed", error: failure });
+    expect(mocks.fail).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(mocks.refresh).toHaveBeenCalledTimes(2));
+    modelListener({ phase: "catalog-published" });
+    await vi.waitFor(() => expect(mocks.refresh).toHaveBeenCalledTimes(3));
+  });
 });

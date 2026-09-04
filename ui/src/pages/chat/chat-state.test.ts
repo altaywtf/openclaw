@@ -3762,6 +3762,24 @@ describe("refreshChatMetadata", () => {
     expect(request.mock.calls.some(([method]) => method === "models.list")).toBe(true);
   });
 
+  it("keeps a recorded discovery warning through rereads until snapshot recovery", async () => {
+    const models = [{ id: "model", name: "Model", provider: "test" }];
+    const request = vi.fn().mockResolvedValue({ models, refreshFailed: true });
+    const state = createMetadataState(request);
+    await loadChatModelCatalog(state);
+    expect(state.chatModelCatalog).toEqual(models);
+    expect(state.chatModelCatalogError).toContain("showing previous choices");
+
+    const recovered = createDeferred<{ models: typeof models }>();
+    request.mockReturnValueOnce(recovered.promise);
+    const pending = loadChatModelCatalog(state);
+    expect(state.chatModelCatalogError).toContain("showing previous choices");
+    recovered.resolve({ models });
+    await pending;
+    expect(state.chatModelCatalog).toEqual(models);
+    expect(state.chatModelCatalogError).toBeNull();
+  });
+
   it.each(["command-metadata", "patch"])(
     "refreshes only the matching session for %s, not streaming updates",
     async (reason) => {

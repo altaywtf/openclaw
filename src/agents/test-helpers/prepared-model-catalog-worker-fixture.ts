@@ -71,6 +71,7 @@ export function writeSyntheticAuthDiscoveryFixture(params: {
   harnessId: string;
   unrelatedId: string;
   pluginVersion: string;
+  nativeAuth?: boolean;
 }): void {
   const probePath = path.join(params.root, "synthetic-auth-probes.txt");
   fs.writeFileSync(
@@ -84,7 +85,7 @@ module.exports = {
   auth: [],
   resolveSyntheticAuth({ provider }) {
     fs.appendFileSync(${JSON.stringify(probePath)}, provider + "\\n");
-    return provider === ${JSON.stringify(params.harnessId)}
+    return ${params.nativeAuth !== false} && provider === ${JSON.stringify(params.harnessId)}
       ? { apiKey: "native-login-not-real", source: "fixture native login", mode: "oauth" }
       : undefined;
   },

@@ -83,7 +83,7 @@ describe("models.list provider catalog outcomes", () => {
     },
   );
 
-  it("preserves an auth rejection when no usable models are visible", async () => {
+  it("preserves refresh failure and auth rejection when no usable models are visible", async () => {
     const config = {} as OpenClawConfig;
     const snapshot = {
       agentId: "main",
@@ -96,6 +96,7 @@ describe("models.list provider catalog outcomes", () => {
       authStore: emptyAuthStore,
       metadataSnapshot,
       authMaterializations: [],
+      refreshFailed: true,
       entries: [],
       routeVariants: [],
       providerOutcomes: [
@@ -120,6 +121,7 @@ describe("models.list provider catalog outcomes", () => {
       buildModelsListResult({ source: { kind: "gateway", context }, params: { view: "all" } }),
     ).resolves.toEqual({
       models: [],
+      refreshFailed: true,
       providerOutcomes: [
         { provider: "openai", profileId: "openai:chatgpt", status: "auth-rejected" },
       ],

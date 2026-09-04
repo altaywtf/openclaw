@@ -356,7 +356,7 @@ describe("openclaw.setup provider resolution", () => {
     await whenAdmittedWizardSessionSettled(session);
     expect(setupSharedMocks.writeWizardConfigFile).not.toHaveBeenCalled();
   });
-  it("persists provider sign-in and selects its default without an inference request", async () => {
+  it("persists provider sign-in without selecting or claiming to verify a default", async () => {
     const runtimeConfig: OpenClawConfig = {};
     const { wizardSessions, context } = makeContext(runtimeConfig);
     modelsAuthLoginMocks.resolveManifestProviderAuthChoice.mockReturnValue({
@@ -391,15 +391,16 @@ describe("openclaw.setup provider resolution", () => {
     expect(done).toEqual({
       done: true,
       status: "done",
-      modelActivation: { modelRef: "xai/grok-4.6" },
     });
     expect(modelsAuthLoginMocks.runModelsAuthLoginFlowCore).toHaveBeenCalledWith(
       expect.objectContaining({
         credentialOnly: true,
-        setDefault: true,
         provider: "xai",
         agent: "research",
       }),
+    );
+    expect(modelsAuthLoginMocks.runModelsAuthLoginFlowCore.mock.calls[0]?.[0]).not.toHaveProperty(
+      "setDefault",
     );
     expect(setupInferenceMocks.activateSetupInference).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
@@ -539,7 +540,6 @@ describe("openclaw.setup.auth.start", () => {
     expect(done).toEqual({
       done: true,
       status: "done",
-      modelActivation: { modelRef: "xai/grok-4" },
     });
     const loginOptions = modelsAuthLoginMocks.runModelsAuthLoginFlowCore.mock.calls[0]?.[0];
     expect(loginOptions).toMatchObject({
@@ -549,7 +549,7 @@ describe("openclaw.setup.auth.start", () => {
       credentialOnly: true,
       agent: "research",
     });
-    expect(loginOptions).toHaveProperty("setDefault", false);
+    expect(loginOptions).not.toHaveProperty("setDefault");
     expect(modelsAuthLoginMocks.refreshModelAuthStateAfterMutation).toHaveBeenCalledWith(
       context,
       "login",

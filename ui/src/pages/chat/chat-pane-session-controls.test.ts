@@ -31,7 +31,7 @@ describe("chat pane composer controls", () => {
       cached: true,
       connected: true,
       error: "metadata unavailable",
-      message: null,
+      message: "Could not refresh models; showing previous choices.",
     },
     {
       label: "failed without a snapshot",
@@ -82,11 +82,7 @@ describe("chat pane composer controls", () => {
       expect(container.querySelector('[data-chat-provider-usage="true"]')).toBeNull();
       expect(container.querySelector('[data-chat-permission-select="true"]')).toBeNull();
       const catalogMessage = container.querySelector(".chat-controls__model-catalog-state");
-      if (message) {
-        expect(catalogMessage?.textContent).toContain(message);
-      } else {
-        expect(catalogMessage).toBeNull();
-      }
+      expect(catalogMessage?.textContent).toContain(message);
       expect(
         container.querySelector('[data-chat-model-select="true"]')?.getAttribute("aria-disabled"),
       ).toBe(String(!connected));

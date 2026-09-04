@@ -25,6 +25,7 @@ const {
   getRuntimeConfigMock,
   runUpdateFailureTriageMock,
   refreshRemoteModelCatalogMock,
+  checkRemoteModelCatalogUpdateMock,
   runGatewayUpdatePreflightMock,
   scheduleGatewaySigusr1RestartMock,
   startManagedServiceUpdateHandoffMock,
@@ -45,6 +46,9 @@ const {
     models: 1,
     generatedAt: 1_753_500_000_000,
   })),
+  checkRemoteModelCatalogUpdateMock: vi.fn<
+    typeof import("../model-catalog/remote-overlay.js").checkRemoteModelCatalogUpdate
+  >(() => "restart-required"),
   runGatewayUpdatePreflightMock:
     vi.fn<typeof import("./update-runner.js").runGatewayUpdatePreflight>(),
   scheduleGatewaySigusr1RestartMock: vi.fn(() => ({ scheduled: true })),
@@ -73,6 +77,11 @@ vi.mock("../model-catalog/remote-refresh.js", async () => {
   );
   return { ...actual, refreshRemoteModelCatalog: refreshRemoteModelCatalogMock };
 });
+
+vi.mock("../model-catalog/remote-overlay.js", () => ({
+  captureRemoteModelCatalogSnapshot: vi.fn(),
+  checkRemoteModelCatalogUpdate: checkRemoteModelCatalogUpdateMock,
+}));
 
 vi.mock("./openclaw-root.js", async () => {
   const actual = await vi.importActual<typeof import("./openclaw-root.js")>("./openclaw-root.js");
@@ -253,6 +262,7 @@ describe("update-startup", () => {
     getRuntimeConfigMock.mockReset();
     getRuntimeConfigMock.mockReturnValue({});
     refreshRemoteModelCatalogMock.mockClear();
+    checkRemoteModelCatalogUpdateMock.mockReset().mockReturnValue("restart-required");
     runGatewayUpdatePreflightMock.mockReset();
     runGatewayUpdatePreflightMock.mockResolvedValue(undefined);
     detectRespawnSupervisorMock.mockReset();
@@ -2527,6 +2537,172 @@ describe("update-startup", () => {
     stop();
     await vi.advanceTimersByTimeAsync(6 * 60 * 60_000);
     expect(refreshRemoteModelCatalogMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses current config for each remote catalog check", async () => {
+    const cfg = { update: { checkOnStart: false } };
+    const nextConfig = {
+      ...cfg,
+      models: { catalogRefresh: { url: "https://mirror.example.test/catalog.json" } },
+    };
+    getRuntimeConfigMock.mockReturnValue(cfg);
+    const stop = scheduleGatewayUpdateCheck({
+      cfg,
+      log: { info: vi.fn() },
+      isNixMode: false,
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      getRuntimeConfigMock.mockReturnValue(nextConfig);
+      await vi.advanceTimersByTimeAsync(6 * 60 * 60_000);
+      expect(refreshRemoteModelCatalogMock).toHaveBeenLastCalledWith(
+        expect.objectContaining({ config: nextConfig }),
+      );
+    } finally {
+      stop();
+    }
+  });
+
+  it.each(["updated", "fresh", "unchanged"] as const)(
+    "reports %s remote metadata as restart-required once without restarting",
+    async (status) => {
+      refreshRemoteModelCatalogMock.mockResolvedValueOnce({
+        status,
+        providers: 1,
+        models: 1,
+        generatedAt: 1_753_500_000_000,
+        nextCheckInMs: 6 * 60 * 60_000,
+      });
+      const log = { info: vi.fn() };
+      const stop = scheduleGatewayUpdateCheck({
+        cfg: { update: { checkOnStart: false } },
+        log,
+        isNixMode: false,
+      });
+      try {
+        await vi.advanceTimersByTimeAsync(0);
+        expect(checkRemoteModelCatalogUpdateMock).toHaveBeenCalledExactlyOnceWith(
+          {},
+          {
+            sourceUrl: "https://catalog.openclaw.ai/models/v1/catalog.json",
+            generatedAt: 1_753_500_000_000,
+          },
+        );
+        expect(log.info).toHaveBeenCalledWith(
+          "remote model catalog downloaded; restart the Gateway to apply",
+          {
+            providers: 1,
+            models: 1,
+            generatedAt: 1_753_500_000_000,
+          },
+        );
+        await vi.advanceTimersByTimeAsync(6 * 60 * 60_000);
+        expect(checkRemoteModelCatalogUpdateMock).toHaveBeenCalledOnce();
+        expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+      } finally {
+        stop();
+      }
+    },
+  );
+
+  it("reports an externally downloaded fresh bundle at the next existing check", async () => {
+    const stop = scheduleGatewayUpdateCheck({
+      cfg: { update: { checkOnStart: false } },
+      log: { info: vi.fn() },
+      isNixMode: false,
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      refreshRemoteModelCatalogMock.mockResolvedValueOnce({
+        status: "fresh",
+        providers: 1,
+        models: 2,
+        generatedAt: 1_753_500_000_001,
+        nextCheckInMs: 1_000,
+      });
+      await vi.advanceTimersByTimeAsync(6 * 60 * 60_000);
+      expect(checkRemoteModelCatalogUpdateMock).toHaveBeenCalledTimes(2);
+      expect(checkRemoteModelCatalogUpdateMock).toHaveBeenLastCalledWith(
+        {},
+        expect.objectContaining({ generatedAt: 1_753_500_000_001 }),
+      );
+      await vi.advanceTimersByTimeAsync(999);
+      expect(refreshRemoteModelCatalogMock).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(refreshRemoteModelCatalogMock).toHaveBeenCalledTimes(3);
+    } finally {
+      stop();
+    }
+  });
+
+  it.each(["superseded", "failed"])(
+    "waits for the ordinary check after a %s metadata inspection",
+    async (outcome) => {
+      if (outcome === "failed") {
+        checkRemoteModelCatalogUpdateMock.mockImplementationOnce(() => {
+          throw new Error("catalog validation failed");
+        });
+      } else {
+        checkRemoteModelCatalogUpdateMock.mockReturnValueOnce("superseded");
+      }
+      const log = { info: vi.fn() };
+      const stop = scheduleGatewayUpdateCheck({
+        cfg: { update: { checkOnStart: false } },
+        log,
+        isNixMode: false,
+      });
+      try {
+        await vi.advanceTimersByTimeAsync(0);
+        expect(log.info).not.toHaveBeenCalledWith(
+          "remote model catalog downloaded; restart the Gateway to apply",
+          expect.anything(),
+        );
+        expect(log.info).toHaveBeenCalledWith(
+          ...(outcome === "failed"
+            ? ["remote model catalog check failed", { error: "Error: catalog validation failed" }]
+            : ["remote model catalog check superseded; deferred to the next scheduled check"]),
+        );
+        await vi.advanceTimersByTimeAsync(6 * 60 * 60_000 - 1);
+        expect(checkRemoteModelCatalogUpdateMock).toHaveBeenCalledOnce();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(checkRemoteModelCatalogUpdateMock).toHaveBeenCalledTimes(2);
+        expect(log.info).toHaveBeenCalledWith(
+          "remote model catalog downloaded; restart the Gateway to apply",
+          expect.anything(),
+        );
+      } finally {
+        stop();
+      }
+    },
+  );
+
+  it("aborts the remote catalog check when the gateway scheduler is replaced", async () => {
+    let capturedSignal: AbortSignal | undefined;
+    refreshRemoteModelCatalogMock.mockImplementationOnce(
+      async ({ signal }) =>
+        await new Promise((resolve) => {
+          capturedSignal = signal;
+          signal?.addEventListener(
+            "abort",
+            () => resolve({ status: "error", error: "aborted", providers: 0, models: 0 }),
+            { once: true },
+          );
+        }),
+    );
+    const params = {
+      cfg: { update: { checkOnStart: false } },
+      log: { info: vi.fn() },
+      isNixMode: false,
+    };
+    const stop = scheduleGatewayUpdateCheck(params);
+    await vi.advanceTimersByTimeAsync(0);
+    const stopReplacement = scheduleGatewayUpdateCheck(params);
+    try {
+      expect(capturedSignal?.aborted).toBe(true);
+    } finally {
+      stopReplacement();
+      stop();
+    }
   });
 
   it("aborts an in-flight remote catalog refresh during cleanup", async () => {

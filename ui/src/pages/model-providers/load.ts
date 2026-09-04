@@ -16,7 +16,7 @@ import {
   isMissingOperatorReadScopeError,
 } from "../../lib/gateway-errors.ts";
 import { loadModelAuthStatus } from "../../lib/model-auth.ts";
-import { loadModelCatalog } from "../../lib/model-catalog-store.ts";
+import { loadModelCatalog, modelCatalogRefreshError } from "../../lib/model-catalog-store.ts";
 import {
   requestProviderUsage,
   type ProviderUsageRequestResult,
@@ -108,7 +108,7 @@ export async function loadModelProvidersData(
       refreshResult && !refreshResult.ok
         ? errorMessage(refreshResult.error)
         : catalog.ok
-          ? null
+          ? modelCatalogRefreshError(catalog.result)
           : errorMessage(catalog.error),
     config,
     providerUsage: null,

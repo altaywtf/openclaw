@@ -41,7 +41,7 @@ export type PreparedModelWorkerRequest =
   | Readonly<{
       kind: "auth-refresh";
       profileIds?: readonly string[];
-      providerIds: readonly string[];
+      providerIds?: readonly string[];
     }>;
 
 export type PreparedModelWorkerResult =
@@ -156,7 +156,7 @@ export function createPreparedModelCatalogWorkerInput(params: {
 
 type PreparedModelCatalogWorker = Readonly<{
   close: () => Promise<void>;
-  loadAuth: (scope: PreparedModelRuntimeAuthScope) => Promise<PreparedModelRuntimeAuth>;
+  loadAuth: (scope?: PreparedModelRuntimeAuthScope) => Promise<PreparedModelRuntimeAuth>;
   loadCatalog: () => Promise<ModelCatalogSnapshot>;
 }>;
 
@@ -249,10 +249,11 @@ export function createPreparedModelCatalogWorker(params: {
       });
       return modelCatalog;
     },
-    loadAuth: async ({ providerIds, profileIds }) => {
-      const normalizedProviderIds = [...new Set(providerIds)].toSorted((left, right) =>
-        left.localeCompare(right),
-      );
+    loadAuth: async (scope) => {
+      const { providerIds, profileIds } = scope ?? {};
+      const normalizedProviderIds =
+        providerIds &&
+        [...new Set(providerIds)].toSorted((left, right) => left.localeCompare(right));
       const normalizedProfileIds = profileIds
         ? [...new Set(profileIds)].toSorted((left, right) => left.localeCompare(right))
         : undefined;

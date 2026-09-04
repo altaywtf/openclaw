@@ -132,6 +132,7 @@ export default {
           });
           ${params.selected ? "await probe.selectedAuthRelease;" : ""}
           return {
+            defaultModel: "collision-provider/default",
             ${params.selected ? 'configPatch: { agents: { defaults: { model: "collision-provider/default" } }, messages: { responsePrefix: "provider-stale" } },' : ""}
             profiles: [{
               profileId: ${JSON.stringify(`${COLLISION_PROVIDER}:${profile}`)},
@@ -414,7 +415,9 @@ describe("openclaw.setup.auth.start owner binding", () => {
           sessionId: started.sessionId,
           answer: { stepId: deviceCode.step?.id ?? "", value: null },
         });
+        expect(completed.error).toBeUndefined();
         expect(completed).toMatchObject({ done: true, status: "done" });
+        expect(completed.modelActivation).toBeUndefined();
 
         const store = loadAuthProfileStoreWithoutExternalProfiles(resolveAgentDir(cfg, "main"));
         expect(probe).toMatchObject({

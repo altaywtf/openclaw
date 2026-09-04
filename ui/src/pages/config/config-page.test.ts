@@ -659,6 +659,7 @@ describe("ConfigPage session observer models", () => {
       systemInfoGatewaySource: ApplicationGateway;
       sessionObserverModels: ModelCatalogEntry[];
       sessionObserverModelsUnavailable: boolean;
+      sessionObserverModelsRefreshError: string | null;
       sessionObserverModelsClient: GatewayBrowserClient | null;
       ensureSessionObserverModels: (
         client: GatewayBrowserClient,
@@ -679,14 +680,16 @@ describe("ConfigPage session observer models", () => {
     } as ApplicationGatewaySnapshot;
     const secondLoad = state.ensureSessionObserverModels(secondClient, "main");
     const currentModels = [{ id: "small", name: "Small", provider: "openai" }];
-    second.resolve({ models: currentModels });
+    second.resolve({ models: currentModels, refreshFailed: true });
     await secondLoad;
     expect(state.sessionObserverModels).toEqual(currentModels);
     expect(state.sessionObserverModelsClient).toBe(secondClient);
+    expect(state.sessionObserverModelsRefreshError).toContain("showing previous choices");
 
     first.resolve({ models: [{ id: "stale", name: "Stale", provider: "old" }] });
     await firstLoad;
     expect(state.sessionObserverModels).toEqual(currentModels);
+    expect(state.sessionObserverModelsRefreshError).toContain("showing previous choices");
     expect(modelCatalogStore.loadModelCatalog).toHaveBeenCalledTimes(2);
     expect(modelCatalogStore.loadModelCatalog).toHaveBeenNthCalledWith(1, firstClient, {
       agentId: "main",

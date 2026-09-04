@@ -24,6 +24,110 @@ function catalogDiscoveryRequests(
 }
 
 suite.define(() => {
+  it("follows catalog publications while preserving the open picker and unsent draft", async () => {
+    const artifactDir = captureUiProof ? suite.artifactDir : undefined;
+    const context = await suite.browser.newContext({
+      locale: "en-US",
+      serviceWorkers: "block",
+      viewport: { height: 900, width: 1280 },
+      ...(artifactDir ? { recordVideo: { dir: artifactDir } } : {}),
+    });
+    const page = await context.newPage();
+    const starter = { id: "starter", name: "Starter", provider: "openai", available: true };
+    const chosen = {
+      id: "chosen",
+      name: "Chosen",
+      provider: "openai",
+      available: true,
+      reasoning: true,
+      thinkingLevels: [
+        { id: "low", label: "Low" },
+        { id: "high", label: "High" },
+      ],
+    };
+    const added = { ...starter, id: "added", name: "Added" };
+    const gateway = await installMockGateway(page, {
+      agentModel: "openai/starter",
+      models: [starter, chosen],
+      methodResponses: {
+        "sessions.create": { key: "agent:main:catalog-publication", runStarted: true },
+      },
+    });
+    try {
+      await page.goto(`${suite.server.baseUrl}new`);
+      const message = page.locator(".new-session-page__message");
+      await message.fill("Keep this draft while the catalog changes");
+      const modelSelect = page.locator('[data-chat-model-select="true"]');
+      await modelSelect.click();
+      await page.locator('[data-chat-model-option="openai/chosen"]').click();
+      const effort = page.locator('[data-chat-thinking-select="true"]');
+      await effort.click();
+      const slider = page.locator('[data-chat-thinking-slider="true"]');
+      await expect.poll(() => slider.isVisible()).toBe(true);
+      await slider.press("Home");
+      await slider.press("End");
+      await expect.poll(() => effort.getAttribute("data-chat-thinking-value")).toBe("high");
+      await effort.click();
+      await modelSelect.click();
+      if (artifactDir) {
+        await page.screenshot({ path: path.join(artifactDir, "before-publication.png") });
+      }
+
+      await gateway.setMethodResponse("models.list", { models: [chosen, added] });
+      await gateway.emitGatewayEvent("chat.metadata.changed");
+      await expect
+        .poll(() => page.locator('[data-chat-model-option="openai/added"]').isVisible())
+        .toBe(true);
+      expect(await page.locator('[data-chat-model-option="openai/starter"]').count()).toBe(0);
+      expect(await modelSelect.getAttribute("data-chat-select-value")).toBe("openai/chosen");
+      expect(await effort.getAttribute("data-chat-thinking-value")).toBe("high");
+      expect(await message.inputValue()).toBe("Keep this draft while the catalog changes");
+      if (artifactDir) {
+        await page.screenshot({ path: path.join(artifactDir, "published-with-draft.png") });
+      }
+
+      await gateway.setMethodResponse("models.list", {
+        models: [chosen, added],
+        refreshFailed: true,
+      });
+      await gateway.emitGatewayEvent("chat.metadata.changed");
+      const warning = page.locator('[data-chat-model-catalog-state="error"]');
+      await expect.poll(() => warning.textContent()).toContain("showing previous choices");
+      expect(await page.locator('[data-chat-model-option="openai/chosen"]').isEnabled()).toBe(true);
+      expect(await effort.isVisible()).toBe(true);
+      expect(await effort.getAttribute("data-chat-thinking-value")).toBe("high");
+      if (artifactDir) {
+        await page.screenshot({ path: path.join(artifactDir, "retained-choices-warning.png") });
+      }
+
+      await modelSelect.click();
+      const readsBeforeReopen = (await gateway.getRequests("models.list")).length;
+      await modelSelect.click();
+      await gateway.waitForRequest("models.list", { after: readsBeforeReopen });
+      await expect.poll(() => warning.isVisible()).toBe(true);
+
+      await gateway.setMethodResponse("models.list", { models: [chosen, added] });
+      await gateway.emitGatewayEvent("chat.metadata.changed");
+      await expect.poll(() => warning.count()).toBe(0);
+      expect(
+        (await gateway.getRequests("models.list")).every(
+          ({ params }) => params !== null && typeof params === "object" && !("refresh" in params),
+        ),
+      ).toBe(true);
+      await modelSelect.click();
+      await page.getByRole("button", { name: "Start session" }).click();
+      const create = await gateway.waitForRequest("sessions.create");
+      expect(create.params).toMatchObject({
+        message: "Keep this draft while the catalog changes",
+        model: "openai/chosen",
+        thinkingLevel: "high",
+      });
+      expect(await gateway.getRequests("config.patch")).toHaveLength(0);
+    } finally {
+      await context.close();
+    }
+  });
+
   it("keeps composer actions fixed while the model catalog loads", async () => {
     if (captureUiProof) {
       await mkdir(path.join(suite.artifactDir, "new-session-skeleton-gap"), { recursive: true });

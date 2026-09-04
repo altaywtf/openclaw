@@ -78,20 +78,28 @@ For OpenAI ChatGPT/Codex OAuth troubleshooting, `openclaw models status`, `openc
 `openclaw models list` is read-only: it reads config, auth profiles, existing catalog state, and provider-owned catalog rows, but never rewrites `models.json`.
 
 `openclaw models refresh [--json]` forces an immediate hosted catalog check. Like `scan`, it rejects `--agent` because the hosted catalog is global, not agent-scoped.
-Updated rows apply to a running Gateway after its next restart. The command
-prints a clear disabled result when `models.catalogRefresh.enabled` is `false`.
+The Gateway downloads compatible rows and pricing at startup and at the existing
+six-hour freshness interval. Restart the Gateway to use downloaded updates;
+scheduled checks and config or plugin reloads do not apply them to a running
+Gateway. The JSON result describes the download, not live application.
+The command prints a clear disabled result when
+`models.catalogRefresh.enabled` is `false`.
 The catalog's public change history lives in
 [`openclaw/catalog`](https://github.com/openclaw/catalog), where each content
 update is committed by the scheduled publisher.
 
 Options: `--all` (full catalog), `--local` (filter to local models), `--provider <id>`, `--agent <id>`, `--json`, `--plain`. `--agent` selects that agent's auth store, workspace, and provider catalog context; explicit multi-agent fleets do not need a default owner when it is present.
 
+`--provider <id>` loads the full catalog before filtering, so runtime-discovered
+models do not require a separate `--all` flag. These explicit catalog requests
+can contact providers through the discovery worker. An ordinary list or picker
+read does not start discovery.
+
 Notes:
 
-- The `Auth` column uses read-only checks. For OpenAI routes, it matches each API and base URL to eligible profiles, credentials, and command-scoped SecretRefs. If route policy is unavailable, an OpenAI row stays unknown instead of using provider-level auth. Other providers and legacy checks use provider-level behavior. For a configured native CLI route, a full or provider-filtered list can run the local auth-status check from the provider. That native result is authoritative; a separate provider credential does not prove the CLI login. The default list stays lazy and shows native CLI authentication as unknown. Synthetic-auth metadata does not prove native account authentication. The command does not load the full provider runtime. It does not read keychain secrets or call provider APIs. It does not prove exact execution readiness.
+- The `Auth` column uses the prepared catalog's authentication facts. For OpenAI routes, it matches each API and base URL to eligible profiles and credentials. Native sign-in facts come from the owning runtime; a separate API key does not prove a native CLI login. Unknown authentication remains unknown. These facts do not prove that every model can complete a turn.
 - `models list --all --provider <id>` can include provider-owned static catalog rows from plugin manifests or bundled provider catalog metadata even when you have not authenticated with that provider yet. Those rows still show as unavailable until matching auth is configured.
-- `models list` keeps the control plane responsive while provider catalog discovery is slow. The default and configured views fall back to configured or synthetic model rows after a short wait and let discovery finish in the background. Use `--all` when you need the exact full discovered catalog and are willing to wait for provider discovery.
-- Broad `models list --all` merges manifest catalog rows over registry rows without loading provider runtime supplement hooks. Provider-filtered manifest fast paths use only providers marked `static`; providers marked `refreshable` stay registry/cache-backed and append manifest rows as supplements, while providers marked `runtime` stay on registry/runtime discovery.
+- Default and configured views read published rows without waiting for discovery. The Gateway publishes static rows first and updates the catalog when its worker finishes. Use `--all` or `--provider <id>` when you want full discovery and are willing to wait.
 - `models list` keeps native model metadata and runtime caps distinct. In table output, `Ctx` shows `contextTokens/contextWindow` when an effective runtime cap differs from the native context window; JSON rows include `contextTokens` when a provider exposes that cap.
 - For provider-owned routes, `models list` projects one logical provider/model row onto the selected route. `Input` and `Ctx` come only from an exact physical-route catalog row, with explicit configured logical overrides applied last; unresolved route selection shows unknown capability fields instead of borrowing sibling-route metadata.
 - `models list --provider <id>` filters by provider id, such as `moonshot` or `openai`. It does not accept display labels from interactive provider pickers, such as `Moonshot AI`.
@@ -177,6 +185,11 @@ openclaw models auth order clear --provider <id>
 `models auth list` lists saved auth profiles for the selected agent without printing token, API-key, or OAuth secret material. Active cooldown and disable entries include their reason and recovery action. Legacy Gemini CLI OAuth cooldowns direct you to the supported Google AI Studio API-key setup instead of offering an unavailable Gemini CLI login flow. Use `--provider <id>` to filter to one provider, such as `openai`, and `--json` for scripting.
 
 `models auth login` runs a provider plugin's auth flow (OAuth/API key). Use `openclaw plugins list` to see which providers are installed. `login` accepts `--profile-id <id>` for providers that support named profiles during login (use this to keep multiple logins for the same provider separate), `--method <id>` to pick a specific auth method, `--device-code` as a shortcut for `--method device-code`, `--set-default` to apply the provider's recommended default model, and `--force` to remove existing profiles for that provider first (use when a cached OAuth profile is stuck or you want to switch accounts).
+
+Login saves required connection settings, such as a regional endpoint, but leaves
+the current default model unchanged unless you request `--set-default`. If a later
+settings update fails, the saved credentials remain available and the error says
+which step failed.
 
 For the shared-main agent, `--force` clears the provider's shared credentials and main-agent local overrides, including their order and health state. For another agent it clears only that agent's local profiles, leaving shared credentials unchanged. A busy auth store stops the command before login starts; close other OpenClaw commands using the same state directory and retry. SQLite lock diagnostics can name either the shared state database or an agent database, so checking only the legacy auth file for open handles does not rule out contention.
 

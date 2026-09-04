@@ -315,15 +315,20 @@ async function activateSetupInferenceUnredacted(
     workspace: params.workspace?.trim()
       ? resolveUserPath(params.workspace)
       : resolveSetupInferenceWorkspace(snapshot),
+    credentialsSaved: false,
     beforePersistentEffect: async () => {
       throwIfSetupInferenceCancelled(params);
       await params.beforePersistentEffect?.();
       throwIfSetupInferenceCancelled(params);
     },
   };
+  const failure = (result: Extract<ActivateSetupInferenceResult, { ok: false }>) =>
+    ctx.credentialsSaved
+      ? { ...result, error: `Credentials saved; default unchanged. ${result.error}` }
+      : result;
   const staged = await stageCandidate(ctx);
   if ("error" in staged) {
-    return { ok: false, status: "unavailable", error: staged.error };
+    return failure({ ok: false, status: "unavailable", error: staged.error });
   }
   const requestedAgentId = params.agentId ? ctx.routeAgentId : undefined;
   // Provider-side changes were prepared against the runtime config; replay them onto whatever
@@ -359,12 +364,12 @@ async function activateSetupInferenceUnredacted(
     },
   );
   if (!route || route.modelLabel !== staged.modelRef) {
-    return {
+    return failure({
       ok: false,
       status: "unavailable",
       error:
         "The staged default-agent route does not match the requested inference candidate. Review model runtime policy and retry.",
-    };
+    });
   }
   throwIfSetupInferenceCancelled(params);
   const progress = params.prompter?.progress("Testing your AI connection…");
@@ -399,7 +404,7 @@ async function activateSetupInferenceUnredacted(
     progress?.stop();
   }
   if (!turn.ok) {
-    return turn;
+    return failure(turn);
   }
   let gatewayRestartRequired = false;
   let leanAnnounced = false;
