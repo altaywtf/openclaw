@@ -16,6 +16,8 @@ const root = await fs.mkdtemp(path.join(os.tmpdir(), "gateway-metadata-proof-"))
 const token = randomBytes(32).toString("hex");
 const report = { platform: process.platform, stages: [], outcome: "incomplete" };
 const children = new Set();
+const captures = [];
+const childExits = new WeakMap();
 let tui;
 let phase = "setup";
 
@@ -79,6 +81,7 @@ function start(env, args) {
     windowsHide: true,
   });
   const capture = { child, text: "", stdout: "" };
+  captures.push(capture);
   children.add(child);
   child.stdout.on("data", (chunk) => {
     capture.stdout += chunk;
@@ -88,6 +91,7 @@ function start(env, args) {
     capture.text += chunk;
   });
   child.once("close", () => children.delete(child));
+  childExits.set(child, new Promise((resolve) => child.once("close", resolve)));
   return capture;
 }
 
@@ -101,6 +105,7 @@ async function stop(child) {
     });
     killer.once("close", resolve);
   });
+  await childExits.get(child);
 }
 
 async function command(env, args) {
@@ -132,7 +137,8 @@ function json(result) {
 function sanitize(text) {
   return stripVTControlCharacters(text)
     .replaceAll(token, "<synthetic-token>")
-    .replaceAll(root, "<isolated-state>");
+    .replaceAll(root, "<isolated-state>")
+    .replaceAll(process.cwd(), "<product-checkout>");
 }
 
 const admin = await makeState("approver");
@@ -194,10 +200,17 @@ try {
       if (gateway.child.exitCode !== null) {
         throw new Error(`Gateway exited: ${sanitize(gateway.text)}`);
       }
-      return gateway.text;
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}/readyz`, {
+          signal: AbortSignal.timeout(1000),
+        });
+        return response.ok && (await response.json()).ready === true;
+      } catch {
+        return false;
+      }
     },
-    (text) => text.includes("listening on"),
-    "Gateway listening",
+    (ready) => ready,
+    "Gateway readyz",
   );
 
   phase = "normal administrator approval";
@@ -213,6 +226,7 @@ try {
   await stopTui(adminTui);
   await completeTui(startTui(admin));
   json(await list(admin));
+  const adminIdentity = json(await command(admin, ["node", "identity", "--json"]));
   report.stages.push({ phase, completedAuthenticatedCommand: true });
 
   phase = "initial CLI device approval";
@@ -220,6 +234,7 @@ try {
   rows = await until(adminList, (value) => value.pending.length === 1, "initial device pairing");
   assert.equal(rows.pending.length, 1);
   const deviceId = rows.pending[0].deviceId;
+  assert.notEqual(deviceId, adminIdentity.deviceId);
   await approve(rows.pending[0].requestId);
   await stopTui(deviceTui);
   await completeTui(startTui(device));
@@ -260,6 +275,42 @@ try {
     async () => node.text,
     (text) => text.includes("node host gateway connected:"),
     "authenticated Node Host connection",
+  );
+  phase = "Node Host command approval";
+  const pendingNodes = await until(
+    async () => json(await command(admin, ["nodes", "pending", "--json"])),
+    (value) => value.some((row) => row.nodeId === deviceId),
+    "Node Host command-surface request",
+  );
+  const nodeSurface = pendingNodes.find((row) => row.nodeId === deviceId);
+  const invokeArgs = [
+    "nodes",
+    "invoke",
+    "--node",
+    deviceId,
+    "--command",
+    "system.which",
+    "--params",
+    '{"bins":["node"]}',
+    "--json",
+  ];
+  assert.notEqual((await command(admin, invokeArgs)).code, 0);
+  json(await command(admin, ["nodes", "approve", nodeSurface.requestId, "--json"]));
+  await stop(node.child);
+  node = start(device, [
+    "node",
+    "run",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    String(port),
+    "--display-name",
+    "Metadata proof node",
+  ]);
+  await until(
+    async () => node.text,
+    (text) => text.includes("node host gateway connected:"),
+    "approved Node Host connection",
   );
   const invoked = json(
     await command(admin, [
@@ -304,9 +355,47 @@ try {
     connected: finalTui.screen().includes("gateway connected"),
     pairingRequired: finalTui.screen().includes("pairing required"),
   });
-  report.outcome = "current-main-repeated-metadata-approval";
+  if (finalTui.screen().includes("gateway connected")) await completeTui(finalTui);
+  else await stopTui(finalTui);
+  phase = "second Node Host after CLI approval";
+  node = start(device, [
+    "node",
+    "run",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    String(port),
+    "--display-name",
+    "Metadata proof node",
+  ]);
+  const secondNode = await until(
+    async () => ({
+      rows: await adminList(),
+      connected: node.text.includes("node host gateway connected:"),
+    }),
+    (value) => value.connected || value.rows.pending.some((row) => row.deviceId === deviceId),
+    "second Node Host outcome",
+  );
+  report.stages.push({
+    phase,
+    connected: secondNode.connected,
+    approval: secondNode.rows.pending.filter((row) => row.deviceId === deviceId).map(projected),
+  });
+  if (secondNode.connected) {
+    assert.equal(json(await command(admin, invokeArgs)).ok, true);
+  }
+  await stop(node.child);
+  phase = "final CLI";
+  const finalCli = await list(device);
+  report.stages.push({ phase, exitCode: finalCli.code });
+  report.outcome = "metadata-approval-after-approved-device-and-role";
 } catch (error) {
   report.failure = { phase, message: sanitize(String(error)) };
+  report.diagnostics = captures.map((capture) => ({
+    exitCode: capture.child.exitCode,
+    output: sanitize(capture.text),
+  }));
+  if (tui) report.terminal = sanitize(tui.screen());
   process.exitCode = 1;
 } finally {
   if (tui) await stopTui(tui);
