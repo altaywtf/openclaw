@@ -1080,7 +1080,6 @@ export async function runModelsAuthLoginFlowCore(
       opts.runtime.log(
         `Removed cached auth profiles for provider "${selectedProvider.id}" (--force). Running fresh auth flow.`,
       );
-      await refreshRunningGatewayAuthState(context.agentId, opts.runtime);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       throw new Error(
@@ -1088,6 +1087,7 @@ export async function runModelsAuthLoginFlowCore(
         { cause: err },
       );
     }
+    await refreshRunningGatewayAuthState(context.agentId, opts.runtime);
   }
 
   const { result, profiles } = await runProviderAuthMethod({
