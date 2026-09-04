@@ -10,8 +10,10 @@ import {
 } from "../../../infra/diagnostic-events.js";
 import { wrapToolWithBeforeToolCallHook } from "../../agent-tools.before-tool-call.js";
 import type { createOpenClawCodingTools } from "../../agent-tools.js";
-import { Agent, type AgentTool } from "../../runtime/index.js";
+import { Agent, type AgentEvent, type AgentTool } from "../../runtime/index.js";
 import { getInternalToolExecutionPreparer } from "../../runtime/internal-hooks.js";
+import { TOOL_EXECUTION_GATED_MESSAGE } from "../../tool-policy-shared.js";
+import { isToolResultError } from "../../tool-result-error.js";
 import type { ToolSearchCatalogRef } from "../../tool-search.js";
 import { createAgentsWaitTool } from "../../tools/agents-wait-tool.js";
 import { createSessionsSpawnTool } from "../../tools/sessions-spawn-tool.js";
@@ -86,10 +88,12 @@ describe("runEmbeddedAttempt tool-search catalog cleanup", () => {
       mode: "joined Code Mode",
       toolName: "sessions_spawn",
       code: 'return await agents.run("inspect");',
+      // Denied spawn capability hides the Swarm guest globals before bridge dispatch.
+      guestError: "ReferenceError: agents is not defined",
     },
   ])(
     "does not enter the original preparer or action through denied $mode",
-    async ({ toolName, code }) => {
+    async ({ toolName, code, guestError }) => {
       const execute = vi.fn(async () => ({ content: [], details: {} }));
       const prepare = vi.fn(async (args: unknown) => args);
       const native =
@@ -102,7 +106,7 @@ describe("runEmbeddedAttempt tool-search catalog cleanup", () => {
       expect(getInternalToolExecutionPreparer(source)).toBeDefined();
       hoisted.createOpenClawCodingToolsMock.mockReturnValue([source]);
       const observed: AssistantMessage["content"][] = [];
-      const outcomes: Array<{ toolName: string; isError: boolean }> = [];
+      const outcomes: Extract<AgentEvent, { type: "tool_execution_end" }>[] = [];
       await createContextEngineAttemptRunner({
         contextEngine: createContextEngineBootstrapAndAssemble(),
         sessionKey: "agent:main:main",
@@ -119,6 +123,10 @@ describe("runEmbeddedAttempt tool-search catalog cleanup", () => {
           let turn = 0;
           const agent = new Agent({
             initialState: { model: options.model, tools: allTools },
+            // Embedded session middleware classifies resolved structured failures this way.
+            afterToolCall: async ({ result, isError }) => ({
+              isError: isError || isToolResultError(result),
+            }),
             streamFn: () => {
               const content: AssistantMessage["content"] =
                 turn++ === 0
@@ -191,9 +199,21 @@ describe("runEmbeddedAttempt tool-search catalog cleanup", () => {
         },
       });
       expect(observed.length).toBeGreaterThanOrEqual(1);
-      expect(outcomes).toContainEqual(
-        expect.objectContaining({ toolName: code ? "exec" : toolName, isError: true }),
-      );
+      expect(outcomes).toHaveLength(1);
+      const outcome = outcomes[0];
+      expect(outcome).toMatchObject({ toolName: code ? "exec" : toolName, isError: true });
+      if (code) {
+        expect(outcome?.result).toMatchObject({
+          details: {
+            status: "failed",
+            error: expect.stringContaining(guestError ?? TOOL_EXECUTION_GATED_MESSAGE),
+          },
+        });
+      } else {
+        expect(outcome?.result).toMatchObject({
+          content: expect.arrayContaining([{ type: "text", text: TOOL_EXECUTION_GATED_MESSAGE }]),
+        });
+      }
       expect(prepare).not.toHaveBeenCalled();
       expect(execute).not.toHaveBeenCalled();
     },

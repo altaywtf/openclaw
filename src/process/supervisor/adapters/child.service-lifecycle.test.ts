@@ -171,6 +171,7 @@ describe.skipIf(process.platform === "win32")("service-managed child lifecycle",
     const command = `
       process.on("SIGTERM", () => {
         require("node:fs").writeFileSync(${JSON.stringify(termPath)}, String(process.pid));
+        process.exit(0);
       });
       require("node:fs").writeFileSync(${JSON.stringify(pidPath)}, String(process.pid));
       setInterval(() => {}, 1000);
@@ -212,10 +213,13 @@ describe.skipIf(process.platform === "win32")("service-managed child lifecycle",
       await expect(supervisor.waitForScope(runId)).rejects.toThrow("cleanup identity lost");
       await expect(run.waitForExtinction?.()).rejects.toThrow("cleanup identity lost");
       await expect(supervisor.shutdown()).rejects.toThrow("cleanup identity lost");
-      // Observe the anchor's TERM before its unchanged grace; neither the timeout
-      // result nor the failed join may disable its independent group cleanup.
+      // A cooperative command proves independent anchor cleanup without racing
+      // its TERM grace. Physical exit must not erase the failed cleanup owner.
       await waitForPidFile(termPath, 5_000, realDelay);
       await waitFor(() => !isAlive(startedPid));
+      await expect(supervisor.waitForScope(runId)).rejects.toThrow("cleanup identity lost");
+      await expect(run.waitForExtinction?.()).rejects.toThrow("cleanup identity lost");
+      await expect(supervisor.shutdown()).rejects.toThrow("cleanup identity lost");
     } finally {
       vi.useRealTimers();
       supervisor.cancel(runId);
