@@ -12,6 +12,7 @@ export type SessionTabInteractionIdentity = {
 
 export type VolatileSessionTab = SessionTabInteractionIdentity & {
   kind: "volatile";
+  generation: symbol;
   ownership?: BrowserTabOwnership;
   trackedAt: number;
   lastUsedAt: number;
@@ -32,6 +33,7 @@ export function sameVolatileSessionTab(
   right: VolatileSessionTab,
 ): boolean {
   return (
+    left.generation === right.generation &&
     volatileSessionTabTargetKey(left) === volatileSessionTabTargetKey(right) &&
     left.sessionKey === right.sessionKey &&
     left.trackedAt === right.trackedAt &&

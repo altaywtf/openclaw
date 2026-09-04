@@ -10,11 +10,16 @@ type CloseTrackedBrowserTabsParams = Parameters<typeof closeTrackedBrowserTabs>[
 export async function closeTrackedBrowserTabsForSessions(
   params: CloseTrackedBrowserTabsParams,
 ): Promise<number> {
-  const { getBrowserControlState } = await import("./src/browser-control-state.js");
   return await closeTrackedBrowserTabs({
     ...params,
-    getResolvedBrowserConfig: () => getBrowserControlState()?.resolved ?? null,
+    getResolvedBrowserConfig: async () => {
+      const { getBrowserControlState } = await import("./src/browser-control-state.js");
+      return getBrowserControlState()?.resolved ?? null;
+    },
   });
 }
 
-export { movePathToTrash } from "./src/browser/trash.js";
+export async function movePathToTrash(targetPath: string): Promise<string> {
+  const { movePathToTrash: moveBrowserPathToTrash } = await import("./src/browser/trash.js");
+  return await moveBrowserPathToTrash(targetPath);
+}
