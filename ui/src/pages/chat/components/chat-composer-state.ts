@@ -3,6 +3,7 @@ import type { ChatRunUiStatus } from "../run-lifecycle.ts";
 import { disconnectComposerPopoverAnchorObserver } from "./chat-composer-dom.ts";
 import { clearGoalElapsedTimers } from "./chat-composer-goal.ts";
 import { HumanMentionMenu } from "./chat-composer-mention-menu.ts";
+import { resetChatComposerRichEditor } from "./chat-composer-rich-editor.ts";
 import { createSkillMenuState } from "./chat-composer-skill-menu.ts";
 import { createSlashMenuState } from "./chat-composer-slash-menu.ts";
 import type { ChatComposerProps, ChatComposerState } from "./chat-composer-types.ts";
@@ -88,6 +89,13 @@ export function composerDraftKey(
   props: Pick<ChatComposerProps, "currentAgentId" | "sessionKey">,
 ): string {
   return `${props.currentAgentId}\u0000${props.sessionKey}`;
+}
+
+export function resetComposerDraftScope(state: ChatComposerState) {
+  state.dictation?.dispose();
+  state.dictation = null;
+  state.dictationSelection = null;
+  resetChatComposerRichEditor(state);
 }
 
 export function commitComposerDraft(

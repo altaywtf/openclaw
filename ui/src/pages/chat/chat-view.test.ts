@@ -78,6 +78,9 @@ vi.mock("./components/chat-composer-rich-editor.ts", async (importOriginal) => {
     (await import("./chat-composer-rich-editor.test-support.ts")) as unknown as RichEditorModule;
   const selected = () => (richEditorMode.useActual ? actual : mock);
   return {
+    resetChatComposerRichEditor: (
+      ...args: Parameters<RichEditorModule["resetChatComposerRichEditor"]>
+    ) => selected().resetChatComposerRichEditor(...args),
     setChatComposerRichEditorHost: (
       ...args: Parameters<RichEditorModule["setChatComposerRichEditorHost"]>
     ) => selected().setChatComposerRichEditorHost(...args),
@@ -5560,6 +5563,41 @@ describe("chat slash menu accessibility", () => {
     render(renderChat(createChatProps({ onDraftChange, draft: "history recall" })), container);
 
     expect(container.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("history recall");
+  });
+
+  it("does not carry undo history into a replacement draft owner", () => {
+    richEditorMode.useActual = true;
+    const onDraftChange = vi.fn();
+    const container = document.createElement("div");
+
+    render(
+      renderChat(createChatProps({ sessionKey: "agent:main:first", onDraftChange })),
+      container,
+    );
+    inputDraft(container, "first session draft");
+    onDraftChange.mockClear();
+    render(
+      renderChat(
+        createChatProps({
+          sessionKey: "agent:main:second",
+          draft: "second session draft",
+          onDraftChange,
+        }),
+      ),
+      container,
+    );
+
+    getComposerEditor(container).dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "z",
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+
+    expect(getComposerTextarea(container).value).toBe("second session draft");
+    expect(onDraftChange).not.toHaveBeenCalledWith("first session draft", undefined);
   });
 
   it("wires command suggestions to the composer with stable active option ids", () => {

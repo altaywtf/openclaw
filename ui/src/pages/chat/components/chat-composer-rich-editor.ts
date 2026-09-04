@@ -7,6 +7,7 @@ import {
   EditorState,
   Prec,
   StateField,
+  Transaction,
   type Range,
 } from "@codemirror/state";
 import {
@@ -405,6 +406,7 @@ function createChatComposerRichEditor(params: {
       view.dispatch({
         changes: { from: 0, to: view.state.doc.length, insert: next.draft },
         selection: EditorSelection.cursor(next.draft.length),
+        annotations: Transaction.addToHistory.of(false),
       });
       applyingDraft = false;
     }
@@ -429,6 +431,7 @@ function createChatComposerRichEditor(params: {
       view.dispatch({
         changes: { from: 0, to: view.state.doc.length, insert: draft },
         selection: EditorSelection.cursor(draft.length),
+        annotations: Transaction.addToHistory.of(false),
       });
       applyingDraft = false;
       options = { ...options, draft };
@@ -471,6 +474,14 @@ function attachChatComposerRichEditor(state: ChatComposerRichEditorState) {
     state.restoreComposerFocus = false;
     queueMicrotask(() => state.composerEditor?.focus());
   }
+}
+
+export function resetChatComposerRichEditor(state: ChatComposerRichEditorState) {
+  const restoreFocus = state.composerEditor?.hasFocus() === true;
+  state.composerEditor?.destroy();
+  state.composerEditor = null;
+  state.composerEditorHost?.replaceChildren();
+  state.restoreComposerFocus ||= restoreFocus;
 }
 
 export function setChatComposerRichEditorSource(

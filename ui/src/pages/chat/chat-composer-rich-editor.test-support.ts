@@ -73,3 +73,11 @@ export function updateChatComposerRichEditor(state: MockState, options: MockOpti
   state.composerEditor?.updateOptions(options);
   attach(state);
 }
+
+export function resetChatComposerRichEditor(state: MockState) {
+  const restoreFocus = state.composerEditor?.hasFocus() === true;
+  state.composerEditor?.destroy();
+  state.composerEditor = null;
+  state.composerEditorHost?.replaceChildren();
+  state.restoreComposerFocus ||= restoreFocus;
+}

@@ -55,6 +55,7 @@ import {
   hasTerminalRunStatus,
   isCurrentSessionSubmittedProgress,
   markComposerInputIntent,
+  resetComposerDraftScope,
   suppressStaleSubmittedDraftReplay,
   syncComposerDraftAfterSend,
 } from "./chat-composer-state.ts";
@@ -105,9 +106,7 @@ export function renderChatComposer(props: ChatComposerProps) {
       : props.runStatus;
   const draftKey = composerDraftKey(props);
   if (state.composerDraftScopeKey !== null && state.composerDraftScopeKey !== draftKey) {
-    state.dictation?.dispose();
-    state.dictation = null;
-    state.dictationSelection = null;
+    resetComposerDraftScope(state);
   }
   state.composerDraftScopeKey = draftKey;
   const visibleDraft =
