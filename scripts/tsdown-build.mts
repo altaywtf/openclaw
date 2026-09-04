@@ -521,7 +521,12 @@ const isConfigArg = (arg: string) =>
   arg === "--no-config";
 const isWatchArg = (arg: string) =>
   arg === "--watch" || arg.startsWith("--watch=") || arg === "-w" || arg.startsWith("-w=");
-const isDtsArg = (arg: string) => arg === "--dts" || arg === "--no-dts";
+const readDtsArg = (arg: string) =>
+  arg === "--dts" || arg === "--dts=true"
+    ? true
+    : arg === "--no-dts" || arg === "--dts=false"
+      ? false
+      : undefined;
 const isUnifiedDtsGroup = (value: string | undefined) =>
   TSDOWN_UNIFIED_DTS_CONFIG_GROUPS.some((group) => group === value);
 
@@ -1474,16 +1479,20 @@ export function resolveTsdownBuildInvocations(params: TsdownBuildParams = {}) {
   }
   const initialEnv = params.env ?? process.env;
   const config = readForwardedOption(initialArgs, ["--config", "-c"]);
-  const dtsArg = initialArgs.findLast(isDtsArg);
+  const dtsArg = initialArgs.findLast((arg) => readDtsArg(arg) !== undefined);
+  const dtsEnabled = dtsArg === undefined ? undefined : readDtsArg(dtsArg);
   const ownsDtsMode =
-    dtsArg !== undefined &&
+    dtsEnabled !== undefined &&
     !initialArgs.includes("--no-config") &&
     (config === undefined ||
       selectsMainConfig(initialArgs) ||
       path.resolve(config) === path.resolve("tsdown.ai.config.ts"));
-  const forwardedArgs = ownsDtsMode ? initialArgs.filter((arg) => !isDtsArg(arg)) : initialArgs;
+  // Inline DTS flags otherwise override the runtime/declaration mode owned by each split config.
+  const forwardedArgs = ownsDtsMode
+    ? initialArgs.filter((arg) => readDtsArg(arg) === undefined)
+    : initialArgs;
   const env = ownsDtsMode
-    ? { ...initialEnv, [RUN_NODE_SKIP_DTS_BUILD_ENV]: dtsArg === "--dts" ? "0" : "1" }
+    ? { ...initialEnv, [RUN_NODE_SKIP_DTS_BUILD_ENV]: dtsEnabled ? "0" : "1" }
     : initialEnv;
   const forwardedFilters = readForwardedOptions(forwardedArgs, ["--filter", "-F"]);
   const hasForwardedFilter = forwardedArgs.some(isFilterArg);

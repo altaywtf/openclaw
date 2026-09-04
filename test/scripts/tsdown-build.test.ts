@@ -235,22 +235,36 @@ describe("resolveTsdownBuildInvocation", () => {
       expectedInvocations: 3 + TSDOWN_UNIFIED_DTS_CONFIG_GROUPS.length,
     },
     {
-      label: "main config selected by path",
-      args: ["--config", "tsdown.config.ts", "--no-dts"],
+      label: "default config uses the last assigned no-DTS switch",
+      args: ["--dts", "--dts=false"],
+      env: {},
+      expected: "1",
+      expectedInvocations: 2,
+    },
+    {
+      label: "default config uses a trailing DTS switch after assigned no-DTS",
+      args: ["--dts=false", "--dts"],
+      env: { OPENCLAW_RUN_NODE_SKIP_DTS_BUILD: "1" },
+      expected: "0",
+      expectedInvocations: 3 + TSDOWN_UNIFIED_DTS_CONFIG_GROUPS.length,
+    },
+    {
+      label: "main config accepts assigned no-DTS",
+      args: ["--config", "tsdown.config.ts", "--dts=false"],
       env: {},
       expected: "1",
       expectedInvocations: 1,
     },
     {
-      label: "main config selected by cwd",
-      args: ["--config", ".", "--no-dts", "--dts"],
+      label: "main config uses a trailing assigned DTS switch",
+      args: ["--config", ".", "--no-dts", "--dts=true"],
       env: { OPENCLAW_RUN_NODE_SKIP_DTS_BUILD: "1" },
       expected: "0",
       expectedInvocations: 2 + TSDOWN_UNIFIED_DTS_CONFIG_GROUPS.length,
     },
     {
-      label: "AI config",
-      args: ["--config", "tsdown.ai.config.ts", "--dts"],
+      label: "AI config accepts assigned DTS",
+      args: ["--config", "tsdown.ai.config.ts", "--dts=true"],
       env: { OPENCLAW_RUN_NODE_SKIP_DTS_BUILD: "1" },
       expected: "0",
       expectedInvocations: 1,
@@ -276,13 +290,15 @@ describe("resolveTsdownBuildInvocation", () => {
     for (const result of results) {
       expect(result.args).not.toContain("--dts");
       expect(result.args).not.toContain("--no-dts");
+      expect(result.args).not.toContain("--dts=true");
+      expect(result.args).not.toContain("--dts=false");
       expect(result.options.env.OPENCLAW_RUN_NODE_SKIP_DTS_BUILD).toBe(expected);
     }
   });
 
   it.each([
-    ["custom config", ["--config", "custom.tsdown.config.ts", "--dts", "--no-dts"]],
-    ["config disabled", ["--no-config", "src/index.ts", "--no-dts", "--dts"]],
+    ["custom config", ["--config", "custom.tsdown.config.ts", "--dts=true", "--dts=false"]],
+    ["config disabled", ["--no-config", "src/index.ts", "--dts=false", "--dts=true"]],
   ])("preserves repeated DTS switches for %s", (_label, args) => {
     const [result] = resolveTsdownBuildInvocations({
       args,
@@ -517,7 +533,7 @@ describe("resolveTsdownBuildInvocation", () => {
               path.resolve("scripts/tsdown-build.mts"),
               "--config",
               "tsdown.ai.config.ts",
-              declarations ? "--dts" : "--no-dts",
+              declarations ? "--dts=true" : "--dts=false",
               "--watch",
             ],
             {
