@@ -42,7 +42,11 @@ describe("assistant.media.get", () => {
       mimeType: "image/png",
       sizeBytes: 42,
     });
-    const handlers = createControlUiHandlers(vi.fn(), vi.fn(), loadMedia);
+    const loadSessionPreview = vi.fn().mockResolvedValue({
+      sessionKey: "agent:main:main",
+      agentId: "main",
+    });
+    const handlers = createControlUiHandlers(vi.fn(), loadSessionPreview, loadMedia);
     const respond = vi.fn<RespondFn>();
     const context = requestOptions({}, respond).context;
 
@@ -50,15 +54,26 @@ describe("assistant.media.get", () => {
       handlers["assistant.media.get"],
       'handlers["assistant.media.get"] test invariant',
     )(
-      requestOptions({ source: " /tmp/browser-shot.png " }, respond, {
-        client: { connId: "control-ui-client" },
-        context,
-      }),
+      requestOptions(
+        { source: " /tmp/browser-shot.png ", sessionKey: "agent:main:main" },
+        respond,
+        {
+          client: { connId: "control-ui-client" },
+          context,
+        },
+      ),
     );
 
+    expect(loadSessionPreview).toHaveBeenCalledWith(
+      "agent:main:main",
+      context,
+      expect.anything(),
+      "/tmp/browser-shot.png",
+    );
     expect(loadMedia).toHaveBeenCalledWith("/tmp/browser-shot.png", context, {
       agentId: "main",
       connId: "control-ui-client",
+      sessionKey: "agent:main:main",
     });
     expect(respond).toHaveBeenCalledWith(
       true,
@@ -91,7 +106,12 @@ describe("assistant.media.get", () => {
       ),
     );
 
-    expect(loadSessionPreview).toHaveBeenCalledWith("agent:research:main", context, client);
+    expect(loadSessionPreview).toHaveBeenCalledWith(
+      "agent:research:main",
+      context,
+      client,
+      "/tmp/research/output.png",
+    );
     expect(loadMedia).toHaveBeenCalledWith("/tmp/research/output.png", context, {
       agentId: "research",
       connId: "control-ui-client",
@@ -99,7 +119,7 @@ describe("assistant.media.get", () => {
     });
   });
 
-  it("does not reveal media roots for a session hidden from the caller", async () => {
+  it("does not reveal media roots without visible transcript ownership", async () => {
     const loadSessionPreview = vi.fn().mockResolvedValue(null);
     const loadMedia = vi.fn();
     const handlers = createControlUiHandlers(vi.fn(), loadSessionPreview, loadMedia);

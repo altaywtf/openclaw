@@ -4,6 +4,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { appendTranscriptMessage } from "../config/sessions/session-accessor.js";
 import { connectGatewayClient, disconnectGatewayClient } from "./test-helpers.e2e.js";
 import {
   installGatewayTestHooks,
@@ -34,9 +35,11 @@ describe("Control UI assistant media e2e", () => {
     const outsideRoot = tempDirs.make("assistant-media-outside-");
     const workspaceFile = path.join(agentWorkspace, "workspace-only.txt");
     const researchFile = path.join(researchWorkspace, "research-only.txt");
+    const unreferencedResearchFile = path.join(researchWorkspace, "unreferenced.txt");
     const outsideFile = path.join(outsideRoot, "outside.txt");
     await fs.writeFile(workspaceFile, "workspace media\n", "utf8");
     await fs.writeFile(researchFile, "research media\n", "utf8");
+    await fs.writeFile(unreferencedResearchFile, "unreferenced media\n", "utf8");
     await fs.writeFile(outsideFile, "outside media\n", "utf8");
     testState.agentsConfig = {
       ownership: "explicit",
@@ -48,12 +51,52 @@ describe("Control UI assistant media e2e", () => {
     testState.sessionStorePath = path.join(stateDir, "sessions.sqlite");
     await writeSessionStore({
       entries: {
+        "agent:main:main": {
+          sessionId: "assistant-media-main-session",
+          updatedAt: Date.now(),
+        },
         "agent:research:main": {
           sessionId: "assistant-media-research-session",
           updatedAt: Date.now(),
         },
       },
     });
+    await appendTranscriptMessage(
+      {
+        agentId: "main",
+        sessionId: "assistant-media-main-session",
+        sessionKey: "agent:main:main",
+        storePath: testState.sessionStorePath,
+      },
+      {
+        message: {
+          role: "assistant",
+          content: [
+            { type: "image", url: filePath },
+            { type: "image", url: workspaceFile },
+          ],
+          timestamp: Date.now(),
+        },
+      },
+    );
+    await appendTranscriptMessage(
+      {
+        agentId: "research",
+        sessionId: "assistant-media-research-session",
+        sessionKey: "agent:research:main",
+        storePath: testState.sessionStorePath,
+      },
+      {
+        message: {
+          role: "assistant",
+          content: [
+            { type: "image", url: filePath },
+            { type: "image", url: researchFile },
+          ],
+          timestamp: Date.now(),
+        },
+      },
+    );
 
     await withGatewayServer(
       async ({ port }) => {
@@ -68,14 +111,21 @@ describe("Control UI assistant media e2e", () => {
           available?: boolean;
           mediaTicket?: string;
           mediaTicketExpiresAt?: string;
-        }>("assistant.media.get", { source: filePath });
+        }>("assistant.media.get", {
+          source: filePath,
+          sessionKey: "agent:research:main",
+        });
         expect(payload.available).toBe(true);
         expect(payload.mediaTicket).toMatch(/^v1\./);
         expect(Date.parse(payload.mediaTicketExpiresAt ?? "")).not.toBeNaN();
 
         await expect(
           client.request("assistant.media.get", { source: workspaceFile }),
-        ).resolves.toMatchObject({ available: true });
+        ).resolves.toEqual({
+          available: false,
+          code: "outside-allowed-folders",
+          reason: "Outside allowed folders",
+        });
         await expect(
           client.request("assistant.media.get", { source: outsideFile }),
         ).resolves.toEqual({
@@ -92,17 +142,21 @@ describe("Control UI assistant media e2e", () => {
           sessionKey: "agent:research:main",
         });
         expect(researchPayload.available).toBe(true);
+        await expect(
+          client.request("assistant.media.get", {
+            source: unreferencedResearchFile,
+            sessionKey: "agent:research:main",
+          }),
+        ).resolves.toEqual({
+          available: false,
+          code: "session_unavailable",
+          reason: "Session unavailable",
+        });
         const researchTicketed = await fetch(
           `${route}?source=${encodeURIComponent(researchFile)}&mediaTicket=${encodeURIComponent(researchPayload.mediaTicket ?? "")}`,
         );
         expect(researchTicketed.status).toBe(200);
         expect(await researchTicketed.text()).toBe("research media\n");
-
-        await writeSessionStore({ entries: {} });
-        const revokedResearchTicket = await fetch(
-          `${route}?source=${encodeURIComponent(researchFile)}&mediaTicket=${encodeURIComponent(researchPayload.mediaTicket ?? "")}`,
-        );
-        expect(revokedResearchTicket.status).toBe(401);
 
         const withoutTicket = await fetch(`${route}?source=${sourceParam}`);
         expect(withoutTicket.status).toBe(401);
@@ -174,6 +228,12 @@ describe("Control UI assistant media e2e", () => {
           expect(notModified.headers.get("content-length")).toBeNull();
           expect(await notModified.text()).toBe("");
         }
+
+        await writeSessionStore({ entries: {} });
+        const revokedResearchTicket = await fetch(
+          `${route}?source=${encodeURIComponent(researchFile)}&mediaTicket=${encodeURIComponent(researchPayload.mediaTicket ?? "")}`,
+        );
+        expect(revokedResearchTicket.status).toBe(401);
 
         const emptyFilePath = path.join(mediaDir, "empty.bin");
         await fs.writeFile(emptyFilePath, Buffer.alloc(0));

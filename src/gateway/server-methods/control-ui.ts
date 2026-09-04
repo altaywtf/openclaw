@@ -9,7 +9,6 @@ import {
 import { redactToolPayloadText } from "../../logging/redact.js";
 import { getActiveSecretsRuntimeConfigSnapshot } from "../../secrets/runtime-state.js";
 import { truncateUtf16Safe } from "../../utils.js";
-import { resolveAssistantIdentity } from "../assistant-identity.js";
 import type { AssistantMediaGetResult, ControlUiSessionPreview } from "../control-ui-contract.js";
 import { formatControlUiGitHubPreviewError } from "../control-ui-github-api.js";
 import {
@@ -91,12 +90,13 @@ type LoadSessionPreview = (
   sessionKey: string,
   context: GatewayRequestContext,
   client: GatewayClient | null,
+  mediaSource?: string,
 ) => ControlUiSessionAccess | null | Promise<ControlUiSessionAccess | null>;
 
 type LoadAssistantMedia = (
   source: string,
   context: GatewayRequestContext,
-  authority: { agentId: string; connId: string; sessionKey?: string },
+  authority: { agentId?: string; connId: string; sessionKey?: string },
 ) => Promise<AssistantMediaGetResult>;
 
 const SESSION_PREVIEW_TEXT_MAX_CHARS = 200;
@@ -137,7 +137,7 @@ function parseAssistantMediaParams(
 async function loadAssistantMedia(
   source: string,
   context: GatewayRequestContext,
-  authority: { agentId: string; connId: string; sessionKey?: string },
+  authority: { agentId?: string; connId: string; sessionKey?: string },
 ): Promise<AssistantMediaGetResult> {
   const cfg = context.getRuntimeConfig();
   return await resolveControlUiAssistantMedia(source, cfg, authority);
@@ -174,8 +174,9 @@ function loadControlUiSessionPreview(
   sessionKey: string,
   context: GatewayRequestContext,
   client: GatewayClient | null,
+  mediaSource?: string,
 ): ControlUiSessionAccess | null {
-  return resolveControlUiSessionAccess(sessionKey, context.getRuntimeConfig(), client);
+  return resolveControlUiSessionAccess(sessionKey, context.getRuntimeConfig(), client, mediaSource);
 }
 
 export function createControlUiHandlers(
@@ -194,7 +195,6 @@ export function createControlUiHandlers(
         );
         return;
       }
-      const cfg = context.getRuntimeConfig();
       const connId = client?.connId?.trim();
       if (!connId) {
         respond(
@@ -204,21 +204,21 @@ export function createControlUiHandlers(
         );
         return;
       }
-      let agentId = resolveAssistantIdentity({ cfg }).agentId;
-      let sessionKey: string | undefined;
-      if (parsed.sessionKey) {
-        const session = await loadSessionPreview(parsed.sessionKey, context, client);
-        if (!session) {
-          respond(
-            true,
-            { available: false, reason: "Session unavailable", code: "session_unavailable" },
-            undefined,
-          );
-          return;
-        }
-        agentId = session.agentId;
-        sessionKey = session.sessionKey;
+      if (!parsed.sessionKey) {
+        respond(true, await loadMedia(parsed.source, context, { connId }), undefined);
+        return;
       }
+      const session = await loadSessionPreview(parsed.sessionKey, context, client, parsed.source);
+      if (!session) {
+        respond(
+          true,
+          { available: false, reason: "Session unavailable", code: "session_unavailable" },
+          undefined,
+        );
+        return;
+      }
+      const agentId = session.agentId;
+      const sessionKey = session.sessionKey;
       respond(
         true,
         await loadMedia(parsed.source, context, {

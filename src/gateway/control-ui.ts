@@ -34,7 +34,7 @@ import {
   resolvePlaybackModeForSource,
   resolvePlaybackTranscode,
 } from "../media/playback-transcode.js";
-import { extractOriginalFilename } from "../media/store.js";
+import { extractOriginalFilename, getMediaDir } from "../media/store.js";
 import { safeEqualSecret } from "../security/secret-equal.js";
 import { AVATAR_MAX_BYTES, resolveAvatarMime } from "../shared/avatar-policy.js";
 import { resolveUserPath } from "../utils.js";
@@ -493,7 +493,7 @@ async function resolveAssistantMediaCapability(
 export async function resolveControlUiAssistantMedia(
   source: string,
   config: OpenClawConfig,
-  authority: { agentId: string; connId: string; sessionKey?: string },
+  authority: { agentId?: string; connId: string; sessionKey?: string },
 ): Promise<AssistantMediaGetResult> {
   const normalizedSource = normalizeAssistantMediaSource(source);
   if (!normalizedSource) {
@@ -501,7 +501,7 @@ export async function resolveControlUiAssistantMedia(
   }
   const capability = await resolveAssistantMediaCapability(
     normalizedSource,
-    getAgentScopedMediaLocalRoots(config, authority.agentId),
+    authority.agentId ? getAgentScopedMediaLocalRoots(config, authority.agentId) : [getMediaDir()],
     authority,
   );
   if (!capability.available) {
@@ -529,6 +529,7 @@ export async function resolveControlUiAssistantMedia(
  */
 function resolveAssistantMediaTicketAuthority(
   ticket: AssistantMediaTicketPayload | null,
+  source: string,
   opts?: { config?: OpenClawConfig; agentId?: string; clients?: ReadonlySet<GatewayWsClient> },
 ): { agentId?: string } | null {
   if (!ticket?.connId) {
@@ -544,7 +545,7 @@ function resolveAssistantMediaTicketAuthority(
     return { agentId: ticket.agentId };
   }
   const access = opts?.config
-    ? resolveControlUiSessionAccess(ticket.sessionKey, opts.config, client)
+    ? resolveControlUiSessionAccess(ticket.sessionKey, opts.config, client, source)
     : null;
   if (!access || access.agentId !== ticket.agentId) {
     return null;
@@ -599,15 +600,18 @@ export async function handleControlUiAssistantMediaRequest(
   ) {
     return true;
   }
-  const authority = resolveAssistantMediaTicketAuthority(verifiedMediaTicket, opts);
+  const authority = resolveAssistantMediaTicketAuthority(verifiedMediaTicket, source, opts);
   if (!authority) {
     respondPlainText(res, 401, "Unauthorized");
     return true;
   }
   const agentId = authority.agentId;
-  const localRoots = opts?.config
-    ? getAgentScopedMediaLocalRoots(opts.config, agentId)
-    : getDefaultLocalRootsCore();
+  const localRoots =
+    opts?.config && agentId
+      ? getAgentScopedMediaLocalRoots(opts.config, agentId)
+      : verifiedMediaTicket?.connId
+        ? [getMediaDir()]
+        : getDefaultLocalRootsCore();
 
   if (isMetaRequest) {
     sendJson(res, 200, await resolveAssistantMediaCapability(source, localRoots, { agentId }));
@@ -621,7 +625,7 @@ export async function handleControlUiAssistantMediaRequest(
     await assertLocalMediaAllowed(localPath, localRoots);
     // Path and root resolution were awaited above; the ticket's connection or
     // session may have been revoked meanwhile. Recheck before touching the file.
-    if (!resolveAssistantMediaTicketAuthority(verifiedMediaTicket, opts)) {
+    if (!resolveAssistantMediaTicketAuthority(verifiedMediaTicket, source, opts)) {
       respondPlainText(res, 401, "Unauthorized");
       return true;
     }
