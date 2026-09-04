@@ -12,7 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { WORKSPACE_TEMPLATE_PACK_PATHS } from "../../scripts/lib/workspace-bootstrap-smoke.mts";
 
 const CONTROL_UI_INDEX = "dist/control-ui/index.html";
@@ -27,6 +27,25 @@ const CHECK_SCRIPT = resolve("scripts/check-openclaw-package-tarball.mjs");
 const TYPESCRIPT_PACKAGE_ROOT = fileURLToPath(
   new URL("../../node_modules/typescript", import.meta.url),
 );
+// npm chmods bin entries of directory install sources; hand it a dereferenced
+// copy so the live pnpm store's file identity is never mutated by this suite.
+let typescriptPackageCopyRoot: string | undefined;
+function isolatedTypescriptPackage(): string {
+  if (!typescriptPackageCopyRoot) {
+    typescriptPackageCopyRoot = mkdtempSync(join(tmpdir(), "openclaw-typescript-package-"));
+    cpSync(TYPESCRIPT_PACKAGE_ROOT, join(typescriptPackageCopyRoot, "typescript"), {
+      recursive: true,
+      dereference: true,
+    });
+  }
+  return join(typescriptPackageCopyRoot, "typescript");
+}
+afterAll(() => {
+  if (typescriptPackageCopyRoot) {
+    rmSync(typescriptPackageCopyRoot, { recursive: true, force: true });
+    typescriptPackageCopyRoot = undefined;
+  }
+});
 
 function writeFixtureFile(packageRoot: string, relativePath: string, content: string): void {
   const filePath = join(packageRoot, relativePath);
