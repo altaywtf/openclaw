@@ -238,6 +238,7 @@ export function createControlUiHandlers(
         assertActive();
         const result = await loadMedia(parsed.source, context, {
           agentId: session?.agentId,
+          client,
           connId,
           sessionKey: session?.sessionKey,
           assertActive,

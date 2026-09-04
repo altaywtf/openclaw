@@ -1136,6 +1136,7 @@ describe("handleControlUiHttpRequest", () => {
           });
           const minted = await resolveControlUiAssistantMedia(filePath, config, {
             agentId: "main",
+            client,
             connId: "ticket-race-conn",
             assertActive: () => {},
             ...(sessionKey ? { sessionKey } : {}),
@@ -1174,6 +1175,44 @@ describe("handleControlUiHttpRequest", () => {
       });
     },
   );
+
+  it("rejects a ticket after its minting client is replaced with the same connection ID", async () => {
+    await withAllowedAssistantMediaRoot({
+      prefix: "ui-media-ticket-client-replacement-",
+      fn: async (tmpRoot) => {
+        const filePath = path.join(tmpRoot, "photo.png");
+        await fs.writeFile(filePath, REAL_PNG);
+        const config = {} as OpenClawConfig;
+        const client = { connId: "ticket-replacement-conn" } as GatewayWsClient;
+        const clients = new Set([client]);
+        const minted = await resolveControlUiAssistantMedia(filePath, config, {
+          agentId: "main",
+          client,
+          connId: client.connId,
+          assertActive: () => {},
+        });
+        expect(minted.available).toBe(true);
+        const mediaTicket = minted.available ? minted.mediaTicket : "";
+        const url = `/__openclaw__/assistant-media?source=${encodeURIComponent(filePath)}&mediaTicket=${encodeURIComponent(mediaTicket)}`;
+        const actualLocalMediaAccess = await vi.importActual<
+          typeof import("../media/local-media-access.js")
+        >("../media/local-media-access.js");
+        assertLocalMediaAllowedMock.mockImplementationOnce(async (localPath, roots) => {
+          clients.clear();
+          clients.add({ connId: client.connId } as GatewayWsClient);
+          return await actualLocalMediaAccess.assertLocalMediaAllowed(localPath, roots);
+        });
+        openLocalFileSafelyMock.mockClear();
+
+        const replaced = await runAssistantMediaRequest({ url, method: "GET", config, clients });
+
+        expect(replaced.handled).toBe(true);
+        expect(replaced.res.statusCode).toBe(401);
+        expect(replaced.end).toHaveBeenCalledWith("Unauthorized");
+        expect(openLocalFileSafelyMock).not.toHaveBeenCalled();
+      },
+    });
+  });
 
   it.each([
     {
@@ -1217,6 +1256,7 @@ describe("handleControlUiHttpRequest", () => {
           const clients = new Set([client as unknown as GatewayWsClient]);
           const minted = await resolveControlUiAssistantMedia(filePath, config, {
             agentId: "main",
+            client,
             connId: client.connId,
             assertActive: () => {},
           });

@@ -108,6 +108,7 @@ const CONTROL_UI_ASSISTANT_MEDIA_TICKET_TTL_MS = 5 * 60 * 1000;
 const CONTROL_UI_ASSETS_MISSING_MESSAGE =
   "Control UI assets not found. Build them with `pnpm ui:build` (auto-installs UI deps), or run `pnpm ui:dev` during development.";
 const controlUiAssistantMediaTicketSecret = randomBytes(32);
+const controlUiAssistantMediaClientInstances = new WeakMap<object, string>();
 
 type ControlUiRequestOptions = {
   basePath?: string;
@@ -280,6 +281,7 @@ type AssistantMediaTicketPayload = {
   source: string;
   agentId?: string;
   connId?: string;
+  clientInstanceId?: string;
   sessionKey?: string;
   exp: number;
 };
@@ -290,9 +292,19 @@ function signAssistantMediaTicketPayload(encodedPayload: string): string {
     .digest("base64url");
 }
 
+function resolveAssistantMediaClientInstanceId(client: object): string {
+  const current = controlUiAssistantMediaClientInstances.get(client);
+  if (current) {
+    return current;
+  }
+  const created = randomBytes(16).toString("base64url");
+  controlUiAssistantMediaClientInstances.set(client, created);
+  return created;
+}
+
 function createAssistantMediaTicket(
   source: string,
-  authority?: { agentId?: string; connId?: string; sessionKey?: string },
+  authority?: { agentId?: string; client?: object; connId?: string; sessionKey?: string },
   nowMs = Date.now(),
 ) {
   const now = asDateTimestampMs(nowMs);
@@ -308,6 +320,9 @@ function createAssistantMediaTicket(
     source,
     ...(authority?.agentId ? { agentId: authority.agentId } : {}),
     ...(authority?.connId ? { connId: authority.connId } : {}),
+    ...(authority?.client
+      ? { clientInstanceId: resolveAssistantMediaClientInstanceId(authority.client) }
+      : {}),
     ...(authority?.sessionKey ? { sessionKey: authority.sessionKey } : {}),
     exp,
   };
@@ -349,6 +364,7 @@ function verifyAssistantMediaTicket(
       payload.source !== source ||
       (payload.agentId !== undefined && typeof payload.agentId !== "string") ||
       (payload.connId !== undefined && typeof payload.connId !== "string") ||
+      (payload.clientInstanceId !== undefined && typeof payload.clientInstanceId !== "string") ||
       (payload.sessionKey !== undefined && typeof payload.sessionKey !== "string") ||
       typeof payload.exp !== "number" ||
       !Number.isFinite(payload.exp) ||
@@ -361,6 +377,7 @@ function verifyAssistantMediaTicket(
       source,
       ...(payload.agentId ? { agentId: payload.agentId } : {}),
       ...(payload.connId ? { connId: payload.connId } : {}),
+      ...(payload.clientInstanceId ? { clientInstanceId: payload.clientInstanceId } : {}),
       ...(payload.sessionKey ? { sessionKey: payload.sessionKey } : {}),
       exp: payload.exp,
     };
@@ -417,7 +434,13 @@ function classifyAssistantMediaError(err: unknown): AssistantMediaAvailability {
 async function resolveAssistantMediaCapability(
   source: string,
   localRoots: readonly string[],
-  authority?: { agentId?: string; connId?: string; sessionKey?: string; assertActive?: () => void },
+  authority?: {
+    agentId?: string;
+    client?: object;
+    connId?: string;
+    sessionKey?: string;
+    assertActive?: () => void;
+  },
 ): Promise<AssistantMediaCapability> {
   const assertActive = authority?.assertActive;
   try {
@@ -489,7 +512,13 @@ async function resolveAssistantMediaCapability(
 export async function resolveControlUiAssistantMedia(
   source: string,
   config: OpenClawConfig,
-  authority: { agentId?: string; connId: string; sessionKey?: string; assertActive: () => void },
+  authority: {
+    agentId?: string;
+    client: object;
+    connId: string;
+    sessionKey?: string;
+    assertActive: () => void;
+  },
 ): Promise<AssistantMediaGetResult> {
   const normalizedSource = normalizeAssistantMediaSource(source);
   if (!normalizedSource) {
@@ -534,8 +563,14 @@ function resolveAssistantMediaTicketAuthority(
   if (!ticket?.connId) {
     return { agentId: ticket?.agentId ?? opts?.agentId };
   }
+  if (!ticket.clientInstanceId) {
+    return null;
+  }
   const client = [...(opts?.clients ?? [])].find(
-    (candidate) => candidate.connId === ticket.connId && !candidate.invalidatedReason,
+    (candidate) =>
+      candidate.connId === ticket.connId &&
+      !candidate.invalidatedReason &&
+      controlUiAssistantMediaClientInstances.get(candidate) === ticket.clientInstanceId,
   );
   if (!client) {
     return null;
