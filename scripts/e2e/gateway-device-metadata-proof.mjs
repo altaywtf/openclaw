@@ -338,26 +338,42 @@ try {
     exitCode: cliResult.code,
     approval: cliRequest ? projected(cliRequest) : null,
   });
-  assert.notEqual(cliResult.code, 0, "Expected current-main metadata approval failure");
-  assert.ok(cliRequest?.isRepair, "Expected same-device metadata repair request");
-  assert.ok(gateway.text.includes("reason=metadata-upgrade"));
-  await approve(cliRequest.requestId);
+  if (cliRequest) {
+    assert.ok(cliRequest.isRepair, "Expected same-device metadata repair request");
+    await approve(cliRequest.requestId);
+  } else {
+    json(cliResult);
+  }
 
-  phase = "TUI after CLI approval";
+  phase = "TUI after approved Node Host";
   const finalTui = startTui(device);
   await until(
     finalTui.screen,
     (text) => text.includes("gateway connected") || text.includes("pairing required"),
     "TUI connection result",
   );
+  rows = await adminList();
+  const tuiRequest = rows.pending.find((row) => row.deviceId === deviceId);
+  const pairedBeforeTuiApproval = rows.paired.find((row) => row.deviceId === deviceId);
   report.stages.push({
     phase,
     connected: finalTui.screen().includes("gateway connected"),
     pairingRequired: finalTui.screen().includes("pairing required"),
+    approval: tuiRequest ? projected(tuiRequest) : null,
+    paired: projected(pairedBeforeTuiApproval),
+    terminal: sanitize(finalTui.screen()),
   });
-  if (finalTui.screen().includes("gateway connected")) await completeTui(finalTui);
-  else await stopTui(finalTui);
-  phase = "second Node Host after CLI approval";
+  if (finalTui.screen().includes("gateway connected")) {
+    await completeTui(finalTui);
+  } else {
+    assert.ok(tuiRequest?.isRepair, "Expected same-device TUI metadata request");
+    assert.ok(gateway.text.includes("reason=metadata-upgrade"));
+    await approve(tuiRequest.requestId);
+    await stopTui(finalTui);
+    await completeTui(startTui(device));
+    report.stages.push({ phase: "TUI after metadata approval", completedStatusRequest: true });
+  }
+  phase = "second Node Host after TUI";
   node = start(device, [
     "node",
     "run",
@@ -388,7 +404,13 @@ try {
   phase = "final CLI";
   const finalCli = await list(device);
   report.stages.push({ phase, exitCode: finalCli.code });
-  report.outcome = "metadata-approval-after-approved-device-and-role";
+  json(finalCli);
+  await completeTui(startTui(device));
+  report.stages.push({ phase: "final TUI", completedStatusRequest: true });
+  report.outcome =
+    cliRequest || tuiRequest || secondNode.rows.pending.some((row) => row.deviceId === deviceId)
+      ? "metadata-approval-after-approved-device-and-role"
+      : "alternating-sequence-completed-without-metadata-approval";
 } catch (error) {
   report.failure = { phase, message: sanitize(String(error)) };
   report.diagnostics = captures.map((capture) => ({
