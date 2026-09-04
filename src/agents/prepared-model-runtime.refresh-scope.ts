@@ -4,6 +4,7 @@ import {
   listConfiguredOwnerInputs,
   normalizePreparedModelRuntimeInput,
   ownerKey,
+  preparedModelCatalogInventoryFingerprint,
   prepareModelRuntimeOwner,
   retirePreparedModelRuntimeOwner,
 } from "./prepared-model-runtime.owner.js";
@@ -84,6 +85,17 @@ export function prepareConfiguredRefreshOwners(
   owners: Map<string, PreparedModelRuntimeOwner>,
   gatewayLifecycleActive: boolean,
 ): Array<{ input: PreparedModelRuntimeInput; owner: PreparedModelRuntimeOwner }> {
+  const inventories = new Map(
+    [...owners.values()].flatMap((owner) =>
+      owner.provenance === "configured" &&
+      owner.catalogInventory.inputFingerprint &&
+      owner.catalogInventory.snapshot &&
+      (!options.pluginMetadataSnapshot ||
+        owner.snapshot?.metadataSnapshot === options.pluginMetadataSnapshot)
+        ? [[owner.catalogInventory.inputFingerprint, owner.catalogInventory] as const]
+        : [],
+    ),
+  );
   const inputs = new Map<string, PreparedModelRuntimeInput>();
   for (const input of listConfiguredRefreshInputs(config, options, owners)) {
     if (options.agentIds && input.agentId && !options.agentIds.has(input.agentId)) {
@@ -111,6 +123,10 @@ export function prepareConfiguredRefreshOwners(
       "configured",
       existing?.provenance === "configured" ? existing : undefined,
     );
+    owner.catalogInventory = {
+      ...inventories.get(preparedModelCatalogInventoryFingerprint(input)),
+      inputFingerprint: owner.catalogInventory.inputFingerprint,
+    };
     return { input, owner };
   });
 }
@@ -134,6 +150,7 @@ export function updateOwnersForScopedRefresh(
       }
       continue;
     }
+    retirePreparedModelRuntimeOwner(owner);
     if (options.retireStandalone && owner.provenance === "standalone") {
       owner.generation += 1;
       owners.delete(key);

@@ -26,6 +26,7 @@ import {
   normalizePreparedModelRuntimeInput,
   ownerKey,
   preparedModelRuntimeConfigsMatch,
+  publishPreparedModelRuntimeOwnerAuth,
   publishPreparedModelRuntimeOwnerBatch,
   publishModelRuntimeSnapshot,
   rebindInputToCommittedConfiguredOwner,
@@ -497,6 +498,9 @@ export function refreshPreparedModelRuntimeSnapshots(
     if (adoptedAuthTransaction) {
       authPublication.resolve(adoptedAuthTransaction, owners);
     }
+    for (const owner of owners.values()) {
+      publishPreparedModelRuntimeOwnerAuth(owner);
+    }
     replacement.resolve();
     // Publication listeners may synchronously read the committed owner. Clear the lifecycle
     // gate before announcing availability so they cannot observe a false missing generation.
@@ -583,7 +587,12 @@ async function drainPendingAuthMutations(
         discoverFullCatalog: gatewayLifecycleActive,
       });
     },
-    publishOwners: (publishedOwners) => replyDispatchPublication.replace(publishedOwners),
+    publishOwners: (publishedOwners) => {
+      replyDispatchPublication.replace(publishedOwners);
+      for (const owner of publishedOwners) {
+        publishPreparedModelRuntimeOwnerAuth(owner);
+      }
+    },
     commit,
     onOwnerFailure: (error) => {
       const refreshError = toStringifiedError(error);
@@ -611,7 +620,7 @@ function invalidateForAuthMutation(event: PreparedModelRuntimeAuthMutation): voi
     }
     invalidatedOwners.push(owner);
     if (normalizedEvent.profileSetChanged) {
-      owner.catalogInventory = {};
+      owner.catalogInventory = { inputFingerprint: owner.catalogInventory.inputFingerprint };
     }
     retirePreparedModelRuntimeOwner(owner);
     owner.generation += 1;

@@ -13,6 +13,7 @@ import {
   rebindInputToCommittedConfiguredOwner,
   resolveConfiguredOwner,
   resolveConfiguredOwnerPublication,
+  retirePreparedModelRuntimeOwner,
   type PreparedModelRuntimeInput,
   type PreparedModelRuntimeLease,
   type PreparedModelRuntimeOwner,
@@ -278,6 +279,7 @@ export async function acquirePreparedModelRuntimeLeaseFromOwners(
           !context.retainedGatewayRunOwners.has(key, owner)
         ) {
           context.owners.delete(key);
+          retirePreparedModelRuntimeOwner(owner);
         }
       }
     },

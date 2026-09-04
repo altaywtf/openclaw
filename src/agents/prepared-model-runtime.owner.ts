@@ -4,6 +4,7 @@ import { tryResolveLegacyCompatibilityAgentId } from "../config/legacy.default-a
 import { hashRuntimeConfigValue } from "../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { normalizePluginsConfig } from "../plugins/config-state.js";
 import { isReservedSystemAgentId } from "../system-agent/agent-id.js";
 import {
   listAgentIds,
@@ -26,10 +27,12 @@ import {
   startSerializedSnapshotBuildBatch,
   type PreparedModelRuntimeBuildResult,
 } from "./prepared-model-runtime.build.js";
+import { collectPreparedModelRuntimeConfiguredRefs } from "./prepared-model-runtime.configured.js";
 import {
   PreparedModelRuntimeOwnerNotPublishedError,
   PreparedModelRuntimePublicationSupersededError,
 } from "./prepared-model-runtime.errors.js";
+import { fingerprintPreparedRuntimeFacts } from "./prepared-model-runtime.facts-support.js";
 import type {
   PreparedModelRuntimeBuildStats,
   PreparedModelRuntimeInput,
@@ -59,11 +62,20 @@ function publishPreparedModelRuntimeOwnerSnapshot(
 ): PreparedModelRuntimeSnapshot {
   const published = stampPreparedModelRuntimeSnapshotConfig(snapshot, owner.input.config);
   owner.snapshot = published;
-  // Unbound owners (directory-derived setup probes) have no agent identity to record for.
-  if (owner.input.agentId) {
-    publishPreparedProviderAuthFacts(owner.input.agentId, published.providerAuth);
-  }
   return published;
+}
+
+export function publishPreparedModelRuntimeOwnerAuth(owner: PreparedModelRuntimeOwner): void {
+  if (
+    owner.input.agentId &&
+    !owner.input.readOnly &&
+    (owner.provenance === "configured" || owner.provenance === "standalone") &&
+    owner.snapshot &&
+    !owner.needsRefresh &&
+    !owner.pending
+  ) {
+    publishPreparedProviderAuthFacts(owner.input.agentId, owner.snapshot.providerAuth);
+  }
 }
 
 export type {
@@ -79,16 +91,43 @@ export type {
   PreparedModelRuntimeStores,
 } from "./prepared-model-runtime.types.js";
 
+export function preparedModelCatalogInventoryFingerprint(input: PreparedModelRuntimeInput): string {
+  const { models, auth, env } = input.config;
+  const plugins = normalizePluginsConfig(input.config.plugins);
+  for (const entry of Object.values(plugins.entries)) {
+    entry.config ??= {};
+  }
+  return fingerprintPreparedRuntimeFacts({
+    ...input,
+    config: { models, auth, env, plugins },
+    env: input.env ?? process.env,
+    configuredModelRefs: [
+      ...new Set(
+        collectPreparedModelRuntimeConfiguredRefs(input.config, input.agentId).map(
+          ({ value }) => value,
+        ),
+      ),
+    ].toSorted(),
+    runtimePluginSelections: undefined,
+  });
+}
+
 export function prepareModelRuntimeOwner(
   input: PreparedModelRuntimeInput,
   provenance: PreparedModelRuntimeOwner["provenance"],
   existing?: PreparedModelRuntimeOwner,
 ): PreparedModelRuntimeOwner {
+  const inputFingerprint = preparedModelCatalogInventoryFingerprint(input);
+  const catalogInventory =
+    existing?.provenance === provenance &&
+    existing.catalogInventory.inputFingerprint === inputFingerprint
+      ? existing.catalogInventory
+      : {};
   // Preparation precedes async discovery: auth may supersede the first build, or a new
   // preparation whose previous snapshot is still attached. Neither snapshot owns these facts.
   return Object.assign(existing ?? { generation: 0, needsRefresh: true }, {
     input,
-    catalogInventory: {},
+    catalogInventory: { ...catalogInventory, inputFingerprint },
     catalogOwner: preparePublishedModelCatalogOwnerIdentity(input),
     environmentFingerprint: effectiveEnvironmentFingerprint(input),
     provenance,
@@ -690,6 +729,7 @@ export async function publishModelRuntimeSnapshot(
       owner.pendingPluginGeneration = undefined;
       owner.pending = undefined;
       owner.needsRefresh = false;
+      publishPreparedModelRuntimeOwnerAuth(owner);
       return snapshot;
     } catch (error) {
       const refreshError = toStringifiedError(error);

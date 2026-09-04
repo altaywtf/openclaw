@@ -16,10 +16,22 @@ import {
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
 import { resolveAgentDir } from "./agent-scope.js";
+import { testing as cliBackendsTesting } from "./cli-backends.test-support.js";
+import { resolveAgentHarnessPolicy } from "./harness/policy.js";
 import { loadPersistedPluginModelCatalogsReadOnly } from "./plugin-model-catalog.js";
 import { preparePublishedModelCatalogOwnerIdentity } from "./prepared-model-catalog-owner.js";
 import { startSerializedSnapshotBuildBatch } from "./prepared-model-runtime.build.js";
-import { refreshPreparedModelRuntimeSnapshots } from "./prepared-model-runtime.js";
+import {
+  acquireAgentRunPreparedModelRuntime,
+  acquireReadOnlyPreparedModelRuntime,
+  activateStandalonePreparedModelRuntime,
+  prepareModelRuntimeSnapshot,
+  refreshPreparedModelRuntimeSnapshots,
+} from "./prepared-model-runtime.js";
+import {
+  readPreparedProviderAuthFacts,
+  resetPreparedProviderAuthFactsForTest,
+} from "./prepared-provider-auth-facts.js";
 
 const mocks = getPreparedModelRuntimeMocks();
 
@@ -27,9 +39,159 @@ let state: OpenClawTestState;
 beforeEach(async () => {
   state = await createOpenClawTestState({ label: "prepared-model-runtime" });
   resetPreparedModelRuntimeHarness(state);
+  resetPreparedProviderAuthFactsForTest();
 });
 afterEach(async ({ task }) => {
+  cliBackendsTesting.resetDepsForTest();
+  resetPreparedProviderAuthFactsForTest();
   await cleanupPreparedModelRuntimeHarness(state, task.result?.state === "fail");
+});
+
+describe("prepared provider auth publication ownership", () => {
+  it.each([
+    { kind: "read-only", configuredOwner: false },
+    { kind: "read-only", configuredOwner: true },
+    { kind: "dynamic run", configuredOwner: true },
+  ])(
+    "keeps $kind auth local during and after a check (configured owner: $configuredOwner)",
+    async ({ kind, configuredOwner }) => {
+      mocks.configuredAgentIds = ["default"];
+      const config = { agents: { entries: { default: {} } } };
+      const expectedGlobalAuth = configuredOwner ? { custom: { mode: "api_key" } } : undefined;
+      if (configuredOwner) {
+        await refreshPreparedModelRuntimeSnapshots(config, { gatewayLifecycle: true });
+        const configured = await prepareModelRuntimeSnapshot({
+          agentId: "default",
+          agentDir: state.agentDir("default"),
+          config,
+        });
+        await configured.loadFullModelCatalog!();
+      }
+      expect(readPreparedProviderAuthFacts("default")).toEqual(expectedGlobalAuth);
+      mocks.authStorage.getAll.mockReturnValue({
+        custom: { type: "token", token: "temporary-check-token" },
+      });
+      const acquire =
+        kind === "dynamic run"
+          ? acquireAgentRunPreparedModelRuntime
+          : acquireReadOnlyPreparedModelRuntime;
+      const lease = await acquire({
+        agentId: "default",
+        agentDir: state.agentDir("default"),
+        workspaceDir: state.workspaceDir,
+        config,
+      });
+      let duringCheck: ReturnType<typeof readPreparedProviderAuthFacts>;
+      try {
+        expect(lease.snapshot.providerAuth).toEqual({ custom: { mode: "token" } });
+        duringCheck = readPreparedProviderAuthFacts("default");
+      } finally {
+        lease.release();
+      }
+      const afterCheck = readPreparedProviderAuthFacts("default");
+      if (configuredOwner) {
+        mocks.authStorage.getAll.mockReturnValue({
+          updated: { type: "api_key", key: "updated-owner-key" },
+        });
+        await refreshPreparedModelRuntimeSnapshots(config);
+      }
+      const afterUpdate = readPreparedProviderAuthFacts("default");
+      mocks.configuredAgentIds = [];
+      await refreshPreparedModelRuntimeSnapshots({ agents: { entries: {} } });
+      expect({
+        duringCheck,
+        afterCheck,
+        afterUpdate,
+        afterRemoval: readPreparedProviderAuthFacts("default"),
+      }).toEqual({
+        duringCheck: expectedGlobalAuth,
+        afterCheck: expectedGlobalAuth,
+        afterUpdate: configuredOwner ? { updated: { mode: "api_key" } } : undefined,
+        afterRemoval: undefined,
+      });
+    },
+  );
+
+  it("preserves standalone native selection through a read-only check and Gateway takeover", async () => {
+    cliBackendsTesting.setDepsForTest({
+      resolveRuntimeCliBackends: () => [
+        {
+          id: "fixture-cli",
+          modelProvider: "custom",
+          pluginId: "fixture",
+          config: { command: "fixture-cli" },
+        },
+      ],
+      resolvePluginSetupRegistry: () => ({
+        providers: [],
+        cliBackends: [],
+        configMigrations: [],
+        autoEnableProbes: [],
+        diagnostics: [],
+      }),
+    });
+    mocks.configuredAgentIds = ["default"];
+    mocks.authStorage.getAll.mockReturnValue({
+      "fixture-cli": {
+        type: "oauth",
+        access: "native-access",
+        refresh: "native-refresh",
+        expires: 4_102_444_800_000,
+      },
+    });
+    const input = {
+      agentId: "default",
+      agentDir: state.agentDir("default"),
+      workspaceDir: state.workspaceDir,
+      config: { agents: { entries: { default: {} } } },
+    };
+    const selection = {
+      config: input.config,
+      agentId: input.agentId,
+      provider: "custom",
+      modelId: "fixture-model",
+    };
+    await activateStandalonePreparedModelRuntime(input);
+    expect(resolveAgentHarnessPolicy(selection)).toEqual({
+      runtime: "fixture-cli",
+      runtimeSource: "auth",
+    });
+    mocks.authStorage.getAll.mockReturnValue({
+      custom: { type: "token", token: "temporary-check-token" },
+    });
+    const lease = await acquireReadOnlyPreparedModelRuntime(input);
+    const duringCheck = resolveAgentHarnessPolicy(selection);
+    try {
+      await refreshPreparedModelRuntimeSnapshots(input.config, { gatewayLifecycle: true });
+    } finally {
+      lease.release();
+    }
+    expect({
+      duringCheck,
+      afterTakeover: readPreparedProviderAuthFacts("default"),
+      runtimeAfterTakeover: resolveAgentHarnessPolicy(selection),
+    }).toEqual({
+      duringCheck: { runtime: "fixture-cli", runtimeSource: "auth" },
+      afterTakeover: { custom: { mode: "token" } },
+      runtimeAfterTakeover: { runtime: "auto", runtimeSource: "implicit" },
+    });
+  });
+
+  it("withdraws shared auth while a configured replacement is pending and after failure", async () => {
+    mocks.configuredAgentIds = ["default"];
+    await refreshPreparedModelRuntimeSnapshots({});
+    expect(readPreparedProviderAuthFacts("default")).toEqual({ custom: { mode: "api_key" } });
+    const nextConfig = createDeferred<Record<string, never>>();
+    const replacement = refreshPreparedModelRuntimeSnapshots(() => nextConfig.promise);
+    const whilePending = readPreparedProviderAuthFacts("default");
+    const rejected = expect(replacement).rejects.toThrow("replacement rejected");
+    nextConfig.reject(new Error("replacement rejected"));
+    await rejected;
+    expect({
+      whilePending,
+      afterFailure: readPreparedProviderAuthFacts("default"),
+    }).toEqual({ whilePending: undefined, afterFailure: undefined });
+  });
 });
 
 describe("prepared fixture containment", () => {

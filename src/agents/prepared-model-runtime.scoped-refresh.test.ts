@@ -11,6 +11,7 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
+import { readPublishedPreparedModelCatalog } from "./prepared-model-catalog.js";
 import { getPreparedModelRuntimeAuthStore } from "./prepared-model-runtime-auth.js";
 import {
   getPreparedModelRuntimeSnapshot,
@@ -25,6 +26,135 @@ describe("prepared model runtime scoped refresh", () => {
     state = await createOpenClawTestState({ label: "prepared-model-runtime" });
     resetPreparedModelRuntimeHarness(state);
   });
+
+  it.each([
+    { change: "neutral", scoped: false, retained: true },
+    { change: "neutral", scoped: true, retained: true },
+    { change: "provider", scoped: false, retained: false },
+    { change: "plugin", scoped: false, retained: false },
+    { change: "account", scoped: false, retained: false },
+    { change: "default-model", scoped: false, retained: false },
+    { change: "agent-model", scoped: true, retained: false },
+  ])(
+    "preserves only compatible inventory with fresh auth after $change reload (scoped: $scoped)",
+    async ({ change, scoped, retained }) => {
+      mocks.configuredAgentIds = ["pro"];
+      const config: OpenClawConfig = {
+        agents: { entries: { pro: {} } },
+        models: {
+          providers: {
+            custom: {
+              api: "openai-completions",
+              baseUrl: "https://first.example.test/v1",
+              models: [],
+            },
+          },
+        },
+        plugins: { entries: { custom: { enabled: true, config: { region: "first" } } } },
+      };
+      const credential = {
+        type: "oauth" as const,
+        provider: "custom",
+        accountId: "first-account",
+        access: "initial-access",
+        refresh: "initial-refresh",
+        expires: 4_102_444_800_000,
+      };
+      const initialAuthStore = {
+        version: 1,
+        profiles: { "custom:primary": credential },
+      };
+      mocks.preparedAuthStore = initialAuthStore;
+      mocks.authStorage.getAll.mockReturnValue({ custom: credential });
+      const discovered = {
+        provider: "custom",
+        id: "discovered-model",
+        name: "Discovered Model",
+      };
+      mocks.runPreparedModelCatalogWorker.mockResolvedValue({
+        entries: [discovered],
+        routeVariants: [discovered],
+      });
+      await refreshPreparedModelRuntimeSnapshots(config, { gatewayLifecycle: true });
+      const input = { agentId: "pro", agentDir: state.agentDir("pro"), config };
+      const original = getPreparedModelRuntimeSnapshot(input)!;
+      await original.loadFullModelCatalog!();
+      expect(readPublishedPreparedModelCatalog(original).modelCatalog.entries).toMatchObject([
+        discovered,
+      ]);
+
+      const refreshedCredential = {
+        ...credential,
+        accountId: change === "account" ? "second-account" : credential.accountId,
+        access: "refreshed-access",
+        refresh: "refreshed-refresh",
+      };
+      const refreshedAuthStore = {
+        version: 1,
+        profiles: { "custom:primary": refreshedCredential },
+      };
+      mocks.preparedAuthStore = refreshedAuthStore;
+      mocks.authStorage.getAll.mockReturnValue({ custom: refreshedCredential });
+      const nextConfig = structuredClone(config);
+      nextConfig.messages = { responsePrefix: "updated" };
+      if (change === "provider") {
+        nextConfig.models!.providers!.custom!.baseUrl = "https://second.example.test/v1";
+      }
+      if (change === "plugin") {
+        nextConfig.plugins!.entries!.custom!.config = { region: "second" };
+      }
+      const configuredModelChanged = change === "default-model" || change === "agent-model";
+      if (configuredModelChanged) {
+        const selection = { model: "custom/newly-configured" };
+        if (change === "default-model") {
+          nextConfig.agents!.defaults = selection;
+        } else {
+          nextConfig.agents!.entries!.pro = selection;
+        }
+        mocks.resolveStaticCatalogModel.mockReturnValue({
+          provider: "custom",
+          id: "newly-configured",
+          name: "Newly Configured",
+          api: "openai-completions",
+          baseUrl: "https://first.example.test/v1",
+          reasoning: false,
+          input: ["text"],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 128_000,
+          maxTokens: 4096,
+        });
+      }
+      mocks.runPreparedModelCatalogWorker.mockRejectedValue(new Error("discovery unavailable"));
+      await refreshPreparedModelRuntimeSnapshots(nextConfig, {
+        gatewayLifecycle: true,
+        ...(scoped ? { agentIds: new Set(["pro"]) } : {}),
+      });
+      const replacement = getPreparedModelRuntimeSnapshot({ ...input, config: nextConfig })!;
+      const expectedEntries = configuredModelChanged
+        ? [{ provider: "custom", id: "newly-configured" }]
+        : retained
+          ? [discovered]
+          : [];
+      if (configuredModelChanged) {
+        expect(replacement.modelCatalog.entries).toMatchObject(expectedEntries);
+      }
+      const published = readPublishedPreparedModelCatalog(replacement);
+      expect(published.modelCatalog.entries).toMatchObject(expectedEntries);
+      expect(getPreparedModelRuntimeAuthStore(published)).toEqual(refreshedAuthStore);
+      expect(getPreparedModelRuntimeAuthStore(published)).not.toBe(initialAuthStore);
+      expect(() => original.readFullModelCatalog!()).toThrow("superseded");
+
+      await expect(replacement.loadFullModelCatalog!({ refresh: true })).rejects.toThrow(
+        "discovery unavailable",
+      );
+      const afterFailure = readPublishedPreparedModelCatalog(replacement);
+      expect(afterFailure.modelCatalog).toMatchObject({
+        entries: expectedEntries,
+        refreshFailed: true,
+      });
+      expect(getPreparedModelRuntimeAuthStore(afterFailure)).toEqual(refreshedAuthStore);
+    },
+  );
 
   it.each([false, true])(
     "retains catalog callbacks across scoped exec reloads (warmed: %s)",

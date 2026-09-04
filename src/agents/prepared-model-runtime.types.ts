@@ -148,6 +148,7 @@ export type PreparedModelRuntimeBuildStats = Readonly<{
 export type PreparedModelRuntimeOwner = {
   input: PreparedModelRuntimeInput;
   catalogInventory: {
+    inputFingerprint?: string;
     snapshot?: ModelCatalogSnapshot;
     authFingerprint?: string;
     refreshFailed?: boolean;
