@@ -1258,13 +1258,37 @@ async function buildResponsesPayload(
   )
     ?.text.match(QA_SUBAGENT_TERMINAL_MATRIX_PROMPT_RE)?.[1]
     ?.toLowerCase();
-  if (terminalCompletionCase && /Internal task completion event/i.test(allInputText)) {
+  // A settled requester still carries the old spawn output. Its current
+  // child finding must win before the post-spawn silence branch below.
+  const currentTerminalTurn = splitMockConversationContext(prompt).current;
+  const settledTerminal = currentTerminalTurn.includes("sourceTool=subagent_announce")
+    ? /(?:^|\n)\d+\. qa-terminal-(visible|silent|empty|restart|fallback)\nstatus: ([^\n]+)\nChild result[^\n]*\n<prompt-data>\n([\s\S]*?)\n<\/prompt-data>/.exec(
+        currentTerminalTurn,
+      )
+    : null;
+  const settledRepresentation = Object.entries(QA_SUBAGENT_TERMINAL_MARKERS).find(
+    ([terminalCase, marker]) =>
+      settledTerminal !== null &&
+      terminalCase === settledTerminal[1] &&
+      settledTerminal[2] === "ok" &&
+      (terminalCase === "silent" || terminalCase === "empty"
+        ? settledTerminal[3]?.trim() === "(no output)"
+        : settledTerminal[3]?.split("\n").includes(marker)),
+  )?.[1];
+  if (settledTerminal && !settledRepresentation) {
+    return buildAssistantEvents("QA-SUBAGENT-TERMINAL-MISSING-RESULT");
+  }
+  if (
+    settledRepresentation ||
+    (terminalCompletionCase && /Internal task completion event/i.test(allInputText))
+  ) {
     const visibleRepresentation =
-      terminalCompletionCase === "silent"
+      settledRepresentation ??
+      (terminalCompletionCase === "silent"
         ? QA_SUBAGENT_TERMINAL_MARKERS.silent
         : terminalCompletionCase === "empty"
           ? QA_SUBAGENT_TERMINAL_MARKERS.empty
-          : undefined;
+          : undefined);
     if (visibleRepresentation) {
       if (completedToolName === "message") {
         return buildAssistantEvents("");
@@ -1275,6 +1299,7 @@ async function buildResponsesPayload(
           body,
         );
         const requiresFinal =
+          settledRepresentation !== undefined ||
           /visible source replies are not automatically delivered for this run\.[\s\S]*set `?final=true`?/i.test(
             deliveryInstructions,
           );
@@ -1340,7 +1365,7 @@ async function buildResponsesPayload(
   if (terminalWorkerCase === "visible" || terminalWorkerCase === "restart") {
     return buildAssistantEvents(QA_SUBAGENT_TERMINAL_MARKERS[terminalWorkerCase]);
   }
-  if (terminalCompletionCase) {
+  if (terminalCompletionCase && QA_SUBAGENT_TERMINAL_MATRIX_PROMPT_RE.test(currentTerminalTurn)) {
     if (!hasCompletedToolOutput && canCallSessionsSpawn) {
       const task =
         terminalCompletionCase === "empty" &&
@@ -1355,8 +1380,8 @@ async function buildResponsesPayload(
       });
     }
     if (hasCompletedToolOutput) {
-      // End the requester turn before the delayed worker settles. The terminal
-      // result must therefore use the runtime's direct channel fallback.
+      // End the requester turn before the delayed worker settles. Completion
+      // arrives later through the runtime-owned handoff or requester wake.
       if (
         terminalCompletionCase === "empty" &&
         QA_SUBAGENT_EMPTY_PARENT_VISIBLE_PROMPT_RE.test(prompt)
