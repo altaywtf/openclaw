@@ -451,7 +451,7 @@ export function renderChatComposer(props: ChatComposerProps) {
       return;
     }
     props.onSend(undefined, submissionAction);
-    syncComposerDraftAfterSend(state.composerTextarea);
+    syncComposerDraftAfterSend(state, props, draftKey, state.composerTextarea);
   };
   state.microphonePicker ??= new ComposerMicrophonePicker(requestUpdate);
   const devicePicker = state.microphonePicker;
