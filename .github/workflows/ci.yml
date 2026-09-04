@@ -3665,12 +3665,11 @@ jobs:
               ;;
           esac
 
-      - name: Prove omitted-effort resume binding
+      - name: Prove reasoning-effort lifecycle fixtures
         if: matrix.task == 'lint'
-        run: >-
-          node scripts/run-vitest.mjs
-          extensions/codex/src/app-server/thread-lifecycle.binding.test.ts
-          -t "preserves the stored reasoning effort when resume omits it"
+        run: |
+          node scripts/run-vitest.mjs extensions/codex/src/app-server/thread-lifecycle.binding.test.ts -t "preserves the stored reasoning effort when resume omits it"
+          node scripts/run-vitest.mjs extensions/codex/src/app-server/run-attempt.test.ts -t "persists native reasoning settings emitted before turn/start returns|rejects a pre-turn reasoning update after durable ownership changes"
 
   # The github/hybrid planner profile aggregates core targets into five Programs
   # across five hosted jobs. All-Blacksmith mode keeps one lint job.
