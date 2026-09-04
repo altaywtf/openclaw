@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { withTestRunAdmission } from "../../agents/admitted-run-context.test-support.js";
 import { buildPreparedCliRunContext } from "../../agents/cli-runner.test-helpers.js";
-import { buildCliRunResult } from "../../agents/cli-runner/cli-run-settlement.js";
+import { buildCliRunResult } from "../../agents/cli-runner/cli-run-results.js";
 import { executeDeps } from "../../agents/cli-runner/execute-deps.js";
 import { executePreparedCliRun } from "../../agents/cli-runner/execute.js";
 import { buildCliMcpGrantContext } from "../../agents/cli-runner/mcp-grant-context.js";
@@ -107,7 +107,6 @@ describe("executeAgentTurn: CLI admission", () => {
             usedHistoryPrompt: false,
             userTurnHandled: true,
             sessionBindingDisabled: false,
-            preparedContextAgentMeta: {},
           })
         : candidateResult,
     );
@@ -202,7 +201,6 @@ describe("executeAgentTurn: CLI admission", () => {
         usedHistoryPrompt: false,
         userTurnHandled: true,
         sessionBindingDisabled: false,
-        preparedContextAgentMeta: {},
       });
       const provider: Parameters<typeof installSessionPlacementAdmissionProvider>[0] = {
         assertCompactionSuccessorAllowed: rejectUnexpectedCompactionSuccessor,

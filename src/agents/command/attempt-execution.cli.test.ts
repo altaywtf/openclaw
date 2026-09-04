@@ -38,7 +38,7 @@ import { clearRuntimeAuthProfileStoreSnapshots } from "../auth-profiles/runtime-
 import { saveAuthProfileStore } from "../auth-profiles/store.js";
 import { testing as cliBackendsTesting } from "../cli-backends.test-support.js";
 import { buildPreparedCliRunContext } from "../cli-runner.test-helpers.js";
-import { buildCliRunResult } from "../cli-runner/cli-run-settlement.js";
+import { buildCliRunResult } from "../cli-runner/cli-run-results.js";
 import { buildCliMcpGrantContext } from "../cli-runner/mcp-grant-context.js";
 import type { RunCliAgentParams } from "../cli-runner/types.js";
 import { createCronCreatorAuthorityCapability } from "../cron-creator-authority-context.js";
@@ -1265,7 +1265,6 @@ describe("CLI attempt execution", () => {
       usedHistoryPrompt: false,
       userTurnHandled: true,
       sessionBindingDisabled: false,
-      preparedContextAgentMeta: {},
     });
     const provider: Parameters<typeof installSessionPlacementAdmissionProvider>[0] = {
       assertCompactionSuccessorAllowed: () => {},

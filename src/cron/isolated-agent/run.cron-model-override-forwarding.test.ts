@@ -3,7 +3,7 @@ import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { buildPreparedCliRunContext } from "../../agents/cli-runner.test-helpers.js";
-import { buildCliRunResult } from "../../agents/cli-runner/cli-run-settlement.js";
+import { buildCliRunResult } from "../../agents/cli-runner/cli-run-results.js";
 import { classifyEmbeddedAgentRunResultForModelFallback } from "../../agents/embedded-agent-runner/result-fallback-classifier.js";
 import { GENERIC_EXTERNAL_RUN_FAILURE_TEXT } from "../../agents/failover/user-copy.js";
 import {
@@ -464,7 +464,6 @@ describe("runCronIsolatedAgentTurn — cron model override forwarding (#58065)",
           usedHistoryPrompt: false,
           userTurnHandled: true,
           sessionBindingDisabled: false,
-          preparedContextAgentMeta: {},
         });
     runCliAgentMock.mockImplementationOnce(async () => {
       if (saveFails) {

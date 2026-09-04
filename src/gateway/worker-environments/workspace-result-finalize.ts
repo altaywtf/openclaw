@@ -451,6 +451,7 @@ export async function executeRemoteExecTurn(params: {
             agentId: params.placement.agentId,
             isActive: () => executionActive,
             sandboxToolPolicy: computer ? sandboxToolPolicy : undefined,
+            computerUse: computer?.descriptor.computerUse ?? null,
             bind: (run) => (computer ? computer.bind(run) : null),
           },
           () =>
