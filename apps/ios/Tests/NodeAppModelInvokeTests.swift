@@ -6461,15 +6461,43 @@ private final class TimingOutDeviceStatusService: DeviceStatusServicing {
     @MainActor func `watch journal holds each send independently and never replays accepted or ambiguous work`(
         failure: String) async throws
     {
+        enum JournalEvent: Equatable, Sendable {
+            case storageWarning
+            case terminalReceipt(String)
+        }
         try await withWatchDeliveryFixture { fixture in
             let gate = WatchMessageSendGate()
+            let events = AsyncStream<JournalEvent>.makeStream()
+            defer {
+                fixture.messaging.sendChatDeliveryReceiptHandler = nil
+                events.continuation.finish()
+            }
+            fixture.messaging.sendChatDeliveryReceiptHandler = { receipt in
+                if receipt.terminal != nil {
+                    events.continuation.yield(.terminalReceipt(receipt.commandId))
+                }
+                return .init(deliveredImmediately: true, queuedForDelivery: false, transport: "sendMessage")
+            }
+            // Suspend on owner events so polling cannot starve the journal's main-actor continuations.
+            func waitForEvent(_ expected: JournalEvent) async throws {
+                let stream = events.stream
+                try await AsyncTimeout.withTimeout(seconds: 2, onTimeout: { URLError(.timedOut) }) {
+                    for await event in stream {
+                        if event == expected { return }
+                    }
+                    throw CancellationError()
+                }
+            }
             var storageWarnings: [String] = []
             let coordinator = WatchReplyCoordinator(
                 journal: fixture.journal,
                 gateway: fixture.gateway,
                 messaging: fixture.messaging,
                 reportStorageWarning: { message in
-                    if let message { storageWarnings.append(message) }
+                    if let message {
+                        storageWarnings.append(message)
+                        events.continuation.yield(.storageWarning)
+                    }
                 })
             @MainActor func stopCoordinator() async {
                 gate.release()
@@ -6563,7 +6591,8 @@ private final class TimingOutDeviceStatusService: DeviceStatusServicing {
                 })
                 try await coordinator.admit(second)
                 if failure == "acceptance-write" {
-                    let reportedStorageFailure = await waitForMainActorWork { !storageWarnings.isEmpty }
+                    try await waitForEvent(.storageWarning)
+                    let reportedStorageFailure = !storageWarnings.isEmpty
                     try #require(reportedStorageFailure)
                     let failed = try #require(try await fixture.journal.entries().first {
                         $0.commandId == second.commandId
@@ -6575,10 +6604,9 @@ private final class TimingOutDeviceStatusService: DeviceStatusServicing {
                     }
                     // Retry only local settlement on the same owners, while the sibling's real send is still held.
                     await coordinator.resume(gatewayStableID: fixture.context.gatewayStableID)
-                    let settled = await waitForMainActorWork {
-                        fixture.messaging.sentChatReceipts.contains {
-                            $0.commandId == second.commandId && $0.terminal != nil
-                        }
+                    try await waitForEvent(.terminalReceipt(second.commandId))
+                    let settled = fixture.messaging.sentChatReceipts.contains {
+                        $0.commandId == second.commandId && $0.terminal != nil
                     }
                     #expect(settled)
                     let completed = try #require(try await fixture.journal.entries().first {
@@ -6591,10 +6619,9 @@ private final class TimingOutDeviceStatusService: DeviceStatusServicing {
                     #expect(completed.receipt?.terminal?.runId == second.commandId)
                 } else {
                     try await coordinator.admit(first)
-                    try #require(await waitForMainActorWork {
-                        fixture.messaging.sentChatReceipts.contains {
-                            $0.commandId == second.commandId && $0.terminal != nil
-                        }
+                    try await waitForEvent(.terminalReceipt(second.commandId))
+                    try #require(fixture.messaging.sentChatReceipts.contains {
+                        $0.commandId == second.commandId && $0.terminal != nil
                     })
                     let secondRow = try #require(try await fixture.journal.entries().first {
                         $0.commandId == second.commandId
@@ -6616,10 +6643,9 @@ private final class TimingOutDeviceStatusService: DeviceStatusServicing {
                 #expect(held.acceptedRunID == nil)
                 #expect(held.receipt?.terminal == nil)
                 gate.release()
-                try #require(await waitForMainActorWork {
-                    fixture.messaging.sentChatReceipts.contains {
-                        $0.commandId == first.commandId && $0.terminal != nil
-                    }
+                try await waitForEvent(.terminalReceipt(first.commandId))
+                try #require(fixture.messaging.sentChatReceipts.contains {
+                    $0.commandId == first.commandId && $0.terminal != nil
                 })
                 let firstRow = try #require(try await fixture.journal.entries().first {
                     $0.commandId == first.commandId
