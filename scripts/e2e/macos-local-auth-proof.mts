@@ -144,7 +144,7 @@ async function observe(name: string, typed: boolean, port: number): Promise<void
     command(
       `${name}-${suffix}`,
       process.execPath,
-      [path.join(repository, "openclaw.mjs"), ...args],
+      [path.join(repository, "openclaw.mjs"), "--profile", profile, ...args],
       env,
     );
   let keychainCreated = false;
