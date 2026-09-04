@@ -13,16 +13,16 @@ describe("resolveAssistantMedia", () => {
     const request = vi.fn().mockResolvedValue(result);
 
     await expect(
-      resolveAssistantMedia({ request } as never, "/tmp/browser-shot.png"),
+      resolveAssistantMedia({ request } as never, "/tmp/report.png", "agent:main:main"),
     ).resolves.toEqual(result);
     expect(request).toHaveBeenCalledWith(
       "assistant.media.get",
-      { source: "/tmp/browser-shot.png" },
+      { source: "/tmp/report.png", sessionKey: "agent:main:main" },
       { timeoutMs: 30_000 },
     );
   });
 
-  it("includes the selected chat session when provided", async () => {
+  it("preserves the selected non-default-agent session", async () => {
     const request = vi.fn().mockResolvedValue({ available: false });
 
     await resolveAssistantMedia(

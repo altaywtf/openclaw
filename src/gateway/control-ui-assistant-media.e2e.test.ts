@@ -25,6 +25,58 @@ const CONTROL_UI_E2E_TOKEN = "test-gateway-token-1234567890";
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 describe("Control UI assistant media e2e", () => {
+  test("does not grant media access from ordinary tool-call arguments", async () => {
+    const workspace = tempDirs.make("media-tool-arguments-");
+    const source = path.join(workspace, "private.txt");
+    await fs.writeFile(source, "not an attachment");
+    testState.agentsConfig = {
+      ownership: "explicit",
+      entries: { main: {}, research: { workspace } },
+    };
+    testState.sessionStorePath = path.join(process.env.OPENCLAW_STATE_DIR!, "sessions.sqlite");
+    const sessionKey = "agent:research:main";
+    const sessionId = "media-tool-arguments";
+    await writeSessionStore({ entries: { [sessionKey]: { sessionId, updatedAt: Date.now() } } });
+    await appendTranscriptMessage(
+      { agentId: "research", sessionId, sessionKey, storePath: testState.sessionStorePath },
+      {
+        message: {
+          role: "assistant",
+          content: [
+            { type: "toolCall", id: "read-private", name: "read", arguments: { path: source } },
+          ],
+          timestamp: Date.now(),
+        },
+      },
+    );
+    await withGatewayServer(
+      async ({ port }) => {
+        const client = await connectGatewayClient({
+          url: "ws://127.0.0.1:" + port,
+          token: CONTROL_UI_E2E_TOKEN,
+          scopes: ["operator.read"],
+        });
+        const opens = vi.spyOn(safeFiles, "openLocalFileSafely");
+        try {
+          expect(await client.request("assistant.media.get", { source, sessionKey })).toEqual({
+            available: false,
+            code: "session_unavailable",
+            reason: "Session unavailable",
+          });
+          expect(opens).not.toHaveBeenCalled();
+        } finally {
+          opens.mockRestore();
+          await disconnectGatewayClient(client);
+        }
+      },
+      {
+        serverOptions: {
+          auth: { mode: "token", token: CONTROL_UI_E2E_TOKEN },
+          controlUiEnabled: true,
+        },
+      },
+    );
+  });
   test("revokes media authority after awaited work before rendition opens and byte streams", async () => {
     const stateDir = process.env.OPENCLAW_STATE_DIR;
     if (!stateDir) {
@@ -339,6 +391,7 @@ describe("Control UI assistant media e2e", () => {
           content: [
             { type: "image", url: homeRelativeSource },
             { type: "image", url: workspaceFile },
+            { type: "image", url: outsideFile },
           ],
           timestamp: Date.now(),
         },
@@ -387,15 +440,16 @@ describe("Control UI assistant media e2e", () => {
         expect(payload.mediaTicket).toMatch(/^v1\./);
         expect(Date.parse(payload.mediaTicketExpiresAt ?? "")).not.toBeNaN();
 
-        await expect(
-          client.request("assistant.media.get", { source: workspaceFile }),
-        ).resolves.toEqual({
-          available: false,
-          code: "outside-allowed-folders",
-          reason: "Outside allowed folders",
+        const mainMedia = await client.request<{ available: boolean }>("assistant.media.get", {
+          source: workspaceFile,
+          sessionKey: "agent:main:main",
         });
+        expect(mainMedia.available, JSON.stringify(mainMedia)).toBe(true);
         await expect(
-          client.request("assistant.media.get", { source: outsideFile }),
+          client.request("assistant.media.get", {
+            source: outsideFile,
+            sessionKey: "agent:main:main",
+          }),
         ).resolves.toEqual({
           available: false,
           code: "outside-allowed-folders",

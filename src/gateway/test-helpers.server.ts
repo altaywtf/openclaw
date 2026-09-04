@@ -306,10 +306,17 @@ export async function writeSessionStore(params: {
   if (upsertsByAgentId.size === 0) {
     upsertsByAgentId.set(normalizeAgentId(params.agentId ?? DEFAULT_AGENT_ID), []);
   }
+  const replacementOwners = new Map(
+    [...upsertsByAgentId].flatMap(([agentId, entries]) =>
+      entries.map(({ sessionKey }) => [sessionKey, agentId] as const),
+    ),
+  );
   for (const [agentId, upserts] of upsertsByAgentId) {
-    const removals = listSessionEntriesCore({ agentId, storePath }).map(({ sessionKey }) => ({
-      sessionKey,
-    }));
+    // Exact SQLite locators can share rows across agents. A later group must
+    // not remove a requested session already replaced by an earlier group.
+    const removals = listSessionEntriesCore({ agentId, storePath })
+      .filter(({ sessionKey }) => (replacementOwners.get(sessionKey) ?? agentId) === agentId)
+      .map(({ sessionKey }) => ({ sessionKey }));
     await applySessionEntryLifecycleMutation({
       agentId,
       storePath,

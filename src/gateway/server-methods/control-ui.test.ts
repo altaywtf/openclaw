@@ -201,9 +201,7 @@ describe("assistant.media.get", () => {
       const respond = vi.fn<RespondFn>();
       const params = {
         source: "/tmp/shot.png",
-        ...(change === "hidden" || change === "agent-changed"
-          ? { sessionKey: session.sessionKey }
-          : {}),
+        sessionKey: session.sessionKey,
       };
       const options = requestOptions(params, respond, {
         client,
@@ -237,6 +235,7 @@ describe("assistant.media.get", () => {
   it.each([
     {},
     { source: " " },
+    { source: "/tmp/shot.png" },
     { source: "/tmp/shot.png", extra: true },
     { source: "x".repeat(8_193) },
     { source: "/tmp/shot.png", sessionKey: " " },

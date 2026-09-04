@@ -113,9 +113,7 @@ function parseSessionPreviewKey(params: unknown): string | null {
   return sessionKey && sessionKey.length <= 512 ? sessionKey : null;
 }
 
-function parseAssistantMediaParams(
-  params: unknown,
-): { source: string; sessionKey?: string } | null {
+function parseAssistantMediaParams(params: unknown): { source: string; sessionKey: string } | null {
   if (
     !isRecord(params) ||
     Object.keys(params).some((key) => key !== "source" && key !== "sessionKey")
@@ -125,9 +123,6 @@ function parseAssistantMediaParams(
   const source = typeof params.source === "string" ? params.source.trim() : "";
   if (!source || source.length > 8192) {
     return null;
-  }
-  if (params.sessionKey === undefined) {
-    return { source };
   }
   const sessionKey = typeof params.sessionKey === "string" ? params.sessionKey.trim() : "";
   return sessionKey && sessionKey.length <= 512 ? { source, sessionKey } : null;
@@ -196,14 +191,12 @@ export function createControlUiHandlers(
       const connId = client?.connId;
       const clientUnavailable = new Error("Client unavailable");
       const sessionUnavailable = new Error("Session unavailable");
-      const session = parsed.sessionKey
-        ? resolveControlUiSessionAccess(
-            parsed.sessionKey,
-            context.getRuntimeConfig(),
-            client,
-            parsed.source,
-          )
-        : undefined;
+      const session = resolveControlUiSessionAccess(
+        parsed.sessionKey,
+        context.getRuntimeConfig(),
+        client,
+        parsed.source,
+      );
       // Carry the exact live connection and selected session into each media
       // effect; a pre-await access snapshot cannot authorize later file I/O.
       const assertActive = () => {
@@ -214,33 +207,34 @@ export function createControlUiHandlers(
         ) {
           throw clientUnavailable;
         }
-        if (parsed.sessionKey) {
-          const current = resolveControlUiSessionAccess(
-            parsed.sessionKey,
-            context.getRuntimeConfig(),
-            client,
-            parsed.source,
-          );
-          if (
-            !current ||
-            !session ||
-            current.agentId !== session.agentId ||
-            current.sessionKey !== session.sessionKey
-          ) {
-            throw sessionUnavailable;
-          }
+        const current = resolveControlUiSessionAccess(
+          parsed.sessionKey,
+          context.getRuntimeConfig(),
+          client,
+          parsed.source,
+        );
+        if (
+          !current ||
+          !session ||
+          current.agentId !== session.agentId ||
+          current.sessionKey !== session.sessionKey
+        ) {
+          throw sessionUnavailable;
         }
       };
       try {
         if (!client || !connId) {
           throw clientUnavailable;
         }
+        if (!session) {
+          throw sessionUnavailable;
+        }
         assertActive();
         const result = await loadMedia(parsed.source, context, {
-          agentId: session?.agentId,
+          agentId: session.agentId,
           connId,
           client,
-          sessionKey: session?.sessionKey,
+          sessionKey: session.sessionKey,
           assertActive,
         });
         assertActive();

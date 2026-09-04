@@ -41,11 +41,7 @@ suite.define(() => {
             },
           };
           const gateway = await installMockGateway(page, {
-            featureMethods: [
-              ...defaultControlUiFeatureMethods,
-              "assistant.media.get",
-              "browser.request",
-            ],
+            featureMethods: [...defaultControlUiFeatureMethods, "browser.request"],
             operatorScopes: ["operator.admin", "operator.read", "operator.write"],
             historyMessages: includeHistory
               ? [
@@ -84,11 +80,6 @@ suite.define(() => {
                 ]
               : [{ role: "assistant", content: "History is ready.", timestamp: 5_000 }],
             methodResponses: {
-              "assistant.media.get": {
-                available: true,
-                mediaTicket: "ticket-browser-screenshot",
-                mediaTicketExpiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
-              },
               "browser.request": {
                 cases: [
                   {
@@ -305,12 +296,7 @@ suite.define(() => {
           });
           const routes = [hostTab, nodeTab];
           const gateway = await installMockGateway(page, {
-            featureMethods: [
-              "assistant.media.get",
-              "chat.metadata",
-              "chat.startup",
-              "browser.request",
-            ],
+            featureMethods: ["chat.metadata", "chat.startup", "browser.request"],
             historyMessages: [
               { role: "user", content: "Open the pages", timestamp: 1_000 },
               result(hostTab, "host-open", 2_000),
@@ -319,11 +305,6 @@ suite.define(() => {
               { role: "assistant", content: "The pages are ready.", timestamp: 5_000 },
             ],
             methodResponses: {
-              "assistant.media.get": {
-                available: true,
-                mediaTicket: "ticket-browser-screenshot",
-                mediaTicketExpiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
-              },
               "browser.request": {
                 cases: [
                   ...routes.flatMap((tab) => {

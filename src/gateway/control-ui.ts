@@ -38,7 +38,7 @@ import {
   resolvePlaybackModeForSource,
   resolvePlaybackTranscode,
 } from "../media/playback-transcode.js";
-import { extractOriginalFilename, getMediaDir } from "../media/store.js";
+import { extractOriginalFilename } from "../media/store.js";
 import { safeEqualSecret } from "../security/secret-equal.js";
 import { AVATAR_MAX_BYTES, resolveAvatarMime } from "../shared/avatar-policy.js";
 import { resolveUserPath } from "../utils.js";
@@ -108,7 +108,7 @@ const CONTROL_UI_ASSISTANT_MEDIA_TICKET_TTL_MS = 5 * 60 * 1000;
 const CONTROL_UI_ASSETS_MISSING_MESSAGE =
   "Control UI assets not found. Build them with `pnpm ui:build` (auto-installs UI deps), or run `pnpm ui:dev` during development.";
 const controlUiAssistantMediaTicketSecret = randomBytes(32);
-const assistantMediaClientKeys = new WeakMap<object, string>();
+const controlUiAssistantMediaClientInstances = new WeakMap<object, string>();
 
 type ControlUiRequestOptions = {
   basePath?: string;
@@ -276,18 +276,17 @@ type AssistantMediaCapability = AssistantMediaAvailability & {
   mediaTicketExpiresAt?: string;
 };
 
-type AssistantMediaAuthority = {
-  agentId?: string;
-  sessionKey?: string;
-  assertActive?: () => void;
-} & ({ connId: string; client: object } | { connId?: undefined; client?: undefined });
+type AssistantMediaAuthority = { agentId?: string } & (
+  | { connId: string; client: object; sessionKey: string; assertActive: () => void }
+  | { connId?: undefined; client?: undefined; sessionKey?: undefined; assertActive?: undefined }
+);
 
 type AssistantMediaTicketPayload = {
   scope: typeof CONTROL_UI_ASSISTANT_MEDIA_TICKET_SCOPE;
   source: string;
   agentId?: string;
   connId?: string;
-  connInstance?: string;
+  clientInstanceId?: string;
   sessionKey?: string;
   exp: number;
 };
@@ -298,13 +297,13 @@ function signAssistantMediaTicketPayload(encodedPayload: string): string {
     .digest("base64url");
 }
 
-function assistantMediaClientKey(client: object): string {
+function resolveAssistantMediaClientInstanceId(client: object): string {
   // Only issuance creates bindings. A copied/reused connId cannot transfer this
   // process-local capability to a different client object; weak keys follow its lifetime.
-  let key = assistantMediaClientKeys.get(client);
+  let key = controlUiAssistantMediaClientInstances.get(client);
   if (!key) {
     key = randomBytes(16).toString("base64url");
-    assistantMediaClientKeys.set(client, key);
+    controlUiAssistantMediaClientInstances.set(client, key);
   }
   return key;
 }
@@ -327,7 +326,10 @@ function createAssistantMediaTicket(
     source,
     ...(authority?.agentId ? { agentId: authority.agentId } : {}),
     ...(authority?.connId
-      ? { connId: authority.connId, connInstance: assistantMediaClientKey(authority.client) }
+      ? {
+          connId: authority.connId,
+          clientInstanceId: resolveAssistantMediaClientInstanceId(authority.client),
+        }
       : {}),
     ...(authority?.sessionKey ? { sessionKey: authority.sessionKey } : {}),
     exp,
@@ -370,9 +372,10 @@ function verifyAssistantMediaTicket(
       payload.source !== source ||
       (payload.agentId !== undefined && typeof payload.agentId !== "string") ||
       (payload.connId !== undefined && typeof payload.connId !== "string") ||
-      (payload.connInstance !== undefined && typeof payload.connInstance !== "string") ||
-      (payload.connId === undefined) !== (payload.connInstance === undefined) ||
+      (payload.clientInstanceId !== undefined && typeof payload.clientInstanceId !== "string") ||
+      (payload.connId === undefined) !== (payload.clientInstanceId === undefined) ||
       (payload.sessionKey !== undefined && typeof payload.sessionKey !== "string") ||
+      (payload.connId !== undefined && (!payload.agentId || !payload.sessionKey)) ||
       typeof payload.exp !== "number" ||
       !Number.isFinite(payload.exp) ||
       payload.exp < now
@@ -384,7 +387,7 @@ function verifyAssistantMediaTicket(
       source,
       ...(payload.agentId ? { agentId: payload.agentId } : {}),
       ...(payload.connId ? { connId: payload.connId } : {}),
-      ...(payload.connInstance ? { connInstance: payload.connInstance } : {}),
+      ...(payload.clientInstanceId ? { clientInstanceId: payload.clientInstanceId } : {}),
       ...(payload.sessionKey ? { sessionKey: payload.sessionKey } : {}),
       exp: payload.exp,
     };
@@ -513,7 +516,7 @@ async function resolveAssistantMediaCapability(
 export async function resolveControlUiAssistantMedia(
   source: string,
   config: OpenClawConfig,
-  authority: AssistantMediaAuthority & { connId: string; assertActive: () => void },
+  authority: AssistantMediaAuthority & { agentId: string; connId: string },
 ): Promise<AssistantMediaGetResult> {
   const normalizedSource = normalizeAssistantMediaSource(source);
   if (!normalizedSource) {
@@ -521,7 +524,7 @@ export async function resolveControlUiAssistantMedia(
   }
   const capability = await resolveAssistantMediaCapability(
     normalizedSource,
-    authority.agentId ? getAgentScopedMediaLocalRoots(config, authority.agentId) : [getMediaDir()],
+    getAgentScopedMediaLocalRoots(config, authority.agentId),
     authority,
   );
   if (!capability.available) {
@@ -562,18 +565,16 @@ function resolveAssistantMediaTicketAuthority(
     (candidate) =>
       candidate.connId === ticket.connId &&
       !candidate.invalidatedReason &&
-      ticket.connInstance !== undefined &&
-      assistantMediaClientKeys.get(candidate) === ticket.connInstance,
+      ticket.clientInstanceId !== undefined &&
+      controlUiAssistantMediaClientInstances.get(candidate) === ticket.clientInstanceId,
   );
   if (!client) {
     return null;
   }
-  if (!ticket.sessionKey) {
-    return { agentId: ticket.agentId };
-  }
-  const access = opts?.config
-    ? resolveControlUiSessionAccess(ticket.sessionKey, opts.config, client, source)
-    : null;
+  const access =
+    ticket.sessionKey && opts?.config
+      ? resolveControlUiSessionAccess(ticket.sessionKey, opts.config, client, source)
+      : null;
   if (!access || access.agentId !== ticket.agentId) {
     return null;
   }
@@ -636,9 +637,7 @@ export async function handleControlUiAssistantMediaRequest(
   const localRoots =
     opts?.config && agentId
       ? getAgentScopedMediaLocalRoots(opts.config, agentId)
-      : verifiedMediaTicket?.connId
-        ? [getMediaDir()]
-        : getDefaultLocalRootsCore();
+      : getDefaultLocalRootsCore();
 
   if (isMetaRequest) {
     sendJson(res, 200, await resolveAssistantMediaCapability(source, localRoots, { agentId }));
@@ -1102,6 +1101,7 @@ export async function handleControlUiHttpRequest(
       communityInvite: config?.gateway?.controlUi?.communityInvite !== false,
       terminalEnabled,
       cliAgentsEnabled: config?.gateway?.cliAgents?.enabled === true,
+      pluginAssetsRequireAuth: opts?.auth !== undefined && opts.auth.mode !== "none",
       pluginFrameGrants: pluginFrameGrants.map(({ pluginId, path: grantPath, match }) => ({
         pluginId,
         path: grantPath,

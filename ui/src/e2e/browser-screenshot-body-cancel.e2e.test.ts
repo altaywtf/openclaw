@@ -2,10 +2,7 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { beforeEach, expect, it } from "vitest";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
-import {
-  defaultControlUiFeatureMethods,
-  installMockGateway,
-} from "../test-helpers/control-ui-e2e.ts";
+import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
 import { openChatSidePanelType } from "./chat-side-panel.test-support.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
@@ -70,16 +67,11 @@ suite.define(() => {
             return response;
           };
         });
-        let mediaRequest: {
-          authorization: string;
-          mediaTicket: string | null;
-          source: string | null;
-        } | null = null;
+        let mediaRequest: { authorization: string; source: string | null } | null = null;
         await page.route("**/__openclaw__/assistant-media**", (route) => {
           const request = route.request();
           mediaRequest = {
             authorization: request.headers().authorization ?? "",
-            mediaTicket: new URL(request.url()).searchParams.get("mediaTicket"),
             source: new URL(request.url()).searchParams.get("source"),
           };
           return route.fulfill({
@@ -89,17 +81,8 @@ suite.define(() => {
           });
         });
         const gateway = await installMockGateway(page, {
-          featureMethods: [
-            ...defaultControlUiFeatureMethods,
-            "assistant.media.get",
-            "browser.request",
-          ],
+          featureMethods: ["chat.metadata", "chat.startup", "browser.request"],
           methodResponses: {
-            "assistant.media.get": {
-              available: true,
-              mediaTicket: "ticket-browser-screenshot",
-              mediaTicketExpiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
-            },
             "browser.request": {
               cases: [
                 {
@@ -190,8 +173,7 @@ suite.define(() => {
           },
         ]);
         expect(mediaRequest).toEqual({
-          authorization: "",
-          mediaTicket: "ticket-browser-screenshot",
+          authorization: "Bearer e2e-device-token",
           source: "/proof/missing.png",
         });
 

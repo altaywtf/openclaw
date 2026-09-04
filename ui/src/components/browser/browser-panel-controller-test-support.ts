@@ -36,17 +36,7 @@ export function createBrowserClient(
     }
     return await handleRequest(params as BrowserRequestEnvelope);
   });
-  const clientRequest = vi.fn(async (method: string, params?: unknown) => {
-    if (method === "assistant.media.get") {
-      return {
-        available: true,
-        mediaTicket: "ticket-browser-panel",
-        mediaTicketExpiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
-      };
-    }
-    return await request(method, params);
-  });
-  return { client: { request: clientRequest } as unknown as GatewayBrowserClient, request };
+  return { client: { request } as unknown as GatewayBrowserClient, request };
 }
 
 export function createBrowserPanelTestTab(id: string, url: string, title: string) {
@@ -92,9 +82,6 @@ export class TestBrowserPanelHost implements BrowserPanelControllerHost {
 
   addController(controller: ReactiveController): void {
     this.controllers.push(controller);
-    if (controller instanceof BrowserPanelController) {
-      controller.synchronizeClient();
-    }
   }
 
   removeController(controller: ReactiveController): void {

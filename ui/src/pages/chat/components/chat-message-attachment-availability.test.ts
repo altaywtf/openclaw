@@ -21,7 +21,7 @@ describe("assistant attachment availability", () => {
       mediaTicket: `ticket-${sessionKey}`,
       mediaTicketExpiresAt: new Date(Date.now() + 90_000).toISOString(),
     }));
-    const sessions = ["agent:main:main", "agent:research:main"];
+    const sessions = ["agent:main:main", "agent:research:main"] as const;
     const resolve = (session: string) =>
       resolveAssistantAttachmentAvailability(source, "/openclaw", update, resolveMedia, 1, session);
     try {

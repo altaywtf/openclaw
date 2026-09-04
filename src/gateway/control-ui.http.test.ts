@@ -137,6 +137,7 @@ function createAuthRateLimiterSpy() {
 afterEach(() => {
   vi.restoreAllMocks();
   resetPluginRuntimeStateForTest();
+  resolveControlUiSessionAccessMock.mockReset();
   runFfprobeMock.mockReset();
   runFfprobeMock.mockResolvedValue("{}");
   resolvePlaybackModeForSourceMock.mockReset();
@@ -1108,8 +1109,11 @@ describe("handleControlUiHttpRequest", () => {
         const original = { connId: "shared-connection-id" } as GatewayWsClient;
         const replacement = { ...original };
         const clients = new Set([original]);
+        const sessionKey = "agent:main:main";
+        resolveControlUiSessionAccessMock.mockReturnValue({ sessionKey, agentId: "main" });
         const mint = async (client: typeof original) => {
           const authority = {
+            sessionKey,
             agentId: "main",
             connId: client.connId,
             client,
@@ -1157,38 +1161,46 @@ describe("handleControlUiHttpRequest", () => {
   it.each([
     {
       revocation: "the minting connection is invalidated",
-      sessionKey: undefined,
       revoke: (client: { invalidatedReason?: string }) => {
         client.invalidatedReason = "closed";
       },
     },
     {
+      revocation: "the minting client is replaced with the same connection ID",
+      revoke: (client: { connId: string }, clients: Set<GatewayWsClient>) => {
+        clients.clear();
+        // SAFETY: only connection identity is read by this HTTP authority fixture.
+        clients.add({ connId: client.connId } as GatewayWsClient);
+      },
+    },
+    {
       revocation: "the ticket session becomes hidden",
-      sessionKey: "agent:main:main",
       revoke: () => {
         resolveControlUiSessionAccessMock.mockReturnValue(null);
       },
     },
     {
       revocation: "the ticket expires",
-      sessionKey: undefined,
       revoke: () => {
         vi.spyOn(Date, "now").mockReturnValue(Date.now() + 6 * 60 * 1000);
       },
     },
   ])(
     "rejects ticketed assistant media before opening the file when $revocation mid-redemption",
-    async ({ sessionKey, revoke }) => {
+    async ({ revoke }) => {
+      const sessionKey = "agent:main:main";
       await withAllowedAssistantMediaRoot({
         prefix: "ui-media-ticket-race-",
         fn: async (tmpRoot) => {
           const filePath = path.join(tmpRoot, "photo.png");
           await fs.writeFile(filePath, REAL_PNG);
           const config = {} as OpenClawConfig;
-          const client = { connId: "ticket-race-conn" } as { invalidatedReason?: string };
+          const client: { connId: string; invalidatedReason?: string } = {
+            connId: "ticket-race-conn",
+          };
           const clients = new Set([client as unknown as GatewayWsClient]);
           resolveControlUiSessionAccessMock.mockReturnValue({
-            sessionKey: sessionKey ?? "agent:main:main",
+            sessionKey,
             agentId: "main",
           });
           const minted = await resolveControlUiAssistantMedia(filePath, config, {
@@ -1196,7 +1208,7 @@ describe("handleControlUiHttpRequest", () => {
             connId: "ticket-race-conn",
             client,
             assertActive: () => {},
-            ...(sessionKey ? { sessionKey } : {}),
+            sessionKey,
           });
           expect(minted.available).toBe(true);
           const mediaTicket = minted.available ? minted.mediaTicket : "";
@@ -1214,7 +1226,7 @@ describe("handleControlUiHttpRequest", () => {
             typeof import("../media/local-media-access.js")
           >("../media/local-media-access.js");
           assertLocalMediaAllowedMock.mockImplementationOnce(async (localPath, roots) => {
-            revoke(client);
+            revoke(client, clients);
             return await actualLocalMediaAccess.assertLocalMediaAllowed(localPath, roots);
           });
           openLocalFileSafelyMock.mockClear();
@@ -1273,7 +1285,10 @@ describe("handleControlUiHttpRequest", () => {
             invalidatedReason?: string;
           };
           const clients = new Set([client as unknown as GatewayWsClient]);
+          const sessionKey = "agent:main:main";
+          resolveControlUiSessionAccessMock.mockReturnValue({ sessionKey, agentId: "main" });
           const minted = await resolveControlUiAssistantMedia(filePath, config, {
+            sessionKey,
             agentId: "main",
             connId: client.connId,
             client,

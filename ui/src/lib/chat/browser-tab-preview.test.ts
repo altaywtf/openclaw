@@ -12,10 +12,6 @@ afterEach(() => {
 const route = { target: "host", profile: "managed" } as const;
 const tabKey = (targetId = "tab-1") => JSON.stringify(["host", null, "managed", targetId]);
 
-function browserRequests(request: ReturnType<typeof vi.fn>) {
-  return request.mock.calls.filter(([method]) => method === "browser.request");
-}
-
 function browserResult(callId: string, targetId = "tab-1") {
   return {
     role: "toolResult",
@@ -27,18 +23,7 @@ function browserResult(callId: string, targetId = "tab-1") {
 }
 
 function screenshotClient() {
-  const browserRequest = vi.fn().mockResolvedValue({ path: "/tmp/shot.png", targetId: "tab-1" });
-  const mediaRequest = vi.fn().mockResolvedValue({
-    available: true,
-    mediaTicket: "ticket-browser-thumbnail",
-    mediaTicketExpiresAt: "2026-09-03T12:00:00.000Z",
-  });
-  const request = vi.fn(async (method: string, params: unknown) => {
-    if (method === "assistant.media.get") {
-      return await mediaRequest(params);
-    }
-    return await browserRequest(params);
-  });
+  const request = vi.fn().mockResolvedValue({ path: "/tmp/shot.png", targetId: "tab-1" });
   const client = { request } as unknown as GatewayBrowserClient;
   const fetchMock = vi.fn<typeof fetch>().mockImplementation(
     async () =>
@@ -51,11 +36,10 @@ function screenshotClient() {
   return {
     client,
     request,
-    browserRequest,
-    mediaRequest,
     fetchMock,
     tab: { ...route, targetId: "tab-1" },
     resourceBasePath: "/gateway",
+    authToken: null,
   };
 }
 
@@ -90,7 +74,7 @@ describe("browser tab previews", () => {
         revision: "one",
       }),
     ).toBeUndefined();
-    expect(browserRequests(params.request)).toHaveLength(33);
+    expect(params.request).toHaveBeenCalledTimes(33);
   });
 
   it("selects only the latest successful completed result, before filtering rows", () => {
@@ -124,18 +108,18 @@ describe("browser tab previews", () => {
   it("shares captures, serializes new revisions, and reads bytes only over HTTP", async () => {
     const params = screenshotClient();
     const deferred = createDeferred<{ path: string }>();
-    params.browserRequest.mockReturnValueOnce(deferred.promise);
+    params.request.mockReturnValueOnce(deferred.promise);
     const first = loadBrowserTabThumbnail({ ...params, revision: "one" });
     expect(loadBrowserTabThumbnail({ ...params, revision: "one" })).toBe(first);
     await Promise.resolve();
     const second = loadBrowserTabThumbnail({ ...params, revision: "two" });
-    expect(browserRequests(params.request)).toHaveLength(1);
+    expect(params.request).toHaveBeenCalledTimes(1);
     deferred.resolve({ path: "/tmp/first.png" });
     expect(await first).toBe("data:image/png;base64,c2hvdA==");
     expect(await second).toBe("data:image/png;base64,c2hvdA==");
     await loadBrowserTabThumbnail({ ...params, revision: "one" });
     await loadBrowserTabThumbnail({ ...params, revision: "two" });
-    expect(browserRequests(params.request)).toEqual([
+    expect(params.request.mock.calls).toEqual([
       [
         "browser.request",
         {
@@ -158,32 +142,26 @@ describe("browser tab previews", () => {
       ],
     ]);
     expect(params.fetchMock.mock.calls.map(([url]) => url)).toEqual([
-      "/gateway/__openclaw__/assistant-media?source=%2Ftmp%2Ffirst.png&mediaTicket=ticket-browser-thumbnail",
-      "/gateway/__openclaw__/assistant-media?source=%2Ftmp%2Fshot.png&mediaTicket=ticket-browser-thumbnail",
+      "/gateway/__openclaw__/assistant-media?source=%2Ftmp%2Ffirst.png",
+      "/gateway/__openclaw__/assistant-media?source=%2Ftmp%2Fshot.png",
     ]);
-    expect(
-      params.fetchMock.mock.calls.every(
-        ([, init]) => !new Headers(init?.headers).has("Authorization"),
-      ),
-    ).toBe(true);
-    expect(params.mediaRequest).toHaveBeenCalledTimes(2);
   });
 
   it.each(["capture", "fetch"])("caches a %s failure until a new revision", async (failure) => {
     const params = screenshotClient();
     if (failure === "capture") {
-      params.browserRequest.mockRejectedValueOnce(new Error("closed"));
+      params.request.mockRejectedValueOnce(new Error("closed"));
     } else {
       params.fetchMock.mockRejectedValueOnce(new Error("offline"));
     }
     const first = loadBrowserTabThumbnail({ ...params, revision: "one" });
     expect(await first).toBeUndefined();
     expect(await loadBrowserTabThumbnail({ ...params, revision: "one" })).toBeUndefined();
-    expect(browserRequests(params.request)).toHaveLength(1);
+    expect(params.request).toHaveBeenCalledTimes(1);
     expect(await loadBrowserTabThumbnail({ ...params, revision: "two" })).toBe(
       "data:image/png;base64,c2hvdA==",
     );
-    expect(browserRequests(params.request)).toHaveLength(2);
+    expect(params.request).toHaveBeenCalledTimes(2);
   });
 
   it("separates identical tab ids and revisions by host, node, and profile", async () => {
@@ -198,9 +176,9 @@ describe("browser tab previews", () => {
       await loadBrowserTabThumbnail({ ...params, tab, revision: "same" });
       await loadBrowserTabThumbnail({ ...params, tab, revision: "same" });
     }
-    expect(browserRequests(params.request)).toHaveLength(tabs.length);
+    expect(params.request).toHaveBeenCalledTimes(tabs.length);
     for (const [index, tab] of tabs.entries()) {
-      expect(browserRequests(params.request)[index]).toEqual([
+      expect(params.request.mock.calls[index]).toEqual([
         "browser.request",
         {
           method: "POST",
@@ -219,6 +197,6 @@ describe("browser tab previews", () => {
     await loadBrowserTabThumbnail({ ...params, revision: "one" });
     const next = screenshotClient();
     await loadBrowserTabThumbnail({ ...next, revision: "one" });
-    expect(browserRequests(next.request)).toHaveLength(1);
+    expect(next.request).toHaveBeenCalledTimes(1);
   });
 });

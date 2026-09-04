@@ -17,15 +17,15 @@ export function buildAssistantMediaUrl(
   return `${normalizeRouteBasePath(resourceBasePath)}/__openclaw__/assistant-media?${params.toString()}`;
 }
 
-/** Mint a narrow local-media capability through the caller's authenticated Gateway session. */
+/** Mint local-media access for a visible transcript through its authenticated Gateway connection. */
 export async function resolveAssistantMedia(
   client: GatewayBrowserClient,
   source: string,
-  sessionKey?: string,
+  sessionKey: string,
 ): Promise<AssistantMediaGetResult> {
   return await client.request<AssistantMediaGetResult>(
     "assistant.media.get",
-    { source, ...(sessionKey ? { sessionKey } : {}) },
+    { source, sessionKey },
     { timeoutMs: ASSISTANT_MEDIA_RESOLVE_TIMEOUT_MS },
   );
 }

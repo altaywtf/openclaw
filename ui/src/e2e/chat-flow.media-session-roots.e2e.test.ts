@@ -22,6 +22,17 @@ suite.define(() => {
     const ticket = "ticket-research-image";
     await page.route("**/__openclaw__/assistant-media?**", async (route) => {
       const url = new URL(route.request().url());
+      if (url.searchParams.get("meta") === "1") {
+        // The main HTTP route resolves the default agent, not the selected research session.
+        await route.fulfill({
+          json: {
+            available: false,
+            code: "outside-allowed-folders",
+            reason: "Outside allowed folders",
+          },
+        });
+        return;
+      }
       expect(url.searchParams.get("source")).toBe(source);
       expect(url.searchParams.get("mediaTicket")).toBe(ticket);
       await route.fulfill({
@@ -54,10 +65,19 @@ suite.define(() => {
       await page.goto(controlUiSessionUrl(suite.server.baseUrl, sessionKey));
       const image = page.getByAltText("Research report");
       await image.waitFor({ state: "visible", timeout: 10_000 });
+      await expect
+        .poll(() => image.evaluate((node) => (node as HTMLImageElement).naturalWidth))
+        .toBeGreaterThan(0);
       const request = await gateway.waitForRequest("assistant.media.get");
       expect(request.params).toEqual({ source, sessionKey });
       expect(await page.getByText("Outside allowed folders").count()).toBe(0);
     } finally {
+      if (process.env.OPENCLAW_UI_E2E_ARTIFACT_DIR?.trim()) {
+        await page.screenshot({
+          fullPage: true,
+          path: path.join(suite.artifactDir, "selected-session-media.png"),
+        });
+      }
       await suite.closeBrowserContext(context);
     }
   });
