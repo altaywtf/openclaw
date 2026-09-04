@@ -215,9 +215,9 @@ function prepareIncrementalTranscriptSuffixMutation(
       .selectFrom("transcript_events")
       .select(["created_at", "event_json", "seq"])
       .where("session_id", "=", resolved.sessionId)
+      .where("seq", ">=", persistedPrefixLength)
       .orderBy("seq", "asc")
-      .limit(expectedTail.length + 1)
-      .offset(persistedPrefixLength),
+      .limit(expectedTail.length + 1),
   ).rows.map((row) => ({ createdAt: row.created_at, eventJson: row.event_json, seq: row.seq }));
   if (
     storedTail.length !== expectedJson.length ||

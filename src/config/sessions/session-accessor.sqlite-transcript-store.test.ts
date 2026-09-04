@@ -455,20 +455,27 @@ describe("SQLite exact transcript suffix replacement", () => {
     },
   ])("plans only the removable suffix above the $name limit", async ({ events }) => {
     await withRewriteFixture(({ db, scope }) => {
-      const work = trackSqliteStatementExecutions(db, ["fullTranscript", "sizeScan"], (sql) => {
-        const normalized = sql.toLowerCase();
-        if (normalized.includes("octet_length")) {
-          return "sizeScan";
-        }
-        if (
-          normalized.includes("transcript_events") &&
-          normalized.includes("event_json") &&
-          !normalized.includes("limit")
-        ) {
-          return "fullTranscript";
-        }
-        return null;
-      });
+      const work = trackSqliteStatementExecutions(
+        db,
+        ["fullTranscript", "prefixScan", "sizeScan"],
+        (sql) => {
+          const normalized = sql.toLowerCase();
+          if (normalized.includes("octet_length")) {
+            return "sizeScan";
+          }
+          if (normalized.includes("transcript_events") && normalized.includes("offset")) {
+            return "prefixScan";
+          }
+          if (
+            normalized.includes("transcript_events") &&
+            normalized.includes("event_json") &&
+            !normalized.includes("limit")
+          ) {
+            return "fullTranscript";
+          }
+          return null;
+        },
+      );
       try {
         const plan = prepareSqliteTranscriptSuffixMutation(
           openOpenClawAgentDatabase(scope),
@@ -483,7 +490,7 @@ describe("SQLite exact transcript suffix replacement", () => {
       } finally {
         work.restore();
       }
-      expect(work.counts).toEqual({ fullTranscript: 0, sizeScan: 0 });
+      expect(work.counts).toEqual({ fullTranscript: 0, prefixScan: 0, sizeScan: 0 });
     }, events);
   });
 
