@@ -1,7 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 // OpenClaw operation tests cover rescue operation planning and execution.
-import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { createGatewayHostLifecycle } from "../cli/gateway-cli/host-lifecycle.js";
@@ -14,7 +13,6 @@ import { installTemporaryCurrentPluginMetadataSnapshot } from "../plugins/curren
 import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
-import { listSystemAgentAuditEntriesForTests } from "./audit.test-support.js";
 import { runGatewayLifecycle } from "./operations-execution-helpers.js";
 import {
   describeSystemAgentPersistentOperation,
@@ -22,31 +20,15 @@ import {
   isPersistentSystemAgentOperation,
 } from "./operations.js";
 import { createSystemAgentTestRuntime } from "./system-agent.runtime.test-support.js";
-import { installSystemAgentPluginMetadataTestSnapshot } from "./system-agent.test-helpers.js";
+import {
+  expectSystemAgentAuditRecord as expectAuditRecord,
+  expectTestRecordFields as expectRecordFields,
+  installSystemAgentPluginMetadataTestSnapshot,
+  readLastSystemAgentAuditEntry as readLastAuditEntry,
+  requireTestRecord as requireRecord,
+} from "./system-agent.test-helpers.js";
 
 type TestConfig = Record<string, unknown>;
-
-const requireRecord = createRequireRecord("object", "label-not-object");
-
-function expectRecordFields(record: Record<string, unknown>, fields: Record<string, unknown>) {
-  for (const [key, value] of Object.entries(fields)) {
-    expect(record[key]).toEqual(value);
-  }
-}
-
-function expectAuditRecord(
-  audit: unknown,
-  fields: Record<string, unknown>,
-  detailFields: Record<string, unknown>,
-) {
-  const auditRecord = requireRecord(audit, "audit record");
-  expectRecordFields(auditRecord, fields);
-  expectRecordFields(requireRecord(auditRecord.details, "audit details"), detailFields);
-}
-
-function readLastAuditEntry(): unknown {
-  return listSystemAgentAuditEntriesForTests().at(-1)?.value;
-}
 
 function requireFirstMockCall(mock: unknown, label: string): unknown[] {
   const call = (mock as { mock?: { calls?: unknown[][] } }).mock?.calls?.[0];
@@ -138,33 +120,6 @@ const mockConfig = vi.hoisted(() => {
       }
       return cloneConfig();
     },
-    mutateConfigFile: vi.fn(
-      async (params: {
-        writeOptions?: {
-          preCommitRuntimePreflight?: (sourceConfig: TestConfig) => Promise<unknown>;
-        };
-        mutate: (
-          draft: TestConfig,
-          context: { snapshot: ReturnType<typeof snapshot> },
-        ) => Promise<void> | void;
-      }) => {
-        const before = snapshot();
-        const draft = cloneConfig();
-        await params.mutate(draft, { snapshot: before });
-        await params.writeOptions?.preCommitRuntimePreflight?.(structuredClone(draft));
-        state.exists = true;
-        state.config = draft;
-        state.hash = "mock-hash-1";
-        return {
-          path: state.path,
-          previousHash: before.hash ?? null,
-          persistedHash: before.hash ?? null,
-          snapshot: before,
-          nextConfig: cloneConfig(),
-          result: undefined,
-        };
-      },
-    ),
   };
 });
 const mockDaemonRestart = vi.hoisted(() => vi.fn(async () => true));
@@ -193,47 +148,8 @@ vi.mock("../infra/restart.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../infra/restart.js")>()),
   scheduleGatewaySigusr1Restart: mockScheduleGatewayRestart,
 }));
-vi.mock("./probes.js", () => ({
-  probeLocalCommand: vi.fn(async (command: string) => ({
-    command,
-    found: false,
-    error: "not found",
-  })),
-  probeGatewayUrl: vi.fn(async (url: string) => ({ reachable: false, url, error: "offline" })),
-}));
-
-vi.mock("./overview.js", () => ({
-  formatSystemAgentOverview: () => "Default model: openai/gpt-5.5",
-  loadSystemAgentOverview: vi.fn(async () => ({
-    defaultAgentId: "main",
-    defaultModel: undefined,
-    agents: [
-      { id: "main", isDefault: true },
-      { id: "work", isDefault: false, model: "openai/gpt-5.2" },
-    ],
-    config: { path: "/tmp/openclaw.json", exists: true, valid: true, issues: [], hash: null },
-    tools: {
-      codex: { command: "codex", found: false, error: "not found" },
-      claude: { command: "claude", found: false, error: "not found" },
-      gemini: { command: "gemini", found: false, error: "not found" },
-      apiKeys: { openai: true, anthropic: false },
-    },
-    gateway: {
-      url: "ws://127.0.0.1:18789",
-      source: "local loopback",
-      reachable: false,
-      error: "offline",
-    },
-    references: {
-      docsUrl: "https://docs.openclaw.ai",
-      sourceUrl: "https://github.com/openclaw/openclaw",
-    },
-  })),
-}));
-
 vi.mock("../config/config.js", () => ({
   getRuntimeConfig: () => mockConfig.getRuntimeConfig(),
-  mutateConfigFile: mockConfig.mutateConfigFile,
   readConfigFileSnapshot: mockConfig.readConfigFileSnapshot,
 }));
 const opTempDirs = useAutoCleanupTempDirTracker(afterEach);

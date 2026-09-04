@@ -836,69 +836,75 @@ describe("nodeHandlers node.pair.remove", () => {
     });
   });
 
-  it("removes Android device-backed node rows from the paired-device store", async () => {
-    const state = await createState("node-remove-android-device-backed");
-    const nodeId = "android-node-1";
-    await pairAndroidNodeDevice(state.stateDir, nodeId);
+  it.each([false, true])(
+    "removes paired device rows (approved node surface: %s)",
+    async (withSurface) => {
+      const state = await createState("node-remove-android-device-backed");
+      const nodeId = "android-node-1";
+      await pairAndroidNodeDevice(state.stateDir, nodeId);
+      if (withSurface) {
+        await approveNodeSurface(state.stateDir, nodeId);
+      }
 
-    expect(Object.hasOwn(await readPaired(state.stateDir), nodeId)).toBe(true);
+      expect(Object.hasOwn(await readPaired(state.stateDir), nodeId)).toBe(true);
 
-    const { context, opts } = createOptions({ nodeId: ` ${nodeId} ` });
-    const captured = captureSecurityEvents();
-    const respond = vi.mocked(opts.respond);
-    respond.mockImplementation(() => {
+      const { context, opts } = createOptions({ nodeId: ` ${nodeId} ` });
+      const captured = captureSecurityEvents();
+      const respond = vi.mocked(opts.respond);
+      respond.mockImplementation(() => {
+        expect(context.invalidateClientsForDevice).toHaveBeenCalledWith(nodeId, {
+          role: "node",
+          reason: "device-pair-removed",
+        });
+        expect(context.disconnectClientsForDevice).not.toHaveBeenCalled();
+      });
+
+      try {
+        await expectDefined(
+          nodeHandlers["node.pair.remove"],
+          'nodeHandlers["node.pair.remove"] test invariant',
+        )(opts);
+        await Promise.resolve();
+      } finally {
+        captured.stop();
+      }
+
+      expect(respond).toHaveBeenCalledWith(true, { nodeId }, undefined);
+      expect(Object.hasOwn(await readPaired(state.stateDir), nodeId)).toBe(false);
       expect(context.invalidateClientsForDevice).toHaveBeenCalledWith(nodeId, {
         role: "node",
         reason: "device-pair-removed",
       });
-      expect(context.disconnectClientsForDevice).not.toHaveBeenCalled();
-    });
-
-    try {
-      await expectDefined(
-        nodeHandlers["node.pair.remove"],
-        'nodeHandlers["node.pair.remove"] test invariant',
-      )(opts);
-      await Promise.resolve();
-    } finally {
-      captured.stop();
-    }
-
-    expect(respond).toHaveBeenCalledWith(true, { nodeId }, undefined);
-    expect(Object.hasOwn(await readPaired(state.stateDir), nodeId)).toBe(false);
-    expect(context.invalidateClientsForDevice).toHaveBeenCalledWith(nodeId, {
-      role: "node",
-      reason: "device-pair-removed",
-    });
-    expect(context.disconnectClientsForDevice).toHaveBeenCalledWith(nodeId, { role: "node" });
-    expect(context.nodeRegistry.updateSurface).toHaveBeenCalledWith(nodeId, {
-      caps: [],
-      commands: [],
-      permissions: undefined,
-    });
-    expect(context.broadcast).toHaveBeenCalledWith(
-      "node.pair.resolved",
-      expect.objectContaining({
-        decision: "removed",
-        nodeId,
-        requestId: "",
-      }),
-      { dropIfSlow: true },
-    );
-    expect(captured.events).toHaveLength(1);
-    expect(captured.events[0]).toMatchObject({
-      type: "security.event",
-      category: "auth",
-      action: "device.role.removed",
-      outcome: "success",
-      severity: "medium",
-      target: { kind: "device", idHash: expect.stringMatching(/^sha256:[a-f0-9]{12}$/u) },
-      policy: { id: "gateway.device-pairing", decision: "allow" },
-      control: { id: "node.pair.remove", family: "auth" },
-      attributes: { role: "node", removed_device: true },
-    });
-    expect(JSON.stringify(captured.events)).not.toContain(nodeId);
-  });
+      expect(context.disconnectClientsForDevice).toHaveBeenCalledWith(nodeId, { role: "node" });
+      expect(context.nodeRegistry.updateSurface).toHaveBeenCalledWith(nodeId, {
+        caps: [],
+        commands: [],
+        permissions: undefined,
+      });
+      expect(context.broadcast).toHaveBeenCalledWith(
+        "node.pair.resolved",
+        expect.objectContaining({
+          decision: "removed",
+          nodeId,
+          requestId: "",
+        }),
+        { dropIfSlow: true },
+      );
+      expect(captured.events).toHaveLength(1);
+      expect(captured.events[0]).toMatchObject({
+        type: "security.event",
+        category: "auth",
+        action: "device.role.removed",
+        outcome: "success",
+        severity: "medium",
+        target: { kind: "device", idHash: expect.stringMatching(/^sha256:[a-f0-9]{12}$/u) },
+        policy: { id: "gateway.device-pairing", decision: "allow" },
+        control: { id: "node.pair.remove", family: "auth" },
+        attributes: { role: "node", removed_device: true },
+      });
+      expect(JSON.stringify(captured.events)).not.toContain(nodeId);
+    },
+  );
 
   it.each(["revoked", "tokenless"] as const)(
     "removes %s device-backed node approvals",
@@ -933,53 +939,6 @@ describe("nodeHandlers node.pair.remove", () => {
       expect(context.disconnectClientsForDevice).toHaveBeenCalledWith(nodeId, { role: "node" });
     },
   );
-
-  it("removes the device row together with its approved node surface", async () => {
-    const state = await createState("node-remove-merged-backing-stores");
-    const nodeId = "merged-android-node-1";
-    await pairAndroidNodeDevice(state.stateDir, nodeId);
-    await approveNodeSurface(state.stateDir, nodeId);
-
-    expect(Object.hasOwn(await readPaired(state.stateDir), nodeId)).toBe(true);
-
-    const { context, opts } = createOptions({ nodeId: ` ${nodeId} ` });
-    const respond = vi.mocked(opts.respond);
-    respond.mockImplementation(() => {
-      expect(context.invalidateClientsForDevice).toHaveBeenCalledWith(nodeId, {
-        role: "node",
-        reason: "device-pair-removed",
-      });
-      expect(context.disconnectClientsForDevice).not.toHaveBeenCalled();
-    });
-
-    await expectDefined(
-      nodeHandlers["node.pair.remove"],
-      'nodeHandlers["node.pair.remove"] test invariant',
-    )(opts);
-    await Promise.resolve();
-
-    expect(respond).toHaveBeenCalledWith(true, { nodeId }, undefined);
-    expect(Object.hasOwn(await readPaired(state.stateDir), nodeId)).toBe(false);
-    expect(context.invalidateClientsForDevice).toHaveBeenCalledWith(nodeId, {
-      role: "node",
-      reason: "device-pair-removed",
-    });
-    expect(context.disconnectClientsForDevice).toHaveBeenCalledWith(nodeId, { role: "node" });
-    expect(context.nodeRegistry.updateSurface).toHaveBeenCalledWith(nodeId, {
-      caps: [],
-      commands: [],
-      permissions: undefined,
-    });
-    expect(context.broadcast).toHaveBeenCalledWith(
-      "node.pair.resolved",
-      expect.objectContaining({
-        decision: "removed",
-        nodeId,
-        requestId: "",
-      }),
-      { dropIfSlow: true },
-    );
-  });
 
   it("preserves non-node device roles when removing a mixed-role node row", async () => {
     const state = await createState("node-remove-mixed-role-device");
