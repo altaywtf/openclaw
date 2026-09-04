@@ -24,7 +24,7 @@ vi.mock("../infra/tailscale.js", () => ({
   hasTailscaleFunnelRouteForPort: mocks.hasTailscaleFunnelRouteForPort,
 }));
 
-import { resolveControlUiIdentityUrl } from "./control-ui-identity.js";
+import { resolveControlUiIdentity } from "./control-ui-identity.js";
 import { startGatewayTailscaleExposure as startGatewayTailscaleExposureBase } from "./server-tailscale.js";
 import {
   getTailscalePublishedOrigin,
@@ -228,17 +228,17 @@ describe("startGatewayTailscaleExposure", () => {
       logTailscale: createLogger(),
     });
 
-    expect(getTailscalePublishedOrigin()).toEqual({
+    expect(getTailscalePublishedOrigin()).toMatchObject({
       origin: "https://node.tailnet.ts.net",
       mode: "serve",
     });
-    expect(resolveControlUiIdentityUrl({}, { mode: "token", allowTailscale: true })).toBe(
+    expect(resolveControlUiIdentity({}, { mode: "token", allowTailscale: true })?.url).toBe(
       "https://node.tailnet.ts.net/",
     );
     await cleanup?.();
     expect(getTailscalePublishedOrigin()).toBeUndefined();
     expect(
-      resolveControlUiIdentityUrl(
+      resolveControlUiIdentity(
         { gateway: { publicOrigin: "https://unrelated.test", tailscale: { mode: "serve" } } },
         { mode: "token", allowTailscale: true },
       ),
@@ -270,7 +270,7 @@ describe("startGatewayTailscaleExposure", () => {
     });
     expect(getTailscalePublishedOrigin()).toBeUndefined();
     expect(
-      resolveControlUiIdentityUrl(
+      resolveControlUiIdentity(
         { gateway: { publicOrigin: "https://unrelated.test", tailscale: { mode: "serve" } } },
         { mode: "token", allowTailscale: true },
       ),
@@ -304,12 +304,12 @@ describe("startGatewayTailscaleExposure", () => {
     });
 
     expect(mocks.hasTailscaleFunnelRouteForPort).not.toHaveBeenCalled();
-    expect(getTailscalePublishedOrigin()).toEqual({
+    expect(getTailscalePublishedOrigin()).toMatchObject({
       origin: "https://node.tailnet.ts.net",
       mode: "funnel",
     });
     expect(
-      resolveControlUiIdentityUrl(
+      resolveControlUiIdentity(
         { gateway: { publicOrigin: "https://unrelated.test", tailscale: { mode: "serve" } } },
         { mode: "token", allowTailscale: true },
       ),

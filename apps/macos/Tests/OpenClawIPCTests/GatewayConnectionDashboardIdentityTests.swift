@@ -119,20 +119,21 @@ struct GatewayConnectionDashboardIdentityTests {
         await fixture.connection.shutdown()
     }
 
-    @Test func `reconnect at the same address replaces the advertised identity`() async throws {
+    @Test(arguments: [nil, "https://renewed.example.test/"])
+    func `reconnect at the same address replaces the advertised identity`(announcement: String?) async throws {
         let fixture = try DashboardIdentityFixture(announcement: "https://team.example.test/")
         #expect(try await fixture.connection.controlUiBrowserIdentityURL(config: fixture.config)?.absoluteString ==
             "https://team.example.test/")
         let lease = try #require(await fixture.connection.captureServerLease())
+        fixture.announcement.withValue { $0 = announcement }
         fixture.session.latestTask()?.emitReceiveFailure()
         let deadline = ContinuousClock.now + .seconds(2)
         while await fixture.connection.isCurrentServerLease(lease), ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }
         #expect(await fixture.connection.isCurrentServerLease(lease) == false)
-        fixture.announcement.withValue { $0 = "https://renewed.example.test/" }
         #expect(try await fixture.connection.controlUiBrowserIdentityURL(config: fixture.config)?.absoluteString ==
-            "https://renewed.example.test/")
+            announcement)
         #expect(fixture.requests.value == ["health", "health"])
         await fixture.connection.shutdown()
     }

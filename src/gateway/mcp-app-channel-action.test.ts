@@ -62,7 +62,7 @@ describe("Tailscale published origin", () => {
       mode: "funnel",
     });
 
-    expect(getTailscalePublishedOrigin()).toEqual({
+    expect(getTailscalePublishedOrigin()).toMatchObject({
       origin: "https://public.example.ts.net",
       mode: "funnel",
     });
