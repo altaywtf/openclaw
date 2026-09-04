@@ -35,6 +35,18 @@ function createMockDraftApi(sendMessageImpl?: () => Promise<MockSentMessage>) {
   };
 }
 
+// Streams cap plain text near Telegram's 4096-char message limit, but the rich JSON for the same
+// text (one block per row) can pass the 24 KiB request budget that Telegram stops answering above.
+function createOversizedRichPreview() {
+  const rows = Array.from({ length: 300 }, (_, index) => `row ${index}`);
+  return {
+    text: rows.join("\n"),
+    richMessage: {
+      blocks: rows.map((row) => ({ type: "paragraph" as const, text: `${row} ${"-".repeat(80)}` })),
+    },
+  };
+}
+
 function createForumDraftStream(api: ReturnType<typeof createMockDraftApi>) {
   return createThreadedDraftStream(api, { id: 99, scope: "forum" });
 }
@@ -1298,6 +1310,49 @@ describe("createTelegramDraftStream", () => {
     expect(plain).toContain("Claude Opus");
     expect(warn).toHaveBeenCalledWith(
       "telegram stream preview degrade=plain-fallback:rich-entity-invalid: 400: Bad Request: RICH_MESSAGE_URL_INVALID",
+    );
+  });
+
+  it("degrades an oversized rich preview to a plain send before it reaches Telegram", async () => {
+    const api = createMockDraftApi();
+    const warn = vi.fn();
+    const stream = createDraftStream(api, { richMessages: true, warn });
+    const oversized = createOversizedRichPreview();
+
+    stream.updatePreview(oversized);
+    await stream.flush();
+
+    expect(api.raw.sendRichMessage).not.toHaveBeenCalled();
+    expect(api.sendMessage).toHaveBeenCalledTimes(1);
+    expect(api.sendMessage.mock.calls[0]?.[1]).toContain("row 299");
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "telegram stream preview degrade=plain-fallback:rich-payload-too-large",
+      ),
+    );
+  });
+
+  it("degrades an oversized rich preview edit to a plain edit before it reaches Telegram", async () => {
+    const api = createMockDraftApi();
+    const warn = vi.fn();
+    const stream = createDraftStream(api, { richMessages: true, warn });
+    stream.updatePreview({
+      text: "Plan is forming",
+      richMessage: { blocks: [{ type: "paragraph", text: "Plan is forming" }] },
+    });
+    await stream.flush();
+    expect(api.raw.sendRichMessage).toHaveBeenCalledTimes(1);
+    const oversized = createOversizedRichPreview();
+
+    stream.updatePreview(oversized);
+    await stream.flush();
+
+    expect(api.raw.editMessageText).not.toHaveBeenCalled();
+    expect(api.editMessageText).toHaveBeenCalledWith(123, 17, expect.stringContaining("row 299"));
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "telegram stream preview edit degrade=plain-fallback:rich-payload-too-large",
+      ),
     );
   });
 

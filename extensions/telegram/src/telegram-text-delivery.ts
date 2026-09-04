@@ -18,8 +18,6 @@ import {
 } from "./rich-message.js";
 import {
   splitTelegramPlainTextChunks,
-  TELEGRAM_RICH_REQUEST_BYTE_LIMIT,
-  TelegramRichPayloadTooLargeError,
   withTelegramPlainFallback,
   warnTelegramRichBlocksDegradations,
 } from "./rich-plain-fallback.js";
@@ -211,17 +209,14 @@ export async function* sendTelegramTextPageParts<TPlain, THtml, TRich>(
   const delivery = await withTelegramPlainFallback<
     { result: THtml | TRich } | { chunks: string[]; label: string }
   >({
-    kind: page.richMessage ? "rich" : "html",
+    ...(page.richMessage
+      ? { kind: "rich", richMessage: page.richMessage, limit: params.fallbackLimit }
+      : { kind: "html" }),
     context: params.context,
     plainText: page.plainText,
     warn: params.warn,
-    ...(page.richMessage ? { limit: params.fallbackLimit } : {}),
     sendFormatted: async () => {
       if (page.richMessage) {
-        const bytes = Buffer.byteLength(JSON.stringify(page.richMessage));
-        if (bytes > TELEGRAM_RICH_REQUEST_BYTE_LIMIT) {
-          throw new TelegramRichPayloadTooLargeError(bytes);
-        }
         return { result: await params.sender.sendRich(page.richMessage) };
       }
       return { result: await params.sender.sendHtml(page.htmlText!) };

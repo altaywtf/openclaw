@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { isTelegramEmptyContentError, withTelegramPlainFallback } from "./rich-plain-fallback.js";
+import {
+  isTelegramEmptyContentError,
+  TELEGRAM_RICH_REQUEST_BYTE_LIMIT,
+  withTelegramPlainFallback,
+} from "./rich-plain-fallback.js";
 
 const fallbackCases = [
   {
@@ -56,7 +60,7 @@ describe("withTelegramPlainFallback", () => {
           ? testCase.htmlTrigger
           : undefined;
     const run = withTelegramPlainFallback({
-      kind: testCase.kind,
+      ...(testCase.kind === "rich" ? { kind: "rich", richMessage: {} } : { kind: "html" }),
       context: "test send",
       plainText: "fallback body",
       warn,
@@ -88,29 +92,54 @@ describe("withTelegramPlainFallback", () => {
     );
   });
 
-  it.each([
-    { kind: "rich" as const, message: "Bad Request: RICH_MESSAGE_URL_INVALID" },
-    { kind: "html" as const, message: "Bad Request: message text is empty" },
-  ])("rethrows $kind failures when plain text is empty", async ({ kind, message }) => {
-    const error = new Error(message);
+  it("degrades a rich payload above Telegram's request byte budget without sending it", async () => {
     const warn = vi.fn();
+    const sendFormatted = vi.fn(async () => "rich");
     const sendPlain = vi.fn(async () => "plain");
 
     await expect(
       withTelegramPlainFallback({
-        kind,
+        kind: "rich",
+        richMessage: { blocks: [{ text: "x".repeat(TELEGRAM_RICH_REQUEST_BYTE_LIMIT) }] },
         context: "test send",
-        plainText: " \n",
+        plainText: "fallback body",
         warn,
-        sendFormatted: async () => {
-          throw error;
-        },
+        sendFormatted,
         sendPlain,
       }),
-    ).rejects.toBe(error);
-    expect(sendPlain).not.toHaveBeenCalled();
-    expect(warn).not.toHaveBeenCalled();
+    ).resolves.toBe("plain");
+    expect(sendFormatted).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("telegram test send degrade=plain-fallback:rich-payload-too-large"),
+    );
   });
+
+  it.each([
+    { format: { kind: "rich", richMessage: {} }, message: "Bad Request: RICH_MESSAGE_URL_INVALID" },
+    { format: { kind: "html" }, message: "Bad Request: message text is empty" },
+  ] as const)(
+    "rethrows $format.kind failures when plain text is empty",
+    async ({ format, message }) => {
+      const error = new Error(message);
+      const warn = vi.fn();
+      const sendPlain = vi.fn(async () => "plain");
+
+      await expect(
+        withTelegramPlainFallback({
+          ...format,
+          context: "test send",
+          plainText: " \n",
+          warn,
+          sendFormatted: async () => {
+            throw error;
+          },
+          sendPlain,
+        }),
+      ).rejects.toBe(error);
+      expect(sendPlain).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("isTelegramEmptyContentError", () => {

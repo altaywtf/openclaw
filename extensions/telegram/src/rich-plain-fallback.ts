@@ -30,7 +30,7 @@ type TelegramRichPlainFallbackTrigger =
 // message before sending so a long table degrades to plain pages instead of dropping the reply.
 export const TELEGRAM_RICH_REQUEST_BYTE_LIMIT = 24 * 1024;
 
-export class TelegramRichPayloadTooLargeError extends Error {
+class TelegramRichPayloadTooLargeError extends Error {
   constructor(readonly bytes: number) {
     super(
       `rich message payload is ${bytes} bytes; Telegram stops answering above ${TELEGRAM_RICH_REQUEST_BYTE_LIMIT}`,
@@ -124,17 +124,30 @@ function splitTelegramPlainTextFallback(text: string, chunkCount: number, limit:
   return chunks;
 }
 
-export async function withTelegramPlainFallback<T>(params: {
-  kind: "rich" | "html";
-  context: string;
-  plainText: string;
-  warn: (message: string) => void;
-  limit?: number;
-  chunkCount?: number;
-  sendFormatted: () => Promise<T>;
-  sendPlain: (plan: TelegramPlainFallbackPlan, label: string) => Promise<T>;
-}): Promise<T> {
+type TelegramPlainFallbackFormat =
+  | { kind: "html" }
+  // The rich payload is required so every rich send and edit is bounded here; a caller cannot
+  // reach Telegram's no-response oversized request by skipping a separate preflight.
+  | { kind: "rich"; richMessage: object };
+
+export async function withTelegramPlainFallback<T>(
+  params: TelegramPlainFallbackFormat & {
+    context: string;
+    plainText: string;
+    warn: (message: string) => void;
+    limit?: number;
+    chunkCount?: number;
+    sendFormatted: () => Promise<T>;
+    sendPlain: (plan: TelegramPlainFallbackPlan, label: string) => Promise<T>;
+  },
+): Promise<T> {
   try {
+    if (params.kind === "rich") {
+      const bytes = Buffer.byteLength(JSON.stringify(params.richMessage));
+      if (bytes > TELEGRAM_RICH_REQUEST_BYTE_LIMIT) {
+        throw new TelegramRichPayloadTooLargeError(bytes);
+      }
+    }
     return await params.sendFormatted();
   } catch (err) {
     const trigger: TelegramPlainFallbackTrigger | undefined =

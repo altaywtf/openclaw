@@ -288,6 +288,7 @@ export function createTelegramDraftStream(params: {
         snapshot: TelegramDraftMessageSnapshot;
       }>({
         kind: "rich",
+        richMessage,
         context: "stream preview",
         plainText: page.plainText,
         warn: (message) => params.warn?.(message),
@@ -365,6 +366,7 @@ export function createTelegramDraftStream(params: {
         });
         acceptedSnapshot = await withTelegramPlainFallback<TelegramDraftMessageSnapshot>({
           kind: "rich",
+          richMessage,
           context: "stream preview edit",
           plainText: page.plainText,
           warn: (message) => params.warn?.(message),
