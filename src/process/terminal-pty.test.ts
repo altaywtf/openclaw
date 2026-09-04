@@ -447,3 +447,35 @@ describe.runIf(process.platform !== "win32")("terminal PTY process-session teard
     }
   });
 });
+
+describe.runIf(process.platform === "win32")("terminal PTY Windows lifecycle", () => {
+  it("keeps a persistent shell alive across writes", async () => {
+    vi.resetModules();
+    vi.doUnmock("@lydell/node-pty");
+    vi.doUnmock("./kill-tree.js");
+    const { spawnTerminalPty: spawnRealTerminalPty } = await import("./terminal-pty.js");
+    const handle = await spawnRealTerminalPty({
+      file: process.env.ComSpec ?? "C:\\Windows\\System32\\cmd.exe",
+      args: ["/d", "/q"],
+      env: process.env as Record<string, string>,
+      cols: 80,
+      rows: 24,
+    });
+    let output = "";
+    handle.onData((chunk) => {
+      output += chunk;
+    });
+
+    try {
+      handle.write("set OPENCLAW_PTY_STATE=persisted&&echo __OPENCLAW_SET__\r");
+      await vi.waitFor(() => expect(output).toContain("__OPENCLAW_SET__"), { timeout: 5_000 });
+
+      handle.write("echo __OPENCLAW_STATE__%OPENCLAW_PTY_STATE%\r");
+      await vi.waitFor(() => expect(output).toContain("__OPENCLAW_STATE__persisted"), {
+        timeout: 5_000,
+      });
+    } finally {
+      handle.kill();
+    }
+  });
+});
