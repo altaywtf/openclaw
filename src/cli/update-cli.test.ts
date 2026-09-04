@@ -1458,6 +1458,7 @@ describe("update-cli", () => {
     version?: string;
     withNpm?: boolean;
   }) => {
+    // A runtime beside a tracked package root can clobber another fixture; own the whole prefix.
     const nodeModules = path.join(params.prefix, "lib", "node_modules");
     const root = path.join(nodeModules, "openclaw");
     const serviceNode = path.join(params.prefix, "bin", "node");
@@ -8217,12 +8218,17 @@ describe("update-cli", () => {
 
   it("warns when a package update targets a managed service root outside the shell root", async () => {
     const shellRoot = createCaseDir("openclaw-shell-root");
-    const serviceRoot = tempDirs.make("openclaw-service-root-");
-    const serviceNode = path.join(path.dirname(serviceRoot), "bin", "node");
-    await fs.mkdir(path.join(serviceRoot, "dist"), { recursive: true });
-    await writeOpenClawPackageFixture(serviceRoot, "2026.5.18");
+    const servicePrefix = tempDirs.make("openclaw-service-prefix-");
+    const {
+      root: serviceRoot,
+      serviceNode,
+      entrypoint,
+    } = await setupServicePackageAtPrefix({
+      prefix: servicePrefix,
+      withNpm: false,
+    });
     mockPackageInstallStatus(shellRoot);
-    primeServiceCommand([serviceNode, path.join(serviceRoot, "dist", "index.js"), "gateway"]);
+    primeServiceCommand([serviceNode, entrypoint, "gateway"]);
 
     await updateCommand({ dryRun: true });
 
@@ -8238,14 +8244,13 @@ describe("update-cli", () => {
 
   it("blocks a stale managed service Node before a no-restart package update", async () => {
     const shellRoot = createCaseDir("openclaw-shell-root");
-    const serviceRoot = tempDirs.make("openclaw-service-root-");
-    const serviceNode = path.join(path.dirname(serviceRoot), "bin", "node");
-    await fs.mkdir(path.join(serviceRoot, "dist"), { recursive: true });
-    await fs.mkdir(path.dirname(serviceNode), { recursive: true });
-    await fs.writeFile(serviceNode, "", "utf-8");
-    await writeOpenClawPackageFixture(serviceRoot, "2026.5.18");
+    const servicePrefix = tempDirs.make("openclaw-service-prefix-");
+    const { serviceNode, entrypoint } = await setupServicePackageAtPrefix({
+      prefix: servicePrefix,
+      withNpm: false,
+    });
     mockPackageInstallStatus(shellRoot);
-    primeServiceCommand([serviceNode, path.join(serviceRoot, "dist", "index.js"), "gateway"]);
+    primeServiceCommand([serviceNode, entrypoint, "gateway"]);
     primeNpmChannelTag("latest", "2026.5.20");
     vi.mocked(fetchNpmPackageTargetStatus).mockResolvedValue(
       packageTargetStatus({ target: "latest", version: "2026.5.20" }),
