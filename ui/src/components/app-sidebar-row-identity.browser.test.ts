@@ -31,7 +31,7 @@ describe.runIf("__vitest_browser__" in globalThis)("sidebar session row DOM iden
     expect(alphaBefore).not.toBeNull();
     expect(betaBefore).not.toBeNull();
     expect(alphaBefore?.querySelector("a")?.getAttribute("href")).toBe(
-      "/control/dashboard/main/release-board-11111111?nav=collapsed",
+      "/control/dashboard/main/release-board-11111111?dashboard=expanded&nav=collapsed",
     );
 
     // A newly created session sorts first (createdAt desc) and shifts every
