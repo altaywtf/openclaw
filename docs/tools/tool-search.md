@@ -45,6 +45,8 @@ descriptions shorten before tool names are omitted; every authorized catalog
 entry remains searchable and callable. Invalid arguments for OpenClaw-owned
 tools include a bounded expected input signature when one can be rendered, so
 the model can correct the call without another schema lookup.
+If a call mistakes an admitted skill name for a tool ID, the error points back
+to the skill’s complete instructions instead of sending the model through tool search.
 
 The deferred directory omits tools already exposed directly. They remain searchable,
 so discovery can still return their complete schemas without duplicating native guidance.

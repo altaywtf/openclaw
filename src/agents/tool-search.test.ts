@@ -3762,6 +3762,44 @@ describe("Tool Search", () => {
     ).rejects.toThrow("Did you mean: openclaw:first-plugin:write, openclaw:second-plugin:write?");
   });
 
+  it.each(["call", "callExactId", "describe"] as const)(
+    "redirects mistaken skill IDs to admitted instructions during %s",
+    async (operation) => {
+      const catalogRef = createToolSearchCatalogRef();
+      registerHeadlessToolSearchCatalog({ catalogRef, tools: [fakeTool("read", "Read a file")] });
+      const reader = vi.fn();
+      const codeModeSkills = [
+        {
+          name: "ledger-audit",
+          description: "Audit the ledger",
+          location: "/workspace/skills/ledger-audit/SKILL.md",
+          source: { filePath: "/private-host/skills/ledger-audit/SKILL.md" },
+          reader,
+        },
+      ];
+      const runtime = new ToolSearchRuntime(
+        { catalogRef, codeModeSkills },
+        resolveToolSearchConfig(),
+      );
+      await expect(runtime[operation]("ledger-audit")).rejects.toThrow(
+        'Load its complete instructions from "/workspace/skills/ledger-audit/SKILL.md"',
+      );
+      expect(reader).not.toHaveBeenCalled();
+      const withoutSkill = new ToolSearchRuntime({ catalogRef }, resolveToolSearchConfig());
+      await expect(withoutSkill[operation]("ledger-audit")).rejects.toThrow("Unknown tool id");
+      registerHeadlessToolSearchCatalog({ catalogRef, tools: [fakeTool("exec", "Run a command")] });
+      await expect(runtime[operation]("ledger-audit")).rejects.toThrow("Unknown tool id");
+      registerHeadlessToolSearchCatalog({
+        catalogRef,
+        tools: [fakeTool("ledger-audit", "Real tool")],
+      });
+      expect(await runtime.call("ledger-audit", {})).toHaveProperty(
+        "result.details.name",
+        "ledger-audit",
+      );
+    },
+  );
+
   it("keeps raw Tool Search recovery guidance when no suggestion matches", async () => {
     const callTool = fakeTool(TOOL_CALL_RAW_TOOL_NAME, "call");
     const searchTool = fakeTool(TOOL_SEARCH_RAW_TOOL_NAME, "search");
