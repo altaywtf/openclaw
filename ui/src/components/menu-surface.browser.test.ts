@@ -109,22 +109,24 @@ describe.skipIf(!hasPopoverApi)("sidebar menu stacking", () => {
     item.textContent = "Created";
     dropdown.append(trigger, item);
     nav.append(dropdown);
-    // Popover membership precedes positioning; hit-test only after the completed show.
-    const shown = new Promise<Event>((resolve) => {
-      dropdown.addEventListener("wa-after-show", resolve, { once: true });
-    });
     dropdown.open = true;
-    await shown;
+    await dropdown.updateComplete;
 
-    const popup = dropdown.shadowRoot?.querySelector<HTMLElement>("wa-popup");
+    const popup = dropdown.shadowRoot?.querySelector<
+      HTMLElement & { updateComplete: Promise<unknown> }
+    >("wa-popup");
+    await popup?.updateComplete;
     const popupSurface = popup?.shadowRoot?.querySelector<HTMLElement>('[part="popup"]');
     await expect.poll(() => popupSurface?.matches(":popover-open")).toBe(true);
     expect(dropdown.closest("openclaw-menu-surface")).toBeNull();
 
     const menu = dropdown.shadowRoot?.querySelector<HTMLElement>('[part="menu"]');
     expect(menu).not.toBeNull();
+    // Web Awesome signals reposition before its async position write completes.
+    await expect
+      .poll(() => menu!.getBoundingClientRect().right)
+      .toBeGreaterThan(dividerBounds.left);
     const menuBounds = menu!.getBoundingClientRect();
-    expect(menuBounds.right).toBeGreaterThan(dividerBounds.left);
     const hit = document.elementFromPoint(
       dividerBounds.left + dividerBounds.width / 2,
       menuBounds.top + menuBounds.height / 2,

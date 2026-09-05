@@ -67,7 +67,7 @@ function expectFixtureResults(
           ? intentionalFailure
           : undefined;
     const expectedStatus = failure ? "failed" : "passed";
-    expect(file.status, file.name).toBe(expectedStatus);
+    expect(file.status, JSON.stringify(file, null, 2)).toBe(expectedStatus);
     expect(file.message, file.name).toBe("");
     expect(
       file.assertionResults.map(
