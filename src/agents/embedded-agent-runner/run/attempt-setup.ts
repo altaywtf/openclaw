@@ -562,6 +562,7 @@ export function prepareEmbeddedAttemptSkills(params: {
       skillsPromptWorkspaceDir,
     });
     const skillsPrompt = resolveSkillsPrompt({
+      contextTokenBudget: params.attempt.contextTokenBudget,
       skillsSnapshot,
       entries: promptSkillEntries,
       loadEntries: createSandboxPromptEntryLoader({

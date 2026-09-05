@@ -21,6 +21,7 @@ import {
   isTrustedToolExecutionPreflightError,
   protectNetworkToolExecutionError,
 } from "./tool-result-error.js";
+import { compactToolInputHint } from "./tool-schema-hints.js";
 import {
   compactToolSearchCatalogEntry,
   prepareToolSearchCatalogExecutionTool,
@@ -356,7 +357,8 @@ function formatCatalogInputError(
   errors: import("../plugins/schema-validator.js").JsonSchemaValidationError[],
   value: unknown,
 ): string {
-  const schema = isRecord(entry.parameters) ? entry.parameters : undefined;
+  const executionSchema = resolveAgentToolExecutionSchema(entry.tool, entry.parameters);
+  const schema = isRecord(executionSchema) ? executionSchema : undefined;
   const propertyNames = isRecord(schema?.properties) ? Object.keys(schema.properties) : [];
   const knownProperties = new Set(propertyNames);
   const unexpectedProperties =
@@ -378,7 +380,9 @@ function formatCatalogInputError(
   ).slice(0, 3);
   const details = errors.map((error) => error.text).join("; ");
   const hint = suggestions.length > 0 ? ` Did you mean: ${suggestions.join(", ")}?` : "";
-  return `Invalid arguments for tool "${entry.id}": ${details}.${hint}`;
+  const input = compactToolInputHint(schema);
+  const signature = input === "unknown" ? "" : ` Expected input: ${input}.`;
+  return `Invalid arguments for tool "${entry.id}": ${details}.${hint}${signature}`;
 }
 
 async function assertCatalogInputMatchesSchema(
