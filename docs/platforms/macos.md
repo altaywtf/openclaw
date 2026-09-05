@@ -179,6 +179,8 @@ Import copies cookies once into a profile on the same Mac. When your Gateway and
 
 Open **Dashboard → Settings → This Mac → Browser**. Cookie sync is **off by default** and is available only in remote mode with an external CLI on this Mac. Turn on cookie sync, add the sites you want kept in sync to the **Domains** allowlist (for example `github.com` and `accounts.google.com`), and set the **Target profile** that receives them (the managed profile name on the remote Gateway, `imported` by default). A status row shows whether sync is running.
 
+If a pending addition would restore a domain removed in another Dashboard window, it is discarded. Review the updated list and add the intended domains again.
+
 While enabled, the app supervises the [`openclaw browser cookie-sync --watch`](/cli/browser#cookie-sync-to-a-remote-gateway) command against the connected Gateway. Cookies are decrypted locally on this Mac (one macOS Keychain or Touch ID prompt per session) and pushed to the remote profile over the app's existing encrypted Gateway connection; only the domains on the allowlist are ever sent, and cookie values are never written to logs. An empty allowlist syncs nothing. As with import, some Google sessions use device-bound session credentials (DBSC) that stay tied to this Mac and may still require re-authentication after sync; for those sites, drive the browser on the Mac itself through the [browser node proxy](/cli/browser#remote-browser-control-node-host-proxy) instead.
 
 ## Choose a Gateway mode

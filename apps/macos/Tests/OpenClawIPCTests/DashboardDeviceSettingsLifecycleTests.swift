@@ -7,6 +7,7 @@ import WebKit
 extension DashboardWindowOwnershipTests {
     @Test(arguments: [
         "replacement", "committed", "provisional", "close", "cancel-domains", "cancel-profile", "normalize-profile",
+        "revoke-domains",
     ])
     func `device settings promises settle with consent and retire with their document`(
         _ transition: String) async throws
@@ -76,7 +77,30 @@ extension DashboardWindowOwnershipTests {
 
         var replacement: DashboardWindowController?
         defer { replacement?.closeDashboard() }
+        var other: DashboardWindowController?
+        let otherAutosaveName = autosaveName + "-other"
+        defer {
+            other?.closeDashboard()
+            NSWindow.removeFrame(usingName: otherAutosaveName)
+        }
         switch transition {
+        case "revoke-domains":
+            let second = DashboardWindowController(
+                url: server.url(),
+                auth: auth,
+                websiteDataStore: .nonPersistent(),
+                windowAutosaveName: otherAutosaveName,
+                requestBrowserProfileImportOffer: { _ in false })
+            other = second
+            second.show(url: server.url(), auth: auth)
+            try #require(await Self
+                .waitForConsentState { second.canDeliverNativeCommands && !second.webView.isLoading })
+            _ = try await second.webView.callAsyncJavaScript("""
+            return await window.webkit.messageHandlers.openclawDeviceSettings.postMessage({
+              type: 'set', key: 'browser.cookieSync.domains', value: []
+            });
+            """, in: nil, contentWorld: .page)
+            #expect(state.cookieSyncDomains.isEmpty)
         case "replacement":
             let transferred = try #require(controller.detachWindowForReplacement())
             replacement = DashboardWindowController(
@@ -105,10 +129,15 @@ extension DashboardWindowOwnershipTests {
         }
         // Join even a regressed, still-attached sheet: stale Allow must not survive retirement.
         if let sheet = window.attachedSheet {
-            window.endSheet(sheet, returnCode: retired || allowed ? .alertSecondButtonReturn : .alertFirstButtonReturn)
+            window.endSheet(
+                sheet,
+                returnCode: retired || allowed || transition == "revoke-domains"
+                    ? .alertSecondButtonReturn : .alertFirstButtonReturn)
         }
         let replies = try await self.waitForDeviceReplies(controller.webView)
         #expect(replies.count == 2)
+        let expectedDomains = transition == "revoke-domains"
+            ? [] : allowed && !changesProfile ? ["existing.test", "added.test"] : ["existing.test"]
         if retired {
             #expect(replies.allSatisfy { $0["error"] is String && $0["value"] == nil })
         } else {
@@ -117,13 +146,11 @@ extension DashboardWindowOwnershipTests {
             let browser = try #require(snapshot["browser"] as? [String: Any])
             let sync = try #require(browser["cookieSync"] as? [String: Any])
             #expect(snapshot["contract"] as? Int == 1)
-            #expect(sync["domains"] as? [String] == (allowed && !changesProfile
-                    ? ["existing.test", "added.test"] : ["existing.test"]))
+            #expect(sync["domains"] as? [String] == expectedDomains)
             #expect(sync["targetProfile"] as? String == (allowed && changesProfile ? "work" : "imported"))
             #expect(replies.first { $0["type"] as? String == "status" }?["value"] is NSNull)
         }
-        #expect(state.cookieSyncDomains == (allowed && !changesProfile
-                ? ["existing.test", "added.test"] : ["existing.test"]))
+        #expect(state.cookieSyncDomains == expectedDomains)
         #expect(state.cookieSyncIntoProfile == (allowed && changesProfile ? "work" : "imported"))
 
         guard transition != "close" else { return }

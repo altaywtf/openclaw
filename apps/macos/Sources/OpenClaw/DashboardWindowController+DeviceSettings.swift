@@ -45,9 +45,7 @@ extension DashboardWindowController {
             await self.publishDeviceSettings()
             await BrowserProfileImportModel.shared.refreshAvailability()
         case let .set(key, value):
-            if await self.confirmDeviceSetting(key, value: value) {
-                await self.setDeviceSetting(key, value: value)
-            }
+            await self.setDeviceSetting(key, value: value)
         case let .requestPermission(id):
             _ = await PermissionManager.ensure([id.capability], interactive: true)
             await PermissionMonitor.shared.refreshNow()
@@ -62,22 +60,20 @@ extension DashboardWindowController {
         NotificationCenter.default.post(name: .openclawDeviceSettingsChanged, object: nil)
     }
 
-    private func confirmDeviceSetting(_ key: DeviceSettingKey, value: DeviceSettingValue) async -> Bool {
+    private func requiredDeviceSettingConsent(
+        _ key: DeviceSettingKey,
+        value: DeviceSettingValue) -> DeviceSettingsConsent?
+    {
         let state = AppStateStore.shared
         let locationMode = AppDefaults.standard.string(forKey: locationModeKey)
             .flatMap(OpenClawLocationMode.init(rawValue:)) ?? .off
-        guard let consent = DeviceSettingsConsent.required(
+        return DeviceSettingsConsent.required(
             for: key,
             value: value,
             cookieSyncEnabled: state.cookieSyncEnabled,
             cookieDomains: state.cookieSyncDomains,
             cookieProfile: state.cookieSyncIntoProfile,
             locationMode: DeviceSettingsLocationMode(locationMode))
-        else { return true }
-        // Origin trust is not user intent: Gateway-authored pages cannot enable sensitive access on their own.
-        let sourceID = self.notificationSourceID
-        guard await self.deviceSettingsMessageHandler.confirm(consent) else { return false }
-        return self.canUseDeviceSettings(sourceID: sourceID)
     }
 
     private static let booleanStateSettings: [DeviceSettingKey: ReferenceWritableKeyPath<AppState, Bool>] = [
@@ -95,12 +91,27 @@ extension DashboardWindowController {
     ]
 
     private func setDeviceSetting(_ key: DeviceSettingKey, value: DeviceSettingValue) async {
-        switch value {
-        case let .boolean(enabled):
-            await self.setDeviceBoolean(key, enabled: enabled)
-        case let .string(value):
-            await self.setDeviceString(key, value: value)
-        case let .strings(values):
+        let sourceID = self.notificationSourceID
+        let consent = self.requiredDeviceSettingConsent(key, value: value)
+        if let consent {
+            guard await self.deviceSettingsMessageHandler.confirm(consent) else { return }
+        }
+        // Another window can revoke scope while the sheet is open. Compare the consent
+        // actually shown, then keep cookie mutations synchronous with this check.
+        guard self.canUseDeviceSettings(sourceID: sourceID),
+              self.requiredDeviceSettingConsent(key, value: value) == consent else { return }
+        switch (key, value) {
+        case let (.wakeEnabled, .boolean(enabled)):
+            await AppStateStore.shared.setVoiceWakeEnabled(enabled) { self.canUseDeviceSettings(sourceID: sourceID) }
+        case let (.locationMode, .string(value)):
+            guard let mode = DeviceSettingsLocationMode(rawValue: value) else { return }
+            await AppStateStore.shared
+                .setLocationMode(mode.nativeMode) { self.canUseDeviceSettings(sourceID: sourceID) }
+        case let (_, .boolean(enabled)):
+            self.setDeviceBoolean(key, enabled: enabled)
+        case let (_, .string(value)):
+            self.setDeviceString(key, value: value)
+        case let (_, .strings(values)):
             let state = AppStateStore.shared
             if key == .cookieSyncDomains {
                 state.cookieSyncDomains = CookieSyncManager.normalizedDomains(values)
@@ -109,14 +120,14 @@ extension DashboardWindowController {
                 guard values.allSatisfy(available.contains) else { return }
                 state.voiceWakeAdditionalLocaleIDs = values
             }
-        case .null:
+        case (_, .null):
             guard key == .microphone else { return }
             AppStateStore.shared.voiceWakeMicName = ""
             AppStateStore.shared.voiceWakeMicID = ""
         }
     }
 
-    private func setDeviceBoolean(_ key: DeviceSettingKey, enabled: Bool) async {
+    private func setDeviceBoolean(_ key: DeviceSettingKey, enabled: Bool) {
         let state = AppStateStore.shared
         let defaults = AppDefaults.standard
         if let keyPath = Self.booleanStateSettings[key] {
@@ -140,9 +151,6 @@ extension DashboardWindowController {
             state.applyComputerControlHostState()
         case .locationPrecise:
             defaults.set(enabled, forKey: locationPreciseKey)
-        case .wakeEnabled:
-            let sourceID = self.notificationSourceID
-            await state.setVoiceWakeEnabled(enabled) { self.canUseDeviceSettings(sourceID: sourceID) }
         case .triggerChime:
             state.voiceWakeTriggerChime = Self.deviceChime(enabled: enabled, current: state.voiceWakeTriggerChime)
         case .sendChime:
@@ -157,7 +165,7 @@ extension DashboardWindowController {
         }
     }
 
-    private func setDeviceString(_ key: DeviceSettingKey, value: String) async {
+    private func setDeviceString(_ key: DeviceSettingKey, value: String) {
         let state = AppStateStore.shared
         let defaults = AppDefaults.standard
         switch key {
@@ -171,10 +179,6 @@ extension DashboardWindowController {
             state.applyComputerControlHostState()
         case .cookieSyncTargetProfile:
             state.cookieSyncIntoProfile = value.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty ?? "imported"
-        case .locationMode:
-            guard let mode = DeviceSettingsLocationMode(rawValue: value) else { return }
-            let sourceID = self.notificationSourceID
-            await state.setLocationMode(mode.nativeMode) { self.canUseDeviceSettings(sourceID: sourceID) }
         case .microphone:
             let devices = VoiceWakeDeviceOptions.microphones()
             guard devices.contains(where: { $0.id == value }) else { return }
