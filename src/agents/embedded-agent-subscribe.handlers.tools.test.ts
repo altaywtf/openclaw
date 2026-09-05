@@ -247,6 +247,8 @@ function requireString(value: unknown, label: string): string {
 describe("progress_card compatibility plan events", () => {
   it("does not emit a generic argument summary before the authoritative plan event", async () => {
     const { ctx } = createTestContext();
+    ctx.params.onToolResult = vi.fn();
+    ctx.shouldEmitToolResult = () => true;
 
     await startTool(ctx, {
       toolName: "progress_card",

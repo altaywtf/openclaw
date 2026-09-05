@@ -117,6 +117,59 @@ describeTelegramDispatch("dispatchTelegramMessage progress-rendering", () => {
     expect(preview?.text).not.toContain("<code>");
   });
 
+  it.each(["partial", "block"] as const)(
+    "renders compact card status in %s previews without raw markup",
+    async (streamMode) => {
+      const draftStream = createSequencedDraftStream(2001);
+      createTelegramDraftStream.mockReturnValue(draftStream);
+      dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ replyOptions }) => {
+        await replyOptions?.onPlanUpdate?.({
+          phase: "update",
+          explanation: "0/1 complete",
+          steps: [{ step: "Configure Browser Use", status: "in_progress" }],
+        });
+        return { queuedFinal: false };
+      });
+
+      await dispatchWithContext({
+        context: createContext(),
+        streamMode,
+        telegramCfg: { streaming: { mode: streamMode, preview: { toolProgress: true } } },
+      });
+
+      expect(draftStream.updatePreview).toHaveBeenLastCalledWith(
+        telegramProgressPreview("Working\n\n0/1 complete", "<b>Working</b><br>0/1 complete"),
+      );
+    },
+  );
+
+  it("renders failed progress-card attention without raw arguments", async () => {
+    const draftStream = createSequencedDraftStream(2001);
+    createTelegramDraftStream.mockReturnValue(draftStream);
+    dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ replyOptions }) => {
+      await replyOptions?.onItemEvent?.({
+        itemId: "plan-failed",
+        kind: "tool",
+        name: "progress_card",
+        status: "failed",
+        meta: '<progress aria-label="private" value="1" max="2"></progress>',
+      });
+      return { queuedFinal: false };
+    });
+
+    await dispatchWithContext({
+      context: createContext(),
+      streamMode: "progress",
+      telegramCfg: { streaming: { mode: "progress", progress: { toolProgress: false } } },
+    });
+
+    const preview = draftStream.updatePreview.mock.calls.at(-1)?.[0];
+    expect(preview?.text).toContain("Progress Card");
+    expect(preview?.text).toContain("failed");
+    expect(preview?.text).not.toContain("<progress");
+    expect(preview?.text).not.toContain("private");
+  });
+
   it("renders plan checklists when the explanation is omitted", async () => {
     const draftStream = createSequencedDraftStream(2001);
     createTelegramDraftStream.mockReturnValue(draftStream);

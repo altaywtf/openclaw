@@ -567,7 +567,13 @@ export function buildChannelProgressDraftLine(
     case "item": {
       const name = input.name ?? itemKindToToolName(input.itemKind);
       if (isAgentPlanProgressToolName(name)) {
-        return undefined;
+        const status = normalizeOptionalLowercaseString(input.status);
+        return status === "failed" || status === "error"
+          ? buildNamedProgressLine(input.event, name, [], options, {
+              id: resolveProgressDraftLineId(input),
+              status,
+            })
+          : undefined;
       }
       const meta =
         options?.commandText !== "raw" && isCommandProgressItem(input)
@@ -607,16 +613,14 @@ export function buildChannelProgressDraftLine(
       if (input.phase !== undefined && input.phase !== "update") {
         return undefined;
       }
-      return buildNamedProgressLine(
-        input.event,
-        "progress_card",
-        [
-          input.explanation,
-          normalizeAgentPlanSteps(input.steps)?.[0]?.step,
-          input.title ?? "planning",
-        ],
-        options,
-      );
+      const text = compactStrings([
+        input.explanation,
+        normalizeAgentPlanSteps(input.steps)?.[0]?.step,
+        input.title ?? "Progress updated",
+      ])[0];
+      return text
+        ? { id: "plan:status", kind: input.event, text, label: "", prefix: false }
+        : undefined;
     }
     case "approval": {
       if (input.phase !== undefined && input.phase !== "requested") {

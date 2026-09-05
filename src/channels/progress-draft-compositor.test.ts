@@ -93,7 +93,7 @@ describe("createChannelProgressDraftCompositor", () => {
     });
   });
 
-  it("publishes partial-preview tool lines without enabling progress-only plans", async () => {
+  it("publishes compact plan status in partial previews without enabling checklists", async () => {
     const update = vi.fn();
     const progress = createChannelProgressDraftCompositor({
       entry: { streaming: { mode: "partial", progress: { label: false } } },
@@ -107,8 +107,26 @@ describe("createChannelProgressDraftCompositor", () => {
     expect(update).toHaveBeenLastCalledWith("• Inspecting files", {
       lines: ["Inspecting files"],
     });
-    expect(await progress.pushPlanProgress([{ step: "Patch", status: "in_progress" }])).toBe(false);
-    expect(update).toHaveBeenCalledTimes(1);
+    expect(
+      await progress.pushPlanProgress([{ step: "Patch", status: "in_progress" }], {
+        explanation: "0/1 complete",
+      }),
+    ).toBe(true);
+    expect(update).toHaveBeenLastCalledWith("• Inspecting files\n0/1 complete", {
+      lines: [
+        "Inspecting files",
+        { id: "plan:status", kind: "plan", text: "0/1 complete", label: "", prefix: false },
+      ],
+    });
+    await progress.pushPlanProgress([{ step: "Patch", status: "completed" }], {
+      explanation: "1/1 complete",
+    });
+    expect(update).toHaveBeenLastCalledWith("• Inspecting files\n1/1 complete", {
+      lines: [
+        "Inspecting files",
+        { id: "plan:status", kind: "plan", text: "1/1 complete", label: "", prefix: false },
+      ],
+    });
   });
 
   it("returns detached structured state for channel-native renderers", async () => {

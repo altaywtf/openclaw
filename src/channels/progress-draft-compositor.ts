@@ -18,6 +18,7 @@ import {
 } from "./progress-draft-status-text.js";
 import { settleProgressVisibilityCallbackResult } from "./progress-visibility.js";
 import {
+  buildChannelProgressDraftLineForEntry,
   createChannelProgressDraftGate,
   type AgentPlanStep,
   type ChannelProgressDraftLine,
@@ -547,14 +548,18 @@ export function createChannelProgressDraftCompositor(params: {
       steps?: AgentPlanStep[],
       options?: { explanation?: string },
     ): Promise<boolean> {
-      if (
-        !params.active ||
-        params.mode !== "progress" ||
-        progressSuppressed ||
-        finalReplyStarted ||
-        finalReplyDelivered
-      ) {
+      if (!params.active || progressSuppressed || finalReplyStarted || finalReplyDelivered) {
         return false;
+      }
+      if (params.mode !== "progress") {
+        return await noteProgress(
+          buildChannelProgressDraftLineForEntry(params.entry, {
+            event: "plan",
+            phase: "update",
+            explanation: options?.explanation,
+            steps,
+          }),
+        );
       }
       planSteps = steps && steps.length > 0 ? steps.map((entry) => ({ ...entry })) : undefined;
       planExplanation = options?.explanation?.replace(/\s+/g, " ").trim() ?? "";

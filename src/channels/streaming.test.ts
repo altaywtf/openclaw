@@ -44,6 +44,25 @@ describe("buildChannelProgressDraftLine", () => {
     },
   );
 
+  it("keeps failed plan-tool attention without raw argument metadata", () => {
+    expect(
+      buildChannelProgressDraftLine({
+        event: "item",
+        itemId: "plan-failed",
+        itemKind: "tool",
+        name: "progress_card",
+        status: "failed",
+        meta: '<progress aria-label="private" value="1" max="2"></progress>',
+      }),
+    ).toMatchObject({
+      id: "plan-failed",
+      kind: "item",
+      label: "Progress Card",
+      status: "failed",
+      text: "🗺️ Progress Card",
+    });
+  });
+
   it("omits generic completed status from successful command output with title", () => {
     const line = buildChannelProgressDraftLine(
       {
