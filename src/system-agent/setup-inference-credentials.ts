@@ -31,16 +31,14 @@ import {
   persistProviderAuthSetupCandidates,
   prepareProviderAuthSetupResult,
 } from "../plugins/provider-auth-persistence.js";
+import { supportsProviderAuthChoiceTextInference } from "../plugins/provider-login-options.js";
 import { resolvePluginProvidersCore } from "../plugins/providers.runtime.js";
 import type { ProviderAuthMethod, ProviderAuthResult } from "../plugins/types.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { closeOpenClawAgentDatabases } from "../state/openclaw-agent-db.js";
 import { createPluginCapabilityConsentPrompter } from "../wizard/plugin-capability-consent.js";
 import { createQuickstartNotePrompter } from "./setup-apply.js";
-import {
-  supportsSetupManualSecret,
-  supportsSetupTextInference,
-} from "./setup-inference-auth-options.js";
+import { supportsSetupManualSecret } from "./setup-inference-auth-options.js";
 import {
   type ActivateSetupInferenceParams,
   type SetupInferenceDeps,
@@ -172,7 +170,11 @@ async function loadProviderAuthMethod(
         normalizeProviderId(candidate.id) === normalizeProviderId(choice.providerId),
     );
     const method = provider?.auth.find((candidate) => candidate.id === choice.methodId);
-    if (!provider || !method || !supportsSetupTextInference(method.wizard?.onboardingScopes)) {
+    if (
+      !provider ||
+      !method ||
+      !supportsProviderAuthChoiceTextInference(method.wizard?.onboardingScopes)
+    ) {
       return { error: "That provider setup is not available on this Gateway." };
     }
     return { config: enabled.config, providerId: provider.id, label: provider.label, method };
@@ -197,6 +199,29 @@ function resolveSetupModel(params: {
     return { error: `${modelRef} is not compatible with the ${params.label} inference route.` };
   }
   return modelRef;
+}
+
+async function persistSetupCredentials(
+  ctx: StageContext,
+  choice: ProviderAuthChoiceMetadata,
+  candidate: { profiles: ProviderAuthResult["profiles"]; config: OpenClawConfig; modelRef: string },
+): Promise<void> {
+  await ctx.beforePersistentEffect("credential");
+  persistProviderAuthSetupCandidates({
+    profiles: candidate.profiles,
+    baseConfig: ctx.cfg,
+    config: candidate.config,
+    agentDir: ctx.agentDir,
+    setup: buildPendingAuthProfileSetup({
+      baseConfig: ctx.cfg,
+      config: candidate.config,
+      modelRef: candidate.modelRef,
+      providerId: choice.providerId,
+      pluginId: choice.pluginId,
+      authChoice: choice.choiceId,
+    }),
+  });
+  ctx.credentialsSaved = candidate.profiles.length > 0;
 }
 
 /** Providers without a plugin-owned secret writer take the pasted key through their CLI path. */
@@ -282,22 +307,11 @@ async function runProviderManualSecretMethod(
     if (typeof modelRef !== "string") {
       throw new Error(modelRef.error);
     }
-    await ctx.beforePersistentEffect("credential");
-    persistProviderAuthSetupCandidates({
+    await persistSetupCredentials(ctx, choice, {
       profiles: result.profiles,
-      baseConfig: ctx.cfg,
       config: nextConfig,
-      agentDir: ctx.agentDir,
-      setup: buildPendingAuthProfileSetup({
-        baseConfig: ctx.cfg,
-        config: nextConfig,
-        modelRef,
-        providerId: choice.providerId,
-        pluginId: choice.pluginId,
-        authChoice: choice.choiceId,
-      }),
+      modelRef,
     });
-    ctx.credentialsSaved = result.profiles.length > 0;
     return { result, config: nextConfig };
   } finally {
     clearRuntimeAuthProfileStoreSnapshot(stagingAgentDir);
@@ -323,7 +337,7 @@ export async function stageProviderAutoCandidate(
   if (
     !choice ||
     choice.appGuidedDiscovery !== true ||
-    !supportsSetupTextInference(choice.onboardingScopes)
+    !supportsProviderAuthChoiceTextInference(choice.onboardingScopes)
   ) {
     return { error: "That detected provider is no longer available on this Gateway." };
   }
@@ -357,22 +371,7 @@ export async function stageProviderAutoCandidate(
     result: prepared,
   });
   if (prepared.profiles.length > 0) {
-    await ctx.beforePersistentEffect("credential");
-    persistProviderAuthSetupCandidates({
-      profiles: prepared.profiles,
-      baseConfig: ctx.cfg,
-      config,
-      agentDir: ctx.agentDir,
-      setup: buildPendingAuthProfileSetup({
-        baseConfig: ctx.cfg,
-        config,
-        modelRef,
-        providerId: choice.providerId,
-        pluginId: choice.pluginId,
-        authChoice: choice.choiceId,
-      }),
-    });
-    ctx.credentialsSaved = true;
+    await persistSetupCredentials(ctx, choice, { profiles: prepared.profiles, config, modelRef });
   }
   return {
     modelRef,
@@ -435,7 +434,7 @@ export async function stageProviderAuthCandidate(
     : "That key-based provider is not available on this Gateway.";
   if (
     !choice ||
-    !supportsSetupTextInference(choice.onboardingScopes) ||
+    !supportsProviderAuthChoiceTextInference(choice.onboardingScopes) ||
     (!interactive && !supportsSetupManualSecret(choice)) ||
     (interactive &&
       (choice.assistantVisibility === "manual-only" ||
@@ -552,22 +551,11 @@ export async function stageProviderAuthCandidate(
         result: prepared,
       });
       if (prepared.profiles.length > 0) {
-        await ctx.beforePersistentEffect("credential");
-        persistProviderAuthSetupCandidates({
+        await persistSetupCredentials(ctx, choice, {
           profiles: prepared.profiles,
-          baseConfig: ctx.cfg,
           config,
-          agentDir: ctx.agentDir,
-          setup: buildPendingAuthProfileSetup({
-            baseConfig: ctx.cfg,
-            config,
-            modelRef,
-            providerId: choice.providerId,
-            pluginId: choice.pluginId,
-            authChoice: choice.choiceId,
-          }),
+          modelRef,
         });
-        ctx.credentialsSaved = true;
       }
       return {
         modelRef,

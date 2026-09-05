@@ -55,7 +55,6 @@ type ListModelsParams = {
   agentId?: string;
   agentDir?: string;
   workspaceDir?: string;
-  preparedOnly?: boolean;
   catalog: ModelCatalogEntry[];
   catalogLoadDelayMs?: number;
   preparedCatalog?: ModelCatalogEntry[];
@@ -128,7 +127,6 @@ async function listModelsWithFacts(params: ListModelsParams, agentId: string) {
   const listParams = {
     view: params.view ?? "all",
     ...(params.refresh ? { refresh: true } : {}),
-    ...(params.preparedOnly ? { preparedOnly: true } : {}),
   } as const;
   if (!params.discoveryModes) {
     return await buildModelsListResult({

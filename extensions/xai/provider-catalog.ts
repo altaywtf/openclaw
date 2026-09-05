@@ -44,17 +44,13 @@ export function buildXaiProvider(
   };
 }
 
-function buildXaiOAuthFallbackProvider(): ModelProviderConfig {
+export function buildXaiOAuthProvider(): ModelProviderConfig {
   return {
     baseUrl: XAI_GROK_OAUTH_BASE_URL,
     api: "openai-responses",
     auth: "oauth",
     models: buildXaiCatalogModels(),
   };
-}
-
-export function buildXaiOAuthProvider(): ModelProviderConfig {
-  return buildXaiOAuthFallbackProvider();
 }
 
 export async function buildLiveXaiProvider(params: {
@@ -169,8 +165,8 @@ export async function buildLiveXaiOAuthProvider(params: {
   fetchGuard?: LiveModelCatalogFetchGuard;
   signal?: AbortSignal;
 }): Promise<ModelProviderConfig> {
-  const fallback = buildXaiOAuthFallbackProvider();
-  const provider = await buildLiveModelProviderConfig({
+  const fallback = buildXaiOAuthProvider();
+  return await buildLiveModelProviderConfig({
     discoveryMode: "strict",
     providerId: PROVIDER_ID,
     endpoint: XAI_GROK_OAUTH_MODELS_ENDPOINT,
@@ -196,5 +192,4 @@ export async function buildLiveXaiOAuthProvider(params: {
         .map(buildXaiOauthModelFromLiveRow)
         .filter((model): model is ModelDefinitionConfig => Boolean(model)),
   });
-  return provider;
 }

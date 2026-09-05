@@ -107,7 +107,6 @@ vi.mock("openclaw/plugin-sdk/agent-runtime", () => ({
 import {
   assertCodexAppServerClientStartSelectionCurrent,
   captureCodexAppServerClientLifetime,
-  captureSharedCodexAppServerCatalogLifetime,
   getSharedCodexAppServerClient,
   readCodexAppServerClientDesktopGeneration,
   readCodexAppServerClientProcessIdentity,
@@ -595,12 +594,10 @@ describe("shared Codex app-server client", () => {
     retained?.release();
     expect(releaseLeasedSharedCodexAppServerClient(client)).toBe(true);
     expect(assertCurrent).not.toThrow();
-    const catalogCurrent = captureSharedCodexAppServerCatalogLifetime(client);
     const configWrite = client.request("config/batchWrite", { edits: [], reloadUserConfig: false });
     const written = JSON.parse(harness.writes.at(-1)!);
     harness.send({ id: written.id, result: {} });
     await configWrite;
-    expect(catalogCurrent()).toBe(false);
     expect(assertCurrent).not.toThrow();
     client.close();
     expect(assertCurrent).toThrow(CodexAdoptedThreadActiveError);
@@ -2536,14 +2533,10 @@ describe("shared Codex app-server client", () => {
     const lease = getLeasedSharedCodexAppServerClient({ timeoutMs: 1000 });
     await sendInitializeResult(first, "openclaw/0.149.0 (macOS; test)");
     await expect(lease).resolves.toBe(first.client);
-    const current = captureSharedCodexAppServerCatalogLifetime(first.client);
-    expect(current()).toBe(true);
     expect(releaseLeasedSharedCodexAppServerClient(first.client)).toBe(true);
-    expect(current()).toBe(true);
     await expect(getLeasedSharedCodexAppServerClient({ timeoutMs: 1000 })).resolves.toBe(
       first.client,
     );
-    expect(current()).toBe(true);
 
     // Routine cleanup (e.g. one-shot bundle-MCP) must not yank a healthy
     // client from co-leased sessions; only suspect retirement does.
@@ -2552,32 +2545,10 @@ describe("shared Codex app-server client", () => {
       closed: false,
     });
     expect(first.process.stdin.destroyed).toBe(false);
-    expect(current()).toBe(false);
 
     expect(releaseLeasedSharedCodexAppServerClient(first.client)).toBe(true);
     expect(first.process.stdin.destroyed).toBe(true);
   });
-
-  it.each(["account/login/start", "account/logout", "config/value/write", "config/batchWrite"])(
-    "invalidates catalog observations before %s settles",
-    async (method) => {
-      const transport = createClientHarness();
-      vi.spyOn(CodexAppServerClient, "start").mockResolvedValueOnce(transport.client);
-      const lease = getLeasedSharedCodexAppServerClient({ timeoutMs: 1000 });
-      await sendInitializeResult(transport, "openclaw/0.149.0 (test)");
-      const client = await lease;
-      const current = captureSharedCodexAppServerCatalogLifetime(client);
-      expect(current()).toBe(true);
-      const requestIndex = transport.writes.length;
-      const pending = client.request(method, {});
-      const request = JSON.parse(await transport.waitForWrite(requestIndex));
-      expect(current()).toBe(false);
-      transport.send({ id: request.id, result: {} });
-      await pending;
-      expect(current()).toBe(false);
-      releaseLeasedSharedCodexAppServerClient(client);
-    },
-  );
 
   it("waits for a dirty desktop generation before reusing a warm managed client", async () => {
     const generation = { epoch: 1, fingerprint: "desktop-x" };

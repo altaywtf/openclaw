@@ -146,13 +146,12 @@ function createPublicModelsListProjector(params: {
     let preparedEntry = prepared.get(entry);
     if (!preparedEntry) {
       const configuredEntry = params.configuredEntriesByKey.get(modelKey(entry.provider, entry.id));
-      const publicEntry = entry;
       const capabilityProvider = params.apiKeyCapabilities?.resolveProvider(entry.provider);
       const runtime = params.runtime(entry);
       const supportsFastMode = params.supportsFastMode(entry);
       const agentRuntime = runtime ? projectWorkerPlacementAgentRuntime(runtime) : undefined;
       const thinkingProfile =
-        typeof publicEntry.reasoning !== "boolean"
+        typeof entry.reasoning !== "boolean"
           ? undefined
           : resolveGatewayModelThinkingProfile({
               cfg: params.cfg,
@@ -161,8 +160,8 @@ function createPublicModelsListProjector(params: {
               model: entry.id,
               agentRuntime: runtime?.id,
               modelCatalog: params.thinkingCatalog,
-              configuredReasoning: publicEntry.configuredReasoning ?? publicEntry.reasoning,
-              thinkingPolicyProvider: publicEntry.thinkingPolicyProvider,
+              configuredReasoning: entry.configuredReasoning ?? entry.reasoning,
+              thinkingPolicyProvider: entry.thinkingPolicyProvider,
             });
       const fastModeState = resolveFastModeState({
         cfg: params.cfg,
@@ -171,7 +170,7 @@ function createPublicModelsListProjector(params: {
         model: entry.id,
       });
       preparedEntry = {
-        ...buildPublicModelProjection(publicEntry, params),
+        ...buildPublicModelProjection(entry, params),
         ...(configuredEntry?.tags.size ? { tags: [...configuredEntry.tags] } : {}),
         ...(agentRuntime ? { agentRuntime } : {}),
         ...(supportsFastMode === undefined ? {} : { supportsFastMode }),
@@ -365,13 +364,15 @@ export async function prepareModelsListResult(
   const capableProviders = includeProviderCapabilities
     ? apiKeyProviderCapabilities({ cfg, metadataSnapshot, workspaceDir })
     : undefined;
-  if (view === "provider-config") {
+  const providerConfigView = view === "provider-config";
+  let inventoryEntries: ModelCatalogEntry[] | undefined;
+  if (providerConfigView) {
     const sourceConfig = getRuntimeConfigSourceSnapshot() ?? cfg;
     const authoredEntries = buildProviderConfigModelCatalogForBrowse({
       cfg: sourceConfig,
       workspaceDir,
     });
-    const inventoryEntries = resolveProviderConfigInventoryEntries({
+    inventoryEntries = resolveProviderConfigInventoryEntries({
       authoredEntries,
       canonicalEntries: catalog,
       discoveryOnlyProviderIds: listConfiguredRuntimeDiscoveryProviderIds(
@@ -379,51 +380,18 @@ export async function prepareModelsListResult(
         metadataSnapshot,
       ),
     });
-    const inventory = await prepareModelCatalogView({
-      cfg,
-      agentId,
-      workspaceDir,
-      snapshot,
-      inventoryEntries,
-      metadataSnapshot,
-      auth: { authStore: preparedAuthStore, providerAuth: preparedProviderAuth ?? {} },
-      authMaterializations: preparedRuntimeAuthMaterializations,
-      catalogComplete: preparedSyntheticAuthComplete,
-      view: "all",
-      ...selection,
-    });
-    const projectPublic = createPublicModelsListProjector({
-      thinkingCatalog: inventory.runtimeCatalog,
-      cfg,
-      agentId,
-      configuredEntriesByKey: inventory.configuredEntries.byKey,
-      runtime: inventory.runtime,
-      supportsFastMode: inventory.supportsFastMode,
-      includeInput: true,
-      includeDetails: params.params.includeDetails,
-      preserveUnknownAvailability: true,
-      ...(capableProviders ? { apiKeyCapabilities: capableProviders } : {}),
-    });
-    return {
-      isCurrent: () => isCurrent() && inventory.isCurrent(),
-      read: () => ({
-        models: inventory.entries
-          .filter(matchesRequestedProvider)
-          .map((entry) => projectPublic(entry, inventory.evaluate(entry))),
-        ...outcomeProjection,
-      }),
-    };
   }
   const preparedView = await prepareModelCatalogView({
     cfg,
     agentId,
     workspaceDir,
     snapshot,
+    inventoryEntries,
     metadataSnapshot,
     auth: { authStore: preparedAuthStore, providerAuth: preparedProviderAuth ?? {} },
     authMaterializations: preparedRuntimeAuthMaterializations,
     catalogComplete: preparedSyntheticAuthComplete,
-    view,
+    view: providerConfigView ? "all" : view,
     ...selection,
   });
   const projectPublic = createPublicModelsListProjector({
@@ -433,13 +401,22 @@ export async function prepareModelsListResult(
     configuredEntriesByKey: preparedView.configuredEntries.byKey,
     runtime: preparedView.runtime,
     supportsFastMode: preparedView.supportsFastMode,
+    includeInput: providerConfigView,
     includeDetails: params.params.includeDetails,
-    preserveUnknownAvailability: params.params.includeDetails,
+    preserveUnknownAvailability: providerConfigView || params.params.includeDetails,
     ...(capableProviders ? { apiKeyCapabilities: capableProviders } : {}),
   });
-  const models = preparedView.entries
-    .filter(matchesRequestedProvider)
-    .map((entry) => projectPublic(entry, preparedView.evaluate(entry)));
+  const readModels = () =>
+    preparedView.entries
+      .filter(matchesRequestedProvider)
+      .map((entry) => projectPublic(entry, preparedView.evaluate(entry)));
+  if (providerConfigView) {
+    return {
+      isCurrent: () => isCurrent() && preparedView.isCurrent(),
+      read: () => ({ models: readModels(), ...outcomeProjection }),
+    };
+  }
+  const models = readModels();
   return {
     isCurrent: () => isCurrent() && preparedView.isCurrent(),
     read: () => ({ models, ...outcomeProjection }),

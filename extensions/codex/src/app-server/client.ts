@@ -218,7 +218,6 @@ export class CodexAppServerClient {
   private readonly closeHandlers = new Set<(client: CodexAppServerClient) => void>();
   private nextId = 1;
   private initialized = false;
-  private modelCatalogRevision = 0;
   private closed = false;
   private transportExited = false;
   private closeError: Error | undefined;
@@ -375,11 +374,6 @@ export class CodexAppServerClient {
   /** Stable generation id for this exact physical client instance. */
   getInstanceId(): string {
     return this.instanceId;
-  }
-
-  /** Account/config observations become stale before a mutation can enter the wire. */
-  getModelCatalogRevision(): number {
-    return this.modelCatalogRevision;
   }
 
   /** Installs the spawn-owner check run before config-loading thread requests. */
@@ -608,14 +602,6 @@ export class CodexAppServerClient {
       );
     }
     const id = this.nextId++;
-    if (
-      method === "account/login/start" ||
-      method === "account/logout" ||
-      method === "config/value/write" ||
-      method === "config/batchWrite"
-    ) {
-      this.modelCatalogRevision += 1;
-    }
     const message: RpcRequest = { id, method, params: params as JsonValue | undefined };
     return new Promise<T>((resolve, reject) => {
       let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -969,9 +955,6 @@ export class CodexAppServerClient {
   }
 
   private handleNotification(notification: CodexServerNotification): void {
-    if (notification.method === "account/updated") {
-      this.modelCatalogRevision += 1;
-    }
     if (this.notificationHandlers.size === 0 && notification.method === "configWarning") {
       if (this.pendingStartupWarnings.length === CODEX_APP_SERVER_PENDING_STARTUP_WARNINGS_MAX) {
         this.pendingStartupWarnings.shift();

@@ -395,22 +395,7 @@ describe("prepared allowlist presentation", () => {
     );
   });
 
-  it("uses explicit allowed choices without loading a catalog", async () => {
-    const multiselect = vi.fn().mockResolvedValue(["fixture/secondary"]);
-    await expect(
-      promptModelAllowlist({
-        config: pickerConfig,
-        prompter: makePrompter({ multiselect }),
-        allowedKeys: ["fixture/primary", "fixture/secondary"],
-      }),
-    ).resolves.toEqual({
-      models: ["fixture/secondary"],
-      scopeKeys: ["fixture/primary", "fixture/secondary"],
-    });
-    expect(mocks.loadView).not.toHaveBeenCalled();
-  });
-
-  it("retains allowed keys outside the catalog and applies only the requested scope", async () => {
+  it("retains explicit allowed keys and their scope without loading a catalog", async () => {
     const multiselect = vi.fn().mockResolvedValue(["fixture/missing"]);
     await expect(
       promptModelAllowlist({
@@ -430,18 +415,6 @@ describe("prepared allowlist presentation", () => {
         ],
       }),
     );
-  });
-
-  it("keeps zero-discovery scoped edits independent of auth or catalogs", async () => {
-    const multiselect = vi.fn().mockResolvedValue(["fixture/missing"]);
-    await expect(
-      promptModelAllowlist({
-        config: pickerConfig,
-        prompter: makePrompter({ multiselect }),
-        allowedKeys: ["fixture/missing"],
-        loadCatalog: false,
-      }),
-    ).resolves.toEqual({ models: ["fixture/missing"], scopeKeys: ["fixture/missing"] });
     expect(mocks.loadView).not.toHaveBeenCalled();
   });
 

@@ -244,28 +244,6 @@ module.exports = {
 }
 
 describe("prepared worker inventory ownership", () => {
-  it("retains a newly observed hosted account model without a provider wildcard", async () => {
-    const fixture = await createInventoryFixture();
-    try {
-      expect(fs.existsSync(fixture.marker)).toBe(false);
-      const catalog = await fixture.loadFullCatalog();
-
-      expect(JSON.parse(fs.readFileSync(fixture.marker, "utf8").trim().split("\n")[0]!)).toEqual({
-        isMainThread: false,
-        mode: "oauth",
-        source: "profile",
-        agentDir: fixture.agentDir,
-        models: ["known", "new-account-model"],
-      });
-      expect(catalog.entries).toContainEqual(
-        expect.objectContaining({ provider: PROVIDER_ID, id: "new-account-model" }),
-      );
-      expect(fixture.config).toEqual(fixture.configBefore);
-    } finally {
-      await fixture.close();
-    }
-  });
-
   it.each([
     {
       name: "native provider preset",
@@ -347,13 +325,24 @@ describe("prepared worker inventory ownership", () => {
   it("retains curated browse inventory after full publication without inventing account access", async () => {
     const fixture = await createInventoryFixture();
     try {
+      expect(fs.existsSync(fixture.marker)).toBe(false);
       expect(fixture.snapshot.modelCatalog.entries).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ provider: PROVIDER_ID, id: "new-account-model" }),
           expect.objectContaining({ provider: PROVIDER_ID, id: "curated-only" }),
         ]),
       );
-      await fixture.loadFullCatalog();
+      const catalog = await fixture.loadFullCatalog();
+      expect(JSON.parse(fs.readFileSync(fixture.marker, "utf8").trim().split("\n")[0]!)).toEqual({
+        isMainThread: false,
+        mode: "oauth",
+        source: "profile",
+        agentDir: fixture.agentDir,
+        models: ["known", "new-account-model"],
+      });
+      expect(catalog.entries).toContainEqual(
+        expect.objectContaining({ provider: PROVIDER_ID, id: "new-account-model" }),
+      );
       const view = await fixture.project("all");
       const observed = view.entries.find((entry) => entry.id === "new-account-model");
       const curated = view.entries.find((entry) => entry.id === "curated-only");

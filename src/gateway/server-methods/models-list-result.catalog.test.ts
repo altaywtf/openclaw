@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ModelCatalogSnapshot } from "../../agents/model-catalog.types.js";
+import type { ModelCatalogEntry } from "../../agents/model-catalog.types.js";
 import { notifyPreparedModelRuntimePublication } from "../../agents/prepared-model-runtime.publication-events.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
@@ -7,6 +7,39 @@ import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import type { PreparedGatewayModelCatalogSnapshot } from "../server-model-catalog-auth.js";
 import { registerGatewayModelCatalogPrivateAccess } from "../server-model-catalog-auth.js";
 import { buildModelsListResult, prepareModelsListResult } from "./models-list-result.js";
+
+function catalogOwner(
+  config: OpenClawConfig,
+  entries: ModelCatalogEntry[],
+  overrides: Partial<PreparedGatewayModelCatalogSnapshot> = {},
+): PreparedGatewayModelCatalogSnapshot {
+  return {
+    agentId: "main",
+    agentDir: "/tmp/models-list-agent",
+    workspaceDir: "/tmp/models-list-workspace",
+    config,
+    providerAuth: {},
+    authStore: { version: 1, profiles: {} },
+    metadataSnapshot: createPluginMetadataSnapshotFixture(),
+    oauthRefreshProviderIds: [],
+    authMaterializations: [],
+    entries,
+    routeVariants: entries,
+    catalogComplete: false,
+    ...overrides,
+  };
+}
+
+function catalogContext(
+  config: OpenClawConfig,
+  access: Parameters<typeof registerGatewayModelCatalogPrivateAccess>[1],
+) {
+  const loadGatewayModelCatalogSnapshot = vi.fn(async () => {
+    throw new Error("Unexpected legacy catalog load");
+  });
+  registerGatewayModelCatalogPrivateAccess(loadGatewayModelCatalogSnapshot, access);
+  return { getRuntimeConfig: () => config, loadGatewayModelCatalogSnapshot };
+}
 
 describe("models.list completed catalog facts", () => {
   it.each(["default", "configured", "all"] as const)(
@@ -22,11 +55,7 @@ describe("models.list completed catalog facts", () => {
         api: "openai-completions" as const,
         baseUrl: "https://test.invalid",
       };
-      const owner: PreparedGatewayModelCatalogSnapshot = {
-        agentId: "main",
-        agentDir: "/tmp/models-list-agent",
-        workspaceDir: "/tmp/models-list-workspace",
-        config,
+      const owner = catalogOwner(config, [curated], {
         providerAuth: { test: { mode: "api_key" } },
         authStore: {
           version: 1,
@@ -34,26 +63,14 @@ describe("models.list completed catalog facts", () => {
             "test:default": { type: "api_key", provider: "test", key: "synthetic-key" },
           },
         },
-        metadataSnapshot: createPluginMetadataSnapshotFixture(),
-        oauthRefreshProviderIds: [],
-        authMaterializations: [],
-        entries: [curated],
-        routeVariants: [curated],
-        catalogComplete: false,
-      };
-      const loadGatewayModelCatalogSnapshot = vi.fn();
+      });
       const loadDeferred = vi.fn(async () => {
         throw new Error("List reads must not start discovery");
       });
-      registerGatewayModelCatalogPrivateAccess(loadGatewayModelCatalogSnapshot, {
+      const context = catalogContext(config, {
         loadDeferred,
         readPrepared: async () => owner,
       });
-      const context = {
-        getRuntimeConfig: () => config,
-        loadGatewayModelCatalogSnapshot,
-        logGateway: { debug: vi.fn(), warn: vi.fn() },
-      } as never;
 
       const result = await buildModelsListResult({
         source: { kind: "gateway", context },
@@ -64,25 +81,20 @@ describe("models.list completed catalog facts", () => {
       expect(result.models).toEqual([
         expect.objectContaining({ provider: "test", id: "curated", available: true }),
       ]);
-      expect(loadGatewayModelCatalogSnapshot).not.toHaveBeenCalled();
+      expect(context.loadGatewayModelCatalogSnapshot).not.toHaveBeenCalled();
       expect(loadDeferred).not.toHaveBeenCalled();
     },
   );
 
   it("does not construct a catalog when the lifecycle owner is unavailable", async () => {
     const config: OpenClawConfig = {};
-    const loadGatewayModelCatalogSnapshot = vi.fn();
     const loadDeferred = vi.fn(async () => {
       throw new Error("Unexpected request-time catalog construction");
     });
-    registerGatewayModelCatalogPrivateAccess(loadGatewayModelCatalogSnapshot, {
+    const context = catalogContext(config, {
       loadDeferred,
       readPrepared: async () => undefined,
     });
-    const context = {
-      getRuntimeConfig: () => config,
-      loadGatewayModelCatalogSnapshot,
-    };
 
     await expect(
       buildModelsListResult({
@@ -100,20 +112,9 @@ describe("models.list completed catalog facts", () => {
       const config: OpenClawConfig = {};
       const stale = { id: "stale", name: "Stale", provider: "previous" };
       const current = { id: "current", name: "Current", provider: "test" };
-      const owner: PreparedGatewayModelCatalogSnapshot = {
-        agentId: "main",
-        agentDir: "/tmp/models-list-agent",
-        workspaceDir: "/tmp/models-list-workspace",
-        config,
-        providerAuth: {},
-        authStore: { version: 1, profiles: {} },
-        metadataSnapshot: createPluginMetadataSnapshotFixture(),
-        oauthRefreshProviderIds: [],
-        authMaterializations: [],
-        entries: [current],
-        routeVariants: [current],
+      const owner = catalogOwner(config, [current], {
         catalogComplete: true,
-      };
+      });
       const readPrepared = vi
         .fn(async () => owner)
         .mockImplementationOnce(async () => {
@@ -121,15 +122,14 @@ describe("models.list completed catalog facts", () => {
           return { ...owner, entries: [stale], routeVariants: [stale] };
         });
       const loadDeferred = vi.fn();
-      const loadGatewayModelCatalogSnapshot = vi.fn();
-      registerGatewayModelCatalogPrivateAccess(loadGatewayModelCatalogSnapshot, {
+      const context = catalogContext(config, {
         loadDeferred,
         readPrepared,
       });
       const result = await buildModelsListResult({
         source: {
           kind: "gateway",
-          context: { getRuntimeConfig: () => config, loadGatewayModelCatalogSnapshot },
+          context,
         },
         agentId: "main",
         params: { view: "all", ...(provider ? { provider } : {}) },
@@ -145,38 +145,18 @@ describe("models.list completed catalog facts", () => {
       agents: { defaults: { model: "test/discovered" } },
     };
     const discovered = { id: "discovered", name: "Discovered", provider: "test" };
-    const catalog: ModelCatalogSnapshot = {
-      entries: [discovered],
-      routeVariants: [discovered],
-    };
-    const owner: PreparedGatewayModelCatalogSnapshot = {
-      agentId: "main",
-      agentDir: "/tmp/models-list-agent",
-      workspaceDir: "/tmp/models-list-workspace",
-      config,
-      providerAuth: {},
-      authStore: { version: 1, profiles: {} },
-      metadataSnapshot: createPluginMetadataSnapshotFixture(),
-      oauthRefreshProviderIds: [],
-      authMaterializations: [],
-      ...catalog,
+    const owner = catalogOwner(config, [discovered], {
       catalogComplete: true,
-    };
+    });
     const loadDeferred = vi.fn(async () => {
       notifyPreparedModelRuntimePublication({ phase: "catalog-published" });
       return owner;
     });
     const readPrepared = vi.fn(async () => owner);
-    const loadGatewayModelCatalogSnapshot = vi.fn();
-    registerGatewayModelCatalogPrivateAccess(loadGatewayModelCatalogSnapshot, {
+    const context = catalogContext(config, {
       loadDeferred,
       readPrepared,
     });
-    const context = {
-      getRuntimeConfig: () => config,
-      loadGatewayModelCatalogSnapshot,
-      logGateway: { debug: vi.fn(), warn: vi.fn() },
-    } as never;
 
     const refreshed = await prepareModelsListResult({
       source: { kind: "gateway", context },
@@ -296,14 +276,8 @@ describe("models.list completed catalog facts", () => {
 
   it("rejects when an explicit catalog load fails", async () => {
     const config: OpenClawConfig = {};
-    const loadGatewayModelCatalogSnapshot = vi.fn();
-    const context = {
-      getRuntimeConfig: () => config,
-      loadGatewayModelCatalogSnapshot,
-      logGateway: { debug: vi.fn(), warn: vi.fn() },
-    } as never;
     const error = new Error("catalog unavailable");
-    registerGatewayModelCatalogPrivateAccess(loadGatewayModelCatalogSnapshot, {
+    const context = catalogContext(config, {
       loadDeferred: async () => {
         throw error;
       },

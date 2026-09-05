@@ -2,10 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ProviderRuntimeModel } from "../plugins/provider-runtime-model.types.js";
 import { testing as cliBackendsTesting } from "./cli-backends.test-support.js";
 import { modelCatalogRowToEntry } from "./model-catalog-entry.js";
-import {
-  collectPreparedModelRuntimeProviderIds,
-  toStaticCatalogEntry,
-} from "./prepared-model-runtime.configured.js";
+import { collectPreparedModelRuntimeProviderIds } from "./prepared-model-runtime.configured.js";
 import type { AuthStorageData } from "./sessions/auth-storage.js";
 
 describe("collectPreparedModelRuntimeProviderIds", () => {
@@ -36,7 +33,7 @@ describe("collectPreparedModelRuntimeProviderIds", () => {
 });
 
 describe("catalog row normalization", () => {
-  it("keeps static and shared row conversion in parity for route metadata", () => {
+  it("preserves route metadata in the shared row projection", () => {
     const model = {
       id: "gpt-5.6-sol",
       name: "GPT-5.6 Sol",
@@ -52,8 +49,7 @@ describe("catalog row normalization", () => {
       maxTokens: 8_192,
     } satisfies ProviderRuntimeModel;
 
-    expect(toStaticCatalogEntry(model)).toEqual(modelCatalogRowToEntry(model));
-    expect(toStaticCatalogEntry(model)).toMatchObject({
+    expect(modelCatalogRowToEntry(model)).toMatchObject({
       api: "openai-responses",
       baseUrl: "https://api.openai.com/v1",
       contextWindow: 1_000_000,

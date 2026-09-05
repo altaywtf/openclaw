@@ -90,5 +90,3 @@ export function groupConfiguredRegistrySources(
   }
   return [...groups.values()].flat();
 }
-
-export type { PreparedConfiguredRegistryGroup };

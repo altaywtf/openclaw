@@ -18,11 +18,7 @@ import { modelCatalogRowToEntry } from "./model-catalog-entry.js";
 import { modelSupportsInput as modelCatalogEntrySupportsInput } from "./model-catalog-lookup.js";
 import { assignProviderModelOrder, compareModelCatalogEntries } from "./model-catalog-order.js";
 import { createPreparedModelCatalogProviderNormalizer } from "./model-catalog-provider-normalizer.js";
-import type {
-  ModelCatalogEntry,
-  ModelCatalogSnapshot,
-  ModelInputType,
-} from "./model-catalog.types.js";
+import type { ModelCatalogEntry, ModelCatalogSnapshot } from "./model-catalog.types.js";
 import { resolveCatalogOwnedModelCompat } from "./model-compat-catalog.js";
 import { createConfiguredProviderCatalogModelIdNormalizer } from "./model-ref-shared.js";
 import { buildConfiguredModelCatalog } from "./model-selection-shared.js";
@@ -41,25 +37,6 @@ export {
   findModelInCatalog,
   modelSupportsInput,
 } from "./model-catalog-lookup.js";
-
-type DiscoveredModel = {
-  id: string;
-  name?: string;
-  provider: string;
-  api?: ModelCatalogEntry["api"];
-  contextWindow?: number;
-  contextTokens?: number;
-  reasoning?: boolean;
-  thinkingLevelMap?: ModelCatalogEntry["thinkingLevelMap"];
-  input?: ModelInputType[];
-  params?: ModelCatalogEntry["params"];
-  compat?: ModelCatalogEntry["compat"];
-  baseUrl?: string;
-};
-
-function persistedModelToEntry(model: DiscoveredModel): ModelCatalogEntry {
-  return modelCatalogRowToEntry(model);
-}
 
 type BuildPreparedModelCatalogParams = {
   agentDir: string;
@@ -423,7 +400,7 @@ export async function buildPreparedModelCatalogSnapshot(
       createPreparedModelCatalogProviderNormalizer(manifestMetadataSnapshot);
     const { buildShouldSuppressBuiltInModelCore } = await loadModelSuppression();
     logStage("catalog-deps-ready");
-    const entries = params.modelRegistry.getAll() as DiscoveredModel[];
+    const entries = params.modelRegistry.getAll();
     const declaredManifestModels = loadManifestModelCatalog({
       config: cfg,
       env,
@@ -464,7 +441,7 @@ export async function buildPreparedModelCatalogSnapshot(
       const modelParams =
         entry?.params && typeof entry.params === "object" ? entry.params : undefined;
       const compat = entry?.compat && typeof entry.compat === "object" ? entry.compat : undefined;
-      const model = persistedModelToEntry({
+      const model = modelCatalogRowToEntry({
         id,
         name,
         provider,

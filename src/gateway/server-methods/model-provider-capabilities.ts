@@ -5,11 +5,11 @@ import {
   resolveManifestDeclaredProviderAuthChoices,
   resolveManifestProviderAuthChoices,
 } from "../../plugins/provider-auth-choices.js";
-import { listProviderAccessOptions } from "../../plugins/provider-login-options.js";
 import {
-  supportsSetupManualSecret,
-  supportsSetupTextInference,
-} from "../../system-agent/setup-inference-auth-options.js";
+  listProviderAccessOptions,
+  supportsProviderAuthChoiceTextInference,
+} from "../../plugins/provider-login-options.js";
+import { supportsSetupManualSecret } from "../../system-agent/setup-inference-auth-options.js";
 import type { ModelProviderCapability } from "./models-auth-status.types.js";
 
 export function resolveModelProviderCapabilities(params: {
@@ -44,7 +44,10 @@ export function resolveModelProviderCapabilities(params: {
   for (const choice of authChoices) {
     const provider = resolveProvider(choice.providerId);
     // Setup descriptors also include tools and media-only services, not just model accounts.
-    if (!modelProviders.has(provider) || !supportsSetupTextInference(choice.onboardingScopes)) {
+    if (
+      !modelProviders.has(provider) ||
+      !supportsProviderAuthChoiceTextInference(choice.onboardingScopes)
+    ) {
       continue;
     }
     const current = capabilities.get(provider);

@@ -18,10 +18,7 @@ import {
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
 import { createGatewayChatMetadataLifecycle } from "./server-chat-metadata-lifecycle.js";
-import {
-  buildModelsListResult,
-  createGatewayAgentModelCatalogProjector,
-} from "./server-methods/models-list-result.js";
+import { buildModelsListResult } from "./server-methods/models-list-result.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
 import { registerGatewayModelCatalogPrivateAccess } from "./server-model-catalog-auth.js";
 import {
@@ -170,15 +167,6 @@ async function expectAvailable(
   if (!owner) {
     throw new Error("expected prepared model owner");
   }
-  const projector = createGatewayAgentModelCatalogProjector({
-    cfg: activeConfig,
-    agentId: "main",
-    snapshot: owner.modelCatalog,
-    metadataSnapshot: owner.metadataSnapshot,
-    preparedAuthStore: mocks.preparedAuthStore ?? { version: 1, profiles: {} },
-    preparedProviderAuth: owner.providerAuth,
-    preparedRuntimeAuthMaterializations: getPreparedModelRuntimeAuthMaterializations(owner),
-  });
   const [metadata, modelsList] = await Promise.all([
     lifecycle.read({ agentId: "main" }),
     buildModelsListResult({
@@ -187,7 +175,12 @@ async function expectAvailable(
         context: activeContext,
         config: activeConfig,
         snapshot: owner.modelCatalog,
-        projector,
+        facts: {
+          metadataSnapshot: owner.metadataSnapshot,
+          authStore: mocks.preparedAuthStore ?? { version: 1, profiles: {} },
+          providerAuth: owner.providerAuth,
+          authMaterializations: getPreparedModelRuntimeAuthMaterializations(owner),
+        },
       },
       agentId: "main",
       params: { view: "configured" },

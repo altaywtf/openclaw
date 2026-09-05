@@ -40,7 +40,6 @@ function codexAppServerModelsToCatalogEntries(
   });
 }
 
-/** One harness registration owns its observations; none travel with worker snapshots. */
 export function createCodexAppServerModelCatalog(runtime: string) {
   let disposed = false;
   return {
@@ -63,7 +62,7 @@ export function createCodexAppServerModelCatalog(runtime: string) {
         nativeAuth: params.runtime === "codex",
       });
       const timeoutMs = discovery?.timeoutMs ?? DEFAULT_MODEL_DISCOVERY_TIMEOUT_MS;
-      const result = await withCodexAppServerJsonClient(
+      const models = await withCodexAppServerJsonClient(
         { startOptions: start, config: params.config, agentDir: params.agentDir, timeoutMs },
         async (request) => {
           const listed = await listAllCodexAppServerModels({
@@ -71,20 +70,19 @@ export function createCodexAppServerModelCatalog(runtime: string) {
             limit: 100,
             includeHidden: true,
           });
-          const models = listed.models.filter(
+          return listed.models.filter(
             (model) =>
               !model.hidden ||
               params.configuredModelRefs?.some(
                 (ref) => ref.provider === "openai" && ref.model === model.id,
               ),
           );
-          return { models } as const;
         },
       );
       if (disposed) {
         return [];
       }
-      return codexAppServerModelsToCatalogEntries(result.models, runtime);
+      return codexAppServerModelsToCatalogEntries(models, runtime);
     },
   };
 }

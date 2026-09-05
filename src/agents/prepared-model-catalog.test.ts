@@ -200,46 +200,6 @@ describe("prepared model catalog access", () => {
   );
 
   it.each(ordinaryReadCases)(
-    "keeps ordinary loads on the configured facts until discovery lands ($name)",
-    async ({ params }) => {
-      setPreparedModelFullCatalogAuth(fullSnapshot.modelCatalog, {
-        authStore: fullSnapshot.authStore,
-        providerAuth: fullSnapshot.providerAuth,
-      });
-      const snapshot = {
-        ...fullSnapshot,
-        loadFullModelCatalog: vi.fn(async () => fullSnapshot.modelCatalog),
-        readFullModelCatalog: vi.fn(() => undefined),
-      };
-      mocks.getSnapshot.mockReturnValue(snapshot);
-      mocks.prepareSnapshot.mockResolvedValue(snapshot);
-
-      await expect(
-        loadPreparedModelCatalogOwnerSnapshot({ ...params, refreshFullCatalog: false }),
-      ).resolves.toMatchObject({ modelCatalog: fullSnapshot.modelCatalog });
-      expect(snapshot.loadFullModelCatalog).not.toHaveBeenCalled();
-    },
-  );
-
-  it("does not await a stale full catalog for read-only request paths", async () => {
-    const snapshot = {
-      ...fullSnapshot,
-      loadFullModelCatalog: vi.fn(),
-      readFullModelCatalog: vi.fn(() => fullSnapshot.modelCatalog),
-    };
-    mocks.getSnapshot.mockReturnValue(snapshot);
-    mocks.prepareSnapshot.mockResolvedValue(snapshot);
-    setPreparedModelFullCatalogAuth(snapshot.modelCatalog, {
-      authStore: fullSnapshot.authStore,
-      providerAuth: fullSnapshot.providerAuth,
-    });
-
-    await expect(loadPreparedModelCatalogSnapshot({ readOnly: true })).resolves.toBe(
-      snapshot.modelCatalog,
-    );
-  });
-
-  it.each(ordinaryReadCases)(
     "keeps ordinary catalog reads on configured facts and materializes explicit full reads once ($name)",
     async ({ params }) => {
       const configuredCatalog = {
@@ -257,6 +217,7 @@ describe("prepared model catalog access", () => {
         ...snapshotFacts,
         modelCatalog: configuredCatalog,
         loadFullModelCatalog,
+        readFullModelCatalog: vi.fn(() => undefined),
       };
       setPreparedModelRuntimeAuthStore(snapshot, authStore);
       mocks.getSnapshot.mockReturnValue(snapshot);

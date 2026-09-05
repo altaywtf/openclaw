@@ -314,10 +314,10 @@ function buildProviderChannelLoginPrompter(params: {
         }
       : {}),
     plain: sendCleanMessage,
-    select: unsupportedPrompt as ModelsAuthLoginFlowOptions["prompter"]["select"],
-    multiselect: unsupportedPrompt as ModelsAuthLoginFlowOptions["prompter"]["multiselect"],
-    text: unsupportedPrompt as ModelsAuthLoginFlowOptions["prompter"]["text"],
-    confirm: unsupportedPrompt as ModelsAuthLoginFlowOptions["prompter"]["confirm"],
+    select: unsupportedPrompt,
+    multiselect: unsupportedPrompt,
+    text: unsupportedPrompt,
+    confirm: unsupportedPrompt,
     progress: () => ({
       update: () => {},
       stop: () => {},

@@ -27,10 +27,6 @@ const readCodexCliActiveApiKeyAsync = vi.hoisted(() => vi.fn());
 const readCodexCliCredentialsAsync = vi.hoisted(() => vi.fn());
 let readCodexCliCredentialsAsyncOriginal: typeof import("./cli-credentials.runtime.js").readCodexCliCredentialsAsync;
 
-vi.mock("openclaw/plugin-sdk/provider-auth", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("openclaw/plugin-sdk/provider-auth")>()),
-}));
-
 vi.mock("./cli-credentials.runtime.js", async (importOriginal) => {
   const original = await importOriginal<typeof import("./cli-credentials.runtime.js")>();
   readCodexCliCredentialsAsyncOriginal = original.readCodexCliCredentialsAsync;

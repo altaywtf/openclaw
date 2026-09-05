@@ -57,9 +57,7 @@ describe("Codex app-server model catalog", () => {
   beforeEach(() => {
     listModelsMock.mockReset();
     vi.mocked(withCodexAppServerJsonClient).mockClear();
-    rpc.request
-      .mockReset()
-      .mockResolvedValue({ account: { type: "apiKey" }, requiresOpenaiAuth: true });
+    rpc.request.mockReset();
     owner = createCodexAppServerModelCatalog("codex");
   });
 
@@ -229,10 +227,6 @@ describe("Codex app-server model catalog", () => {
       ] !== undefined;
     listModelsMock.mockImplementation(async () => ({
       models: hasImportedAuth() ? remoteModels : [],
-    }));
-    rpc.request.mockImplementation(async () => ({
-      account: hasImportedAuth() ? { type: "chatgpt" } : null,
-      requiresOpenaiAuth: true,
     }));
     const catalogOwner = createCodexAppServerModelCatalog("codex");
     const params = { config, agentId: "main", agentDir, workspaceDir };

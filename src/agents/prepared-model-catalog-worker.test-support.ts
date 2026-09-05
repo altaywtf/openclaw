@@ -3,10 +3,7 @@ import path from "node:path";
 import { expect, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createGatewayChatMetadataRuntime } from "../gateway/server-methods/chat-metadata-runtime.js";
-import {
-  buildModelsListResult,
-  createGatewayAgentModelCatalogProjector,
-} from "../gateway/server-methods/models-list-result.js";
+import { buildModelsListResult } from "../gateway/server-methods/models-list-result.js";
 import type { GatewayRequestContext } from "../gateway/server-methods/types.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
 import { createEmptyPluginRegistry } from "../plugins/registry.js";
@@ -334,19 +331,18 @@ async function expectNativeHarnessModelsPublished(params: {
       getRuntimeConfig: () => params.config,
       logGateway: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     } as unknown as GatewayRequestContext;
-    const projector = createGatewayAgentModelCatalogProjector({
-      cfg: params.config,
-      agentId: "main",
-      snapshot: catalog,
-      metadataSnapshot: params.metadataSnapshot,
-      preparedAuthStore: fullAuth.authStore,
-      preparedProviderAuth: fullAuth.providerAuth,
-    });
-    await expect(projector.decisions.evaluate(nativeEntry!)).resolves.toMatchObject({
-      availability: true,
-    });
     const preparedModels = await buildModelsListResult({
-      source: { kind: "published", context, config: params.config, snapshot: catalog, projector },
+      source: {
+        kind: "published",
+        context,
+        config: params.config,
+        snapshot: catalog,
+        facts: {
+          metadataSnapshot: params.metadataSnapshot,
+          ...fullAuth,
+          authMaterializations: [],
+        },
+      },
       agentId: "main",
       params: { view: "configured" },
     });

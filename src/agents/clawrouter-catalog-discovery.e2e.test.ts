@@ -1,10 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import {
-  buildModelsListResult,
-  createGatewayAgentModelCatalogProjector,
-} from "../gateway/server-methods/models-list-result.js";
-import type { GatewayRequestContext } from "../gateway/server-methods/types.js";
+import { buildModelsListResult } from "../gateway/server-methods/models-list-result.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
@@ -171,24 +167,21 @@ describe("ClawRouter cold prepared catalog", () => {
     if (result.status !== "ok" || result.kind !== "catalog") {
       throw new Error("catalog worker did not publish a catalog");
     }
-    const projector = createGatewayAgentModelCatalogProjector({
-      cfg: config,
-      agentId,
-      snapshot: result.snapshot,
-      metadataSnapshot: prepared.pluginGeneration.pluginMetadataSnapshot,
-      preparedAuthStore: result.authStore,
-      preparedProviderAuth: result.providerAuth,
-    });
     const catalog = await buildModelsListResult({
       source: {
         kind: "published",
-        context: { getRuntimeConfig: () => config } as GatewayRequestContext,
+        context: { getRuntimeConfig: () => config },
         config,
         snapshot: result.snapshot,
-        projector,
+        facts: {
+          metadataSnapshot: prepared.pluginGeneration.pluginMetadataSnapshot,
+          authStore: result.authStore,
+          providerAuth: result.providerAuth,
+          authMaterializations: [],
+        },
       },
       agentId,
-      params: { view: refreshedAuth ? "all" : "configured", preparedOnly: true },
+      params: { view: refreshedAuth ? "all" : "configured" },
     });
     expect(catalog.models).toContainEqual(
       expect.objectContaining({

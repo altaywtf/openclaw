@@ -1,9 +1,9 @@
 /** Explicit Codex migration reads. Normal runtime auth uses Codex app-server status only. */
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
-import { realpath } from "node:fs/promises";
 import path from "node:path";
 import { runCommandBuffered } from "openclaw/plugin-sdk/process-runtime";
+import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 
 const CODEX_AUTH_FILE = "auth.json";
 const CODEX_COMMAND_MAX_OUTPUT_BYTES = 16 * 1024;
@@ -35,7 +35,7 @@ export type CodexCredentialReadOptions = {
 };
 
 async function canonicalCodexHome(codexHome: string): Promise<string> {
-  return await realpath(codexHome).catch(() => codexHome);
+  return await fs.realpath(codexHome).catch(() => codexHome);
 }
 
 function keychainAccount(codexHome: string): string {
@@ -49,8 +49,7 @@ function commandSignal(options: CodexCredentialReadOptions): AbortSignal | undef
   if ((options.platform ?? process.platform) !== "darwin" || !options.allowKeychainPrompt) {
     return undefined;
   }
-  const deadline = AbortSignal.timeout(CODEX_KEYCHAIN_PROMPT_TIMEOUT_MS);
-  return deadline;
+  return AbortSignal.timeout(CODEX_KEYCHAIN_PROMPT_TIMEOUT_MS);
 }
 
 async function readKeychainRecord(
@@ -74,10 +73,7 @@ async function readKeychainRecord(
     return undefined;
   }
   try {
-    const parsed: unknown = JSON.parse(result.stdout.toString("utf8").trim());
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : undefined;
+    return asOptionalRecord(JSON.parse(result.stdout.toString("utf8").trim()));
   } catch {
     return undefined;
   }
@@ -85,12 +81,9 @@ async function readKeychainRecord(
 
 async function readAuthFile(codexHome: string): Promise<Record<string, unknown> | undefined> {
   try {
-    const parsed: unknown = JSON.parse(
-      await fs.readFile(path.join(codexHome, CODEX_AUTH_FILE), "utf8"),
+    return asOptionalRecord(
+      JSON.parse(await fs.readFile(path.join(codexHome, CODEX_AUTH_FILE), "utf8")),
     );
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : undefined;
   } catch {
     return undefined;
   }
@@ -116,12 +109,12 @@ function parseOAuth(data: Record<string, unknown>): CodexCliCredential | undefin
   if (authMode && authMode !== "chatgpt" && authMode !== "chatgptauthtokens") {
     return undefined;
   }
-  const tokens = data.tokens;
-  if (!tokens || typeof tokens !== "object" || Array.isArray(tokens)) {
+  const tokens = asOptionalRecord(data.tokens);
+  if (!tokens) {
     return undefined;
   }
-  const access = (tokens as { access_token?: unknown }).access_token;
-  const refresh = (tokens as { refresh_token?: unknown }).refresh_token;
+  const access = tokens.access_token;
+  const refresh = tokens.refresh_token;
   if (typeof access !== "string" || !access || typeof refresh !== "string" || !refresh) {
     return undefined;
   }
@@ -131,8 +124,8 @@ function parseOAuth(data: Record<string, unknown>): CodexCliCredential | undefin
     (Number.isFinite(lastRefresh)
       ? lastRefresh + CODEX_FALLBACK_EXPIRY_MS
       : Date.now() + CODEX_FALLBACK_EXPIRY_MS);
-  const accountId = (tokens as { account_id?: unknown }).account_id;
-  const idToken = (tokens as { id_token?: unknown }).id_token;
+  const accountId = tokens.account_id;
+  const idToken = tokens.id_token;
   return {
     type: "oauth",
     provider: "openai",

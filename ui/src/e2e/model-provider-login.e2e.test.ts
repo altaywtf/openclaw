@@ -236,13 +236,9 @@ describeControlUiE2e("Control UI provider login", () => {
             .evaluate((element) => String((element as HTMLElement & { value?: string }).value)),
         )
         .toBe("openai/gpt-5.5");
-      for (const request of await gateway.getRequests("models.list")) {
-        expect(request.params).toEqual({
-          agentId: "main",
-          preparedOnly: true,
-          view: "configured",
-        });
-      }
+      expect(
+        (await gateway.getRequests("models.list")).map((request) => request.params?.refresh),
+      ).not.toContain(true);
       if (artifactDir) {
         await page.screenshot({
           animations: "disabled",
@@ -493,13 +489,9 @@ describeControlUiE2e("Control UI provider login", () => {
       expect(await gateway.getRequests("config.patch")).toHaveLength(0);
       expect(await gateway.getRequests("openclaw.setup.auth.start")).toHaveLength(1);
       expect(await gateway.getRequests("openclaw.setup.prepare.start")).toHaveLength(1);
-      for (const request of await gateway.getRequests("models.list")) {
-        expect(request.params).toEqual({
-          agentId: "main",
-          preparedOnly: true,
-          view: "configured",
-        });
-      }
+      expect(
+        (await gateway.getRequests("models.list")).map((request) => request.params?.refresh),
+      ).not.toContain(true);
     } finally {
       await context.close();
     }

@@ -2189,7 +2189,9 @@ describe("gateway server chat", () => {
             routeVariants: [subscriptionRoute, platformRoute],
           };
           const { loadAuthProfileStoreForRuntime } = await import("../agents/auth-profiles.js");
-          const { resolveAgentDir } = await import("../agents/agent-scope.js");
+          const { resolveAgentDir, resolveAgentWorkspaceDir } =
+            await import("../agents/agent-scope.js");
+          const { resolveDefaultAgentWorkspaceDir } = await import("../agents/workspace.js");
           const preparedAuthStoreByAgentId = new Map([
             [
               "main",
@@ -2213,8 +2215,10 @@ describe("gateway server chat", () => {
             return authStore;
           };
           const responses: Array<{ ok: boolean; payload?: unknown; error?: unknown }> = [];
-          const { buildModelsListResult, createGatewayAgentModelCatalogProjector } =
-            await import("./server-methods/models-list-result.js");
+          const { buildModelsListResult } = await import("./server-methods/models-list-result.js");
+          const { prepareModelCatalogView } = await import("../agents/model-catalog-view.js");
+          const { getPreparedModelCatalogDecisions } =
+            await import("../agents/model-catalog-decisions.js");
           const projectionByKey = new Map<
             string,
             Promise<{
@@ -2241,32 +2245,45 @@ describe("gateway server chat", () => {
             if (existing) {
               return existing;
             }
-            const projector = createGatewayAgentModelCatalogProjector({
-              cfg: persistedConfig,
-              agentId,
-              snapshot: catalogSnapshot,
+            const facts = {
               metadataSnapshot: pluginMetadataSnapshot,
-              preparedAuthStore: requirePreparedAuthStore(agentId),
+              authStore: requirePreparedAuthStore(agentId),
+              providerAuth: {},
+              authMaterializations: [],
+            };
+            const selection = {
               ...(profileId ? { preferredProfileId: profileId } : {}),
               ...(profileId && (profileSource === "user" || legacyUserProfile)
                 ? { lockedProfileId: profileId }
                 : {}),
-            });
+            };
             const projection = Promise.all([
-              projector.projectCatalog(),
+              prepareModelCatalogView({
+                cfg: persistedConfig,
+                agentId,
+                workspaceDir:
+                  resolveAgentWorkspaceDir(persistedConfig, agentId) ??
+                  resolveDefaultAgentWorkspaceDir(),
+                snapshot: catalogSnapshot,
+                metadataSnapshot: facts.metadataSnapshot,
+                auth: { authStore: facts.authStore, providerAuth: facts.providerAuth },
+                ...selection,
+                view: "all",
+              }),
               buildModelsListResult({
                 source: {
                   kind: "published",
                   context,
                   config: persistedConfig,
                   snapshot: catalogSnapshot,
-                  projector,
+                  facts,
                 },
                 agentId,
                 params: { view: "configured" },
+                selection,
               }),
-            ]).then(([modelCatalog, metadata]) => ({
-              modelCatalog,
+            ]).then(([inventory, metadata]) => ({
+              modelCatalog: inventory.runtimeCatalog,
               metadata: { ...metadata, swarmEnabled: false },
             }));
             projectionByKey.set(key, projection);
@@ -2301,14 +2318,16 @@ describe("gateway server chat", () => {
               };
             }),
           });
-          const expiredPreferenceEvaluation = await createGatewayAgentModelCatalogProjector({
+          const expiredPreferenceEvaluation = await getPreparedModelCatalogDecisions({
             cfg: persistedConfig,
             agentId: "work",
+            workspaceDir:
+              resolveAgentWorkspaceDir(persistedConfig, "work") ??
+              resolveDefaultAgentWorkspaceDir(),
             snapshot: catalogSnapshot,
             metadataSnapshot: pluginMetadataSnapshot,
-            preparedAuthStore: requirePreparedAuthStore("work"),
-            preferredProfileId: "openai:expired",
-          }).evaluateEntry(subscriptionRoute, catalogSnapshot.routeVariants);
+            auth: { authStore: requirePreparedAuthStore("work"), providerAuth: {} },
+          }).evaluate(subscriptionRoute, { preferredProfileId: "openai:expired" });
           expect(expiredPreferenceEvaluation).toMatchObject({
             availability: true,
             selectedProfileId: "openai:api",

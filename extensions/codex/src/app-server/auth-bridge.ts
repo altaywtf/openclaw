@@ -144,9 +144,6 @@ function assertNoUnimportedAgentCodexAuthFile(params: {
   agentDir: string;
   authRequirement?: CodexAppServerAuthRequirement;
 }): void {
-  // Ephemeral stdio starts cannot load this stale file, and the shared-client key
-  // separates auth requirements plus fallback identities. Preserve the supported
-  // stdio API-key login instead of turning a leftover file into a hard failure.
   const message = resolveUnimportedAgentCodexAuthMessage(params);
   if (message) {
     throw new AgentHarnessPreflightError(message);

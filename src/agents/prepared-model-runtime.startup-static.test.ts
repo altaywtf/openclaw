@@ -241,14 +241,12 @@ const {
 const { getPreparedModelCatalogSnapshot } = await import("./prepared-model-catalog.js");
 const { prepareScopedReadOnlyLiveModelCatalog } =
   await import("./prepared-model-runtime.scoped-catalog.js");
-const { prepareWorkspaceBuildGroup } = await import("./prepared-model-runtime.facts.js");
 const { resetPreparedModelRuntimeSnapshotsForTest } =
   await import("./prepared-model-runtime.test-support.js");
 const { resolveThinkingProfile } = await import("../auto-reply/thinking.js");
 
 beforeEach(() => {
   resetPreparedModelRuntimeSnapshotsForTest();
-  mocks.metadataSnapshot.plugins = [];
   mocks.loadAgentRuntimePluginRegistryHandle
     .mockReset()
     .mockReturnValue(createEmptyPluginRegistry());
@@ -259,50 +257,6 @@ beforeEach(() => {
 });
 
 describe("prepared model runtime Gateway catalog mode", () => {
-  it("includes manifest synthetic-auth providers without a registered harness", async () => {
-    mocks.metadataSnapshot.plugins = [
-      { providers: ["openai"], syntheticAuthRefs: ["openai"] },
-    ] as never;
-    mocks.prepareStaticCatalog.mockImplementationOnce(async () => ({
-      providers: [
-        {
-          id: "openai",
-          label: "OpenAI",
-          auth: [],
-          resolveSyntheticAuth: mocks.resolveSyntheticAuth,
-        },
-      ],
-      entries: [],
-    }));
-    mocks.resolveAmbientCredentials.mockImplementationOnce((...args: unknown[]) => {
-      const options = args[0] as {
-        resolveSyntheticAuth: (provider: string) => { apiKey?: string } | undefined;
-      };
-      const auth = options.resolveSyntheticAuth("openai");
-      const credentials = auth?.apiKey ? { openai: { type: "api_key", key: auth.apiKey } } : {};
-      return { credentials, providerAuth: {} };
-    });
-
-    await prepareWorkspaceBuildGroup(
-      [{ agentDir: "/tmp/native-auth-agent", config: {}, env: {}, loadRuntimePlugins: true }],
-      "static",
-    );
-
-    expect(mocks.prepareStaticCatalog).toHaveBeenCalledWith(
-      expect.objectContaining({
-        providerDiscoveryProviderIds: ["openai"],
-      }),
-    );
-    const ambientOptions = mocks.resolveAmbientCredentials.mock.calls.at(-1)?.[0] as {
-      syntheticAuthProviderRefs: string[];
-      resolveSyntheticAuth: (provider: string) => { apiKey?: string } | undefined;
-    };
-    expect(ambientOptions.syntheticAuthProviderRefs).toContain("openai");
-    expect(ambientOptions.resolveSyntheticAuth("openai")).toMatchObject({
-      apiKey: "synthetic-openai-key",
-    });
-  });
-
   it.each([
     {
       name: "native orchestration",

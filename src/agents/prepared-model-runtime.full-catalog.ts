@@ -1,6 +1,7 @@
 import { dedupeByKey } from "../shared/dedupe-by-key.js";
 import { discoverModels } from "./agent-model-discovery.js";
 import { loadBundledProviderStaticCatalogContextModels } from "./embedded-agent-runner/model.static-catalog.js";
+import { modelCatalogRowToEntry } from "./model-catalog-entry.js";
 import { loadManifestModelCatalog } from "./model-catalog.js";
 import type { ModelCatalogSnapshot } from "./model-catalog.types.js";
 import { modelCatalogLogicalKey } from "./openai-model-routes.js";
@@ -13,10 +14,7 @@ import type {
   PreparedModelRuntimeCatalogFacts,
   PreparedModelRuntimeCatalogSource,
 } from "./prepared-model-runtime.catalog-contract.js";
-import {
-  toStaticCatalogEntry,
-  type PreparedRuntimeCapabilityModel,
-} from "./prepared-model-runtime.configured.js";
+import type { PreparedRuntimeCapabilityModel } from "./prepared-model-runtime.configured.js";
 import { buildPreparedPluginModelCatalog } from "./prepared-model-runtime.plugin-generation.js";
 import type { PreparedModelRuntimePluginGeneration } from "./prepared-model-runtime.types.js";
 
@@ -55,13 +53,13 @@ export async function prepareFullCatalogFacts(
   const staticEntries = replaceCatalog
     ? []
     : [
-        ...agentFacts.configuredRuntimeModels.map(({ model }) => toStaticCatalogEntry(model)),
+        ...agentFacts.configuredRuntimeModels.map(({ model }) => modelCatalogRowToEntry(model)),
         ...loadManifestModelCatalog({
           config: input.config,
           env,
           metadataSnapshot: pluginMetadataSnapshot,
         }),
-        ...providerStaticModels.map(toStaticCatalogEntry),
+        ...providerStaticModels.map(modelCatalogRowToEntry),
       ];
   const providerOutcomes = catalogSource.providerOutcomes ?? [];
   const completeModelCatalog = markPreparedModelCatalogFull({
@@ -88,7 +86,7 @@ export function materializePreparedModelCatalog(
   const runtimeByKey = new Map(
     runtimeCapabilityModels.map(({ provider, modelId, model }) => [
       modelCatalogLogicalKey({ provider, id: modelId }),
-      toStaticCatalogEntry(model),
+      modelCatalogRowToEntry(model),
     ]),
   );
   const project = (entries: ModelCatalogSnapshot["entries"]) =>

@@ -19,7 +19,6 @@ import { resolveCliRuntimeCanonicalProvider } from "./cli-backends.js";
 import { buildInlineProviderModels } from "./embedded-agent-runner/model.inline-provider.js";
 import type { StaticModelIdMatcher } from "./embedded-agent-runner/model.static-id.js";
 import { resolveConfiguredModelHarnessRuntime } from "./harness-runtimes.js";
-import { modelCatalogRowToEntry } from "./model-catalog-entry.js";
 import type { ModelCatalogEntry } from "./model-catalog.js";
 import type { AuthStorageData } from "./sessions/auth-storage.js";
 import { resolveEffectiveAgentRuntime } from "./thinking-runtime.js";
@@ -53,10 +52,6 @@ export function collectPreparedModelRuntimeConfiguredRefs(
       list: entry ? [entry] : [],
     },
   });
-}
-
-export function toStaticCatalogEntry(model: ProviderRuntimeModel): ModelCatalogEntry {
-  return modelCatalogRowToEntry(model);
 }
 
 export function collectPreparedModelRuntimeProviderIds(

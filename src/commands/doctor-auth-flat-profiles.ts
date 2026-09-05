@@ -1766,7 +1766,7 @@ function canonicalizeOpenAIAuthOrder(
 
 function canonicalizeLegacyProviderAuthOrder(
   auth: Record<string, unknown>,
-  profileIdMap: Map<string, string>,
+  profileIdMap: ReadonlyMap<string, string>,
 ): boolean {
   if (!isRecord(auth.order)) {
     return false;
@@ -1850,7 +1850,7 @@ function canonicalizeLegacyAuthProfileEntries(
 
 function canonicalizeLegacyAuthRotationState(
   auth: Record<string, unknown>,
-  profileIdMap: Map<string, string>,
+  profileIdMap: ReadonlyMap<string, string>,
 ): boolean {
   let changed = canonicalizeLegacyProviderAuthOrder(auth, profileIdMap);
   if (isRecord(auth.usageStats)) {
@@ -1923,15 +1923,12 @@ export function maybeRepairLegacyAuthProfileStores(params: {
             );
             const rotationChanged = canonicalizeLegacyAuthRotationState(
               storeRaw,
-              new Map(params.profileIdMap),
+              params.profileIdMap,
             );
             storeChanged = profileChanged || rotationChanged;
           }
           if (isRecord(stateRaw)) {
-            stateChanged = canonicalizeLegacyAuthRotationState(
-              stateRaw,
-              new Map(params.profileIdMap),
-            );
+            stateChanged = canonicalizeLegacyAuthRotationState(stateRaw, params.profileIdMap);
           }
           if (storeChanged) {
             writePersistedAuthProfileStoreRaw(storeRaw, agentDir, database);
@@ -1960,7 +1957,7 @@ export function maybeRepairLegacyAuthProfileStores(params: {
 
 function renameMappedProfileIdKeys(
   record: Record<string, unknown>,
-  profileIdMap: Map<string, string>,
+  profileIdMap: ReadonlyMap<string, string>,
 ): boolean {
   let changed = false;
   for (const [key, value] of Object.entries({ ...record })) {

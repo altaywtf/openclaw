@@ -115,24 +115,17 @@ export class ModelConnectController implements ReactiveController {
     if (this.setup.phase === "loading") {
       return this.setup.load;
     }
-    // Only the load that still owns this slot may publish its outcome; a retry
-    // replaces the slot and the superseded import resolves into nothing.
-    const owns = () => this.setup.phase === "loading" && this.setup.load === load;
     const load = import("../model-setup/model-setup-page.ts")
       .then(() => {
-        if (owns()) {
-          this.setup = { phase: "ready" };
-          this.host.requestUpdate();
-        }
+        this.setup = { phase: "ready" };
+        this.host.requestUpdate();
       })
       .catch((error: unknown) => {
-        if (owns()) {
-          this.setup = {
-            phase: "failed",
-            message: formatUiError(error, t("modelSetup.errors.requestFailed")),
-          };
-          this.host.requestUpdate();
-        }
+        this.setup = {
+          phase: "failed",
+          message: formatUiError(error, t("modelSetup.errors.requestFailed")),
+        };
+        this.host.requestUpdate();
       });
     this.setup = { phase: "loading", load };
     return load;

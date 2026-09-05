@@ -113,23 +113,13 @@ function readCliOauthTokenFields(
     : null;
 }
 
-function readPortalCliOauthCredentials<TProvider extends string>(
-  credentialPath: string,
-  provider: TProvider,
-): { type: "oauth"; provider: TProvider; access: string; refresh: string; expires: number } | null {
-  const raw = loadJsonFileThroughSymlink(credentialPath);
+function readMiniMaxCliCredentials(options?: { homeDir?: string }): MiniMaxCliCredential | null {
+  const raw = loadJsonFileThroughSymlink(resolveMiniMaxCliCredentialsPath(options?.homeDir));
   if (!raw || typeof raw !== "object") {
     return null;
   }
   const tokens = readCliOauthTokenFields(raw as Record<string, unknown>);
-  return tokens ? { type: "oauth", provider, ...tokens } : null;
-}
-
-function readMiniMaxCliCredentials(options?: { homeDir?: string }): MiniMaxCliCredential | null {
-  return readPortalCliOauthCredentials(
-    resolveMiniMaxCliCredentialsPath(options?.homeDir),
-    "minimax-portal",
-  );
+  return tokens ? { type: "oauth", provider: "minimax-portal", ...tokens } : null;
 }
 
 function decodeJwtIdentityClaims(token: string): { sub?: string; email?: string } {
