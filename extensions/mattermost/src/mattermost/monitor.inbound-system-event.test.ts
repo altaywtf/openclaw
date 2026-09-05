@@ -1553,6 +1553,20 @@ describe("mattermost inbound user posts", () => {
           name: "exec",
           status: "failed",
         });
+        await params.replyOptions?.onPlanUpdate?.({
+          phase: "update",
+          explanation: "1/2 complete",
+          steps: [
+            { step: "Inspect", status: "completed" },
+            { step: "Patch", status: "in_progress" },
+          ],
+        });
+        await params.replyOptions?.onPlanUpdate?.({
+          phase: "update",
+          explanation: "Progress updated",
+          steps: [],
+        });
+        await params.replyOptions?.onPlanUpdate?.({ phase: "update", steps: [] });
         await params.replyOptions?.onObservedReplyDelivery?.();
         abortController.abort();
       });
@@ -1607,6 +1621,11 @@ describe("mattermost inbound user posts", () => {
       expect(updates.at(-1)).toContain("failed");
       expect(updates.at(-1)).toContain("Checking");
       expect(updates.at(-1)).not.toContain("ThinkingChecking");
+      expect(updates.some((text) => text.includes("1/2 complete"))).toBe(true);
+      expect(updates.some((text) => text.includes("✅ Inspect"))).toBe(true);
+      expect(updates.some((text) => text.includes("▸ Patch"))).toBe(true);
+      expect(updates.some((text) => text.includes("Progress updated"))).toBe(true);
+      expect(updates.join("\n")).not.toContain("<progress");
     },
   );
 

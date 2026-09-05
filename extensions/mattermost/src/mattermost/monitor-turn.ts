@@ -517,6 +517,18 @@ export async function dispatchMattermostInboundTurn(
               }
               return false;
             },
+            onPlanUpdate: async (payloadValue) => {
+              if (!draftProgressEnabled || payloadValue.phase !== "update") {
+                return false;
+              }
+              const boundarySettled = enterBlockPreviewActivity("tool");
+              const progressSettled = progressDraft.pushPlanProgress(payloadValue.steps, {
+                explanation: payloadValue.explanation,
+              });
+              previewBoundaryController.noteUpdate();
+              const [, visible] = await Promise.all([boundarySettled, progressSettled]);
+              return visible;
+            },
             onToolStart: async (payloadValue) => {
               if (!draftProgressEnabled) {
                 return false;
