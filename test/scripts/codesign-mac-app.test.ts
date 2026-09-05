@@ -34,6 +34,8 @@ async function runCodesignWithoutAllocation(
   const allocation = path.join(tempRoot, "allocation-attempted");
   const allocator = path.join(binDir, "mktemp");
   await mkdir(binDir);
+  // The allocation probe must execute, rather than fail on an inherited ESM package scope.
+  await writeFile(path.join(binDir, "package.json"), '{"type":"commonjs"}\n');
   await writeFile(
     allocator,
     `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(allocation)}, 'called');\nprocess.exit(91);\n`,

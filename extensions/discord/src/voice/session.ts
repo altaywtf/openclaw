@@ -32,7 +32,7 @@ export type VoiceOperationResult = {
 export type VoiceJoinOptions = {
   preserveFollowState?: boolean;
   autoJoinWhenOccupied?: boolean;
-  transcripts?: VoiceSessionEntry["transcripts"];
+  captureOnly?: boolean;
 };
 
 export type VoiceSessionGeneration = {
@@ -93,6 +93,7 @@ type VoiceRealtimeLifecycle =
 
 export type VoiceSessionEntry = {
   generation: number;
+  captureOnly: boolean;
   autoJoinWhenOccupied: boolean;
   sessionLifecycle: { status: "active" } | { status: "stopped"; reason: string };
   guildId: string;
@@ -114,8 +115,8 @@ export type VoiceSessionEntry = {
   realtimeLifecycle: VoiceRealtimeLifecycle;
   transcripts?: {
     sessionId: string;
+    isCurrent: () => boolean;
     onUtterance: (utterance: TranscriptUtterance) => void | Promise<void>;
-    onStop?: () => void | Promise<void>;
   };
   receiveRecovery: VoiceReceiveRecoveryState;
   stop: (reason?: string) => void;

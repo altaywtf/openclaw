@@ -7,7 +7,11 @@ import {
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
 import type { TranscriptSessionDescriptor } from "./provider-types.js";
-import { safeTranscriptPathSegment, TranscriptsStore } from "./store.js";
+import {
+  safeTranscriptPathSegment,
+  TranscriptSessionConflictError,
+  TranscriptsStore,
+} from "./store.js";
 import { summarizeTranscripts } from "./summary.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -185,6 +189,44 @@ describe("TranscriptsStore", () => {
       store.writeSession(session("standup", "2026-07-01T11:00:00.000Z")),
     ).rejects.toThrow();
   });
+
+  it.each(["2026-07-01T10:00:00.000Z", "2026-07-01T12:00:00.000Z", "2026-07-01T09:00:00.000Z"])(
+    "separates historical daily admission from updates at %s",
+    async (startedAt) => {
+      const { stateDir, store } = createStore();
+      const target = { ...session("daily"), title: "Original title" };
+      await store.admitSession(target);
+      await store.appendUtteranceForSession(target, { text: "retained" });
+      const stopped = { ...target, stoppedAt: "2026-07-01T11:00:00.000Z" };
+      await store.writeSession(stopped);
+      const summary = summarizeTranscripts({
+        session: stopped,
+        utterances: [{ text: "retained" }],
+      });
+      await store.writeSummary(summary, stopped);
+      const { db } = openOpenClawStateDatabase({
+        env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
+      });
+      // Doctor can encounter historical selector projections that differ from today's encoder.
+      db.prepare(
+        "UPDATE meeting_transcript_sessions SET selector = ? WHERE session_id = ? AND started_at = ?",
+      ).run("2026-07-01/historical", target.sessionId, target.startedAt);
+      await expect(
+        store.admitSession({ ...target, startedAt, title: "must not overwrite" }),
+      ).rejects.toBeInstanceOf(TranscriptSessionConflictError);
+      expect(await store.readSession("2026-07-01/historical")).toEqual(stopped);
+      expect(await store.readUtterancesForSession(target)).toMatchObject([{ text: "retained" }]);
+      expect(await store.readSummary(stopped)).toMatchObject({ summary });
+      expect(fs.existsSync(path.join(stateDir, "transcripts"))).toBe(false);
+      expect(await store.listSessionEntries()).toHaveLength(1);
+      // Same-identity persistence still supports finalization and owned meeting retries.
+      await store.writeSession(stopped);
+      expect(await store.readSession("2026-07-01/daily")).toEqual(stopped);
+      await expect(
+        store.admitSession(session("daily", "2026-07-02T00:00:00.000Z")),
+      ).resolves.toBeUndefined();
+    },
+  );
 
   it("stores case-distinct sessions and rejects only unsafe export collisions", async () => {
     const { store } = createStore();

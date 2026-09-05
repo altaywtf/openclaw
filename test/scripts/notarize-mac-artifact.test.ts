@@ -139,6 +139,8 @@ function notarizationFixture(extension = "zip") {
   const control = path.join(root, "control.json");
   const bin = path.join(root, "bin");
   mkdirSync(bin);
+  // Keep the fake xcrun independent of the containing checkout's package scope.
+  writeFileSync(path.join(bin, "package.json"), '{"type":"commonjs"}\n');
   writeFileSync(artifact, "signed artifact");
   writeFileSync(control, JSON.stringify({ failFirstWait: true }));
   writeFileSync(

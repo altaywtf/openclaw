@@ -2,6 +2,7 @@
  * Regression coverage for core tool catalog profile defaults.
  * Verifies built-in profile allowlists include expected core tool groups.
  */
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { listCoreToolSections, resolveCoreToolProfilePolicy } from "./tool-catalog.js";
 
@@ -22,6 +23,37 @@ function requirePolicyAllow(profile: Parameters<typeof resolveCoreToolProfilePol
 }
 
 describe("tool-catalog", () => {
+  it("keeps catalog descriptions out of the browser policy bundle", async () => {
+    const { build } = await import("vite");
+    const result = await build({
+      configFile: false,
+      envFile: false,
+      logLevel: "silent",
+      build: {
+        write: false,
+        minify: false,
+        lib: {
+          entry: fileURLToPath(new URL("./tool-policy-shared.ts", import.meta.url)),
+          formats: ["es"],
+        },
+      },
+    });
+    const code = (Array.isArray(result) ? result : [result])
+      .flatMap((bundle) => ("output" in bundle ? bundle.output : []))
+      .filter((file) => file.type === "chunk")
+      .map((file) => file.code)
+      .join("\n");
+    const descriptions = listCoreToolSections({
+      swarmEnabled: true,
+      githubPublicationAvailable: true,
+    }).flatMap((section) => section.tools.map((tool) => tool.description));
+
+    expect(code).toContain("resolveToolProfilePolicy");
+    expect(
+      descriptions.filter((description) => code.includes(JSON.stringify(description))),
+    ).toEqual([]);
+  });
+
   it("lists agents_wait only for a Swarm-enabled catalog", () => {
     const ids = (config?: Parameters<typeof listCoreToolSections>[0]) =>
       listCoreToolSections(config).flatMap((section) => section.tools.map((tool) => tool.id));

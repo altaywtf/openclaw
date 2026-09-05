@@ -346,6 +346,40 @@ node host accepts one provider for the command pair; registering another
 provider conflicts with the existing command registration instead of creating
 a fallback stack.
 
+### Transcript source providers
+
+**Import:** `openclaw/plugin-sdk/transcripts`
+
+Register a `TranscriptSourceProvider` with `api.registerTranscriptSourceProvider(...)`.
+Declare its ID in `contracts.transcriptSourceProviders` in `openclaw.plugin.json`.
+To offer curated boot auto-start setup, add a manifest-owned
+[`transcriptSources` descriptor](/plugins/manifest#transcript-sources-reference):
+
+```json
+{
+  "contracts": { "transcriptSourceProviders": ["discord-voice"] },
+  "transcriptSources": {
+    "discord-voice": {
+      "name": "Discord Voice",
+      "autoStart": { "accountId": "optional", "guildId": "required", "channelId": "required" }
+    }
+  }
+}
+```
+
+The UI offers setup for enabled manifest-declared sources before runtime loads.
+`transcripts.status` reads the prepared metadata snapshot; it does not import
+providers. Observed runtime `canStart: false` prevents new setup, but an absent
+runtime capability is unknown, not a reason to hide static setup. Omit `autoStart`
+for sources that only attach to an already-active meeting bot.
+
+The descriptor's only locator keys are `accountId`, `guildId`, `channelId`, and
+`meetingUrl`, each marked `"required"` or `"optional"`. Omitted keys are not offered
+for new sources. Shared title and optional custom session ID controls remain
+available independently of locator metadata. Existing configured fields remain
+editable when metadata is unavailable. This descriptor changes neither the
+accepted `transcripts.autoStart` config shape nor runtime start semantics.
+
 ## `defineChannelPluginEntry`
 
 **Import:** `openclaw/plugin-sdk/channel-core`

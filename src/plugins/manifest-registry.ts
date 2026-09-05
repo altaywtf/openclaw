@@ -544,6 +544,7 @@ function buildRecord(params: {
       params.manifest.contracts,
       officialCatalogManifest?.contracts,
     ),
+    transcriptSources: params.manifest.transcriptSources,
     mediaUnderstandingProviderMetadata: params.manifest.mediaUnderstandingProviderMetadata,
     imageGenerationProviderMetadata: params.manifest.imageGenerationProviderMetadata,
     videoGenerationProviderMetadata: params.manifest.videoGenerationProviderMetadata,

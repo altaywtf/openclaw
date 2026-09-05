@@ -30,7 +30,7 @@ export function controlUiLocaleModulesPlugin(): Plugin {
       }
       return null;
     },
-    load(id) {
+    async load(id) {
       if (!id.startsWith(resolvedLocaleModulePrefix)) {
         return null;
       }

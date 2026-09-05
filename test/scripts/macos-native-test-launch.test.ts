@@ -29,6 +29,8 @@ function fixture(
   for (const dir of [bin, home, runnerTemp]) {
     fs.mkdirSync(dir);
   }
+  // Fake commands must not inherit the ESM package scope when TMPDIR is inside the checkout.
+  fs.writeFileSync(path.join(bin, "package.json"), '{"type":"commonjs"}\n');
   const cache = path.join(home, "Library/Caches/org.swift.swiftpm");
   fs.mkdirSync(cache, { recursive: true });
   fs.writeFileSync(path.join(cache, "fixture-cache"), "reusable build cache");

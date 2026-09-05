@@ -12,6 +12,7 @@ import type {
   TranscriptSourceLocator,
   TranscriptUtterance,
 } from "./provider-types.js";
+import { transcriptDateSegment } from "./store-artifacts.js";
 import type { TranscriptsSummary } from "./summary.js";
 
 type MeetingTranscriptsDatabase = Pick<
@@ -43,6 +44,27 @@ export function meetingTranscriptSessionQuery(
     .where("started_at", "=", session.startedAt);
 }
 
+export function findMeetingTranscriptSessionForDay(
+  database: DatabaseSync,
+  session: Pick<TranscriptSessionDescriptor, "sessionId" | "startedAt">,
+) {
+  return executeSqliteQueryTakeFirstSync(
+    database,
+    meetingTranscriptDb(database)
+      .selectFrom("meeting_transcript_sessions")
+      .select("started_at")
+      .where("session_id", "=", session.sessionId)
+      .where((eb) =>
+        eb(
+          eb.fn<string>("substr", ["started_at", eb.val(1), eb.val(11)]),
+          "=",
+          `${transcriptDateSegment(session.startedAt)}T`,
+        ),
+      )
+      .limit(1),
+  );
+}
+
 export function readTranscriptSummaryInputRevision(
   database: DatabaseSync,
   session: Pick<TranscriptSessionDescriptor, "sessionId" | "startedAt">,
@@ -59,6 +81,16 @@ export function readTranscriptSummaryInputRevision(
   );
   // Export bookkeeping is not summary input and must not invalidate a reader.
   return row ? JSON.stringify(row) : undefined;
+}
+
+export function readTranscriptSummaryKeys(database: DatabaseSync): Set<string> {
+  const rows = executeSqliteQuerySync(
+    database,
+    meetingTranscriptDb(database)
+      .selectFrom("meeting_transcript_summaries")
+      .select(["session_id", "session_started_at"]),
+  ).rows;
+  return new Set(rows.map((row) => `${row.session_id}\0${row.session_started_at}`));
 }
 
 export function readRecentStoppedTranscriptSession(
@@ -191,7 +223,12 @@ function parseOptionalJsonRecord(value: string | null): Record<string, unknown> 
   return asOptionalRecord(JSON.parse(value));
 }
 
-export function sessionFromRow(row: MeetingTranscriptSessionRow): TranscriptSessionDescriptor {
+export function sessionFromRow(
+  row: Pick<
+    MeetingTranscriptSessionRow,
+    "session_id" | "source_json" | "metadata_json" | "started_at" | "title" | "stopped_at"
+  >,
+): TranscriptSessionDescriptor {
   const source = parseOptionalJsonRecord(row.source_json);
   const metadata = parseOptionalJsonRecord(row.metadata_json);
   if (!source || typeof source.providerId !== "string") {

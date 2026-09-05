@@ -16,6 +16,7 @@ import { registerPluginConsentEnglish } from "../../ui/src/i18n/locales/en-plugi
 import { registerSessionPlacementEnglish } from "../../ui/src/i18n/locales/en-session-placement.ts";
 import { registerSettingsEnglish } from "../../ui/src/i18n/locales/en-settings.ts";
 import { registerSkillLibraryEnglish } from "../../ui/src/i18n/locales/en-skill-library.ts";
+import { registerTranscriptsEnglish } from "../../ui/src/i18n/locales/en-transcripts.ts";
 import { registerUpdateActionsEnglish } from "../../ui/src/i18n/locales/en-update-actions.ts";
 import { en } from "../../ui/src/i18n/locales/en.ts";
 import type { TranslationMap, TranslationMemoryEntry } from "./control-ui-i18n-sync-plan.ts";
@@ -26,53 +27,81 @@ const localesDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../../ui/src/i18n/locales",
 );
-const sourceFiles = [
-  "en.ts",
-  "en-agents.ts",
-  "en-activity.ts",
-  "en-debug.ts",
-  "en-desktop.ts",
-  "en-devices.ts",
-  "en-login.ts",
-  "en-meetings.ts",
-  "en-memory-import.ts",
-  "en-model-accounts.ts",
-  "en-session-placement.ts",
-  "en-new-session-setup.ts",
-  "en-plugin-consent.ts",
-  "en-settings.ts",
-  "en-skill-library.ts",
-  "en-update-actions.ts",
+// File order is the source hash contract. Merge phases retain the existing
+// skill-library prefix and partial debug/desktop replacement within eager en.
+const sourceCatalogs: ReadonlyArray<{
+  fileName: string;
+  phase?: "before" | "base" | "after";
+  catalog?: TranslationMap;
+}> = [
+  { fileName: "en.ts", phase: "base", catalog: en },
+  { fileName: "en-agents.ts" },
+  { fileName: "en-activity.ts", phase: "after", catalog: registerActivityEnglish.catalog },
+  {
+    fileName: "en-debug.ts",
+    phase: "base",
+    catalog: { debug: registerDebugEnglish.catalog.debug },
+  },
+  {
+    fileName: "en-desktop.ts",
+    phase: "base",
+    catalog: { desktop: registerDesktopEnglish.catalog.desktop },
+  },
+  { fileName: "en-devices.ts", phase: "after", catalog: registerDevicesEnglish.catalog },
+  { fileName: "en-login.ts", phase: "after", catalog: registerLoginEnglish.catalog },
+  { fileName: "en-meetings.ts", phase: "after", catalog: registerMeetingsEnglish.catalog },
+  { fileName: "en-memory-import.ts", phase: "after", catalog: registerMemoryImportEnglish.catalog },
+  {
+    fileName: "en-model-accounts.ts",
+    phase: "after",
+    catalog: registerModelAccountsEnglish.catalog,
+  },
+  {
+    fileName: "en-session-placement.ts",
+    phase: "after",
+    catalog: registerSessionPlacementEnglish.catalog,
+  },
+  {
+    fileName: "en-new-session-setup.ts",
+    phase: "after",
+    catalog: registerNewSessionSetupEnglish.catalog,
+  },
+  {
+    fileName: "en-plugin-consent.ts",
+    phase: "after",
+    catalog: registerPluginConsentEnglish.catalog,
+  },
+  { fileName: "en-settings.ts", phase: "after", catalog: registerSettingsEnglish.catalog },
+  {
+    fileName: "en-skill-library.ts",
+    phase: "before",
+    catalog: registerSkillLibraryEnglish.catalog,
+  },
+  {
+    fileName: "en-update-actions.ts",
+    phase: "after",
+    catalog: registerUpdateActionsEnglish.catalog,
+  },
+  { fileName: "en-transcripts.ts", phase: "after", catalog: registerTranscriptsEnglish.catalog },
 ];
 
 export function loadControlUiSourceCatalog(): TranslationMap {
   // Read fragment data without registering it into the shared runtime catalog.
   // en.ts's empty anchors retain source order for extracted whole subtrees.
+  const catalogs = (phase: "before" | "base" | "after") =>
+    sourceCatalogs.flatMap((source) =>
+      source.phase === phase && source.catalog ? [source.catalog] : [],
+    );
   return mergeControlUiTranslationMaps(
-    registerSkillLibraryEnglish.catalog,
-    // Preserve partial-fragment key order while keeping shared labels eager.
-    {
-      ...en,
-      debug: registerDebugEnglish.catalog.debug,
-      desktop: registerDesktopEnglish.catalog.desktop,
-    },
-    registerActivityEnglish.catalog,
-    registerDevicesEnglish.catalog,
-    registerLoginEnglish.catalog,
-    registerMeetingsEnglish.catalog,
-    registerMemoryImportEnglish.catalog,
-    registerModelAccountsEnglish.catalog,
-    registerSessionPlacementEnglish.catalog,
-    registerNewSessionSetupEnglish.catalog,
-    registerPluginConsentEnglish.catalog,
-    registerSettingsEnglish.catalog,
-    registerUpdateActionsEnglish.catalog,
+    ...catalogs("before"),
+    Object.assign({}, ...catalogs("base")),
+    ...catalogs("after"),
   );
 }
 
 export async function readControlUiSourceCatalog(): Promise<string> {
   const sources = await Promise.all(
-    sourceFiles.map((fileName) => readFile(path.join(localesDir, fileName), "utf8")),
+    sourceCatalogs.map(({ fileName }) => readFile(path.join(localesDir, fileName), "utf8")),
   );
   return sources.join("\n");
 }

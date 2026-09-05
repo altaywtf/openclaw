@@ -1,17 +1,44 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 // Discord tests cover transcripts source plugin behavior.
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { Guild, RequestClient } from "../internal/discord.js";
 import {
   discordVoiceTranscriptsSourceProvider,
   setDiscordTranscriptsVoiceManager,
 } from "./transcripts-source.js";
-import type { DiscordVoiceManager } from "./voice-runtime.js";
+
+type TranscriptsManager = NonNullable<
+  Parameters<typeof setDiscordTranscriptsVoiceManager>[0]["manager"]
+>;
 
 describe("discordVoiceTranscriptsSourceProvider", () => {
-  afterEach(() => {
-    setDiscordTranscriptsVoiceManager({ accountId: "primary", manager: null });
-    setDiscordTranscriptsVoiceManager({ accountId: "delayed", manager: null });
-    setDiscordTranscriptsVoiceManager({ accountId: "work", manager: null });
+  const managers = new Map<string, TranscriptsManager>();
+  function registerManager(params: { accountId: string; manager: Partial<TranscriptsManager> }) {
+    const manager: TranscriptsManager = {
+      resolveAccessTarget: vi.fn(async () => undefined),
+      startTranscriptsCapture: vi.fn(async () => ({ ok: true, message: "joined" })),
+      stopTranscriptsCapture: vi.fn(async () => {}),
+      watchChannelOccupancy: vi.fn(() => vi.fn()),
+      ...params.manager,
+    };
+    managers.set(params.accountId, manager);
+    setDiscordTranscriptsVoiceManager({ accountId: params.accountId, manager });
+  }
+  afterEach(async () => {
+    for (const [accountId, manager] of managers) {
+      const active = await discordVoiceTranscriptsSourceProvider.status!({
+        providerId: "discord-voice",
+        accountId,
+      });
+      for (const capture of active) {
+        await discordVoiceTranscriptsSourceProvider.stop!({
+          sessionId: capture.sessionId!,
+          source: capture.source!,
+        });
+      }
+      setDiscordTranscriptsVoiceManager({ accountId, manager: null, expectedManager: manager });
+    }
+    managers.clear();
     vi.useRealTimers();
   });
 
@@ -20,16 +47,21 @@ describe("discordVoiceTranscriptsSourceProvider", () => {
   });
 
   it("authorizes the resolved target with the native voice policy", async () => {
-    setDiscordTranscriptsVoiceManager({
+    const guild = new Guild<true>(
+      { rest: new RequestClient("token-primary"), fetchUser: vi.fn() },
+      "g1",
+    );
+    vi.spyOn(guild, "name", "get").mockReturnValue("Guild One");
+    registerManager({
       accountId: "primary",
       manager: {
         resolveAccessTarget: vi.fn(async () => ({
-          guild: { id: "g1", name: "Guild One" },
+          guild,
           channelName: "General Voice",
           channelSlug: "general-voice",
-          scope: "channel",
+          scope: "channel" as const,
         })),
-      } as unknown as DiscordVoiceManager,
+      },
     });
     const cfg = {
       channels: {
@@ -112,64 +144,45 @@ describe("discordVoiceTranscriptsSourceProvider", () => {
   it.each([undefined, "Operator meeting"])(
     "starts capture, retains title %s, and reports retirement",
     async (title) => {
-      const join = vi.fn<DiscordVoiceManager["join"]>(async () => ({
+      const join = vi.fn<TranscriptsManager["startTranscriptsCapture"]>(async () => ({
         ok: true,
         message: "joined",
         channelName: "Planning room",
       }));
-      setDiscordTranscriptsVoiceManager({
+      registerManager({ accountId: "primary", manager: { startTranscriptsCapture: join } });
+      const source = {
+        providerId: "discord-voice",
         accountId: "primary",
-        manager: { join } as unknown as DiscordVoiceManager,
-      });
-
+        guildId: "g1",
+        channelId: "c1",
+      };
       const onUtterance = vi.fn();
       const onStatus = vi.fn();
       const result = await discordVoiceTranscriptsSourceProvider.start?.({
-        session: {
-          sessionId: "notes-1",
-          title,
-          startedAt: new Date().toISOString(),
-          source: {
-            providerId: "discord-voice",
-            accountId: "primary",
-            guildId: "g1",
-            channelId: "c1",
-          },
-        },
+        session: { sessionId: "notes-1", title, startedAt: new Date().toISOString(), source },
         onUtterance,
         onStatus,
       });
-
       expect(result).toMatchObject({ ok: true, session: { title: title ?? "Planning room" } });
-      expect(join).toHaveBeenCalledWith(
-        { guildId: "g1", channelId: "c1" },
-        {
-          transcripts: {
-            sessionId: "notes-1",
-            onUtterance,
-            onStop: expect.any(Function),
-          },
-        },
-      );
-      await join.mock.calls[0]?.[1]?.transcripts?.onStop?.();
+      expect(join).toHaveBeenCalledExactlyOnceWith({
+        accountId: "primary",
+        guildId: "g1",
+        channelId: "c1",
+      });
+      await discordVoiceTranscriptsSourceProvider.stop!({ sessionId: "notes-1", source });
       expect(onStatus).toHaveBeenCalledExactlyOnceWith({
         active: false,
         sessionId: "notes-1",
-        source: {
-          providerId: "discord-voice",
-          accountId: "primary",
-          guildId: "g1",
-          channelId: "c1",
-        },
+        source,
       });
     },
   );
 
   it("uses the sole voice-capable account instead of a text-only default", async () => {
     const workJoin = vi.fn(async () => ({ ok: true, message: "joined work" }));
-    setDiscordTranscriptsVoiceManager({
+    registerManager({
       accountId: "work",
-      manager: { join: workJoin } as unknown as DiscordVoiceManager,
+      manager: { startTranscriptsCapture: workJoin },
     });
     const source = {
       providerId: "discord-voice",
@@ -289,9 +302,9 @@ describe("discordVoiceTranscriptsSourceProvider", () => {
 
   it("excludes voice accounts whose configured credentials are unavailable", async () => {
     const primaryJoin = vi.fn(async () => ({ ok: true, message: "joined primary" }));
-    setDiscordTranscriptsVoiceManager({
+    registerManager({
       accountId: "primary",
-      manager: { join: primaryJoin } as unknown as DiscordVoiceManager,
+      manager: { startTranscriptsCapture: primaryJoin },
     });
     const unavailableAccount = {
       token: { source: "env", provider: "default", id: "DISCORD_WORK_TOKEN" },
@@ -417,9 +430,9 @@ describe("discordVoiceTranscriptsSourceProvider", () => {
     await vi.advanceTimersByTimeAsync(1_000);
     expect(join).not.toHaveBeenCalled();
 
-    setDiscordTranscriptsVoiceManager({
+    registerManager({
       accountId: "delayed",
-      manager: { join } as unknown as DiscordVoiceManager,
+      manager: { startTranscriptsCapture: join },
     });
 
     await expect(resultPromise).resolves.toMatchObject({ ok: true });
@@ -455,16 +468,16 @@ describe("discordVoiceTranscriptsSourceProvider", () => {
       const unsubscribe = vi.fn(() => {
         listener = undefined;
       });
-      const watchChannelOccupancy = vi.fn<DiscordVoiceManager["watchChannelOccupancy"]>(
+      const watchChannelOccupancy = vi.fn<TranscriptsManager["watchChannelOccupancy"]>(
         (_room, callback) => {
           listener = callback;
           callback({ occupied: true });
           return unsubscribe;
         },
       );
-      const manager = { watchChannelOccupancy } as unknown as DiscordVoiceManager;
+      const manager = { watchChannelOccupancy };
       if (readiness === "registered") {
-        setDiscordTranscriptsVoiceManager({ accountId: "work", manager });
+        registerManager({ accountId: "work", manager });
       }
       const transitions: string[] = [];
       const request = discordVoiceTranscriptsSourceProvider.watchOccupancy?.({
@@ -491,7 +504,7 @@ describe("discordVoiceTranscriptsSourceProvider", () => {
       if (readiness === "delayed") {
         await vi.advanceTimersByTimeAsync(1_000);
         expect(transitions).toEqual([]);
-        setDiscordTranscriptsVoiceManager({ accountId: "work", manager });
+        registerManager({ accountId: "work", manager });
       }
       const result = await request;
       expect(result?.ok).toBe(true);
@@ -509,6 +522,65 @@ describe("discordVoiceTranscriptsSourceProvider", () => {
       expect(transitions).toEqual(["occupied", "empty"]);
       expect(unsubscribe).toHaveBeenCalledOnce();
       expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
+  it.each(["stop", "abort"])(
+    "reattaches occupancy to replacement managers and fences retired callbacks after %s",
+    async (ending) => {
+      const listeners: Array<(state: { occupied: boolean }) => void> = [];
+      const releases = [vi.fn(), vi.fn(), vi.fn()];
+      const replace = (occupied: boolean) => {
+        const release = releases[listeners.length]!;
+        registerManager({
+          accountId: "work",
+          manager: {
+            watchChannelOccupancy: (_target, listener) => {
+              listeners.push(listener);
+              listener({ occupied });
+              return release;
+            },
+          },
+        });
+      };
+      replace(true);
+      const transitions: boolean[] = [];
+      const abortController = new AbortController();
+      const result = await discordVoiceTranscriptsSourceProvider.watchOccupancy!({
+        source: { providerId: "discord-voice", accountId: "work", guildId: "g1", channelId: "c1" },
+        abortSignal: abortController.signal,
+        onOccupied: () => transitions.push(true),
+        onEmpty: () => transitions.push(false),
+      });
+      if (!result.ok) {
+        throw new Error(result.error);
+      }
+      try {
+        const retired = managers.get("work")!;
+        setDiscordTranscriptsVoiceManager({
+          accountId: "work",
+          manager: null,
+          expectedManager: retired,
+        });
+        listeners[0]!({ occupied: false });
+        expect(transitions).toEqual([true]);
+        expect(releases[0]).toHaveBeenCalledOnce();
+        replace(false);
+        listeners[0]!({ occupied: true });
+        expect(transitions).toEqual([true, false]);
+        if (ending === "abort") {
+          abortController.abort();
+        } else {
+          result.value.stop();
+        }
+        listeners[1]!({ occupied: true });
+        replace(true);
+        expect(listeners).toHaveLength(2);
+        expect(transitions).toEqual([true, false]);
+        expect(releases[1]).toHaveBeenCalledOnce();
+      } finally {
+        result.value.stop();
+      }
     },
   );
 
@@ -536,9 +608,9 @@ describe("discordVoiceTranscriptsSourceProvider", () => {
         await vi.advanceTimersByTimeAsync(1_000);
       }
       await expect(result).resolves.toMatchObject({ ok: false });
-      setDiscordTranscriptsVoiceManager({
+      registerManager({
         accountId: "delayed",
-        manager: { watchChannelOccupancy } as unknown as DiscordVoiceManager,
+        manager: { watchChannelOccupancy },
       });
       expect(watchChannelOccupancy).not.toHaveBeenCalled();
       expect(vi.getTimerCount()).toBe(0);
@@ -546,10 +618,24 @@ describe("discordVoiceTranscriptsSourceProvider", () => {
   );
 
   it("stops Discord transcripts without owning promoted voice sessions", async () => {
-    const leave = vi.fn(async () => ({ ok: true, message: "stopped notes" }));
-    setDiscordTranscriptsVoiceManager({
+    const stop = vi.fn(async () => {});
+    registerManager({
       accountId: "primary",
-      manager: { leave } as unknown as DiscordVoiceManager,
+      manager: { stopTranscriptsCapture: stop },
+    });
+
+    await discordVoiceTranscriptsSourceProvider.start!({
+      session: {
+        sessionId: "notes-1",
+        startedAt: new Date().toISOString(),
+        source: {
+          providerId: "discord-voice",
+          accountId: "primary",
+          guildId: "g1",
+          channelId: "c1",
+        },
+      },
+      onUtterance: vi.fn(),
     });
 
     const result = await discordVoiceTranscriptsSourceProvider.stop?.({
@@ -563,23 +649,18 @@ describe("discordVoiceTranscriptsSourceProvider", () => {
     });
 
     expect(result).toMatchObject({ ok: true, sessionId: "notes-1" });
-    expect(leave).toHaveBeenCalledWith(
-      {
-        guildId: "g1",
-        channelId: "c1",
-      },
-      {
-        transcriptsSessionId: "notes-1",
-      },
-    );
+    expect(stop).toHaveBeenCalledExactlyOnceWith({
+      accountId: "primary",
+      guildId: "g1",
+      channelId: "c1",
+    });
   });
 
   it("does not route accountless lifecycle calls to an arbitrary voice manager", async () => {
-    const leave = vi.fn(async () => ({ ok: true, message: "stopped notes" }));
-    const status = vi.fn(() => [{ ok: true, message: "active", guildId: "g1" }]);
-    setDiscordTranscriptsVoiceManager({
+    const stop = vi.fn(async () => {});
+    registerManager({
       accountId: "primary",
-      manager: { leave, status } as unknown as DiscordVoiceManager,
+      manager: { stopTranscriptsCapture: stop },
     });
     const source = { providerId: "discord-voice", guildId: "g1", channelId: "c1" };
 
@@ -590,7 +671,6 @@ describe("discordVoiceTranscriptsSourceProvider", () => {
       error: "Discord transcripts require accountId to stop a voice session.",
     });
     await expect(discordVoiceTranscriptsSourceProvider.status?.(source)).resolves.toEqual([]);
-    expect(leave).not.toHaveBeenCalled();
-    expect(status).not.toHaveBeenCalled();
+    expect(stop).not.toHaveBeenCalled();
   });
 });

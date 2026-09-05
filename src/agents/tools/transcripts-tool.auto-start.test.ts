@@ -12,13 +12,14 @@ import {
   closeOpenClawStateDatabaseForTest,
 } from "../../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
+import { createTranscriptsAutoStartService } from "../../transcripts/auto-start.js";
 import type {
   TranscriptSourceProvider,
   TranscriptStartRequest,
   TranscriptStopRequest,
 } from "../../transcripts/provider-types.js";
 import { TranscriptsStore } from "../../transcripts/store.js";
-import { createTranscriptsAutoStartService, createTranscriptsTool } from "./transcripts-tool.js";
+import { createTranscriptsTool } from "./transcripts-tool.js";
 
 const tempDirs = createTempDirTracker();
 const capturedText = "Private captured decision: keep these notes out of operator logs.";
@@ -148,10 +149,6 @@ describe("transcripts auto-start stop reporting", () => {
         await expect(service.stop()).resolves.toBeUndefined();
         expect(stop.mock.calls.map(([request]) => request.sessionId)).toEqual(ids);
         const warnings = logger.warn.mock.calls.map(([message]) => message);
-        await service.stop();
-        expect(stop).toHaveBeenCalledTimes(2);
-        expect(logger.warn.mock.calls.map(([message]) => message)).toEqual(warnings);
-
         const database =
           openClawStateDatabaseCache.getOpenClawStateDatabaseIfOpenAtPath(databasePath)!;
         expect(database.db.isOpen).toBe(true);
@@ -219,6 +216,12 @@ describe("transcripts auto-start stop reporting", () => {
             expect(warning).not.toContain('"transcript":');
           }
         }
+        await service.stop();
+        expect(stop.mock.calls.map(([request]) => request.sessionId)).toEqual(
+          outcome === "throw" ? [...ids, subjectId] : ids,
+        );
+        expect(logger.warn.mock.calls.map(([message]) => message)).toEqual(warnings);
+        await expect(execute("status")).resolves.toMatchObject({ details: { active: [] } });
       } finally {
         for (const gate of gates.values()) {
           gate.resolve();

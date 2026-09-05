@@ -2,10 +2,10 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import { activeSessions } from "../../transcripts/capture.js";
 import type { TranscriptSourceProvider } from "../../transcripts/provider-types.js";
 import { TranscriptsStore, transcriptSessionSelector } from "../../transcripts/store.js";
 import { summarizeTranscripts } from "../../transcripts/summary.js";
-import { activeSessions } from "./transcripts-tool-runtime.js";
 import { createTranscriptsTool } from "./transcripts-tool.js";
 
 const { getProvider } = vi.hoisted(() => ({ getProvider: vi.fn() }));

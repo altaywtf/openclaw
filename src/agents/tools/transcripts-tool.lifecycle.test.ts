@@ -3,13 +3,22 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { createTempDirTracker } from "../../../test/helpers/temp-dir.js";
-import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import { extractErrorCode } from "../../infra/errors.js";
+import {
+  closeOpenClawStateDatabaseForTest,
+  openOpenClawStateDatabase,
+} from "../../state/openclaw-state-db.js";
+import {
+  activeSessions,
+  isTranscriptSessionStarting,
+  startTranscripts,
+} from "../../transcripts/capture.js";
+import { manualTranscriptSourceProvider } from "../../transcripts/manual-source.js";
 import type {
   TranscriptSourceProvider,
   TranscriptStartRequest,
 } from "../../transcripts/provider-types.js";
-import { TranscriptsStore } from "../../transcripts/store.js";
-import { activeSessions } from "./transcripts-tool-runtime.js";
+import { TranscriptSessionConflictError, TranscriptsStore } from "../../transcripts/store.js";
 import { createTranscriptsTool } from "./transcripts-tool.js";
 
 const { getProvider } = vi.hoisted(() => ({ getProvider: vi.fn() }));
@@ -78,6 +87,50 @@ function harness() {
 }
 
 describe("transcript capture ownership", () => {
+  it.each(["revision-read", "restore-write"] as const)(
+    "does not grant retry authority when failed startup encounters %s failure",
+    async (fault) => {
+      const h = harness();
+      await h.start();
+      await h.requests[0]!.onUtterance({ text: "Original note" });
+      await h.execute({ action: "stop", sessionId: "notes" });
+      const existingSession = await h.session();
+      const originalWrite = h.store.writeSession.bind(h.store);
+      if (fault === "restore-write") {
+        vi.spyOn(h.store, "writeSession")
+          .mockImplementationOnce(originalWrite)
+          .mockRejectedValueOnce(new Error("restore unavailable"));
+      } else {
+        vi.spyOn(h.store, "readSummaryInputRevision").mockImplementationOnce(() => {
+          throw new Error("revision unavailable");
+        });
+      }
+      h.provider.start = vi.fn<NonNullable<TranscriptSourceProvider["start"]>>(async () => ({
+        ok: false,
+        error: "provider unavailable",
+      }));
+      await expect(
+        startTranscripts({
+          ctx: { stateDir: h.stateDir, logger: h.logger },
+          store: h.store,
+          rawParams: { providerId: h.provider.id },
+          configuredLifecycle: true,
+          existingSession,
+        }),
+      ).rejects.toMatchObject({
+        name: "TranscriptStartError",
+        code: "admitted-start-failed",
+        retry: undefined,
+      });
+      expect(h.provider.start).toHaveBeenCalledOnce();
+      expect(await h.store.listSessionEntries()).toHaveLength(1);
+      expect(await h.store.readUtterancesForSession(existingSession)).toMatchObject([
+        { text: "Original note" },
+      ]);
+      await h.execute({ action: "stop", sessionId: "notes" });
+    },
+  );
+
   it.each(["write failure", "shutdown"])(
     "releases the provider when title adoption encounters %s",
     async (fault) => {
@@ -130,10 +183,21 @@ describe("transcript capture ownership", () => {
     },
   );
 
-  it.each([undefined, "Operator title"])(
-    "adopts only a bounded provider title when the caller title is %s",
-    async (title) => {
+  it.each(
+    [undefined, "Operator title"].flatMap((title) =>
+      [false, true].map((reopen) => ({ title, reopen })),
+    ),
+  )(
+    "bounds fresh provider titles and preserves admitted title $title (reopen=$reopen)",
+    async ({ title, reopen }) => {
       const h = harness();
+      let existingSession: Awaited<ReturnType<typeof h.store.readSession>>;
+      if (reopen) {
+        await h.execute({ action: "start", providerId: "capture", title });
+        const initial = h.requests[0]!.session;
+        await h.execute({ action: "stop", sessionId: initial.sessionId });
+        existingSession = await h.store.readSession(initial.sessionId);
+      }
       h.provider.start = async (request) => ({
         ok: true,
         session: {
@@ -145,16 +209,27 @@ describe("transcript capture ownership", () => {
           title: `  ${"Room".repeat(40)}  `,
         },
       });
-      await h.execute({ action: "start", providerId: "capture", sessionId: "notes", title });
-      const stored = await h.session();
-      expect(stored.title).toBe(title ?? "Room".repeat(30));
+      const sessionId = existingSession?.sessionId ?? "notes";
+      if (existingSession) {
+        await startTranscripts({
+          ctx: { stateDir: h.stateDir, agentId: "research", logger: h.logger },
+          store: h.store,
+          rawParams: { providerId: "capture", title: "Future title" },
+          configuredLifecycle: true,
+          existingSession,
+        });
+      } else {
+        await h.execute({ action: "start", providerId: "capture", sessionId, title });
+      }
+      const stored = await h.store.readSession(sessionId);
+      expect(stored?.title).toBe(reopen ? title : (title ?? "Room".repeat(30)));
       expect(stored).toMatchObject({
-        sessionId: "notes",
+        sessionId,
         source: { providerId: "capture" },
         metadata: { agentId: "research" },
       });
-      expect(stored.startedAt).not.toBe("2000-01-01T00:00:00Z");
-      await h.execute({ action: "stop", sessionId: "notes" });
+      expect(stored?.startedAt).not.toBe("2000-01-01T00:00:00Z");
+      await h.execute({ action: "stop", sessionId });
     },
   );
 
@@ -200,9 +275,10 @@ describe("transcript capture ownership", () => {
   );
 
   it.each(["terminal", "rejected", "thrown"] as const)(
-    "fences a %s startup and its retained callbacks after same-millisecond id reuse",
+    "rejects same-millisecond admission after a %s startup and fences old callbacks",
     async (outcome) => {
       vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date("2026-07-01T10:00:00.000Z"));
       const h = harness();
       let retained!: TranscriptStartRequest;
       h.provider.start = async (request) => {
@@ -260,14 +336,25 @@ describe("transcript capture ownership", () => {
         },
         metadata: { agentId: "research" },
       });
-      h.provider.start = async (request) => ({ ok: true, session: request.session });
+      const start = vi.fn<NonNullable<TranscriptSourceProvider["start"]>>(async (request) => ({
+        ok: true,
+        session: request.session,
+      }));
+      h.provider.start = start;
+      const summary = await h.store.readSummary(first);
+      await expect(h.start()).rejects.toBeInstanceOf(TranscriptSessionConflictError);
+      expect(start).not.toHaveBeenCalled();
+      expect(await h.session()).toEqual(first);
+      expect(await h.store.readSummary(first)).toEqual(summary);
+      vi.setSystemTime(new Date("2026-07-02T10:00:00.000Z"));
       await h.start();
       await retained.onStatus?.({ active: false, sessionId: "notes" });
       await retained.onUtterance({ text: "stale callback after reuse" });
-      const replacement = await h.session();
-      expect(replacement.startedAt).toBe(first.startedAt);
+      const replacement = (await h.store.readSession("2026-07-02/notes"))!;
+      expect(replacement.startedAt).toBe("2026-07-02T10:00:00.000Z");
       expect(replacement.stoppedAt).toBeUndefined();
-      expect((await h.store.readUtterancesForSession(replacement)).map((row) => row.text)).toEqual([
+      expect(await h.store.readUtterancesForSession(replacement)).toEqual([]);
+      expect((await h.store.readUtterancesForSession(first)).map((row) => row.text)).toEqual([
         "before closure",
       ]);
       await expect(h.execute({ action: "status" })).resolves.toMatchObject({
@@ -277,6 +364,133 @@ describe("transcript capture ownership", () => {
       await h.execute({ action: "stop", sessionId: "notes" });
     },
   );
+
+  it.each([
+    { action: "start", elapsed: 0, historical: false },
+    { action: "import", elapsed: 0, historical: false },
+    { action: "start", elapsed: 5_000, historical: false },
+    { action: "import", elapsed: 5_000, historical: false },
+    { action: "start", elapsed: 5_000, historical: true },
+    { action: "import", elapsed: 5_000, historical: true },
+    { action: "start", elapsed: -5_000, historical: true },
+    { action: "import", elapsed: -5_000, historical: true },
+  ] as const)(
+    "rejects new $action after $elapsed ms without changing the archive (historical=$historical)",
+    async ({ action, elapsed, historical }) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const at = Date.parse("2026-07-01T10:00:00.000Z");
+      vi.setSystemTime(at);
+      const h = harness();
+      await h.start();
+      await h.requests[0]!.onUtterance({
+        id: "original",
+        text: "Preserved decision",
+        final: true,
+        speaker: { id: "speaker", label: "Speaker" },
+        metadata: { provenance: "original" },
+      });
+      await h.execute({ action: "stop", sessionId: "notes" });
+      const original = await h.session();
+      const artifacts = await h.store.materializeSessionArtifacts(original, "all");
+      const { db } = openOpenClawStateDatabase({
+        env: { ...process.env, OPENCLAW_STATE_DIR: h.stateDir },
+      });
+      if (historical) {
+        db.prepare("UPDATE meeting_transcript_sessions SET selector = ? WHERE session_id = ?").run(
+          "2026-07-01/historical",
+          original.sessionId,
+        );
+        await fs.rm(artifacts.sessionDir, { recursive: true });
+      }
+      const snapshot = async () => ({
+        session: await h.session(),
+        utterances: await h.store.readUtterancesForSession(original),
+        summary: await h.store.readSummary(original),
+        rows: [
+          "meeting_transcript_sessions",
+          "meeting_transcript_utterances",
+          "meeting_transcript_summaries",
+        ].map((table) => db.prepare(`SELECT * FROM ${table} WHERE session_id = ?`).all("notes")),
+        exports: historical
+          ? await fs.readdir(artifacts.sessionDir).catch((error: unknown) => {
+              if (extractErrorCode(error) !== "ENOENT") {
+                throw error;
+              }
+              return [];
+            })
+          : await Promise.all(
+              (await fs.readdir(artifacts.sessionDir))
+                .toSorted()
+                .map(async (name) => [
+                  name,
+                  await fs.readFile(path.join(artifacts.sessionDir, name), "utf8"),
+                ]),
+            ),
+      });
+      const before = await snapshot();
+      const importing = vi.spyOn(manualTranscriptSourceProvider, "importTranscript");
+      vi.setSystemTime(at + elapsed);
+      const other = createTranscriptsTool({
+        stateDir: h.stateDir,
+        agentId: "other",
+        config: { transcripts: { enabled: true } },
+        caller: { kind: "operator", source: "local" },
+      });
+      await expect(
+        other.execute("collision", {
+          action,
+          sessionId: "notes",
+          title: "Replacement",
+          providerId: action === "start" ? "capture" : "manual-transcript",
+          accountId: "other",
+          meetingUrl: "https://example.test/other",
+          transcript: "New: must not append",
+        }),
+      ).rejects.toMatchObject({ name: "TranscriptSessionConflictError", cause: expect.any(Error) });
+      expect(h.provider.start).toHaveBeenCalledOnce();
+      expect(importing).not.toHaveBeenCalled();
+      expect(isTranscriptSessionStarting("notes")).toBe(false);
+      await expect(h.execute({ action: "status" })).resolves.toMatchObject({
+        details: { active: [], pendingFinalization: [] },
+      });
+      expect(await snapshot()).toEqual(before);
+      // A rejected claim cannot poison a later, independently generated admission.
+      await expect(h.execute({ action: "start", providerId: "capture" })).resolves.toMatchObject({
+        details: { sessionId: expect.stringMatching(/^transcript-/) },
+      });
+      expect(await snapshot()).toEqual(before);
+    },
+  );
+
+  it("admits only one competing manual import at the same timestamp", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-07-01T10:00:00.000Z"));
+    const h = harness();
+    const importing = vi.spyOn(manualTranscriptSourceProvider, "importTranscript");
+    const attempts = await Promise.allSettled(
+      ["First", "Second"].map((text) =>
+        h.createTool().execute("competing-import", {
+          action: "import",
+          sessionId: "notes",
+          providerId: "manual-transcript",
+          title: text,
+          transcript: text,
+        }),
+      ),
+    );
+    expect(attempts.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(attempts.filter((result) => result.status === "rejected")).toMatchObject([
+      { reason: { name: "TranscriptSessionConflictError", cause: expect.any(Error) } },
+    ]);
+    expect(importing).toHaveBeenCalledOnce();
+    const original = await h.session();
+    expect(await h.store.readUtterancesForSession(original)).toMatchObject([
+      { text: original.title },
+    ]);
+    expect((await h.store.readSummary(original)).summary?.utteranceCount).toBe(1);
+    expect(await h.store.listSessionEntries()).toHaveLength(1);
+    expect(isTranscriptSessionStarting("notes")).toBe(false);
+  });
 
   it.each(["inline", "microtask", "after-stop"] as const)(
     "shares durable finalization with an explicit stop notification delivered %s",
@@ -363,10 +577,11 @@ describe("transcript capture ownership", () => {
     async (phase) => {
       vi.useFakeTimers({ toFake: ["Date"] });
       const h = harness();
-      await h.start();
+      await h.execute({ action: "start", providerId: h.provider.id });
+      const sessionId = h.requests[0]!.session.sessionId;
       await h.requests[0]!.onUtterance({ text: "Original meeting" });
-      await h.execute({ action: "stop", sessionId: "notes" });
-      const session = await h.session();
+      await h.execute({ action: "stop", sessionId });
+      const session = (await h.store.readSession(sessionId))!;
       const entered = createDeferred();
       const release = createDeferred();
       const originalRead = h.store.readUtterancesForSession.bind(h.store);
@@ -389,13 +604,25 @@ describe("transcript capture ownership", () => {
           },
         );
       }
-      const historical = h.execute({ action: "summarize", sessionId: "notes" });
+      const historical = h.execute({ action: "summarize", sessionId });
       try {
         await Promise.race([entered.promise, historical]);
-        await h.start();
-        expect((await h.session()).startedAt).toBe(session.startedAt);
+        // Only the configured generated-session path may reopen its durable tuple.
+        await startTranscripts({
+          ctx: {
+            config: { transcripts: { enabled: true } },
+            stateDir: h.stateDir,
+            agentId: "research",
+            logger: h.logger,
+          },
+          store: h.store,
+          rawParams: { providerId: h.provider.id },
+          configuredLifecycle: true,
+          existingSession: session,
+        });
+        expect((await h.store.readSession(sessionId))?.startedAt).toBe(session.startedAt);
         await h.requests[1]!.onUtterance({ text: "Reopened meeting" });
-        await h.execute({ action: "stop", sessionId: "notes" });
+        await h.execute({ action: "stop", sessionId });
         release.resolve();
         await expect.soft(historical).resolves.toMatchObject({ details: { skipped: true } });
         expect(await h.store.readSummary(session)).toMatchObject({
@@ -404,7 +631,7 @@ describe("transcript capture ownership", () => {
       } finally {
         release.resolve();
         await Promise.allSettled([historical]);
-        await h.execute({ action: "stop", sessionId: "notes" });
+        await h.execute({ action: "stop", sessionId });
       }
     },
   );
@@ -464,6 +691,7 @@ describe("transcript capture ownership", () => {
     "revalidates capture identity after awaited $action authorization via $key without reusing startup authority",
     async ({ action, key }) => {
       vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date("2026-07-01T10:00:00.000Z"));
       const h = harness();
       let callerActive = true;
       const startingTool = h.createTool(() => {
@@ -509,8 +737,9 @@ describe("transcript capture ownership", () => {
       await Promise.race([entered, delayed]);
       callerActive = false;
       await h.requests[0]!.onStatus?.({ active: false });
+      vi.setSystemTime(new Date("2026-07-02T10:00:00.000Z"));
       await h.start();
-      const replacement = await h.session();
+      const replacement = (await h.store.readSession("2026-07-02/notes"))!;
       const savedSummary = await h.store.readSummary(replacement);
       const read = vi.spyOn(TranscriptsStore.prototype, "readUtterancesForSession");
       const write = vi.spyOn(TranscriptsStore.prototype, "writeSummary");
@@ -527,13 +756,14 @@ describe("transcript capture ownership", () => {
         code: "ENOENT",
       });
       expect(h.provider.stop).not.toHaveBeenCalled();
-      expect((await h.session()).stoppedAt).toBeUndefined();
+      expect((await h.store.readSession("2026-07-02/notes"))?.stoppedAt).toBeUndefined();
       await h.execute({ action: "stop", sessionId: "notes" });
     },
   );
 
   it("does not persist or export a summary after its capture retires during the read", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-07-01T10:00:00.000Z"));
     const h = harness();
     await h.start();
     const session = await h.session();
@@ -556,6 +786,7 @@ describe("transcript capture ownership", () => {
     try {
       await Promise.race([entered.promise, delayed]);
       await h.requests[0]!.onStatus?.({ active: false });
+      vi.setSystemTime(new Date("2026-07-02T10:00:00.000Z"));
       await h.start();
       await h.requests[1]!.onUtterance({ text: "replacement note" });
     } finally {
@@ -569,7 +800,7 @@ describe("transcript capture ownership", () => {
     await expect
       .soft(fs.stat(h.store.sessionDir(session)))
       .rejects.toMatchObject({ code: "ENOENT" });
-    expect((await h.session()).stoppedAt).toBeUndefined();
+    expect((await h.store.readSession("2026-07-02/notes"))?.stoppedAt).toBeUndefined();
     await h.execute({ action: "stop", sessionId: "notes" });
   });
 

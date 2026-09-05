@@ -1,15 +1,10 @@
 // Stores meeting-capture transcripts in the shared SQLite state database.
-import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { resolveOptionalIntegerOption } from "@openclaw/normalization-core/number-coercion";
 import { sha256File, sha256Hex } from "../infra/crypto-digest.js";
 import { ensureAbsoluteDirectory } from "../infra/fs-safe.js";
-import {
-  executeSqliteQuerySync,
-  executeSqliteQueryTakeFirstSync,
-  iterateSqliteQuerySync,
-} from "../infra/kysely-sync.js";
+import { executeSqliteQuerySync, executeSqliteQueryTakeFirstSync } from "../infra/kysely-sync.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
@@ -34,19 +29,21 @@ import {
   transcriptSessionSelector,
   writeTranscriptArtifact,
 } from "./store-artifacts.js";
-import { writeTranscriptJsonlArtifact } from "./store-export-jsonl.js";
+import { transcriptJsonlDigest, writeTranscriptJsonlArtifact } from "./store-export-jsonl.js";
 import {
   assertTranscriptExportPathAvailable,
   hasAliasedCanonicalTranscriptExportPathOwner,
 } from "./store-export-ownership.js";
-import { queryTranscriptReadEntries, type TranscriptReadOptions } from "./store-read.js";
+import * as read from "./store-read.js";
 import {
   appendMeetingTranscriptUtterance,
+  findMeetingTranscriptSessionForDay,
   meetingTranscriptDb,
   meetingTranscriptSessionQuery,
   meetingTranscriptUtteranceQuery,
   type MeetingTranscriptSessionRow,
   readRecentStoppedTranscriptSession,
+  readTranscriptSummaryKeys,
   readTranscriptSummaryInputRevision,
   sessionFromRow,
   summaryFromRow,
@@ -58,6 +55,16 @@ import { renderTranscriptsMarkdown } from "./summary.js";
 
 export type * from "./store-types.js";
 export { safeTranscriptPathSegment, transcriptSessionExportKey, transcriptSessionSelector };
+
+export class TranscriptSessionConflictError extends Error {
+  constructor(cause: unknown) {
+    super(
+      "Transcript ID already used for this day. Choose a new unused custom ID or leave it unset for generated IDs.",
+      { cause },
+    );
+    this.name = "TranscriptSessionConflictError";
+  }
+}
 
 export class TranscriptsSummaryChangedError extends Error {
   constructor() {
@@ -101,16 +108,6 @@ export class TranscriptsStore {
       summaryPath: path.join(sessionDir, "summary.md"),
       hasSummary,
     };
-  }
-
-  private readSummaryKeys(database: OpenClawStateDatabase): Set<string> {
-    const rows = executeSqliteQuerySync(
-      database.db,
-      meetingTranscriptDb(database.db)
-        .selectFrom("meeting_transcript_summaries")
-        .select(["session_id", "session_started_at"]),
-    ).rows;
-    return new Set(rows.map((row) => `${row.session_id}\0${row.session_started_at}`));
   }
 
   private hasSummary(database: OpenClawStateDatabase, row: MeetingTranscriptSessionRow): boolean {
@@ -158,25 +155,6 @@ export class TranscriptsStore {
     return row ? sessionFromRow(row) : undefined;
   }
 
-  private transcriptRows(session: TranscriptSessionDescriptor) {
-    const database = this.database();
-    return {
-      database,
-      query: meetingTranscriptUtteranceQuery(database.db, session)
-        .selectAll()
-        .orderBy("sequence", "asc"),
-    };
-  }
-
-  private transcriptJsonlDigest(session: TranscriptSessionDescriptor): string {
-    const { database, query } = this.transcriptRows(session);
-    const digest = createHash("sha256");
-    for (const row of iterateSqliteQuerySync(database.db, query)) {
-      digest.update(`${JSON.stringify(utteranceFromRow(row))}\n`);
-    }
-    return digest.digest("hex");
-  }
-
   private async expectedExportHashes(
     session: TranscriptSessionDescriptor,
   ): Promise<Record<string, string>> {
@@ -186,7 +164,7 @@ export class TranscriptsStore {
     }
     const hashes: Record<string, string> = {
       "metadata.json": sha256Hex(`${JSON.stringify(storedSession, null, 2)}\n`),
-      "transcript.jsonl": this.transcriptJsonlDigest(storedSession),
+      "transcript.jsonl": transcriptJsonlDigest(this.database().db, storedSession),
     };
     const summary = await this.readSummary(storedSession);
     if (summary.summary) {
@@ -321,10 +299,37 @@ export class TranscriptsStore {
         .orderBy("started_at", "desc")
         .orderBy("session_id", "asc"),
     ).rows;
-    const summaryKeys = this.readSummaryKeys(database);
+    const summaryKeys = readTranscriptSummaryKeys(database.db);
     return rows.map((row) =>
       this.entryFromRow(row, summaryKeys.has(`${row.session_id}\0${row.started_at}`)),
     );
+  }
+
+  iterateReadEntries(options: read.TranscriptReadOptions = {}) {
+    return read.iterateTranscriptReadEntries(this.database().db, options);
+  }
+
+  readEntry(selector: string, exporting = false) {
+    return read.readTranscriptEntry(this.database().db, selector, exporting);
+  }
+
+  readLatestEntry() {
+    return read.readLatestTranscriptEntry(this.database().db);
+  }
+
+  readNotes(session: TranscriptSessionDescriptor, exporting = false) {
+    return read.readTranscriptNotes(this.database().db, session, exporting);
+  }
+
+  readUtterancePage(
+    session: TranscriptSessionDescriptor,
+    options: { limit?: number; after?: number; query?: string } = {},
+  ) {
+    return read.readTranscriptUtterancePage(this.database().db, session, options);
+  }
+
+  iterateUtterances(session: TranscriptSessionDescriptor) {
+    return read.iterateTranscriptUtterances(this.database().db, session);
   }
 
   readRecentStoppedSession(
@@ -344,30 +349,66 @@ export class TranscriptsStore {
     return readTranscriptSummaryInputRevision(this.database().db, session);
   }
 
-  listReadEntries(options: TranscriptReadOptions) {
-    return queryTranscriptReadEntries(this.database().db, options);
-  }
-
-  readUtteranceEntries(session: TranscriptSessionDescriptor, maxUtterances: number) {
-    const database = this.database();
-    return executeSqliteQuerySync(
-      database.db,
-      meetingTranscriptUtteranceQuery(database.db, session)
-        .select([
-          "sequence",
-          "started_at",
-          "ended_at",
-          "speaker_id",
-          "speaker_label",
-          "text",
-          "final",
-        ])
-        .orderBy("sequence", "desc")
-        .limit(maxUtterances),
-    ).rows.toReversed();
+  listReadEntries(options: read.TranscriptReadOptions) {
+    return read.queryTranscriptReadEntries(this.database().db, options);
   }
 
   async writeSession(session: TranscriptSessionDescriptor): Promise<void> {
+    await this.persistSession(session, "write");
+  }
+
+  async admitSession(session: TranscriptSessionDescriptor): Promise<void> {
+    await this.persistSession(session, "admit");
+  }
+
+  private async persistSession(
+    session: TranscriptSessionDescriptor,
+    mode: "write" | "admit",
+  ): Promise<void> {
+    try {
+      await this.writeSessionOwned(session, mode);
+    } catch (error) {
+      if (error instanceof TranscriptSessionConflictError) {
+        throw error;
+      }
+      const database = this.database();
+      const owner = executeSqliteQueryTakeFirstSync(
+        database.db,
+        meetingTranscriptDb(database.db)
+          .selectFrom("meeting_transcript_sessions")
+          .select(["session_id", "started_at"])
+          .where((eb) =>
+            eb.or([
+              eb("selector", "=", transcriptSessionSelector(session)),
+              ...(mode === "admit"
+                ? [
+                    eb.and([
+                      eb("session_id", "=", session.sessionId),
+                      eb("started_at", "=", session.startedAt),
+                    ]),
+                  ]
+                : []),
+            ]),
+          ),
+      );
+      // Translate an existing rejection only. Never upsert by selector or adopt
+      // its owner, including when exported artifacts rejected the new identity first.
+      if (
+        owner &&
+        (mode === "admit" ||
+          owner.session_id !== session.sessionId ||
+          owner.started_at !== session.startedAt)
+      ) {
+        throw new TranscriptSessionConflictError(error);
+      }
+      throw error;
+    }
+  }
+
+  private async writeSessionOwned(
+    session: TranscriptSessionDescriptor,
+    mode: "write" | "admit",
+  ): Promise<void> {
     ensureMeetingTranscriptsSchema(this.databaseOptions);
     if (
       !this.readSessionByIdentity(session) &&
@@ -406,6 +447,14 @@ export class TranscriptsStore {
     };
     const now = Date.now();
     this.transaction("meeting-transcripts.session.write", ({ db: database }) => {
+      // Historical selectors may differ from today's encoder. Admission consumes
+      // the raw ID for its UTC day, while owned-tuple writes remain updates.
+      const admitted = mode === "admit" && findMeetingTranscriptSessionForDay(database, session);
+      if (admitted) {
+        throw new TranscriptSessionConflictError(
+          new Error(`Transcript raw ID was already admitted at ${admitted.started_at}`),
+        );
+      }
       executeSqliteQuerySync(
         database,
         meetingTranscriptDb(database)
@@ -420,11 +469,15 @@ export class TranscriptsStore {
             created_at_ms: now,
             updated_at_ms: now,
           })
-          .onConflict((conflict) =>
-            conflict.columns(["session_id", "started_at"]).doUpdateSet({
-              ...sessionValues,
-              updated_at_ms: now,
-            }),
+          // Only the existing descriptor owner may update a tuple. New admissions
+          // use the same transaction and constraints, even when timestamps collide.
+          .$if(mode === "write", (query) =>
+            query.onConflict((conflict) =>
+              conflict.columns(["session_id", "started_at"]).doUpdateSet({
+                ...sessionValues,
+                updated_at_ms: now,
+              }),
+            ),
           ),
       );
     });

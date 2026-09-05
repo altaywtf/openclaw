@@ -186,6 +186,7 @@ export function loadPluginManifest(
     raw.autoEnableWhenConfiguredProviders,
   );
   const providers = normalizeTrimmedStringList(raw.providers);
+  const contracts = capabilityNormalizers.normalizeManifestContracts(raw.contracts);
   const cliBackends = normalizeTrimmedStringList(raw.cliBackends);
   const rawDoctorContract = isRecord(raw.doctorContract) ? raw.doctorContract : undefined;
   const doctorContract = rawDoctorContract
@@ -293,7 +294,11 @@ export function loadPluginManifest(
       catalog: capabilityNormalizers.normalizeManifestCatalog(raw.catalog),
       version: normalizeOptionalString(raw.version),
       uiHints: setupNormalizers.normalizeConfigUiHints(raw.uiHints),
-      contracts: capabilityNormalizers.normalizeManifestContracts(raw.contracts),
+      contracts,
+      transcriptSources: capabilityNormalizers.normalizeManifestTranscriptSources(
+        raw.transcriptSources,
+        contracts?.transcriptSourceProviders,
+      ),
       mediaUnderstandingProviderMetadata:
         capabilityNormalizers.normalizeMediaUnderstandingProviderMetadata(
           raw.mediaUnderstandingProviderMetadata,

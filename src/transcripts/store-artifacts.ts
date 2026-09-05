@@ -40,19 +40,19 @@ function legacyTranscriptPathSegment(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "session";
 }
 
-function dateSegment(value: string | undefined): string {
+export function transcriptDateSegment(value: string | undefined): string {
   const isoDate = value?.match(/^(\d{4}-\d{2}-\d{2})T/)?.[1];
   return isoDate ?? new Date().toISOString().slice(0, 10);
 }
 
 export function transcriptSessionSelector(session: TranscriptSessionDescriptor): string {
-  return `${dateSegment(session.startedAt)}/${safeTranscriptPathSegment(session.sessionId)}`;
+  return `${transcriptDateSegment(session.startedAt)}/${safeTranscriptPathSegment(session.sessionId)}`;
 }
 
 export function legacyTranscriptSessionSelector(
   session: TranscriptSessionDescriptor,
 ): string | undefined {
-  const date = dateSegment(session.startedAt);
+  const date = transcriptDateSegment(session.startedAt);
   const segment = legacyTranscriptPathSegment(session.sessionId);
   // An oversized component could never hold legacy files; probing it would
   // reject otherwise valid captures with ENAMETOOLONG before persistence.

@@ -4,6 +4,7 @@ read_when:
   - You want to read stored transcript summaries from the terminal
   - You need the path to a transcripts markdown summary
   - You are debugging the core transcripts storage layout
+  - You want to browse meeting transcripts or configure capture in the Control UI
   - You want an agent or the Control UI to read past meeting notes
 title: "Transcripts CLI"
 ---
@@ -31,6 +32,42 @@ back during capture, summarization, or listing. Default state directory is
 `~/.openclaw`; override with `OPENCLAW_STATE_DIR`. The date directory comes
 from the session start time; the session directory is a filesystem-safe slug
 derived from the session id.
+
+## Read transcripts in the Control UI
+
+In the [Control UI](/web/control-ui#meeting-transcript-library), open the sidebar's
+pencil menu (**Edit pinned items**) and choose **Transcripts** to browse the same
+SQLite archive. You can pin **Transcripts** to the sidebar;
+it is not pinned by default. This library contains meeting notes, not agent chat
+history from **Sessions**.
+
+Search titles and session/source IDs; meeting URLs are not searched. Filter by
+exact provider/account/agent ID or the session start date.
+Dates use UTC: **Started on or after** includes the selected day,
+and **Started before** excludes it. Results load in deterministic pages. Change
+a filter or select **Refresh** to start pagination again.
+
+Select a transcript for timestamped speaker text. **Search within this transcript**
+searches its stored utterances on the Gateway, including text that has not yet
+loaded in the browser. **Load more** continues reading; the browser keeps only
+the latest five loaded pages. The selected transcript is part of the URL, so
+bookmarks and browser back/forward preserve the selection.
+
+**Summary** shows stored notes, including participants and model or heuristic
+provenance when available. Opening the reader does not generate a missing summary.
+**Download Markdown** includes the transcript and any stored summary;
+**Download JSONL** exports the reader's public utterance projection: sequence,
+utterance ID, full text, speaker identity, source timestamps, and finality when
+available. It excludes provider-private metadata and local filesystem paths;
+the local CLI export keeps its existing raw utterance format. Downloads save actual files
+through the browser. Exports larger than 4 MiB fail visibly without a partial
+file; use `openclaw transcripts path <session> --transcript` or
+`openclaw transcripts path <session> --dir` on the Gateway host for larger exports.
+
+Archive reads require `operator.read` or its write/admin implication and
+permission to read the shared archive. On restricted multi-user profiles,
+choosing an agent filter does not grant archive access. Capture configuration
+requires `operator.admin`.
 
 ## Commands
 
@@ -164,23 +201,25 @@ when one capture is active.
 
 Open **Meetings** in the [Control UI](/web/control-ui#meetings-page) to browse
 captured meetings and notes without a terminal. The page and other Gateway
-clients use two read-only RPC methods:
+clients use the canonical read-only RPC methods:
 
-| Method             | Parameters                                            | Result                                                                                                                                                    |
-| ------------------ | ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `transcripts.list` | Optional `limit` (1–200, default 50) and `providerId` | Newest-first `sessions`, including participants, utterance counts, active state, summary availability, and an overview preview of at most 280 characters. |
-| `transcripts.get`  | Required `selector`; optional `includeUtterances`     | One `session`, stored `summary` and its Markdown when available, and optional bounded `utterances`.                                                       |
+| Method             | Parameters                                                                                           | Result                                                                                                                                                                  |
+| ------------------ | ---------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `transcripts.list` | Optional `limit` (1–200, default 50), `cursor`, provider/account/agent IDs, date bounds, and `query` | Newest-first `sessions`, including participants, utterance counts, active state, summary availability, an overview preview of at most 280 characters, and `nextCursor`. |
+| `transcripts.get`  | Required `selector`; optional `includeUtterances`, `limit` (1–100), `cursor`, and utterance `query`  | One `session`, stored `summary` and its Markdown when available, optional full-text `utterances`, and `nextCursor`.                                                     |
 
 Both methods require `operator.read` and expose meetings across one trusted
 Gateway domain, not just the current agent or chat session. Use separate Gateway
 domains when readers need isolation. Source locators contain only `providerId`,
-`accountId`, `guildId`, `channelId`, and `meetingUrl` when present, never arbitrary
+`accountId`, `guildId`, `channelId`, `threadTs`, `fileId`, `kind`, and sanitized `meetingUrl` when present, never arbitrary
 capture metadata. See [Gateway protocol](/gateway/protocol).
 
 The stored summary Markdown is the canonical notes text, matching the CLI's
 `show` output. RPC reads do not materialize files. Utterances are omitted unless
-requested and bounded by the capture limit of 2,000; each utterance text is also
-sanitized and bounded. Summary participants and model/heuristic provenance are
+requested and paginated without truncating stored text. Each result is bounded to
+1 MiB before transfer; `transcripts.export` supports Markdown or JSONL up to 4 MiB.
+`transcripts.status` reports capture configuration and durable archive facts.
+Summary participants and model/heuristic provenance are
 shown when available; older summaries need not contain them.
 
 ## JSON output
@@ -287,6 +326,62 @@ sessions and any exports you rely on.
 
 ## Configuration
 
+Open **Settings → Communications → Meeting capture** to edit the existing
+`transcripts.enabled` and `transcripts.autoStart` settings. **Enable transcript
+storage** controls whether durable capture is permitted; each auto-start source
+opts in a particular provider and source. You can add or remove sources and edit
+their title, account, source locators, and optional custom session ID. The controls
+use the same config draft, automatic saving, validation, and apply flow as the
+rest of Settings. If **Apply changes** appears, use it to activate saved changes.
+If a restart interrupts a pending draft, **Autosave paused after reconnect** keeps
+that draft without sending it to the new connection. Review it and select **Save**
+in the Settings footer to submit it explicitly.
+The schema editor for **Transcripts** remains in Communications for advanced edits.
+
+Changing only source titles applies to **future captures** without restarting or
+interrupting current captures. Current and historical notes keep their original
+title, source, agent attribution, and selector. Other source edits retain normal
+Gateway restart behavior.
+
+A custom session ID can admit only one capture per UTC day. A real Gateway
+restart, disable/re-enable, or remove/re-add starts a new capture; it does not
+resume a completed same-day ID. **Meeting capture** health reports the conflict.
+This also applies to historical selectors, missing export files, and a clock
+moving backward within that day. The same fixed ID can start again on a new UTC day.
+Choose a new unused fixed ID, or leave the field empty for generated IDs
+(recommended for automation). Existing notes and summaries are preserved.
+
+Startup can retry before a transcript is admitted, for example while its provider
+is unavailable. Generated captures also retry provider-start failures
+after admission, keeping the same ID, original title, start time, source, and
+saved notes. Retries stop after twelve attempts, when the service stops, or when
+the pending transcript is manually stopped. With `whenOccupied`, a manual stop
+cancels retries for that occupancy episode; a new empty-to-occupied transition
+can reopen the meeting within the normal window. A fixed-ID capture's post-admission
+failure is terminal. Health reports the failure
+without provider error details. Correct the provider configuration before starting
+a new capture.
+
+New sources are offered when an enabled plugin manifest declares auto-start
+setup metadata, even before its provider runtime loads. An observed runtime
+`canStart: false` prevents new setup. The manifest descriptor chooses the
+supported locator controls and marks required fields. Existing entries remain
+editable when provider metadata is unavailable; their fields are preserved.
+Meeting providers that attach to an already-active bot are not advertised as
+boot auto-start sources.
+
+The health rows distinguish the Gateway's applied setting from the draft.
+**Armed** means a registered capture subscription, not proof that audio is arriving
+or being saved. **Not active** means no subscription was reported; **Unknown**
+means the Gateway could not establish the fact. URL-based configured sources
+remain unknown when only sanitized capture URLs are retained: equal public URLs
+do not prove equal invitation identities. A current configured-start attempt can
+report its exact subscription without deriving ownership from stored URLs. Neither `enabled: true` nor an
+unset stop time proves recording. Saved utterance counts are durable facts.
+The latest saved transcript is the most recently updated session containing
+utterances, not an exact last-ingestion ordering. Source utterance times are
+labeled explicitly; the archive does not retain exact ingestion timestamps.
+
 Meeting transcript capture is enabled by default. To opt out globally:
 
 ```json
@@ -329,6 +424,51 @@ Otherwise, set `accountId` to the corresponding key under
 }
 ```
 
+Automatic channel captures belong to the agent selected by normal channel and
+account routing. Use that agent to inspect or summarize its notes; native
+account access checks still apply. Existing notes are not reassigned when
+bindings change.
+
+Run the `transcripts` tool with `action: "status"` to discover active capture IDs
+and their sources, then pass the full `sessionId` to `summarize` or `stop`.
+The visible listing includes up to three complete selectors, prioritizes pending
+finalization, and reports omissions. Structured `details.active` retains all
+sessions the caller can access.
+
+Discord `voice.autoJoin` alone does not record. An explicit `transcripts` tool
+start or the `autoStart` entry above subscribes to the selected account, guild,
+and channel. When that source matches the account's configured voice auto-join
+target, capture preserves normal conversation and `whenOccupied` behavior: it
+waits while the room is empty and resumes on subsequent joins and connection
+recovery. Capture also rebinds when the same account's voice manager restarts.
+With no configured auto-join target or active conversation in that guild,
+manual capture retains silent transcript-only behavior. A source for another
+channel stays registered without taking over that guild's conversation.
+See [Discord voice capture](/channels/discord#capture-voice-transcripts).
+
+An authorized Discord source records all participants independently of command
+allowlists. Recording grants no conversation, tool, or run-control authority.
+Per-speaker batch transcription preserves speaker IDs and audio-ingress times,
+including overlapping speech and speech during protected playback. Realtime
+conversation keeps its existing authorization and wake-name gates and incurs
+additional batch transcription while recording is active. Long speech uses
+bounded contiguous audio uploads within the same session.
+Batch-only conversation shares the transcription and responds at the normal
+end of speech, not at each upload boundary. If a chunk fails processing or is
+omitted before transcription, for example because it exceeds the upload limit, no
+conversation command or active-run control is dispatched for that utterance;
+successfully captured note chunks remain saved. A completed transcription with
+no text, including successful empty CLI output, does not count as a processing failure.
+
+Voice-channel recording is opt-in: joining voice alone does not record. Depending
+on the configured speech-to-text provider, capture can send audio to that provider
+and incur provider usage. The transcript library does not store or play raw audio.
+
+Continuous captures can span several room occupations until explicit capture stop
+or auto-start service shutdown. Stop detaches the subscription even while
+disconnected, without disconnecting an independently conversation-owned session.
+Summaries are not automatically posted to Discord.
+
 `whenOccupied` defaults to `false`: capture starts with the Gateway and continues
 until stopped. Set it to `true` to wait for humans, then capture one meeting per
 occupancy episode. It also starts when humans are already present at startup;
@@ -336,12 +476,14 @@ bots never count. After the last human leaves, a fixed 30-second grace period
 allows short reconnects without splitting the meeting. A human returning during
 that grace cancels the stop. Otherwise, OpenClaw stops capture and generates notes.
 
-Occupancy episodes use generated IDs; an entry's `sessionId` is ignored. To
+Occupancy episodes use generated IDs when `sessionId` is omitted. To
 continue a meeting across a Gateway restart, OpenClaw reopens the most recent
 session for the same provider, account, guild, and channel when it stopped within
-the last 10 minutes. The session keeps its original ID and start time, and new
+the last 10 minutes. The session keeps its original ID, title, and start time, and new
 utterances append to it. A later return within that window also reuses the meeting;
-outside the window, capture gets a new ID.
+outside the window, capture gets a new ID. A configured fixed ID admits one new
+capture per actual UTC day and never reopens history. Restarting, re-enabling, or
+removing and re-adding a consumed fixed ID on the same day reports a conflict.
 
 The provider must report occupancy. `discord-voice` supports it; an unsupported
 provider logs a warning and skips the entry instead of capturing continuously.

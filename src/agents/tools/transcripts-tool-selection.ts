@@ -1,13 +1,14 @@
-import type { TranscriptSessionDescriptor } from "../../transcripts/provider-types.js";
-import { transcriptSessionSelector, type TranscriptsStore } from "../../transcripts/store.js";
 import {
   activeSessions,
   authorizeTranscriptSource,
   readTranscriptStringParam,
   resolveSourceProvider,
-  toolText,
+  type TranscriptCaptureSelection,
   type TranscriptsRuntimeContext,
-} from "./transcripts-tool-runtime.js";
+} from "../../transcripts/capture.js";
+import type { TranscriptSessionDescriptor } from "../../transcripts/provider-types.js";
+import { transcriptSessionSelector, type TranscriptsStore } from "../../transcripts/store.js";
+import { toolText } from "./transcripts-tool-result.js";
 
 type TranscriptSessionIdentity = Pick<TranscriptSessionDescriptor, "sessionId" | "startedAt">;
 
@@ -126,21 +127,7 @@ export async function resolveTranscriptToolSession(params: {
   return { session, selector: entry.selector, activeCandidate, selectedActive, historicalRevision };
 }
 
-type TranscriptToolSelection = Awaited<ReturnType<typeof resolveTranscriptToolSession>>;
-
-export function isTranscriptSelectionCurrent(
-  selection: TranscriptToolSelection,
-  store: TranscriptsStore,
-): boolean {
-  return (
-    activeSessions.get(selection.session.sessionId) === selection.activeCandidate &&
-    (selection.selectedActive !== undefined ||
-      (selection.historicalRevision !== undefined &&
-        store.readSummaryInputRevision(selection.session) === selection.historicalRevision))
-  );
-}
-
-export function transcriptSelectionNoLongerActive(selection: TranscriptToolSelection) {
+export function transcriptSelectionNoLongerActive(selection: TranscriptCaptureSelection) {
   const sessionId = selection.session.sessionId;
   return toolText(`Transcripts session no longer active: ${sessionId}`, {
     sessionId,

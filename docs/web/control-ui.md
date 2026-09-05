@@ -372,6 +372,88 @@ Choose **Icon & color** from a single session's context menu to give its sidebar
 
 Choose **Icon & color** from a session menu and select a color swatch to add a narrow color stripe to its sidebar row and a matching dot beside the chat title. Pick one of eight colors, or choose **Default** to clear only the color. **Reset to default** clears both the icon and color. The colors match Claude Code’s `/color` names, so imported Claude Code sessions keep the same color. Imported catalog rows show their color without offering color editing.
 
+## Meeting transcript library
+
+Open the sidebar's pencil menu (**Edit pinned items**) and choose **Transcripts**
+to read saved meeting notes at `/transcripts`. Choose **Edit pinned items** inside
+that menu to pin the library; it is not a default pinned item.
+Meeting transcripts are separate from agent chat-history search in **Sessions**.
+
+Search by title or session/source ID, then select a transcript. Meeting URLs are
+not searched. Open **Filters** for
+provider, account, agent, and date controls; the disclosure opens automatically
+when those filters are active. Provider, account, and agent IDs match
+exactly. Date filters use UTC session start times, with an inclusive lower bound
+and exclusive upper bound. **Next page** continues the ordered results;
+**First page**, a filter change, or **Refresh** starts a new pagination pass.
+The reader shows timestamped speaker text alongside the list on desktop and as
+a single column on mobile. Its URL preserves the selected transcript.
+
+**Search within this transcript** searches the full stored transcript in bounded
+server pages. **Load more** continues through utterances or matches; only the
+latest five loaded pages stay in the browser's reading window. **Read from
+beginning** returns to the first page. **Basic summary** is stored automatic
+extraction using text heuristics, not an AI-generated summary. Opening this tab
+does not run a summary job. Missing summaries and empty transcripts have distinct
+empty states.
+
+**Download Markdown** downloads the transcript and any stored basic summary;
+**Download JSONL** downloads the reader's public utterance projection, including
+full text, sequence, utterance and speaker identity, source timestamps, and
+finality when available. Provider-private metadata and local filesystem paths
+are excluded; local CLI exports retain their existing raw format. Browser exports are limited to
+4 MiB and fail visibly rather than downloading a partial file. For larger exports,
+use the [Transcripts CLI](/cli/transcripts). Archive access requires `operator.read`
+or its write/admin implication and a profile allowed to read the shared archive;
+an agent filter does not bypass that restriction.
+
+If a library read or download reports denied access, the browser clears its
+cached library and reader pages. **Retry** keeps those notes hidden until a fresh
+authorized response arrives and starts the reader from its first page. Temporary
+network errors alone do not remove already loaded reader pages. Files already
+downloaded remain yours.
+
+Configure capture in **Settings → Communications → Meeting capture**, which also
+links back to the library. Administrators can change the existing
+`transcripts.enabled` setting and add, edit, or remove `transcripts.autoStart`
+sources. Edits preserve account and source locators, titles, and custom session
+IDs through the shared config draft. Form changes auto-save through the standard
+Settings coordinator, including validation and conflict handling. If a restart
+interrupts a pending draft, the footer shows **Autosave paused after reconnect**;
+review the retained draft and select **Save** to submit it on the new connection.
+**Messages** remains the default Communications section. The full transcript schema editor
+is available under **Meeting capture → Advanced settings**.
+
+Title-only edits keep the current capture running and apply the new title to
+future captures; current and saved notes are not renamed. A fixed custom ID is
+usable once per UTC day, not a resume handle. Actual restart, disable/re-enable,
+or remove/re-add with an already-used same-day ID fails visibly in capture
+health. Choose a new unused fixed ID or leave it empty for generated IDs
+(recommended for automation). Health also distinguishes startup retries before
+admission from terminal provider failure after transcript creation; neither
+failure rewrites existing notes. See [capture configuration](/cli/transcripts#configuration).
+
+Enabled plugin manifests with explicit auto-start setup metadata are offered for
+new sources even before runtime loads. An observed runtime `canStart: false`
+prevents new setup. The manifest declares which
+locator fields are supported and required. Existing entries remain editable
+without losing fields when metadata is unavailable. Providers that only attach
+to an already-active meeting bot are not offered as boot auto-start sources.
+
+Capture is opt-in for voice channels: joining voice does not record, and recording
+participants does not grant command or agent permissions. **Enabled** permits
+capture; **Armed** reports a registered subscription, not confirmed recording.
+**Not active** and **Unknown** remain distinct. Configured URL sources remain
+unknown when the retained sanitized URL cannot prove the original invitation
+identity. Saved utterance counts come from
+durable rows. The latest saved transcript is the most recently updated session
+containing utterances, not an exact last-ingestion ordering. Source speech times
+are labeled explicitly; ingestion timestamps are not recorded. An empty room does
+not automatically end a source: one transcript may span several room occupations.
+Speech-to-text may use your configured provider and incur provider usage. The UI
+does not play raw audio, split meetings automatically, generate AI summaries, or
+delete transcripts.
+
 ## New session page
 
 New session **+** controls are links: click to open the draft in the current browser tab, Command-click (macOS) or Ctrl-click (Windows/Linux) to open another tab, or right-click for the browser's **Open Link in New Tab/Window** menu. Middle-click works too. The smaller plus controls on group and catalog sections preserve their target in the new tab; your current conversation stays open.

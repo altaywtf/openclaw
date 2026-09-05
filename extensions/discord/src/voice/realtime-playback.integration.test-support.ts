@@ -30,6 +30,7 @@ export function createRealtimePlaybackFixture(onTalkEvent?: (event: TalkEvent) =
   );
   const entry: VoiceSessionEntry = {
     generation: 1,
+    captureOnly: false,
     autoJoinWhenOccupied: false,
     sessionLifecycle: { status: "active" },
     guildId: "guild",

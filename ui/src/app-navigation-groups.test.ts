@@ -165,6 +165,13 @@ describe("sidebar entries", () => {
     expect(isSettingsNavigationRoute("portals")).toBe(false);
   });
 
+  it("offers the meeting transcript workspace in More and allows pinning without a default pin", () => {
+    expect(sidebarMoreRoutes(DEFAULT_SIDEBAR_ENTRIES)).toContain("transcripts");
+    expect(isSettingsNavigationRoute("transcripts")).toBe(false);
+    expect(normalizeSidebarEntries(["route:transcripts"])).toEqual(["route:transcripts"]);
+    expect(sidebarMoreRoutes(["route:transcripts"])).not.toContain("transcripts");
+  });
+
   it("keeps the plugin manager in customizable workspace routes", () => {
     expect(normalizeSidebarEntries(["route:plugins", "route:usage", "route:plugins"])).toEqual([
       "route:plugins",

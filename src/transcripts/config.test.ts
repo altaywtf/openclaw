@@ -11,7 +11,7 @@ describe("resolveTranscriptsConfig", () => {
   it.each([
     { whenOccupied: undefined, expected: false, sessionId: "daily" },
     { whenOccupied: false, expected: false, sessionId: "daily" },
-    { whenOccupied: true, expected: true, sessionId: undefined },
+    { whenOccupied: true, expected: true, sessionId: "daily" },
   ])(
     "uses occupancy only when opted in ($whenOccupied)",
     ({ whenOccupied, expected, sessionId }) => {

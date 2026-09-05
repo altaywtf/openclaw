@@ -1,29 +1,33 @@
-import { sanitizeTerminalText } from "../../../packages/terminal-core/src/safe-text.js";
-import { formatErrorMessage } from "../../infra/errors.js";
-import {
-  resolveTranscriptsConfig,
-  type ResolvedTranscriptsAutoStartConfig,
-} from "../../transcripts/config.js";
-import type {
-  TranscriptOccupancyWatchHandle,
-  TranscriptSourceLocator,
-  TranscriptSessionDescriptor,
-} from "../../transcripts/provider-types.js";
-import { sanitizeTranscriptSourceLocator } from "../../transcripts/source-locator.js";
-import type { TranscriptsStore } from "../../transcripts/store.js";
-import { truncateUtf16Safe } from "../../utils.js";
+import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { formatErrorMessage } from "../infra/errors.js";
+import { truncateUtf16Safe } from "../utils.js";
+import { createTranscriptsStore, stopTranscriptCapture } from "./capture-operations.js";
 import {
   activeSessions,
   createTranscriptSessionId,
-  createTranscriptsStore,
   isTranscriptSessionStarting,
   resolveSourceProvider,
   resolveTranscriptSourceOwnership,
+  retainTranscriptStartRetry,
   sourceFromParams,
   startTranscripts,
+  TranscriptStartError,
   type TranscriptsRuntimeContext,
-} from "./transcripts-tool-runtime.js";
-import { stopTranscripts } from "./transcripts-tool-stop.js";
+} from "./capture.js";
+import {
+  hasSameTranscriptCaptureIntent,
+  resolveTranscriptsConfig,
+  type ResolvedTranscriptsAutoStartConfig,
+} from "./config.js";
+import { beginConfiguredTranscriptStarts } from "./configured-start-status.js";
+import type { TranscriptOccupancyWatchHandle, TranscriptSourceLocator } from "./provider-types.js";
+import { sanitizeTranscriptSourceLocator } from "./source-locator.js";
+import {
+  TranscriptSessionConflictError,
+  transcriptSessionSelector,
+  type TranscriptsStore,
+} from "./store.js";
 
 const AUTO_START_RETRY_ATTEMPTS = 12;
 const AUTO_START_RETRY_MS = 5_000;
@@ -58,12 +62,16 @@ async function waitForPendingAutoStartsToSettle(pending: Set<Promise<void>>): Pr
 }
 
 /** Own configured captures independently of the room's provider connection. */
-export function createTranscriptsAutoStartService(ctx: TranscriptsRuntimeContext): {
+export function createTranscriptsAutoStartService(
+  ctx: TranscriptsRuntimeContext,
+  getConfig: () => OpenClawConfig | undefined = () => ctx.config,
+): {
   start: () => void;
   stop: () => Promise<void>;
 } {
   let stopped = false;
   let started = false;
+  let diagnostics: ReturnType<typeof beginConfiguredTranscriptStarts> | undefined;
   const timers = new Set<Timer>();
   const watchers = new Set<TranscriptOccupancyWatchHandle>();
   const startedSessions = new Map<string, symbol>();
@@ -71,6 +79,25 @@ export function createTranscriptsAutoStartService(ctx: TranscriptsRuntimeContext
   const pendingStarts = new Set<Promise<void>>();
   const pendingStops = new Set<Promise<void>>();
   const guildOwners = new Map<string, number>();
+  const retries = new Map<number, ReturnType<typeof retainTranscriptStartRetry>>();
+  const clearRetry = (index: number) => {
+    retries.get(index)?.release();
+    retries.delete(index);
+  };
+  const futureTitle = (entry: ResolvedTranscriptsAutoStartConfig, index: number) => {
+    const latest = getConfig();
+    return hasSameTranscriptCaptureIntent(ctx.config?.transcripts, latest?.transcripts)
+      ? resolveTranscriptsConfig(latest?.transcripts).autoStart[index]?.title
+      : entry.title;
+  };
+  const terminalDiagnostic = (error: unknown, fixedId: string | undefined) =>
+    error instanceof TranscriptSessionConflictError
+      ? "id-conflict"
+      : error instanceof TranscriptStartError
+        ? !fixedId && error.retry
+          ? undefined
+          : error.code
+        : undefined;
   const schedule = (run: () => void, delay: number) => {
     const timer = setTimeout(() => {
       timers.delete(timer);
@@ -110,12 +137,25 @@ export function createTranscriptsAutoStartService(ctx: TranscriptsRuntimeContext
   const stopCapture = async (capture: OwnedCapture, store: TranscriptsStore) => {
     const warnings: string[] = [];
     try {
-      const { details } = await stopTranscripts({
+      const active = activeSessions.get(capture.sessionId);
+      if (!active || active.lifecycleToken !== capture.lifecycleToken) {
+        forgetCapture(capture);
+        return;
+      }
+      const details = await stopTranscriptCapture({
         ctx,
         store,
-        rawParams: { action: "stop", sessionId: capture.sessionId },
-        lifecycleToken: capture.lifecycleToken,
+        selection: {
+          session: active.session,
+          selector: transcriptSessionSelector(active.session),
+          activeCandidate: active,
+          selectedActive: active,
+          historicalRevision: undefined,
+        },
       });
+      if (details.status === "skipped") {
+        return;
+      }
       // Log diagnostics only, never the tool content or captured meeting notes.
       if (typeof details.summaryExportError === "string") {
         warnings.push(
@@ -138,40 +178,96 @@ export function createTranscriptsAutoStartService(ctx: TranscriptsRuntimeContext
     forgetCapture(capture);
   };
 
+  const startCapture = async (
+    capture: OwnedCapture,
+    index: number,
+    params: Pick<
+      Parameters<typeof startTranscripts>[0],
+      "store" | "rawParams" | "abortSignal" | "existingSession" | "onCaptureEnded"
+    >,
+  ) => {
+    diagnostics?.record(index, capture.lifecycleToken, "starting");
+    try {
+      const retry = retries.get(index);
+      // Both modes validate the exact failed attempt immediately before the
+      // configured start's synchronous existing-tuple write.
+      retry?.assertCurrent(params.store);
+      const result = await startTranscripts({
+        ...params,
+        existingSession: retry?.session ?? params.existingSession,
+        ctx,
+        startupWaitMs: AUTO_START_PROVIDER_READY_TIMEOUT_MS,
+        configuredLifecycle: true,
+        lifecycleToken: capture.lifecycleToken,
+        rawParams: { ...params.rawParams, sessionId: capture.sessionId },
+      });
+      clearRetry(index);
+      if (!stopped) {
+        diagnostics?.record(
+          index,
+          capture.lifecycleToken,
+          result.status === "ended" ? "ended" : undefined,
+        );
+      }
+      return result;
+    } catch (error) {
+      if (error instanceof TranscriptStartError) {
+        clearRetry(index);
+        if (!stopped && error.retry) {
+          retries.set(index, retainTranscriptStartRetry(ctx, error.retry));
+        }
+      }
+      throw error;
+    } finally {
+      // Shutdown may finish before startup transfers a cleanup/finalization owner.
+      // Reconcile this exact attempt on every settlement, including rejected starts.
+      if (ownsCapture(capture)) {
+        startedSessions.set(capture.sessionId, capture.lifecycleToken);
+        if (stopped) {
+          await stopCapture(capture, params.store);
+        }
+      }
+    }
+  };
+
   const startContinuous = (
     entry: ResolvedTranscriptsAutoStartConfig,
+    index: number,
     attempt: number,
     store: TranscriptsStore,
   ) => {
     if (stopped || startedSessions.has(entry.sessionId ?? "")) {
       return;
     }
-    const lifecycleToken = Symbol(entry.sessionId);
+    const capture: OwnedCapture = {
+      sessionId:
+        retries.get(index)?.session.sessionId ?? entry.sessionId ?? createTranscriptSessionId(),
+      lifecycleToken: Symbol(entry.sessionId),
+    };
     void runPending(async (controller) => {
       try {
-        const result = await startTranscripts({
-          ctx,
+        await startCapture(capture, index, {
           store,
           abortSignal: controller.signal,
-          startupWaitMs: AUTO_START_PROVIDER_READY_TIMEOUT_MS,
-          configuredLifecycle: true,
-          lifecycleToken,
-          rawParams: { action: "start", ...entry },
+          rawParams: { ...entry, title: futureTitle(entry, index) },
         });
-        const sessionId = result.details.sessionId;
-        if (typeof sessionId === "string") {
-          startedSessions.set(sessionId, lifecycleToken);
-        }
       } catch (error) {
         if (stopped) {
           return;
         }
-        if (attempt >= AUTO_START_RETRY_ATTEMPTS) {
+        // Only a failed provider start can retain a generated admission for
+        // this service's next attempt. Fixed IDs remain consumed.
+        const terminal = terminalDiagnostic(error, entry.sessionId);
+        if (terminal || attempt >= AUTO_START_RETRY_ATTEMPTS) {
+          clearRetry(index);
+          const diagnostic = terminal ?? "start-failed";
+          diagnostics?.record(index, capture.lifecycleToken, diagnostic);
           ctx.logger.warn(
-            `transcripts autoStart failed provider=${entry.providerId}: ${formatAutoStopDiagnostic(error)} (check the transcripts.autoStart entry in your config)`,
+            `transcripts autoStart source ${index + 1}: ${diagnostic}. Check Meeting capture health in Settings.`,
           );
         } else {
-          schedule(() => startContinuous(entry, attempt + 1, store), AUTO_START_RETRY_MS);
+          diagnostics?.record(index, capture.lifecycleToken, "retrying");
+          schedule(() => startContinuous(entry, index, attempt + 1, store), AUTO_START_RETRY_MS);
         }
       }
     });
@@ -185,13 +281,13 @@ export function createTranscriptsAutoStartService(ctx: TranscriptsRuntimeContext
     let occupied = false;
     let ready = false;
     let capture: OwnedCapture | undefined;
-    let candidate: TranscriptSessionDescriptor | undefined;
     let starting: Promise<void> | undefined;
     let stopping: Promise<void> | undefined;
     let startController: AbortController | undefined;
     let emptyTimer: Timer | undefined;
     let retryTimer: Timer | undefined;
     let source: TranscriptSourceLocator;
+    let diagnosticToken = Symbol(`transcripts occupancy ${index}`);
     const label = `transcripts autoStart[${index}] provider=${entry.providerId}`;
     const retry = (
       run: () => void,
@@ -202,12 +298,16 @@ export function createTranscriptsAutoStartService(ctx: TranscriptsRuntimeContext
       if (stopped) {
         return;
       }
-      if (attempt >= AUTO_START_RETRY_ATTEMPTS) {
+      const terminal = terminalDiagnostic(error, entry.sessionId);
+      if (terminal || attempt >= AUTO_START_RETRY_ATTEMPTS) {
+        clearRetry(index);
+        diagnostics?.record(index, diagnosticToken, terminal ?? "start-failed");
         ctx.logger.warn(
           `${label} failed: ${formatAutoStopDiagnostic(error)}; check the entry and provider connection. ${phase === "watch" ? "Restart the gateway to retry occupancy watching." : "Waiting for the next occupancy transition."}`,
         );
         return;
       }
+      diagnostics?.record(index, diagnosticToken, "retrying");
       cancel(retryTimer);
       retryTimer = schedule(run, AUTO_START_RETRY_MS);
     };
@@ -227,53 +327,53 @@ export function createTranscriptsAutoStartService(ctx: TranscriptsRuntimeContext
         try {
           // A terminal persistence failure retains its old owner. Retire it through
           // the same stop path before reopening; never append behind finalization.
-          if (capture && ownsCapture(capture)) {
+          if (capture) {
             await stopCapture(capture, store);
             if (ownsCapture(capture)) {
               throw new Error("previous capture still awaits finalization");
             }
           }
-          if (capture) {
-            forgetCapture(capture);
-          }
           if (stopped || !occupied || controller.signal.aborted) {
             return;
           }
           const now = Date.now();
-          const recent =
-            candidate ??
-            store.readRecentStoppedSession(
-              sanitizeTranscriptSourceLocator(source),
-              new Date(now - AUTO_START_OCCUPANCY_REOPEN_WINDOW_MS).toISOString(),
-              new Date(now).toISOString(),
-            );
-          candidate =
-            recent &&
-            !activeSessions.has(recent.sessionId) &&
-            !isTranscriptSessionStarting(recent.sessionId) &&
-            !startedSessions.has(recent.sessionId)
+          const recent = entry.sessionId
+            ? undefined
+            : (retries.get(index)?.session ??
+              store.readRecentStoppedSession(
+                sanitizeTranscriptSourceLocator(source),
+                new Date(now - AUTO_START_OCCUPANCY_REOPEN_WINDOW_MS).toISOString(),
+                new Date(now).toISOString(),
+              ));
+          const candidate = entry.sessionId
+            ? undefined
+            : recent &&
+                !activeSessions.has(recent.sessionId) &&
+                !isTranscriptSessionStarting(recent.sessionId) &&
+                !startedSessions.has(recent.sessionId)
               ? recent
               : {
                   sessionId: createTranscriptSessionId(),
+                  title: futureTitle(entry, index),
                   source: sanitizeTranscriptSourceLocator(source),
                   startedAt: new Date(now).toISOString(),
                   stoppedAt: new Date(now).toISOString(),
                 };
           const owned = {
-            sessionId: candidate.sessionId,
+            sessionId: entry.sessionId ?? candidate!.sessionId,
             lifecycleToken: Symbol(label),
           };
+          diagnosticToken = owned.lifecycleToken;
           capture = owned;
-          startedSessions.set(owned.sessionId, owned.lifecycleToken);
-          const result = await startTranscripts({
-            ctx,
+          const result = await startCapture(owned, index, {
             store,
             abortSignal: controller.signal,
-            startupWaitMs: AUTO_START_PROVIDER_READY_TIMEOUT_MS,
-            configuredLifecycle: true,
-            lifecycleToken: owned.lifecycleToken,
             existingSession: candidate,
-            rawParams: { ...entry, ...source, sessionId: owned.sessionId },
+            rawParams: {
+              ...entry,
+              ...source,
+              title: futureTitle(entry, index),
+            },
             onCaptureEnded: () => {
               if (capture !== owned || stopped || !occupied) {
                 return;
@@ -283,13 +383,11 @@ export function createTranscriptsAutoStartService(ctx: TranscriptsRuntimeContext
               retryTimer = schedule(() => begin(1), AUTO_START_RETRY_MS);
             },
           });
-          candidate = undefined;
-          if (result.details.active === false) {
+          if (result.status === "ended") {
             throw new Error("capture ended during startup");
           }
         } catch (error) {
           if (capture && !ownsCapture(capture)) {
-            forgetCapture(capture);
             capture = undefined;
           }
           if (occupied && !controller.signal.aborted) {
@@ -311,7 +409,7 @@ export function createTranscriptsAutoStartService(ctx: TranscriptsRuntimeContext
         await starting;
         // Failed startup may restore its candidate while settling. A new
         // occupancy episode must consult the durable reopen window again.
-        candidate = undefined;
+        clearRetry(index);
         if (capture) {
           await stopCapture(capture, store);
           if (!ownsCapture(capture)) {
@@ -346,7 +444,7 @@ export function createTranscriptsAutoStartService(ctx: TranscriptsRuntimeContext
             );
             return;
           }
-          candidate = undefined;
+          clearRetry(index);
           source = resolveTranscriptSourceOwnership({
             ctx,
             operation: "start",
@@ -379,6 +477,7 @@ export function createTranscriptsAutoStartService(ctx: TranscriptsRuntimeContext
               occupied = true;
               cancel(emptyTimer);
               cancel(retryTimer);
+              clearRetry(index);
               begin(1);
             },
             onEmpty: () => {
@@ -420,6 +519,7 @@ export function createTranscriptsAutoStartService(ctx: TranscriptsRuntimeContext
         return;
       }
       started = true;
+      diagnostics = beginConfiguredTranscriptStarts(ctx.config?.transcripts);
       const config = resolveTranscriptsConfig(ctx.config?.transcripts);
       if (!config.enabled || !config.autoStart.length) {
         return;
@@ -429,16 +529,16 @@ export function createTranscriptsAutoStartService(ctx: TranscriptsRuntimeContext
         if (entry.whenOccupied) {
           watchEntry(entry, index, store);
         } else {
-          startContinuous(
-            { ...entry, sessionId: entry.sessionId ?? createTranscriptSessionId() },
-            1,
-            store,
-          );
+          startContinuous(entry, index, 1, store);
         }
       }
     },
     async stop() {
       stopped = true;
+      for (const index of retries.keys()) {
+        clearRetry(index);
+      }
+      diagnostics?.clear();
       for (const watcher of watchers) {
         watcher.stop();
       }
@@ -463,7 +563,6 @@ export function createTranscriptsAutoStartService(ctx: TranscriptsRuntimeContext
       for (const [sessionId, lifecycleToken] of startedSessions) {
         await stopCapture({ sessionId, lifecycleToken }, store);
       }
-      startedSessions.clear();
     },
   };
 }

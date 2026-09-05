@@ -345,6 +345,7 @@ function scheduleRestartSentinelWakeAfterReady(params: {
 
 function scheduleTranscriptsAutoStartSidecar(params: {
   cfg: OpenClawConfig;
+  getConfig: () => OpenClawConfig;
   startupTrace?: GatewayStartupTrace;
   log: { warn: (msg: string) => void };
   waitForPostReadyWork?: () => Promise<void>;
@@ -356,16 +357,18 @@ function scheduleTranscriptsAutoStartSidecar(params: {
     log: params.log,
     waitForPostReadyWork: params.waitForPostReadyWork,
     run: async (isStopped) => {
-      const { createTranscriptsAutoStartService } =
-        await import("../agents/tools/transcripts-tool.js");
+      const { createTranscriptsAutoStartService } = await import("../transcripts/auto-start.js");
       if (isStopped()) {
         return;
       }
-      const service = createTranscriptsAutoStartService({
-        config: params.cfg,
-        stateDir: resolveStateDir(),
-        logger: params.log,
-      });
+      const service = createTranscriptsAutoStartService(
+        {
+          config: params.cfg,
+          stateDir: resolveStateDir(),
+          logger: params.log,
+        },
+        params.getConfig,
+      );
       stopTranscriptsAutoStart = () => service.stop();
       service.start();
     },
@@ -1559,6 +1562,7 @@ export async function startGatewayPostAttachRuntime(
             newGatewayLifetimeSidecars.push(
               scheduleTranscriptsAutoStartSidecar({
                 cfg: params.gatewayPluginConfigAtStart,
+                getConfig: params.getConfig,
                 startupTrace: params.startupTrace,
                 log: params.log,
                 waitForPostReadyWork: params.waitForPostReadyWork,

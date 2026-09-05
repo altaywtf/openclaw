@@ -154,6 +154,8 @@ export async function makeSigningFixture(
   for (const dir of [worker, bin, capture]) {
     await mkdir(dir, { recursive: true });
   }
+  // Fake Node commands own their module format even when TMPDIR is inside an ESM checkout.
+  await writeFile(path.join(bin, "package.json"), '{"type":"commonjs"}\n');
   await writeFile(options, "{}");
   const fake = path.join(bin, "codesign");
   await writeFile(

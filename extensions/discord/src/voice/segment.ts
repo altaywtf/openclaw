@@ -7,11 +7,7 @@ import { createSubsystemLogger } from "openclaw/plugin-sdk/runtime-env";
 import { formatErrorMessage } from "openclaw/plugin-sdk/ssrf-runtime";
 import { maybeControlDiscordVoiceAgentRun } from "./agent-control.js";
 import { createDiscordOpusPlaybackStream } from "./audio.js";
-import {
-  type DiscordVoiceIngressContext,
-  resolveDiscordVoiceIngressContext,
-  runDiscordVoiceAgentTurn,
-} from "./ingress.js";
+import { type DiscordVoiceIngressContext, runDiscordVoiceAgentTurn } from "./ingress.js";
 import { formatVoiceLogPreview } from "./log-preview.js";
 import { formatVoiceIngressPrompt } from "./prompt.js";
 import { loadDiscordVoiceSdk } from "./sdk-runtime.js";
@@ -21,75 +17,88 @@ import { synthesizeVoiceReplyAudio, transcribeVoiceAudio } from "./tts.js";
 
 const logger = createSubsystemLogger("discord/voice");
 
-export async function processDiscordVoiceSegment(params: {
+type DiscordVoiceResponseParams = {
   entry: VoiceSessionEntry;
   accountId: string;
-  wavPath: string;
   userId: string;
-  durationSeconds: number;
   cfg: OpenClawConfig;
   discordConfig: DiscordAccountConfig;
   runtime: RuntimeEnv;
   admissionAllowFrom?: string[];
   fetchGuildName: (guildId: string) => Promise<string | undefined>;
   speakerContext: DiscordVoiceSpeakerContextResolver;
-  ingressContext?: DiscordVoiceIngressContext;
-  resolveIngressContext?: () => Promise<DiscordVoiceIngressContext | null>;
-  transcripts?: VoiceSessionEntry["transcripts"];
   enqueuePlayback: (entry: VoiceSessionEntry, task: () => Promise<void>) => void;
-}) {
+};
+
+type DiscordVoiceSegmentParams = Pick<DiscordVoiceResponseParams, "entry" | "userId" | "cfg"> & {
+  wavPath: string;
+  durationSeconds: number;
+  resolveIngressContext: () => Promise<DiscordVoiceIngressContext | null>;
+  recording?: {
+    capture: NonNullable<VoiceSessionEntry["transcripts"]>;
+    startedAt: number;
+    speaker: Promise<{ label: string }>;
+  };
+};
+
+type DiscordVoiceSegmentOutcome =
+  | { status: "transcribed"; text: string }
+  | { status: "excluded" }
+  | { status: "empty" };
+
+export async function processDiscordVoiceSegment(
+  params: DiscordVoiceSegmentParams,
+): Promise<DiscordVoiceSegmentOutcome> {
   const { entry, wavPath, userId, durationSeconds } = params;
+  const conversationCurrent = () =>
+    !entry.captureOnly && entry.sessionLifecycle.status === "active";
   logVoiceVerbose(
     `segment processing (${durationSeconds.toFixed(2)}s): guild ${entry.guildId} channel ${entry.channelId}`,
   );
-  const ingress =
-    params.ingressContext ??
-    (params.resolveIngressContext
-      ? await params.resolveIngressContext()
-      : await resolveDiscordVoiceIngressContext({
-          entry,
-          userId,
-          cfg: params.cfg,
-          discordConfig: params.discordConfig,
-          admissionAllowFrom: params.admissionAllowFrom,
-          fetchGuildName: params.fetchGuildName,
-          speakerContext: params.speakerContext,
-        }));
-  if (!ingress) {
+  const ingress = await params.resolveIngressContext();
+  const recording = params.recording;
+  if (!ingress && !recording?.capture.isCurrent()) {
     logVoiceVerbose(
       `segment unauthorized: guild ${entry.guildId} channel ${entry.channelId} user ${userId}`,
     );
-    return;
+    return { status: "excluded" };
   }
-  const transcript = await transcribeVoiceAudio({
+  const speakerLabel = recording
+    ? (await recording.speaker).label
+    : (ingress?.speakerLabel ?? userId);
+  if (!ingress && !recording?.capture.isCurrent()) {
+    return { status: "excluded" };
+  }
+  const { text: transcript, processing } = await transcribeVoiceAudio({
     cfg: params.cfg,
     agentId: entry.route.agentId,
     filePath: wavPath,
   });
+  // Known omitted input cannot become a partial command. Completed silent input
+  // remains empty, including CLI success without text and successful fallback.
+  if (processing === "omitted") {
+    return { status: "excluded" };
+  }
   if (!transcript) {
     logVoiceVerbose(
       `transcription empty: guild ${entry.guildId} channel ${entry.channelId} user ${userId}`,
     );
-    return;
+    return { status: ingress && conversationCurrent() ? "empty" : "excluded" };
   }
   logVoiceVerbose(
     `transcription ok (${transcript.length} chars): guild ${entry.guildId} channel ${entry.channelId}`,
   );
   logVoiceVerbose(
-    `transcript from ${ingress.speakerLabel} (${userId}) in guild ${entry.guildId} channel ${entry.channelId}: ${formatVoiceLogPreview(transcript)}`,
+    `transcript from ${speakerLabel} (${userId}) in guild ${entry.guildId} channel ${entry.channelId}: ${formatVoiceLogPreview(transcript)}`,
   );
-  if (params.transcripts) {
-    // Ingress and STT awaits can outlive this binding while the voice entry is reused.
-    if (entry.sessionLifecycle.status === "stopped" || entry.transcripts !== params.transcripts) {
-      return;
-    }
-    await params.transcripts.onUtterance({
-      sessionId: params.transcripts.sessionId,
-      startedAt: new Date().toISOString(),
+  if (recording?.capture.isCurrent()) {
+    await recording.capture.onUtterance({
+      sessionId: recording.capture.sessionId,
+      startedAt: new Date(recording.startedAt).toISOString(),
       final: true,
       speaker: {
         id: userId,
-        label: ingress.speakerLabel,
+        label: speakerLabel,
       },
       text: transcript,
       metadata: {
@@ -99,9 +108,25 @@ export async function processDiscordVoiceSegment(params: {
         voiceSessionKey: entry.voiceSessionKey,
       },
     });
+  }
+  if (!ingress || !conversationCurrent()) {
+    return { status: "excluded" };
+  }
+  return { status: "transcribed", text: transcript };
+}
+
+export async function respondToDiscordVoiceTranscript(
+  params: DiscordVoiceResponseParams & {
+    ingress: DiscordVoiceIngressContext;
+    transcript: string;
+  },
+): Promise<void> {
+  const { entry, ingress, transcript, userId } = params;
+  const conversationCurrent = () =>
+    !entry.captureOnly && entry.sessionLifecycle.status === "active";
+  if (!conversationCurrent()) {
     return;
   }
-
   let replyText: string;
   const control = await maybeControlDiscordVoiceAgentRun({
     entry,

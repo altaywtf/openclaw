@@ -120,11 +120,11 @@ export const AUTOMATION_FIELD_HELP: Record<string, string> = {
   "transcripts.autoStart[].providerId":
     "Transcript source provider id, such as a Discord voice or future Slack huddle provider. Use the exact id exposed by the provider plugin.",
   "transcripts.autoStart[].sessionId":
-    "Optional fixed transcript session id for this auto-start source. Ignored when whenOccupied is true. Leave unset for generated ids unless you need a stable daily selector and can avoid same-day collisions.",
+    "Optional fixed transcript session id, usable once per day. Gateway restart or disable/re-enable starts a new capture and cannot resume a used same-day id. Leave unset for generated ids (recommended for automation), or choose a new unused fixed id.",
   "transcripts.autoStart[].whenOccupied":
-    "Start a fresh transcript session each time humans are present in the source and stop it (generating notes) after the last human leaves. Requires a provider that reports occupancy, such as discord-voice. Default: false (capture continuously from gateway start).",
+    "Capture while humans are present, generating notes after the last human leaves. Generated sessions may reopen within ten minutes; fixed ids remain usable only once per UTC day. Requires an occupancy-capable provider such as discord-voice. Default: false (capture continuously from gateway start).",
   "transcripts.autoStart[].title":
-    "Optional human-readable title stored with the transcript session and shown in transcript listings. Use concise meeting names that help operators identify the captured source.",
+    "Optional title for future transcript captures. Changing only titles keeps current captures running and does not rename their admitted title or saved notes. Other source changes retain their normal restart handling.",
   "transcripts.autoStart[].accountId":
     "Optional provider account or workspace identifier for transcript sources that need account disambiguation. Use the provider's documented account id format.",
   "transcripts.autoStart[].guildId":

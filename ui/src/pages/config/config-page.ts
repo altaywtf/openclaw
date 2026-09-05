@@ -72,6 +72,7 @@ import {
 import * as themeImport from "./custom-theme-import-owner.ts";
 import { importCustomThemeFromUrl } from "./custom-theme-import.ts";
 import { renderMcp } from "./mcp.ts";
+import { renderMeetingCapture } from "./meeting-capture.ts";
 import { renderMemoryPage } from "./memory-page.ts";
 import { narrowMemorySchema } from "./memory-schema.ts";
 import { configTargetIdFromHash, type ConfigRouteData } from "./route-data.ts";
@@ -1347,6 +1348,17 @@ export class ConfigPage extends OpenClawLightDomElement {
       configPath: configState.configSnapshot?.path ?? null,
       navRootLabel: this.pageId === "advanced" ? undefined : configPageTitle(this.pageId),
       showSectionDocs: this.pageId !== "communications",
+      renderSection:
+        this.pageId === "communications" && activeSection === "transcripts"
+          ? (editor) =>
+              renderMeetingCapture({
+                mutationDisabled: this.isCuratedConfigMutationDisabled(),
+                advancedExpanded:
+                  this.routeData?.advanced === true ||
+                  this.routeData?.targetBlockId === "config-section-transcripts",
+                editor,
+              })
+          : undefined,
       sectionPrelude:
         activeSection === "browser" && browserPanelAvailable
           ? renderBrowserLinkPreferencesRow({

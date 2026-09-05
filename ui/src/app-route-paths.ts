@@ -76,6 +76,7 @@ const APP_ROUTE_DEFINITIONS = {
   workboard: { path: "/workboard" },
   worktrees: { path: "/worktrees", aliases: ["/settings/worktrees"] },
   sessions: { path: "/sessions", aliases: ["/settings/sessions"] },
+  transcripts: { path: "/transcripts" },
   usage: { path: "/usage" },
   debug: { path: "/debug" },
   logs: { path: "/logs" },
