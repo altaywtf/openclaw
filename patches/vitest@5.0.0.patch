@@ -120,6 +120,24 @@ index 50abf4fbed1dc8670b7941ee466a7c8443840c5f..d369712bd4c8cee79aed9f4bf8050986
  		const errors = results.filter((result) => result.status === "rejected").map((result) => result.reason);
  		if (errors.length > 0) throw new AggregateError(errors, "Errors occurred while running tests. For more information, see serialized error.");
  	}
+diff --git a/dist/chunks/index.OVGXnVRj.js b/dist/chunks/index.OVGXnVRj.js
+index a7b39bf9e1dd97c44fb78888d02f9e7cc4b0ceef..8dcd740f54fe7e190aa39935808a30d80e6e1b40 100644
+--- a/dist/chunks/index.OVGXnVRj.js
++++ b/dist/chunks/index.OVGXnVRj.js
+@@ -4964,12 +4964,12 @@ function requireFakeTimersSrc () {
+ 	                    return this.refed;
+ 	                },
+ 	                refresh: function () {
++	                    clock.timerHeap.remove(timer);
+ 	                    timer.callAt =
+ 	                        clock.now +
+ 	                        (parseInt(String(timer.delay)) ||
+ 	                            (clock.duringTick ? 1 : 0));
+ 
+-	                    clock.timerHeap.remove(timer);
+ 	                    timer.order = uniqueTimerOrder++;
+ 	                    setTimer(clock, timer);
+ 	                    clock.timerHeap.push(timer);
 diff --git a/dist/chunks/init-forks.CiCtIMPj.js b/dist/chunks/init-forks.CiCtIMPj.js
 index dbb1a04882b2ff60ab0968d6dabd10dfad696eb2..818981f891f170e197a16e41dfe98b341b64fc3c 100644
 --- a/dist/chunks/init-forks.CiCtIMPj.js
