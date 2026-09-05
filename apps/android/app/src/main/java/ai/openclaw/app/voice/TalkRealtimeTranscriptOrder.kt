@@ -28,12 +28,13 @@ internal class TalkRealtimeTranscriptOrder(
     itemId: String,
     previousItemId: String?,
     role: String?,
+    predecessorProvided: Boolean = true,
   ): Boolean {
     if (itemId in items) return true
     if (items.size >= maxItems) return false
     if (role != null && speechItems >= maxSpeechItems) return false
     if (role != null) speechItems++
-    val item = Item(previousItemId, role)
+    val item = Item(if (predecessorProvided) previousItemId else lastItemId, role)
     items[itemId] = item
     if (role != null) onReserved(itemId, role, item.entryId, item.text, item.afterPrevious, item.written)
     assignOrders()
@@ -74,10 +75,19 @@ internal class TalkRealtimeTranscriptOrder(
   private fun assignOrders(closing: Boolean = false) {
     while (true) {
       val pending = items.entries.filter { !it.value.ordered }
+      val pendingIds = pending.mapTo(mutableSetOf()) { it.key }
       val next =
         pending.firstOrNull { (_, item) ->
           if (item.previousItemId == null) lastItemId == null else item.previousItemId == lastItemId
-        } ?: (if (closing) pending.firstOrNull() else null) ?: return
+        }
+          ?: if (closing) {
+            // Preserve every known pending predecessor edge before falling back
+            // for a genuinely absent provider ancestor.
+            pending.firstOrNull { it.value.previousItemId !in pendingIds } ?: pending.firstOrNull()
+          } else {
+            null
+          }
+          ?: return
       val (itemId, item) = next
       item.ordered = true
       lastItemId = itemId

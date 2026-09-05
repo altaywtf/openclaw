@@ -47,6 +47,27 @@ class TalkRealtimeTranscriptOrderTest {
     assertTrue(owner.reserve("u2", "u1", "user"))
   }
 
+  @Test fun omittedPredecessorUsesCurrentTailWhileExplicitNullMeansRoot() {
+    val order = mutableMapOf<String, CompletableDeferred<String>>()
+    val owner = TalkRealtimeTranscriptOrder { id, _, entryId, _, _, _ -> order[id] = entryId }
+    assertTrue(owner.reserve("u1", null, "user"))
+    assertTrue(owner.reserve("a1", null, "assistant", predecessorProvided = false))
+    assertEquals("1", order.getValue("u1").getCompleted())
+    assertEquals("2", order.getValue("a1").getCompleted())
+    assertTrue(owner.reserve("new-root", null, "user"))
+    assertFalse(order.getValue("new-root").isCompleted)
+  }
+
+  @Test fun closePreservesKnownPendingPredecessorOrder() {
+    val order = mutableMapOf<String, CompletableDeferred<String>>()
+    val owner = TalkRealtimeTranscriptOrder { id, _, entryId, _, _, _ -> order[id] = entryId }
+    assertTrue(owner.reserve("child", "parent", "assistant"))
+    assertTrue(owner.reserve("parent", "missing", "user"))
+    owner.close()
+    assertEquals("1", order.getValue("parent").getCompleted())
+    assertEquals("2", order.getValue("child").getCompleted())
+  }
+
   @Test fun orderedNonSpeechAncestryDoesNotConsumeCapacity() {
     val owner = TalkRealtimeTranscriptOrder(maxItems = 1) { _, _, _, _, _, _ -> }
     var previous: String? = null

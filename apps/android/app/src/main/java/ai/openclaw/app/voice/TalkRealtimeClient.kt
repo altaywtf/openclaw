@@ -190,7 +190,7 @@ internal class TalkRealtimeClient(
     when (event.string("type")) {
       "input_audio_buffer.committed" -> {
         val id = itemId ?: return fail("Realtime transcript item has no identity")
-        reserveTranscript(id, event.string("previous_item_id"), "user")
+        reserveTranscript(id, event.string("previous_item_id"), "user", event.containsKey("previous_item_id"))
       }
 
       "conversation.item.added", "conversation.item.created" -> {
@@ -207,7 +207,7 @@ internal class TalkRealtimeClient(
 
             else -> null
           }
-        reserveTranscript(id, event.string("previous_item_id"), role)
+        reserveTranscript(id, event.string("previous_item_id"), role, event.containsKey("previous_item_id"))
       }
 
       "conversation.item.done", "response.output_item.done" -> {
@@ -361,8 +361,9 @@ internal class TalkRealtimeClient(
     itemId: String,
     previousItemId: String?,
     role: String?,
+    predecessorProvided: Boolean,
   ) {
-    if (!gatewayTranscripts && !transcriptOrder.reserve(itemId, previousItemId, role)) {
+    if (!gatewayTranscripts && !transcriptOrder.reserve(itemId, previousItemId, role, predecessorProvided)) {
       fail("Realtime transcript queue overflow")
     }
   }
