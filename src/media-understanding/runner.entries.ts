@@ -1011,6 +1011,7 @@ export async function runProviderEntry(params: {
     text: trimOutput(result.text, maxChars),
     provider: providerId,
     model: result.model ?? model,
+    ...(result.processing ? { processing: result.processing } : {}),
   });
 }
 

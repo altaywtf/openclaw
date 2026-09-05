@@ -1,20 +1,41 @@
-// Qa Lab plugin module implements cli behavior.
 import {
   runMantisDesktopBrowserSmoke,
   type MantisDesktopBrowserSmokeOptions,
 } from "./desktop-browser-smoke.runtime.js";
 import { runMantisDiscordSmoke, type MantisDiscordSmokeOptions } from "./discord-smoke.runtime.js";
+// Qa Lab plugin module implements cli behavior.
+import { auditMantisEvidence } from "./evidence-video-audit.runtime.js";
 import { runMantisBeforeAfter, type MantisBeforeAfterOptions } from "./run.runtime.js";
 import {
   runMantisSlackDesktopSmoke,
   type MantisSlackDesktopSmokeOptions,
 } from "./slack-desktop-smoke.runtime.js";
+import { auditMantisVideo, type MantisVideoAuditOptions } from "./video-audit.runtime.js";
 import {
   runMantisVisualDriver,
   runMantisVisualTask,
   type MantisVisualDriverOptions,
   type MantisVisualTaskOptions,
 } from "./visual-task.runtime.js";
+
+export async function runMantisEvidenceAuditCommand(opts: {
+  repoRoot: string;
+  manifestPath: string;
+}) {
+  const result = await auditMantisEvidence(opts);
+  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  if (result.status !== "pass") {
+    process.exitCode = 1;
+  }
+}
+
+export async function runMantisVideoAuditCommand(opts: MantisVideoAuditOptions) {
+  const result = await auditMantisVideo(opts);
+  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  if (result.status !== "pass") {
+    process.exitCode = 1;
+  }
+}
 
 export async function runMantisDiscordSmokeCommand(opts: MantisDiscordSmokeOptions) {
   const result = await runMantisDiscordSmoke(opts);

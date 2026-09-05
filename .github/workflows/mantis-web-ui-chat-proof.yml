@@ -217,10 +217,99 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+  audit_web_ui_video:
+    name: Audit Control UI recording with Gemini
+    needs: run_web_ui_chat
+    if: ${{ always() && needs.run_web_ui_chat.outputs.artifact_name != '' }}
+    permissions:
+      actions: read
+      contents: read
+    runs-on: ubuntu-24.04
+    environment: qa-live-shared
+    timeout-minutes: 45
+    outputs:
+      artifact_name: ${{ steps.prepare_audit.outputs.artifact_name }}
+      manifest_name: ${{ steps.audit.outputs.manifest_name }}
+    steps:
+      - name: Checkout trusted harness ref
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
+      - name: Allocate audit evidence directory
+        id: prepare_audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          output_parent="${GITHUB_WORKSPACE}/.artifacts/qa-e2e/mantis/web-ui-chat-video-audit"
+          mkdir -p "$output_parent"
+          root="$(mktemp -d "$output_parent/run.XXXXXX")"
+          echo "output_dir=${root}" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=mantis-web-ui-chat-audited-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+
+      - name: Download captured evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ needs.run_web_ui_chat.outputs.artifact_name }}
+          path: ${{ steps.prepare_audit.outputs.output_dir }}
+
+      - name: Setup Node environment
+        uses: ./.github/actions/setup-node-env
+        with:
+          cache-mode: restore
+          node-version: ${{ env.NODE_VERSION }}
+          install-bun: "false"
+          install-deps: "true"
+
+      - name: Build trusted QA runtime
+        env:
+          OPENCLAW_BUILD_PRIVATE_QA: "1"
+        run: pnpm build
+
+      - name: Audit captured video evidence
+        id: audit
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENCLAW_ENABLE_PRIVATE_QA_CLI: "1"
+          EVIDENCE_ROOT: ${{ steps.prepare_audit.outputs.output_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          result_file="$(mktemp "${RUNNER_TEMP}/mantis-audit-result.XXXXXX")"
+          audit_status=0
+          node openclaw.mjs qa mantis audit-evidence --json \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --manifest "$EVIDENCE_ROOT/mantis-evidence.json" >"$result_file" || audit_status=$?
+          node --input-type=module - "$result_file" <<'MANTIS_AUDIT_RESULT'
+          import fs from "node:fs";
+          import path from "node:path";
+          const result = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+          const root = process.env.EVIDENCE_ROOT;
+          if (result.outputDir !== root || path.dirname(result.manifestPath) !== root) {
+            throw new Error("Audit returned a manifest outside the captured evidence root.");
+          }
+          const name = path.basename(result.manifestPath);
+          if (!/^mantis-evidence-audited-[0-9a-f-]+\.json$/u.test(name)) {
+            throw new Error("Audit did not return its invocation manifest.");
+          }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `manifest_name=${name}\n`);
+          MANTIS_AUDIT_RESULT
+          exit "$audit_status"
+
+      - name: Upload audited Mantis web UI chat artifacts
+        if: ${{ always() && steps.prepare_audit.outputs.output_dir != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ steps.prepare_audit.outputs.artifact_name }}
+          path: ${{ steps.prepare_audit.outputs.output_dir }}
+          retention-days: 14
+          if-no-files-found: error
+
   publish_evidence:
     name: Publish Mantis web UI chat evidence
-    needs: [resolve_request, run_web_ui_chat]
-    if: ${{ always() && needs.resolve_request.outputs.pr_number != '' && needs.run_web_ui_chat.outputs.artifact_name != '' }}
+    needs: [resolve_request, audit_web_ui_video]
+    if: ${{ always() && needs.resolve_request.outputs.pr_number != '' && needs.audit_web_ui_video.outputs.manifest_name != '' }}
     runs-on: ubuntu-24.04
     environment: qa-live-shared
     steps:
@@ -232,7 +321,7 @@ jobs:
       - name: Download Mantis web UI chat artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: ${{ needs.run_web_ui_chat.outputs.artifact_name }}
+          name: ${{ needs.audit_web_ui_video.outputs.artifact_name }}
           path: .artifacts/qa-e2e/mantis/web-ui-chat-proof
 
       - name: Create Mantis GitHub App token
@@ -257,16 +346,17 @@ jobs:
           MANTIS_ARTIFACT_R2_SECRET_ACCESS_KEY: ${{ secrets.MANTIS_ARTIFACT_R2_SECRET_ACCESS_KEY }}
           REQUEST_SOURCE: ${{ needs.resolve_request.outputs.request_source }}
           TARGET_PR: ${{ needs.resolve_request.outputs.pr_number }}
+          AUDITED_MANIFEST: ${{ needs.audit_web_ui_video.outputs.manifest_name }}
         shell: bash
         run: |
           set -euo pipefail
           root=".artifacts/qa-e2e/mantis/web-ui-chat-proof"
-          if [[ ! -f "$root/mantis-evidence.json" ]]; then
+          if [[ ! -f "$root/$AUDITED_MANIFEST" ]]; then
             echo "No Mantis evidence manifest found; skipping PR evidence comment."
             exit 0
           fi
           node scripts/mantis/publish-pr-evidence.mjs \
-            --manifest "$root/mantis-evidence.json" \
+            --manifest "$root/$AUDITED_MANIFEST" \
             --target-pr "$TARGET_PR" \
             --artifact-root "mantis/web-ui-chat-proof/pr-${TARGET_PR}/run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --marker "<!-- mantis-web-ui-chat-proof -->" \
@@ -275,7 +365,8 @@ jobs:
 
   clear_issue_comment_reaction:
     name: Clear Mantis command reaction
-    needs: [resolve_request, validate_candidate, run_web_ui_chat, publish_evidence]
+    needs:
+      [resolve_request, validate_candidate, run_web_ui_chat, audit_web_ui_video, publish_evidence]
     if: ${{ always() && github.event_name == 'issue_comment' && needs.resolve_request.outputs.request_source == 'issue_comment' && needs.resolve_request.outputs.reaction_id != '' }}
     permissions: {}
     uses: ./.github/workflows/mantis-clear-reaction.yml

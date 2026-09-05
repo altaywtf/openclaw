@@ -17,6 +17,9 @@ type WorkflowStep = {
 };
 
 type WorkflowJob = {
+  env?: Record<string, string>;
+  if?: string;
+  needs?: string | string[];
   outputs?: Record<string, string>;
   permissions?: Record<string, string>;
   steps?: WorkflowStep[];
@@ -93,6 +96,45 @@ describe("Mantis Web UI chat proof workflow", () => {
     expect(job.steps?.some((step) => step.name === "Setup Node environment")).toBe(false);
     expect(publish?.run).toContain("node scripts/mantis/publish-pr-evidence.mjs");
     expect(publish?.run).not.toContain("--import tsx");
+  });
+
+  it("keeps provider credentials in the trusted audit job and publishes its exact manifest", () => {
+    const candidate = workflowJob("run_web_ui_chat");
+    const audit = workflowJob("audit_web_ui_video");
+    const publisher = workflowJob("publish_evidence");
+    const checkout = audit.steps?.find((step) => step.name === "Checkout trusted harness ref");
+    const build = audit.steps?.find((step) => step.name === "Build trusted QA runtime");
+    const inference = audit.steps?.find((step) => step.id === "audit");
+    const upload = audit.steps?.find(
+      (step) => step.name === "Upload audited Mantis web UI chat artifacts",
+    );
+    const publish = publisher.steps?.find(
+      (step) => step.name === "Comment PR with inline QA evidence",
+    );
+    const download = publisher.steps?.find((step) =>
+      step.uses?.startsWith("actions/download-artifact@"),
+    );
+
+    expect(JSON.stringify(candidate)).not.toContain("GEMINI_API_KEY");
+    expect(audit.env).toBeUndefined();
+    expect(audit.needs).toBe("run_web_ui_chat");
+    expect(audit.permissions).toEqual({ actions: "read", contents: "read" });
+    expect(checkout?.with).toMatchObject({
+      ref: "${{ github.workflow_sha }}",
+      "persist-credentials": false,
+    });
+    expect(build?.env).toEqual({ OPENCLAW_BUILD_PRIVATE_QA: "1" });
+    expect(inference?.env?.OPENCLAW_ENABLE_PRIVATE_QA_CLI).toBe("1");
+    expect(inference?.env?.GEMINI_API_KEY).toBe("${{ secrets.GEMINI_API_KEY }}");
+    expect(inference?.run).toContain("node openclaw.mjs qa mantis audit-evidence");
+    expect(inference?.run).toContain('JSON.parse(fs.readFileSync(process.argv[2], "utf8"))');
+    expect(upload?.if).toContain("always()");
+    expect(publisher.needs).toEqual(["resolve_request", "audit_web_ui_video"]);
+    expect(download?.with?.name).toBe("${{ needs.audit_web_ui_video.outputs.artifact_name }}");
+    expect(publish?.env?.AUDITED_MANIFEST).toBe(
+      "${{ needs.audit_web_ui_video.outputs.manifest_name }}",
+    );
+    expect(publish?.run).toContain('--manifest "$root/$AUDITED_MANIFEST"');
   });
 
   it("retains one invocation root through capture, failure reporting, and artifact upload", () => {

@@ -156,6 +156,109 @@ describe("describeGeminiVideo", () => {
     expect(body.contents?.[0]?.parts?.[1]?.inline_data?.data).toBe(
       Buffer.from("video-bytes").toString("base64"),
     );
+    expect(body.contents?.[0]?.parts?.[1]?.mediaProcessing).toBeUndefined();
+    expect(result.processing).toBeUndefined();
+  });
+
+  it("requests agentic inline video and records observed navigation without thought text", async () => {
+    const { fetchFn, getRequest } = createRequestCaptureJsonFetch({
+      candidates: [
+        {
+          content: {
+            parts: [
+              { thought: true, text: "Inspecting the streaming transition." },
+              { toolCall: { toolType: "MEDIA_PROCESSING" } },
+              { toolResponse: { toolType: "MEDIA_PROCESSING" } },
+              { text: "00:02.400: The streamed text briefly disappears." },
+            ],
+          },
+        },
+      ],
+    });
+
+    const result = await describeGeminiVideo({
+      buffer: Buffer.from("video-bytes"),
+      fileName: "clip.mp4",
+      apiKey: "test-key",
+      model: "gemini-3.8-flash",
+      prompt: "Audit the streaming transition.",
+      timeoutMs: 1500,
+      fetchFn,
+    });
+    const { url, init } = getRequest();
+
+    expect(url).toBe(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
+    );
+    const requestBody = await new Response(init?.body).json();
+    expect(requestBody.contents[0].parts).toEqual([
+      { text: "Audit the streaming transition." },
+      {
+        inline_data: {
+          mime_type: "video/mp4",
+          data: Buffer.from("video-bytes").toString("base64"),
+        },
+        mediaProcessing: "AGENTIC",
+      },
+    ]);
+    expect(result).toEqual({
+      text: "00:02.400: The streamed text briefly disappears.",
+      model: "gemini-3.8-flash",
+      processing: { mode: "agentic", verified: true },
+    });
+  });
+
+  it.each([
+    { name: "absent navigation", parts: [] },
+    { name: "call only", parts: [{ toolCall: { toolType: "MEDIA_PROCESSING" } }] },
+    { name: "response only", parts: [{ toolResponse: { toolType: "MEDIA_PROCESSING" } }] },
+    {
+      name: "unrelated tool response",
+      parts: [
+        { toolCall: { toolType: "MEDIA_PROCESSING" } },
+        { toolResponse: { toolType: "GOOGLE_SEARCH_WEB" } },
+      ],
+    },
+  ])("does not verify agentic video with $name", async ({ parts }) => {
+    const { fetchFn } = createRequestCaptureJsonFetch({
+      candidates: [{ content: { parts: [...parts, { text: "Video description." }] } }],
+    });
+
+    const result = await describeGeminiVideo({
+      buffer: Buffer.from("video-bytes"),
+      fileName: "clip.mp4",
+      apiKey: "test-key",
+      model: "gemini-3.8-flash",
+      timeoutMs: 1500,
+      fetchFn,
+    });
+
+    expect(result.text).toBe("Video description.");
+    expect(result.processing).toEqual({ mode: "agentic", verified: false });
+  });
+
+  it("does not enable video processing for Gemini Flash audio", async () => {
+    const { fetchFn, getRequest } = createRequestCaptureJsonFetch({
+      candidates: [{ content: { parts: [{ text: "Audio transcript." }] } }],
+    });
+
+    const result = await transcribeGeminiAudio({
+      buffer: Buffer.from("audio-bytes"),
+      fileName: "clip.wav",
+      apiKey: "test-key",
+      model: "gemini-3.8-flash",
+      timeoutMs: 1500,
+      fetchFn,
+    });
+
+    const requestBody = await new Response(getRequest().init?.body).json();
+    expect(requestBody.contents[0].parts[1]).toEqual({
+      inline_data: {
+        mime_type: "audio/wav",
+        data: Buffer.from("audio-bytes").toString("base64"),
+      },
+    });
+    expect(result).toEqual({ text: "Audio transcript.", model: "gemini-3.8-flash" });
   });
 
   it("uses the canonical endpoint for an empty configured base URL", async () => {

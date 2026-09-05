@@ -18,6 +18,7 @@ import {
   warmupCrabbox,
 } from "./crabbox-runtime.js";
 import { renderMantisCrabboxReport, type MantisCrabboxReportSummary } from "./report.js";
+import { auditMantisVideo } from "./video-audit.runtime.js";
 
 export type MantisDesktopBrowserSmokeOptions = {
   browserProfileArchiveEnv?: string;
@@ -305,6 +306,7 @@ export async function runMantisDesktopBrowserSmoke(
     .replace(/[^0-9A-Za-z]/gu, "-")}`;
   let leaseId = explicitLeaseId;
   let summary: MantisDesktopBrowserSmokeSummary | undefined;
+  let videoAudit: MantisCrabboxReportSummary["videoAudit"];
 
   try {
     leaseId =
@@ -365,10 +367,25 @@ export async function runMantisDesktopBrowserSmoke(
     });
     const screenshotPath = path.join(outputDir, "desktop-browser-smoke.png");
     const videoPath = path.join(outputDir, "desktop-browser-smoke.mp4");
+    const copiedVideoPath = (await pathExists(videoPath)) ? videoPath : undefined;
+    if (copiedVideoPath) {
+      videoAudit = await auditMantisVideo({
+        repoRoot,
+        outputDir,
+        videoPath: copiedVideoPath,
+        prompt:
+          "Audit the visible browser launch and page rendering for transient visual defects. Only assess events visible in this recording; browser functionality beyond the recorded launch is untested.",
+      });
+    }
     if (!(await pathExists(screenshotPath))) {
       throw new Error("Desktop browser screenshot was not copied back from Crabbox.");
     }
-    const copiedVideoPath = (await pathExists(videoPath)) ? videoPath : undefined;
+    const status = videoAudit?.status === "pass" ? "pass" : "fail";
+    const auditError = copiedVideoPath
+      ? videoAudit?.status === "error"
+        ? videoAudit.error
+        : undefined
+      : "Desktop browser recording is missing; video audit could not run.";
     summary = {
       artifacts: {
         reportPath,
@@ -377,6 +394,7 @@ export async function runMantisDesktopBrowserSmoke(
         videoPath: copiedVideoPath,
       },
       browserUrl,
+      error: auditError,
       htmlFile,
       crabbox: {
         bin: crabboxBin,
@@ -391,13 +409,14 @@ export async function runMantisDesktopBrowserSmoke(
       outputDir,
       remoteOutputDir,
       startedAt: startedAt.toISOString(),
-      status: "pass",
+      status,
+      videoAudit,
     };
     return {
       outputDir,
       reportPath,
       screenshotPath,
-      status: "pass",
+      status,
       summaryPath,
       videoPath: copiedVideoPath,
     };
@@ -424,6 +443,7 @@ export async function runMantisDesktopBrowserSmoke(
       remoteOutputDir,
       startedAt: startedAt.toISOString(),
       status: "fail",
+      videoAudit,
     };
     await fs.writeFile(path.join(outputDir, "error.txt"), `${summary.error}\n`, "utf8");
     return {

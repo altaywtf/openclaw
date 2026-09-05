@@ -17,7 +17,7 @@ afterEach(() => {
   }
 });
 
-function writeFixtureManifest() {
+function writeFixtureManifest(withReport = false) {
   const dir = mkdtempSync(path.join(tmpdir(), "mantis-evidence-test-"));
   tempDirs.push(dir);
   mkdirSync(path.join(dir, "baseline"), { recursive: true });
@@ -25,6 +25,7 @@ function writeFixtureManifest() {
   writeFileSync(path.join(dir, "baseline", "timeline.png"), "baseline timeline");
   writeFileSync(path.join(dir, "candidate", "timeline.png"), "candidate timeline");
   writeFileSync(path.join(dir, "baseline", "change.mp4"), "baseline clip");
+  writeFileSync(path.join(dir, "candidate", "audit.md"), "Temporal video audit");
   const manifestPath = path.join(dir, "mantis-evidence.json");
   writeFileSync(
     manifestPath,
@@ -50,6 +51,17 @@ function writeFixtureManifest() {
         pass: true,
       },
       artifacts: [
+        ...(withReport
+          ? [
+              {
+                kind: "report",
+                label: "Candidate video audit",
+                lane: "candidate",
+                path: "candidate/audit.md",
+                targetPath: "candidate-video-audit.md",
+              },
+            ]
+          : []),
         {
           alt: "Baseline timeline",
           kind: "timeline",
@@ -98,7 +110,7 @@ describe("scripts/mantis/publish-pr-evidence", () => {
   });
 
   it("renders a manifest-driven PR comment with inline screenshots and video links", () => {
-    const manifest = loadEvidenceManifest(writeFixtureManifest());
+    const manifest = loadEvidenceManifest(writeFixtureManifest(true));
     const body = renderEvidenceComment({
       artifactUrl: "https://github.com/openclaw/openclaw/actions/runs/1/artifacts/2",
       manifest,
@@ -119,6 +131,9 @@ describe("scripts/mantis/publish-pr-evidence", () => {
     );
     expect(body).toContain(
       "[Baseline change MP4](https://qa.openclaw.ai/mantis/discord/pr-1/run-1/baseline-change.mp4)",
+    );
+    expect(body).toContain(
+      "[Candidate video audit](https://qa.openclaw.ai/mantis/discord/pr-1/run-1/candidate-video-audit.md)",
     );
     expect(body).not.toContain("raw.githubusercontent.com");
     expect(body).toContain("- Overall: `pass`");

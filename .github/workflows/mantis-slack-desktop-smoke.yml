@@ -201,6 +201,7 @@ jobs:
       - name: Run Slack desktop scenario
         id: run_mantis
         env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENCLAW_LIVE_OPENAI_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENCLAW_QA_CONVEX_SITE_URL: ${{ secrets.OPENCLAW_QA_CONVEX_SITE_URL }}
@@ -327,7 +328,6 @@ jobs:
 
           if [[ ! -f "$root/mantis-slack-desktop-smoke-summary.json" ]]; then
             echo "Mantis Slack desktop smoke did not produce a summary." >&2
-            exit "$mantis_exit"
           fi
 
           if [[ -f "$root/slack-desktop-smoke.mp4" ]]; then
@@ -347,7 +347,7 @@ jobs:
             fi
           fi
 
-          status="$(jq -r '.status' "$root/mantis-slack-desktop-smoke-summary.json")"
+          status="$(jq -r '.status' "$root/mantis-slack-desktop-smoke-summary.json" 2>/dev/null)" || status="fail"
           screenshot_required=false
           desktop_capture_inline=true
           if [[ "$status" == "pass" ]]; then
@@ -432,18 +432,23 @@ jobs:
                 { kind: "motionPreview", lane: "candidate", label: "Slack motion preview", path: "slack-desktop-smoke-preview.gif", targetPath: "slack-desktop-preview.gif", alt: "Animated Slack desktop preview", width: 720, inline: $desktop_capture_inline, required: false },
                 { kind: "motionClip", lane: "candidate", label: "Slack change MP4", path: "slack-desktop-smoke-change.mp4", targetPath: "slack-desktop-change.mp4", required: false },
                 { kind: "fullVideo", lane: "candidate", label: "Slack desktop MP4", path: "slack-desktop-smoke.mp4", targetPath: "slack-desktop.mp4", required: false },
-                { kind: "metadata", lane: "run", label: "Slack desktop summary", path: "mantis-slack-desktop-smoke-summary.json", targetPath: "summary.json" },
-                { kind: "report", lane: "run", label: "Slack desktop report", path: "mantis-slack-desktop-smoke-report.md", targetPath: "report.md" },
+                { kind: "metadata", lane: "run", label: "Slack desktop summary", path: "mantis-slack-desktop-smoke-summary.json", targetPath: "mantis-slack-desktop-smoke-summary.json", required: false },
+                { kind: "report", lane: "run", label: "Slack desktop report", path: "mantis-slack-desktop-smoke-report.md", targetPath: "mantis-slack-desktop-smoke-report.md", required: false },
                 { kind: "metadata", lane: "run", label: "Slack command log", path: "slack-desktop-command.log", targetPath: "slack-desktop-command.log", required: false },
                 { kind: "metadata", lane: "run", label: "Slack preview metadata", path: "slack-desktop-smoke-preview.json", targetPath: "slack-desktop-preview.json", required: false },
                 { kind: "metadata", lane: "run", label: "Slack error", path: "error.txt", targetPath: "error.txt", required: false }
               ] + $checkpoint_artifacts)
             }' > "$root/mantis-evidence.json"
 
-          cat "$root/mantis-slack-desktop-smoke-report.md" >> "$GITHUB_STEP_SUMMARY"
+          audit_status="$(node scripts/mantis/attach-smoke-video-audits.mjs "$root/mantis-evidence.json" \
+            --smoke candidate "$root/mantis-slack-desktop-smoke-summary.json" "$mantis_exit")"
+          if [[ -f "$root/mantis-slack-desktop-smoke-report.md" ]]; then
+            cat "$root/mantis-slack-desktop-smoke-report.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          cat "$root/mantis-smoke-video-audits.md" >> "$GITHUB_STEP_SUMMARY"
 
-          if [[ "$status" != "pass" ]]; then
-            echo "Slack desktop smoke failed." >&2
+          if [[ "$audit_status" != "pass" ]]; then
+            echo "Slack desktop smoke or video audit did not pass." >&2
             exit 1
           fi
           if [[ "$mantis_exit" -ne 0 ]]; then

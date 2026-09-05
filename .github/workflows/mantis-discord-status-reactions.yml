@@ -182,6 +182,7 @@ jobs:
         id: run_mantis
         shell: bash
         env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENCLAW_QA_CONVEX_SITE_URL: ${{ secrets.OPENCLAW_QA_CONVEX_SITE_URL }}
           OPENCLAW_QA_CONVEX_SECRET_CI: ${{ secrets.OPENCLAW_QA_CONVEX_SECRET_CI }}
@@ -264,6 +265,7 @@ jobs:
           }
           trap cleanup_desktop_lease EXIT
 
+          smoke_audit_args=()
           capture_desktop_lane() {
             local lane="$1"
             local html_file="$root/$lane/discord-status-reactions-tool-only-timeline.html"
@@ -282,9 +284,14 @@ jobs:
               --ttl 90m
               --lease-id "$desktop_lease_id"
             )
-            pnpm "${args[@]}"
-            cp "$desktop_dir/desktop-browser-smoke.png" "$root/$lane/discord-status-reactions-tool-only-desktop.png"
-            cp "$desktop_dir/desktop-browser-smoke.mp4" "$root/$lane/discord-status-reactions-tool-only-desktop.mp4"
+            local smoke_exit=0
+            pnpm "${args[@]}" || smoke_exit=$?
+            smoke_audit_args+=(--smoke "$lane" "$desktop_dir/mantis-desktop-browser-smoke-summary.json" "$smoke_exit")
+            for extension in png mp4; do
+              if [[ -f "$desktop_dir/desktop-browser-smoke.$extension" ]]; then
+                cp "$desktop_dir/desktop-browser-smoke.$extension" "$root/$lane/discord-status-reactions-tool-only-desktop.$extension"
+              fi
+            done
           }
 
           capture_desktop_lane baseline
@@ -375,7 +382,7 @@ jobs:
               schemaVersion: 2,
               id: "discord-status-reactions",
               title: "Mantis Discord Status Reactions QA",
-              summary: "Mantis reran Discord status reactions against the known queued-only baseline and the candidate ref. The baseline reproduced the bug, while the candidate showed the expected queued -> thinking -> done reaction sequence.",
+              summary: "Mantis compares Discord status reactions against a known queued-only baseline and audits the captured desktop recordings. Functional results and video audit findings are reported separately.",
               scenario: "discord-status-reactions-tool-only",
               comparison: {
                 baseline: { sha: $baseline_sha, expected: "queued-only", expectationMet: ($baseline_status == "fail"), status: $baseline_status, reproduced: ($baseline_status == "fail") },
@@ -401,14 +408,16 @@ jobs:
               ]
             }' > "$root/mantis-evidence.json"
 
+          comparison_status="$(node scripts/mantis/attach-smoke-video-audits.mjs "$root/mantis-evidence.json" "${smoke_audit_args[@]}")"
+          jq --slurpfile manifest "$root/mantis-evidence.json" \
+            '.pass = $manifest[0].comparison.pass | .outcome = $manifest[0].comparison.outcome | .videoAudit = $manifest[0].videoAudit' \
+            "$root/comparison.json" > "$root/comparison-final.json"
+          mv "$root/comparison-final.json" "$root/comparison.json"
           cat "$root/mantis-report.md" >> "$GITHUB_STEP_SUMMARY"
+          cat "$root/mantis-smoke-video-audits.md" >> "$GITHUB_STEP_SUMMARY"
 
-          if [[ "$baseline_status" != "fail" ]]; then
-            echo "Baseline did not reproduce queued-only behavior." >&2
-            exit 1
-          fi
-          if [[ "$candidate_status" != "pass" ]]; then
-            echo "Candidate did not show queued -> thinking -> done." >&2
+          if [[ "$comparison_status" != "pass" ]]; then
+            echo "Mantis functional comparison or desktop video audit did not pass." >&2
             exit 1
           fi
 

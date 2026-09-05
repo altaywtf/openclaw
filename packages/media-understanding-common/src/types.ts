@@ -44,4 +44,6 @@ export type MediaUnderstandingOutput = {
   model?: string;
   requestedBackend?: string;
   observedBackend?: string;
+  /** Provider-observed video navigation, not an inference from the requested model. */
+  processing?: { mode: "agentic"; verified: boolean };
 };

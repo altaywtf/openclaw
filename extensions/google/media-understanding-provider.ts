@@ -41,7 +41,7 @@ async function generateGeminiInlineDataText(params: {
   defaultMime: string;
   httpErrorLabel: string;
   missingTextError: string;
-}): Promise<{ text: string; model: string }> {
+}): Promise<VideoDescriptionResult> {
   const fetchFn = params.fetchFn ?? fetch;
   const model = (() => {
     const trimmed = params.model?.trim();
@@ -66,6 +66,9 @@ async function generateGeminiInlineDataText(params: {
     const trimmed = params.prompt?.trim();
     return trimmed || params.defaultPrompt;
   })();
+  // Agentic navigation is an explicit Gemini video Part contract, not a model default.
+  // https://ai.google.dev/gemini-api/docs/generate-content/video-understanding#agentic-video-understanding
+  const agenticVideo = params.defaultMime.startsWith("video/") && model === "gemini-3.8-flash";
 
   const body = {
     contents: [
@@ -78,6 +81,7 @@ async function generateGeminiInlineDataText(params: {
               mime_type: params.mime ?? params.defaultMime,
               data: params.buffer.toString("base64"),
             },
+            ...(agenticVideo ? { mediaProcessing: "AGENTIC" } : {}),
           },
         ],
       },
@@ -100,18 +104,39 @@ async function generateGeminiInlineDataText(params: {
 
     const payload = await readProviderJsonResponse<{
       candidates?: Array<{
-        content?: { parts?: Array<{ text?: string }> };
+        content?: {
+          parts?: Array<{
+            text?: string;
+            thought?: boolean;
+            toolCall?: { toolType?: string };
+            toolResponse?: { toolType?: string };
+          }>;
+        };
       }>;
     }>(res, params.httpErrorLabel);
     const parts = payload.candidates?.[0]?.content?.parts ?? [];
     const text = parts
+      .filter((part) => !part.thought)
       .map((part) => part?.text?.trim())
       .filter(Boolean)
       .join("\n");
     if (!text) {
       throw new Error(params.missingTextError);
     }
-    return { text, model };
+    return {
+      text,
+      model,
+      ...(agenticVideo
+        ? {
+            processing: {
+              mode: "agentic",
+              verified:
+                parts.some((part) => part.toolCall?.toolType === "MEDIA_PROCESSING") &&
+                parts.some((part) => part.toolResponse?.toolType === "MEDIA_PROCESSING"),
+            },
+          }
+        : {}),
+    };
   } finally {
     await release();
   }
@@ -135,7 +160,7 @@ export async function transcribeGeminiAudio(
 export async function describeGeminiVideo(
   params: VideoDescriptionRequest,
 ): Promise<VideoDescriptionResult> {
-  const { text, model } = await generateGeminiInlineDataText({
+  return await generateGeminiInlineDataText({
     ...params,
     defaultBaseUrl: DEFAULT_GOOGLE_API_BASE_URL,
     defaultModel: DEFAULT_GOOGLE_VIDEO_MODEL,
@@ -144,7 +169,6 @@ export async function describeGeminiVideo(
     httpErrorLabel: "Video description failed",
     missingTextError: "Video description response missing text",
   });
-  return { text, model };
 }
 
 export const googleMediaUnderstandingProvider: MediaUnderstandingProvider = {

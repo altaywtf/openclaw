@@ -1,4 +1,5 @@
 import path from "node:path";
+import type { MantisVideoAudit } from "./video-audit.runtime.js";
 
 type MantisReportLine = string | undefined;
 
@@ -23,6 +24,7 @@ export type MantisCrabboxReportSummary = {
   outputDir: string;
   startedAt: string;
   status: "pass" | "fail";
+  videoAudit?: MantisVideoAudit;
 };
 
 export function renderMantisCrabboxReport(params: {
@@ -65,6 +67,18 @@ export function renderMantisCrabboxReport(params: {
       : "- Video: missing",
     ...params.artifactRows,
     "",
+    ...(summary.videoAudit
+      ? [
+          "## Video audit",
+          "",
+          `Status: ${summary.videoAudit.status}`,
+          `Report: [video audit](${path.relative(path.dirname(summary.artifacts.reportPath), summary.videoAudit.reportPath).split(path.sep).map(encodeURIComponent).join("/")})`,
+          summary.videoAudit.status === "error"
+            ? summary.videoAudit.error
+            : summary.videoAudit.summary,
+          "",
+        ]
+      : []),
     ...(params.afterArtifacts ?? []),
   ].filter((line) => line !== undefined);
   return `${lines.join("\n")}\n`;

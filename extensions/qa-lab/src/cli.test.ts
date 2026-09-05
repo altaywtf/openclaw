@@ -54,6 +54,8 @@ const {
   runQaProviderServerCommand,
   runQaSuiteCommand,
   runQaTelegramCommand,
+  runMantisVideoAuditCommand,
+  runMantisEvidenceAuditCommand,
   runMantisBeforeAfterCommand,
   runMantisDesktopBrowserSmokeCommand,
   runMantisDiscordSmokeCommand,
@@ -70,6 +72,8 @@ const {
   runQaProviderServerCommand: vi.fn(),
   runQaSuiteCommand: vi.fn(),
   runQaTelegramCommand: vi.fn(),
+  runMantisVideoAuditCommand: vi.fn(),
+  runMantisEvidenceAuditCommand: vi.fn(),
   runMantisBeforeAfterCommand: vi.fn(),
   runMantisDesktopBrowserSmokeCommand: vi.fn(),
   runMantisDiscordSmokeCommand: vi.fn(),
@@ -109,6 +113,8 @@ vi.mock("./live-transports/telegram/cli.runtime.js", () => ({
 }));
 
 vi.mock("./mantis/cli.runtime.js", () => ({
+  runMantisVideoAuditCommand,
+  runMantisEvidenceAuditCommand,
   runMantisBeforeAfterCommand,
   runMantisDesktopBrowserSmokeCommand,
   runMantisDiscordSmokeCommand,
@@ -146,6 +152,8 @@ describe("qa cli registration", () => {
     runQaProviderServerCommand.mockReset();
     runQaSuiteCommand.mockReset();
     runQaTelegramCommand.mockReset();
+    runMantisVideoAuditCommand.mockReset();
+    runMantisEvidenceAuditCommand.mockReset();
     runMantisBeforeAfterCommand.mockReset();
     runMantisDesktopBrowserSmokeCommand.mockReset();
     runMantisDiscordSmokeCommand.mockReset();
@@ -466,6 +474,39 @@ describe("qa cli registration", () => {
       transport: "discord",
     });
   });
+
+  it.each(["audit-video", "audit-evidence"])(
+    "routes %s with machine-readable output and repository-relative inputs",
+    async (command) => {
+      await program.parseAsync([
+        "node",
+        "openclaw",
+        "qa",
+        "mantis",
+        command,
+        "--json",
+        "--repo-root",
+        "/tmp/openclaw-repo",
+        ...(command === "audit-video"
+          ? ["--file", "recording.webm", "--output-dir", "qa-audits"]
+          : ["--manifest", "capture/mantis-evidence.json"]),
+      ]);
+      if (command === "audit-video") {
+        expect(runMantisVideoAuditCommand).toHaveBeenCalledWith({
+          repoRoot: "/tmp/openclaw-repo",
+          outputDir: "/tmp/openclaw-repo/qa-audits",
+          videoPath: "/tmp/openclaw-repo/recording.webm",
+          prompt: undefined,
+          events: undefined,
+        });
+      } else {
+        expect(runMantisEvidenceAuditCommand).toHaveBeenCalledWith({
+          repoRoot: "/tmp/openclaw-repo",
+          manifestPath: "/tmp/openclaw-repo/capture/mantis-evidence.json",
+        });
+      }
+    },
+  );
 
   it("routes mantis desktop browser smoke flags into the mantis runtime command", async () => {
     await program.parseAsync([

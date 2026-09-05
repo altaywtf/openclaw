@@ -1,7 +1,10 @@
 // Shared media-understanding types for attachments, provider hooks, request
 // auth, decisions, and structured extraction inputs.
 import type { Result } from "@openclaw/normalization-core/result";
-import type { MediaUnderstandingCapability } from "../../packages/media-understanding-common/src/types.js";
+import type {
+  MediaUnderstandingCapability,
+  MediaUnderstandingOutput,
+} from "../../packages/media-understanding-common/src/types.js";
 import type { AuthProfileStore } from "../agents/auth-profiles/types.js";
 import type { ModelProviderConfig } from "../config/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -149,6 +152,7 @@ export type VideoDescriptionRequest = {
 export type VideoDescriptionResult = {
   text: string;
   model?: string;
+  processing?: MediaUnderstandingOutput["processing"];
 };
 
 export type ImageDescriptionRequest = {

@@ -570,6 +570,15 @@ export function renderEvidenceComment({
   if (fullVideos) {
     lines.push(fullVideos);
   }
+  const reports = renderLinkList({
+    artifacts: manifest.artifacts,
+    kind: "report",
+    rawBase,
+    title: "Audit and QA reports",
+  });
+  if (reports) {
+    lines.push(reports);
+  }
   lines.push(`Raw QA files: ${treeUrl ?? rawBase}`);
   return `${lines.join("\n").replace(/\n{3,}/gu, "\n\n")}\n`;
 }

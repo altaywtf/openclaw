@@ -24,6 +24,7 @@ import {
   warmupCrabbox,
 } from "./crabbox-runtime.js";
 import { renderMantisCrabboxReport, type MantisCrabboxReportSummary } from "./report.js";
+import { auditMantisVideo } from "./video-audit.runtime.js";
 
 export type MantisSlackDesktopSmokeOptions = {
   alternateModel?: string;
@@ -635,23 +636,11 @@ fi
 if [ -z "$slack_url" ]; then
   slack_url="https://app.slack.com/client"
 fi
-video_pid=""
 if command -v ffmpeg >/dev/null 2>&1; then
   :
 else
   sudo apt-get update -y >>"$out/apt.log" 2>&1 || true
   sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ffmpeg >>"$out/apt.log" 2>&1 || true
-fi
-if command -v ffmpeg >/dev/null 2>&1; then
-  display_input="$DISPLAY"
-  case "$display_input" in
-    *.*) ;;
-    *) display_input="$display_input.0" ;;
-  esac
-  ffmpeg -hide_banner -loglevel error -y -f x11grab -framerate 15 -i "$display_input" -t 45 -pix_fmt yuv420p "$out/slack-desktop-smoke.mp4" >"$out/ffmpeg.log" 2>&1 &
-  video_pid=$!
-else
-  echo "ffmpeg missing; video artifact skipped" >"$out/ffmpeg.log"
 fi
 if [ "$setup_gateway" = "1" ]; then
   nohup "$browser_bin" \
@@ -794,6 +783,65 @@ console.log(match[1] + " " + match[2]);
     echo "Unsupported hydrate mode: $hydrate_mode" >&2
     exit 3
   fi
+  # Hydration is outside the recording. The timed body owns capture through QA
+  # and checkpoint completion, including graceful MP4 finalization on failure.
+  command -v ffmpeg >/dev/null 2>&1 || {
+    echo "ffmpeg is required to record Slack QA." >&2
+    exit 3
+  }
+  video_pid=""
+  finish_video_capture() {
+    body_status=$?
+    trap - EXIT
+    trap '' INT TERM
+    video_status=0
+    video_exit=0
+    if kill -0 "$video_pid" >/dev/null 2>&1; then
+      kill -TERM "$video_pid" >/dev/null 2>&1 || true
+    else
+      echo "Video recording ended before Slack QA completed." >&2
+      video_status=1
+    fi
+    video_stop_attempt=0
+    while kill -0 "$video_pid" >/dev/null 2>&1 && [ "$video_stop_attempt" -lt 100 ]; do
+      sleep 0.1
+      video_stop_attempt=$((video_stop_attempt + 1))
+    done
+    if [ "$video_stop_attempt" -ge 100 ]; then
+      kill -KILL "$video_pid" >/dev/null 2>&1 || true
+    fi
+    wait "$video_pid" || video_exit=$?
+    # FFmpeg returns 255 after handling SIGTERM and flushing its output.
+    if { [ "$video_exit" -ne 0 ] && [ "$video_exit" -ne 255 ]; } || ! grep -q '^progress=end$' "$out/ffmpeg-progress.log"; then
+      echo "Video recording did not finalize. See ffmpeg.log." >&2
+      video_status=1
+    fi
+    if [ "$body_status" -ne 0 ]; then
+      exit "$body_status"
+    fi
+    exit "$video_status"
+  }
+  trap finish_video_capture EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  display_input="$DISPLAY"
+  case "$display_input" in
+    *.*) ;;
+    *) display_input="$display_input.0" ;;
+  esac
+  # FFmpeg 7.1 checks termination signals in its stdin loop. Keep that loop
+  # enabled with /dev/null so stopping capture flushes the MP4 without reading QA input.
+  ffmpeg -stdin -hide_banner -loglevel error -y -f x11grab -framerate 30 -i "$display_input" -t "$remote_command_timeout_seconds" -pix_fmt yuv420p -progress "$out/ffmpeg-progress.log" "$out/slack-desktop-smoke.mp4" </dev/null >"$out/ffmpeg.log" 2>&1 &
+  video_pid=$!
+  video_ready_attempt=0
+  until grep -Eq '^frame=[[:space:]]*[1-9][0-9]*$' "$out/ffmpeg-progress.log" 2>/dev/null; do
+    if ! kill -0 "$video_pid" >/dev/null 2>&1 || [ "$video_ready_attempt" -ge 100 ]; then
+      echo "Video recording did not capture its first frame. See ffmpeg.log." >&2
+      exit 1
+    fi
+    sleep 0.1
+    video_ready_attempt=$((video_ready_attempt + 1))
+  done
   if [ "$setup_gateway" = "1" ]; then
     export OPENCLAW_HOME="$HOME/.openclaw-mantis/slack-openclaw"
     mkdir -p "$OPENCLAW_HOME"
@@ -1082,11 +1130,12 @@ MANTIS_APPROVAL_WATCHER
       fi
     fi
   fi
+  sleep 5
 }
 export -f run_mantis_remote_body
 export out credential_source credential_role provider_mode primary_model alternate_model
 export fast_mode hydrate_mode setup_gateway approval_checkpoints slack_channel_id
-export approval_checkpoint_scenarios_json browser_bin profile slack_url
+export approval_checkpoint_scenarios_json browser_bin profile slack_url remote_command_timeout_seconds
 set +e
 if command -v timeout >/dev/null 2>&1; then
   timeout --kill-after=15s "\${remote_command_timeout_seconds}s" bash -c run_mantis_remote_body >"$out/slack-desktop-command.log" 2>&1 &
@@ -1110,16 +1159,12 @@ if [ "$qa_status" -eq 124 ] || [ "$qa_status" -eq 137 ]; then
   echo "Remote command timed out after \${remote_command_timeout_seconds}s." >"$out/remote-command-timeout.txt"
   qa_status=124
 fi
-sleep 5
 if [ "$approval_checkpoints" = "1" ] && [ -s "$out/approval-checkpoints/slack-approval-plugin-native-pending.png" ]; then
   cp "$out/approval-checkpoints/slack-approval-plugin-native-pending.png" "$out/slack-desktop-smoke.png"
 elif [ "$approval_checkpoints" = "1" ] && [ -s "$out/approval-checkpoints/slack-approval-exec-native-pending.png" ]; then
   cp "$out/approval-checkpoints/slack-approval-exec-native-pending.png" "$out/slack-desktop-smoke.png"
 else
   scrot "$out/slack-desktop-smoke.png" || true
-fi
-if [ -n "$video_pid" ]; then
-  wait "$video_pid" || true
 fi
 if [ "$setup_gateway" != "1" ]; then
   kill "$chrome_pid" >/dev/null 2>&1 || true
@@ -1189,6 +1234,7 @@ function renderReport(summary: MantisSlackDesktopSmokeSummary) {
       "- FFmpeg log: `ffmpeg.log`",
       "- Chrome log: `chrome.log`",
       summary.error ? `- Error: ${summary.error}` : undefined,
+      "- Video coverage: the desktop is recorded after hydration through gateway setup or Slack QA completion. Approval checkpoint screenshots are separately rendered from observed Slack API payloads.",
     ],
     beforeArtifacts: [
       "## Timings",
@@ -1277,6 +1323,7 @@ export async function runMantisSlackDesktopSmoke(
   let screenshotPath: string | undefined;
   let slackQaDir: string | undefined;
   let videoPath: string | undefined;
+  let videoAudit: MantisCrabboxReportSummary["videoAudit"];
   let remoteMetadata: SlackDesktopRemoteMetadata | undefined;
   let approvalCheckpointArtifacts: MantisApprovalCheckpointArtifacts | undefined;
 
@@ -1383,6 +1430,16 @@ export async function runMantisSlackDesktopSmoke(
     if (!(await pathExists(videoPath))) {
       videoPath = undefined;
     }
+    if (videoPath) {
+      videoAudit = await auditMantisVideo({
+        repoRoot,
+        outputDir,
+        videoPath,
+        prompt: gatewaySetup
+          ? "Audit the visible Slack desktop during gateway startup for transient visual defects. This mode covers setup, not later QA actions. Report missing coverage if Slack Web is not visible or authenticated. Do not infer message or approval outcomes."
+          : "Audit the visible Slack desktop throughout QA for transient streaming and rendering defects. Recording begins after hydration and covers QA and checkpoint completion. Report missing coverage if Slack Web is not visible or authenticated. Approval checkpoint screenshots are separately rendered from API payloads; do not assume they are frames in this video or infer outcomes that are not visible.",
+      });
+    }
     remoteMetadata = await readRemoteMetadata(outputDir);
     slackQaDir = path.join(outputDir, "slack-qa");
     await assertNonEmptyFile(screenshotPath, "Slack desktop screenshot");
@@ -1413,6 +1470,12 @@ export async function runMantisSlackDesktopSmoke(
       outputDir,
       scenarioIds,
     });
+    const status = videoAudit?.status === "pass" ? "pass" : "fail";
+    const auditError = videoPath
+      ? videoAudit?.status === "error"
+        ? videoAudit.error
+        : undefined
+      : "Slack desktop recording is missing; video audit could not run.";
     summary = {
       artifacts: {
         approvalCheckpoints: approvalCheckpointArtifacts,
@@ -1432,13 +1495,15 @@ export async function runMantisSlackDesktopSmoke(
         vncCommand: `${crabboxBin} vnc --provider ${provider} --id ${resolvedLeaseId} --open`,
       },
       finishedAt: new Date().toISOString(),
+      error: auditError,
       hydrateMode: normalizeHydrateMode(remoteMetadata?.hydrateMode) ?? hydrateMode,
       outputDir,
       remoteOutputDir,
       slackUrl: trimToValue(remoteMetadata?.openedUrl) ?? slackUrl,
       startedAt: startedAt.toISOString(),
-      status: "pass",
+      status,
       timings: timer.snapshot(),
+      videoAudit,
     };
     return {
       approvalCheckpointScreenshotPaths: approvalCheckpointArtifacts?.screenshots.map(
@@ -1447,7 +1512,7 @@ export async function runMantisSlackDesktopSmoke(
       outputDir,
       reportPath,
       screenshotPath,
-      status: "pass",
+      status,
       summaryPath,
       videoPath,
     };
@@ -1479,6 +1544,7 @@ export async function runMantisSlackDesktopSmoke(
       startedAt: startedAt.toISOString(),
       status: "fail",
       timings: timer.snapshot(),
+      videoAudit,
     };
     await fs.writeFile(path.join(outputDir, "error.txt"), `${summary.error}\n`, "utf8");
     return {

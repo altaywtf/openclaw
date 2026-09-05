@@ -17,6 +17,12 @@ import {
   warmupCrabbox,
 } from "./crabbox-runtime.js";
 import { renderMantisCrabboxReport, type MantisCrabboxReportSummary } from "./report.js";
+import { auditMantisVideo } from "./video-audit.runtime.js";
+import {
+  parseImageDescribeText,
+  evaluateVisualExpectation,
+  type VisionAssertion,
+} from "./visual-assertion.js";
 
 export type MantisVisualTaskVisionMode = "image-describe" | "metadata";
 
@@ -87,14 +93,6 @@ type MantisVisualDriverResult = {
     text?: string;
     timeoutMs: number;
   };
-};
-
-type VisionAssertion = {
-  evidence?: string;
-  expectedText: string;
-  matched: boolean;
-  reason?: string;
-  visible?: boolean;
 };
 
 type MantisVisualTaskSummary = MantisCrabboxReportSummary & {
@@ -266,107 +264,6 @@ function buildVisualDriverArgs(params: {
     args.push("--vision-model", params.visionModel);
   }
   return args;
-}
-
-function parseImageDescribeText(stdout: string) {
-  const parsed = parseJsonObjectFromText(
-    stdout,
-    (value): value is { outputs?: Array<{ text?: unknown }> } =>
-      Boolean(
-        value &&
-        typeof value === "object" &&
-        Array.isArray((value as { outputs?: unknown }).outputs),
-      ),
-  );
-  if (!parsed) {
-    throw new Error("Image describe did not return a JSON envelope with outputs.");
-  }
-  const text = parsed.outputs?.find((output) => typeof output.text === "string")?.text;
-  if (typeof text !== "string" || text.trim().length === 0) {
-    throw new Error("Image describe did not return output text.");
-  }
-  return text;
-}
-
-function parseJsonObjectFromText<T>(text: string, accepts: (value: unknown) => value is T) {
-  const starts = [...text.matchAll(/\{/gu)]
-    .map((match) => match.index)
-    .filter((index) => index !== undefined);
-  const ends = [...text.matchAll(/\}/gu)]
-    .map((match) => match.index)
-    .filter((index) => index !== undefined);
-  for (const start of starts) {
-    for (const end of ends.toReversed()) {
-      if (end < start) {
-        continue;
-      }
-      try {
-        const parsed = JSON.parse(text.slice(start, end + 1)) as unknown;
-        if (accepts(parsed)) {
-          return parsed;
-        }
-      } catch {
-        // Keep scanning: command wrappers can echo prompt schemas before the real JSON.
-      }
-    }
-  }
-  return undefined;
-}
-
-function parseVisionAssertion(text: string, expectText: string): VisionAssertion {
-  const parsed = parseJsonObjectFromText(text, (value): value is Record<string, unknown> =>
-    Boolean(value && typeof value === "object" && "visible" in value),
-  );
-  if (!parsed) {
-    return {
-      expectedText: expectText,
-      matched: false,
-      reason: "Image describe did not return a structured visual assertion.",
-    };
-  }
-  const record = parsed;
-  const visible = record.visible;
-  const evidence = typeof record.evidence === "string" ? record.evidence.trim() : undefined;
-  const reason = typeof record.reason === "string" ? record.reason.trim() : undefined;
-  if (typeof visible !== "boolean") {
-    return {
-      evidence,
-      expectedText: expectText,
-      matched: false,
-      reason: reason ?? "Image describe visual assertion is missing boolean visible.",
-    };
-  }
-  const normalizedExpected = expectText.toLowerCase();
-  const positiveEvidence = [evidence, reason]
-    .filter((value): value is string => Boolean(value))
-    .some((value) => value.toLowerCase().includes(normalizedExpected));
-  return {
-    evidence,
-    expectedText: expectText,
-    matched: visible && Boolean(evidence) && positiveEvidence,
-    reason: positiveEvidence
-      ? reason
-      : (reason ?? `Visual assertion did not cite the expected text "${expectText}".`),
-    visible,
-  };
-}
-
-function evaluateVisualExpectation(text: string | undefined, expectText: string | undefined) {
-  if (!expectText) {
-    return { matched: true };
-  }
-  if (!text) {
-    return {
-      assertion: {
-        expectedText: expectText,
-        matched: false,
-        reason: "Image describe did not return text.",
-      },
-      matched: false,
-    };
-  }
-  const assertion = parseVisionAssertion(text, expectText);
-  return { assertion, matched: assertion.matched };
 }
 
 function browserLaunchScript() {
@@ -687,7 +584,20 @@ export async function runMantisVisualTask(
     const recordingFailure =
       recordingError ??
       (copiedVideo ? undefined : "Mantis visual task recording did not produce visual-task.mp4.");
-    const status = driver.status === "pass" && !recordingFailure ? "pass" : "fail";
+    // The MP4 is finalized only after record --while returns. Auditing in the
+    // driver would inspect an incomplete file and miss its last transitions.
+    const videoAudit =
+      copiedVideo && !recordingFailure && visionMode !== "metadata"
+        ? await auditMantisVideo({
+            repoRoot,
+            outputDir,
+            videoPath: copiedVideo,
+            prompt:
+              opts.visionPrompt ?? (expectText ? `Verify visible text: ${expectText}` : undefined),
+          })
+        : undefined;
+    const auditPassed = visionMode === "metadata" || videoAudit?.status === "pass";
+    const status = driver.status === "pass" && !recordingFailure && auditPassed ? "pass" : "fail";
     summary = {
       artifacts: {
         driverResultPath,
@@ -707,6 +617,7 @@ export async function runMantisVisualTask(
         vncCommand: `${crabboxBin} vnc --provider ${provider} --id ${leaseId} --open`,
       },
       driver,
+      videoAudit,
       error: recordingFailure,
       finishedAt: new Date().toISOString(),
       outputDir,
@@ -776,4 +687,3 @@ export async function runMantisVisualTask(
     }
   }
 }
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

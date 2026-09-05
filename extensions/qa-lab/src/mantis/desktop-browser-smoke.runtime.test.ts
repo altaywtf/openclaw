@@ -5,10 +5,27 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runMantisDesktopBrowserSmoke } from "./desktop-browser-smoke.runtime.js";
 
+const videoAuditMocks = vi.hoisted(() => ({ auditMantisVideo: vi.fn() }));
+vi.mock("./video-audit.runtime.js", () => videoAuditMocks);
+
 describe("mantis desktop browser smoke runtime", () => {
   let repoRoot: string;
 
   beforeEach(async () => {
+    videoAuditMocks.auditMantisVideo
+      .mockReset()
+      .mockImplementation(
+        async ({ outputDir, videoPath }: { outputDir: string; videoPath: string }) => {
+          expect(await fs.readFile(videoPath, "utf8")).toBe("mp4");
+          return {
+            status: "pass",
+            reportPath: path.join(outputDir, "mantis-video-audit.md"),
+            summaryPath: path.join(outputDir, "mantis-video-audit.json"),
+            summary: "No temporal defects observed in the recording.",
+            findings: [],
+          };
+        },
+      );
     repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mantis-desktop-browser-smoke-"));
   });
 
@@ -16,112 +33,151 @@ describe("mantis desktop browser smoke runtime", () => {
     await fs.rm(repoRoot, { force: true, recursive: true });
   });
 
-  it("leases a desktop box, runs a visible browser, copies artifacts, and stops on pass", async () => {
-    await fs.mkdir(path.join(repoRoot, "qa-artifacts"), { recursive: true });
-    await fs.writeFile(path.join(repoRoot, "qa-artifacts", "timeline.html"), "<h1>Mantis</h1>");
-    const commands: { args: readonly string[]; command: string; env?: NodeJS.ProcessEnv }[] = [];
-    const runtimeEnv = {
-      PATH: process.env.PATH,
-      CRABBOX_COORDINATOR_TOKEN: "runtime-token",
-      OPENCLAW_MANTIS_CRABBOX_PROVIDER: "hetzner",
-    };
-    const runner = vi.fn(
-      async (command: string, args: readonly string[], options: { env?: NodeJS.ProcessEnv }) => {
-        commands.push({ command, args, env: options.env });
-        if (command === "/tmp/crabbox" && args[0] === "warmup") {
-          return { stdout: "ready lease cbx_abc123\n", stderr: "" };
-        }
-        if (command === "/tmp/crabbox" && args[0] === "inspect") {
-          return {
-            stdout: `${JSON.stringify({
-              host: "203.0.113.10",
-              id: "cbx_abc123",
-              provider: "hetzner",
-              slug: "brisk-mantis",
-              sshKey: "/tmp/key",
-              sshPort: "2222",
-              sshUser: "crabbox",
-              state: "active",
-            })}\n`,
-            stderr: "",
-          };
-        }
-        if (command === "rsync") {
-          const outputDir = args.at(-1);
-          expect(outputDir).toBeTypeOf("string");
-          await fs.mkdir(outputDir as string, { recursive: true });
-          await fs.writeFile(path.join(outputDir as string, "desktop-browser-smoke.png"), "png");
-          await fs.writeFile(path.join(outputDir as string, "desktop-browser-smoke.mp4"), "mp4");
-          await fs.writeFile(path.join(outputDir as string, "remote-metadata.json"), "{}\n");
-          await fs.writeFile(path.join(outputDir as string, "chrome.log"), "chrome\n");
-          await fs.writeFile(path.join(outputDir as string, "ffmpeg.log"), "ffmpeg\n");
+  it.each(["pass", "fail", "error", "missing"] as const)(
+    "gates browser smoke success on the finalized video audit: %s",
+    async (auditStatus) => {
+      if (auditStatus !== "missing") {
+        videoAuditMocks.auditMantisVideo.mockImplementationOnce(
+          async ({ outputDir, videoPath }: { outputDir: string; videoPath: string }) => {
+            expect(await fs.readFile(videoPath, "utf8")).toBe("mp4");
+            return {
+              status: auditStatus,
+              reportPath: path.join(outputDir, "mantis-video-audit.md"),
+              summaryPath: path.join(outputDir, "mantis-video-audit.json"),
+              summary: "A streamed message briefly disappeared before the clean final frame.",
+              error: auditStatus === "error" ? "Google authentication unavailable" : undefined,
+              findings: [],
+            };
+          },
+        );
+      }
+      await fs.mkdir(path.join(repoRoot, "qa-artifacts"), { recursive: true });
+      await fs.writeFile(path.join(repoRoot, "qa-artifacts", "timeline.html"), "<h1>Mantis</h1>");
+      const commands: { args: readonly string[]; command: string; env?: NodeJS.ProcessEnv }[] = [];
+      const runtimeEnv = {
+        PATH: process.env.PATH,
+        CRABBOX_COORDINATOR_TOKEN: "runtime-token",
+        OPENCLAW_MANTIS_CRABBOX_PROVIDER: "hetzner",
+      };
+      const runner = vi.fn(
+        async (command: string, args: readonly string[], options: { env?: NodeJS.ProcessEnv }) => {
+          commands.push({ command, args, env: options.env });
+          if (command === "/tmp/crabbox" && args[0] === "warmup") {
+            return { stdout: "ready lease cbx_abc123\n", stderr: "" };
+          }
+          if (command === "/tmp/crabbox" && args[0] === "inspect") {
+            return {
+              stdout: `${JSON.stringify({
+                host: "203.0.113.10",
+                id: "cbx_abc123",
+                provider: "hetzner",
+                slug: "brisk-mantis",
+                sshKey: "/tmp/key",
+                sshPort: "2222",
+                sshUser: "crabbox",
+                state: "active",
+              })}\n`,
+              stderr: "",
+            };
+          }
+          if (command === "rsync") {
+            const outputDir = args.at(-1);
+            expect(outputDir).toBeTypeOf("string");
+            await fs.mkdir(outputDir as string, { recursive: true });
+            await fs.writeFile(path.join(outputDir as string, "desktop-browser-smoke.png"), "png");
+            if (auditStatus !== "missing") {
+              await fs.writeFile(
+                path.join(outputDir as string, "desktop-browser-smoke.mp4"),
+                "mp4",
+              );
+            }
+            await fs.writeFile(path.join(outputDir as string, "remote-metadata.json"), "{}\n");
+            await fs.writeFile(path.join(outputDir as string, "chrome.log"), "chrome\n");
+            await fs.writeFile(path.join(outputDir as string, "ffmpeg.log"), "ffmpeg\n");
+            return { stdout: "", stderr: "" };
+          }
           return { stdout: "", stderr: "" };
-        }
-        return { stdout: "", stderr: "" };
-      },
-    );
+        },
+      );
 
-    const result = await runMantisDesktopBrowserSmoke({
-      browserUrl: "https://openclaw.ai/docs",
-      commandRunner: runner,
-      crabboxBin: "/tmp/crabbox",
-      env: runtimeEnv,
-      htmlFile: "qa-artifacts/timeline.html",
-      now: () => new Date("2026-05-04T12:00:00.000Z"),
-      outputDir: ".artifacts/qa-e2e/mantis/desktop-browser-test",
-      repoRoot,
-    });
+      const result = await runMantisDesktopBrowserSmoke({
+        browserUrl: "https://openclaw.ai/docs",
+        commandRunner: runner,
+        crabboxBin: "/tmp/crabbox",
+        env: runtimeEnv,
+        htmlFile: "qa-artifacts/timeline.html",
+        now: () => new Date("2026-05-04T12:00:00.000Z"),
+        outputDir: ".artifacts/qa-e2e/mantis/desktop-browser-test",
+        repoRoot,
+      });
 
-    expect(result.status).toBe("pass");
-    expect(commands.map((entry) => [entry.command, entry.args[0]])).toEqual([
-      ["/tmp/crabbox", "warmup"],
-      ["/tmp/crabbox", "inspect"],
-      ["/tmp/crabbox", "run"],
-      ["rsync", "-az"],
-      ["/tmp/crabbox", "stop"],
-    ]);
-    expect(commands.map((entry) => entry.env)).toEqual(commands.map(() => runtimeEnv));
-    const rsyncArgs = commands.find((entry) => entry.command === "rsync")?.args ?? [];
-    expect(rsyncArgs).not.toContain("--delete");
-    const excludeIndex = rsyncArgs.indexOf("--exclude");
-    expect(excludeIndex).toBeGreaterThanOrEqual(0);
-    expect(rsyncArgs[excludeIndex + 1]).toBe("chrome-profile/**");
-    expect(rsyncArgs).toContain(
-      "crabbox@203.0.113.10:/tmp/openclaw-mantis-desktop-2026-05-04T12-00-00-000Z/",
-    );
-    const remoteScript = commands
-      .find((entry) => entry.command === "/tmp/crabbox" && entry.args[0] === "run")
-      ?.args.at(-1);
-    expect(remoteScript).toContain("${BROWSER:-}");
-    expect(remoteScript).toContain("${CHROME_BIN:-}");
-    expect(remoteScript).toContain("chromium-browser");
-    expect(remoteScript).toContain("${OPENCLAW_MANTIS_BROWSER_PROFILE_TGZ_B64:-}");
-    expect(remoteScript).toContain('"browserProfileRestored": $profile_restored');
-    expect(remoteScript).toContain('"temporaryBrowserProfile": $temporary_profile');
-    expect(remoteScript).toContain("-t 10");
-    expect(remoteScript).toContain("base64 -d");
-    expect(remoteScript).toContain("ffmpeg");
-    expect(remoteScript).toContain('sudo apt-get update -y >>"$out/apt.log" 2>&1 || true');
-    expect(remoteScript).toContain("desktop-browser-smoke.mp4");
-    expect(remoteScript).not.toContain("-video_size");
-    expect(remoteScript).toContain('url="file://$out/input.html"');
-    expect(remoteScript).toContain('"browserBinary": "$browser_bin"');
-    await expect(fs.readFile(result.screenshotPath ?? "", "utf8")).resolves.toBe("png");
-    await expect(fs.readFile(result.videoPath ?? "", "utf8")).resolves.toBe("mp4");
-    const summary = JSON.parse(await fs.readFile(result.summaryPath, "utf8")) as {
-      browserUrl: string;
-      crabbox: { id: string; vncCommand: string };
-      htmlFile?: string;
-      status: string;
-    };
-    expect(summary.browserUrl).toMatch(/^file:\/\//u);
-    expect(summary.htmlFile).toBe(path.join(repoRoot, "qa-artifacts", "timeline.html"));
-    expect(summary.status).toBe("pass");
-    expect(summary.crabbox.id).toBe("cbx_abc123");
-    expect(summary.crabbox.vncCommand).toBe(
-      "/tmp/crabbox vnc --provider hetzner --id cbx_abc123 --open",
-    );
-  });
+      const expectedStatus = auditStatus === "pass" ? "pass" : "fail";
+      expect(result.status).toBe(expectedStatus);
+      expect(commands.map((entry) => [entry.command, entry.args[0]])).toEqual([
+        ["/tmp/crabbox", "warmup"],
+        ["/tmp/crabbox", "inspect"],
+        ["/tmp/crabbox", "run"],
+        ["rsync", "-az"],
+        ...(auditStatus === "pass" ? [["/tmp/crabbox", "stop"]] : []),
+      ]);
+      expect(commands.map((entry) => entry.env)).toEqual(commands.map(() => runtimeEnv));
+      const rsyncArgs = commands.find((entry) => entry.command === "rsync")?.args ?? [];
+      expect(rsyncArgs).not.toContain("--delete");
+      const excludeIndex = rsyncArgs.indexOf("--exclude");
+      expect(excludeIndex).toBeGreaterThanOrEqual(0);
+      expect(rsyncArgs[excludeIndex + 1]).toBe("chrome-profile/**");
+      expect(rsyncArgs).toContain(
+        "crabbox@203.0.113.10:/tmp/openclaw-mantis-desktop-2026-05-04T12-00-00-000Z/",
+      );
+      const remoteScript = commands
+        .find((entry) => entry.command === "/tmp/crabbox" && entry.args[0] === "run")
+        ?.args.at(-1);
+      expect(remoteScript).toContain("${BROWSER:-}");
+      expect(remoteScript).toContain("${CHROME_BIN:-}");
+      expect(remoteScript).toContain("chromium-browser");
+      expect(remoteScript).toContain("${OPENCLAW_MANTIS_BROWSER_PROFILE_TGZ_B64:-}");
+      expect(remoteScript).toContain('"browserProfileRestored": $profile_restored');
+      expect(remoteScript).toContain('"temporaryBrowserProfile": $temporary_profile');
+      expect(remoteScript).toContain("-t 10");
+      expect(remoteScript).toContain("base64 -d");
+      expect(remoteScript).toContain("ffmpeg");
+      expect(remoteScript).toContain('sudo apt-get update -y >>"$out/apt.log" 2>&1 || true');
+      expect(remoteScript).toContain("desktop-browser-smoke.mp4");
+      expect(remoteScript).not.toContain("-video_size");
+      expect(remoteScript).toContain('url="file://$out/input.html"');
+      expect(remoteScript).toContain('"browserBinary": "$browser_bin"');
+      await expect(fs.readFile(result.screenshotPath ?? "", "utf8")).resolves.toBe("png");
+      if (auditStatus === "missing") {
+        expect(result.videoPath).toBeUndefined();
+        expect(videoAuditMocks.auditMantisVideo).not.toHaveBeenCalled();
+      } else {
+        await expect(fs.readFile(result.videoPath ?? "", "utf8")).resolves.toBe("mp4");
+        expect(videoAuditMocks.auditMantisVideo).toHaveBeenCalledOnce();
+      }
+      const summary = JSON.parse(await fs.readFile(result.summaryPath, "utf8")) as {
+        browserUrl: string;
+        crabbox: { id: string; vncCommand: string };
+        htmlFile?: string;
+        error?: string;
+        status: string;
+        videoAudit?: { status: string };
+      };
+      expect(summary.browserUrl).toMatch(/^file:\/\//u);
+      expect(summary.htmlFile).toBe(path.join(repoRoot, "qa-artifacts", "timeline.html"));
+      expect(summary.status).toBe(expectedStatus);
+      expect(summary.videoAudit?.status).toBe(auditStatus === "missing" ? undefined : auditStatus);
+      if (auditStatus === "missing") {
+        expect(summary.error).toContain("video audit could not run");
+      }
+      if (auditStatus === "error") {
+        expect(summary.error).toBe("Google authentication unavailable");
+      }
+      expect(summary.crabbox.id).toBe("cbx_abc123");
+      expect(summary.crabbox.vncCommand).toBe(
+        "/tmp/crabbox vnc --provider hetzner --id cbx_abc123 --open",
+      );
+    },
+  );
 
   it("rejects html files outside the repository", async () => {
     const runner = vi.fn(async () => ({ stdout: "", stderr: "" }));
@@ -243,6 +299,7 @@ describe("mantis desktop browser smoke runtime", () => {
         const outputDir = args.at(-1);
         await fs.mkdir(outputDir as string, { recursive: true });
         await fs.writeFile(path.join(outputDir as string, "desktop-browser-smoke.png"), "png");
+        await fs.writeFile(path.join(outputDir as string, "desktop-browser-smoke.mp4"), "mp4");
         await fs.writeFile(path.join(outputDir as string, "remote-metadata.json"), "{}\n");
         await fs.writeFile(path.join(outputDir as string, "chrome.log"), "chrome\n");
       }

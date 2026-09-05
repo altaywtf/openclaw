@@ -1,11 +1,12 @@
 ---
-summary: "Mantis captures visual end-to-end evidence for live transport comparisons and focused candidate-only browser proofs, then attaches the artifacts to PRs."
+summary: "Mantis captures and audits visual end-to-end evidence for live transport comparisons and focused browser proofs, then attaches artifacts to PRs."
 title: "Mantis"
 read_when:
   - Building or running live visual QA for OpenClaw bugs
   - Adding before and after verification for a pull request
   - Adding Discord, Slack, WhatsApp, or other live transport scenarios
   - Running focused Control UI browser proof for a candidate ref
+  - Auditing recordings for transient streaming or rendering defects
   - Debugging QA runs that need screenshots, browser automation, or VNC access
 ---
 
@@ -15,6 +16,11 @@ focused browser lanes may instead prove one candidate against a deterministic
 mocked transport. Discord shipped first with real bot auth, guild channels, reactions, threads,
 and a browser witness. Slack and focused Control UI chat lanes exist too;
 WhatsApp and Matrix are unimplemented.
+
+Recorded desktop and Control UI flows also run a video audit with Gemini 3.8
+Flash agentic video understanding. The audit checks transitions across the recording,
+reports timestamped findings, and distinguishes observed defects from
+unverified causal hypotheses.
 
 ## Ownership
 
@@ -31,19 +37,129 @@ All commands are `pnpm openclaw qa mantis <command>`, defined in
 at build/run time (bundled workflows set `OPENCLAW_BUILD_PRIVATE_QA=1` and
 `OPENCLAW_ENABLE_PRIVATE_QA_CLI=1` before building).
 
-| Command                         | Purpose                                                                                                                                                   |
-| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `discord-smoke`                 | Verify the Mantis Discord bot can see the guild/channel, post, and react.                                                                                 |
-| `run`                           | Run a before/after scenario against baseline and candidate refs (Discord only).                                                                           |
-| `desktop-browser-smoke`         | Lease/reuse a Crabbox desktop, open a visible browser, capture screenshot + video.                                                                        |
-| `slack-desktop-smoke`           | Lease/reuse a Crabbox desktop, run Slack QA inside it, open Slack Web, capture evidence.                                                                  |
-| `visual-task` / `visual-driver` | Generic Crabbox desktop capture with optional image-understanding assertions; `visual-driver` is the driver half launched under `crabbox record --while`. |
+| Command                         | Purpose                                                                                                                           |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `discord-smoke`                 | Verify the Mantis Discord bot can see the guild/channel, post, and react.                                                         |
+| `run`                           | Run a before/after scenario against baseline and candidate refs (Discord only).                                                   |
+| `desktop-browser-smoke`         | Lease/reuse a Crabbox desktop, open a visible browser, capture screenshot + video.                                                |
+| `slack-desktop-smoke`           | Lease/reuse a Crabbox desktop, run Slack QA inside it, open Slack Web, capture evidence.                                          |
+| `visual-task` / `visual-driver` | Capture a desktop flow, check its screenshot, and audit the finalized video; `visual-driver` runs under `crabbox record --while`. |
+| `audit-video`                   | Audit an existing finalized recording with Gemini 3.8 Flash agentic video understanding.                                          |
+| `audit-evidence`                | Audit full recordings in an evidence bundle and write a new manifest with the combined verdict.                                   |
 
-Every command accepts `--repo-root <path>` and `--output-dir <path>`; Crabbox
-commands also accept `--crabbox-bin`, `--provider`, `--machine-class`/`--class`,
+Every command accepts `--repo-root <path>`. All except `audit-evidence` accept
+`--output-dir <path>`; Crabbox commands also accept `--crabbox-bin`, `--provider`, `--machine-class`/`--class`,
 `--lease-id`, `--idle-timeout`, `--ttl`, and `--keep-lease`. Local CLI defaults
 for provider/class are `hetzner`/`beast` unless noted otherwise; CI workflows
 usually override both.
+
+### `audit-video`
+
+Configure Google API-key auth on the machine running Mantis, using the
+existing [model provider setup](/concepts/model-providers#google-gemini-api-key)
+such as `GEMINI_API_KEY`, then audit a completed recording:
+
+```bash
+pnpm openclaw qa mantis audit-video --json \
+  --file .artifacts/qa-e2e/streaming/recording.mp4 \
+  --output-dir .artifacts/qa-e2e/mantis/streaming \
+  --prompt "Check whether streamed text disappears or repeats before the response completes."
+```
+
+The audit uses the existing [media-understanding](/nodes/media-understanding)
+auth path and pins `google/gemini-3.8-flash`. It sends the video to Google's
+`generateContent` endpoint with `mediaProcessing: "AGENTIC"` on the video
+part, and verifies that the response includes both a `MEDIA_PROCESSING` tool
+call and result. Google documents this explicit enablement and navigation
+evidence in its [agentic video guide](https://ai.google.dev/gemini-api/docs/generate-content/video-understanding#agentic-video-understanding).
+The [model reference](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash)
+lists Gemini 3.8 Flash's supported inputs and capabilities.
+
+The recording must be nonempty, finalized, and at most **50 MiB**. This leaves
+room for base64 encoding and the prompt under Google's current
+[100 MB inline payload limit](https://ai.google.dev/gemini-api/docs/file-input-methods#input-method-comparison).
+The model request has a **180-second** timeout. `--prompt` accepts up to 512 characters.
+`--repo-root` defaults to the current directory; relative input paths resolve
+from that root. `--output-dir` must stay inside the repository and defaults
+to `.artifacts/qa-e2e/mantis`.
+
+To correlate findings with captured events, add `--events-file <path>`. Supply
+a JSON array of at most eight events in a file no larger than 4,096 bytes:
+
+```json
+[
+  { "id": "submit", "timestampMs": 850, "description": "User submitted the message." },
+  { "id": "first-delta", "timestampMs": 1240, "description": "First response delta arrived." }
+]
+```
+
+Use offsets in milliseconds from the start of the recording. Event IDs must
+be unique, nonempty, and at most 48 characters; descriptions must be nonempty
+and at most 120 characters. Reports may cite only supplied event IDs. Event
+correlation supports investigation; it does not establish causation. Without
+events, findings have no supporting event references.
+
+Do not derive recording offsets from an application's timer or a virtual
+browser clock. The Control UI proof advances a virtual clock and does not
+automatically emit recording-relative event timestamps. Supply events only
+when their timing is measured against the capture; otherwise omit them.
+
+Each invocation creates a new `video-audit-*` directory under the output
+parent, preserving earlier reports. It contains `video-audit.json` and
+`video-audit.md` with the outcome and video identity. Completed audits include
+coverage, the recording's SHA-256, and up to eight timestamped findings;
+unavailable audits record an error.
+
+| Outcome | Meaning                                                                                                                                    |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `pass`  | Agentic navigation was verified, the model reported complete coverage, and no defects were reported.                                       |
+| `fail`  | The audit reported one or more visible defects.                                                                                            |
+| `error` | The audit could not establish a result, including API/auth failure, missing navigation evidence, malformed output, or incomplete coverage. |
+
+Only `pass` exits successfully. For an error, inspect the report, resolve
+provider access or input problems, and rerun; use a shorter recording when
+the request times out or exceeds the size limit.
+
+### `audit-evidence`
+
+Use the same Google auth setup to audit the `fullVideo` artifacts in a schema
+version 2 evidence bundle:
+
+```bash
+pnpm openclaw qa mantis audit-evidence --json \
+  --repo-root . \
+  --manifest .artifacts/qa-e2e/mantis/streaming/mantis-evidence.json
+```
+
+The command audits at most eight recordings. It reads an optional
+`web-ui-chat-events.json` beside each recording using the event limits above.
+The manifest, recordings, and event files must stay inside the repository's
+evidence bundle. It adds audit reports and metadata to a new
+`mantis-evidence-audited-<id>.json` beside the original manifest, preserving
+the original files and earlier audit attempts. Standard output is JSON with
+`outputDir`, `manifestPath`, and `status`; publish the returned manifest.
+
+A passing result requires the original functional expectations and clean
+candidate video audits. Baseline defects remain reproduction evidence.
+Candidate defects produce `fail`; an unavailable audit or missing required
+recording produces `blocked`. Candidate video is always required, and a
+comparison with a baseline also requires baseline video. Only `pass` exits
+successfully. Inspect the new audit report for failure details, then rerun
+after correcting provider access or missing evidence.
+
+### `visual-task` / `visual-driver`
+
+`visual-task` defaults to `--vision-mode image-describe`: the driver captures
+and checks a screenshot while the recording runs, then the parent audits the
+video after `crabbox record --while` finishes and the MP4 is finalized. Both
+the screenshot check and video audit must pass. `--vision-model` chooses the
+screenshot model; the video audit remains pinned to Gemini 3.8 Flash with
+agentic processing. `--vision-prompt` also supplies the video audit task and
+must fit its 512-character limit.
+
+Use `--vision-mode metadata` explicitly for capture only. That mode records
+artifacts without claiming visual model verification. `visual-driver` is the
+recording's child process; run `visual-task` for the complete audit flow.
 
 ### `discord-smoke`
 
@@ -119,6 +235,11 @@ pointed at `--browser-url` (default `https://openclaw.ai`) or a rendered
 `--html-file`, waits, screenshots with `scrot`, optionally records an MP4 with
 `ffmpeg`, and rsyncs `desktop-browser-smoke.png` / `.mp4` / `remote-metadata.json`
 back to `--output-dir`.
+
+After copying the finalized MP4, the command runs the video audit described
+above. Its result covers browser launch and page rendering visible in that
+recording. A missing recording or unsuccessful audit prevents a passing
+smoke result.
 
 Flags:
 
@@ -198,21 +319,39 @@ scenario observed, not the live Slack UI; `slack-desktop-smoke.png` is only
 proof of Slack Web itself when the lease's browser profile was already logged
 in.
 
+The Slack desktop recording starts after hydration and captures at 30 FPS.
+The timed QA process waits for the first recorded frame, records the selected
+gateway setup or QA flow, then finalizes the MP4 on completion or failure.
+The audit covers the visible desktop during that interval. Headless approval
+checkpoint screenshots remain separate evidence. Missing or incomplete
+recordings and unsuccessful audits prevent a passing smoke result.
+
 ## Evidence manifest
 
-Every scenario that publishes to a PR writes `mantis-evidence.json` next to
-its report:
+The publisher and `audit-evidence` consume a schema version 2 manifest next
+to its report. Capture workflows use `mantis-evidence.json`; an evidence
+audit writes a new manifest as described above:
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "discord-status-reactions",
   "title": "Mantis Discord Status Reactions QA",
   "summary": "Human-readable top summary for the PR comment.",
   "scenario": "discord-status-reactions-tool-only",
   "comparison": {
-    "baseline": { "sha": "...", "status": "fail", "expected": "queued-only" },
-    "candidate": { "sha": "...", "status": "pass", "expected": "queued -> thinking -> done" },
+    "baseline": {
+      "sha": "...",
+      "status": "fail",
+      "expected": "queued-only",
+      "expectationMet": true
+    },
+    "candidate": {
+      "sha": "...",
+      "status": "pass",
+      "expected": "queued -> thinking -> done",
+      "expectationMet": true
+    },
     "pass": true
   },
   "artifacts": [
@@ -275,18 +414,32 @@ Comments post through the Mantis GitHub App (`MANTIS_GITHUB_APP_ID` /
 `MANTIS_GITHUB_APP_PRIVATE_KEY`), not `github-actions[bot]`, using a hidden
 marker comment as the upsert key.
 
-| Workflow                          | Trigger         | What it does                                                                                                                                                                                                                                                                           |
-| --------------------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Mantis Discord Smoke`            | manual dispatch | Runs `discord-smoke` against a chosen ref.                                                                                                                                                                                                                                             |
-| `Mantis Discord Status Reactions` | manual dispatch | Builds separate baseline/candidate worktrees, runs `discord-status-reactions-tool-only` on each, renders each lane's timeline in a Crabbox desktop browser, generates motion-trimmed GIF/MP4 previews with `crabbox media preview`, uploads artifacts, posts inline PR evidence.       |
-| `Mantis Scenario`                 | manual dispatch | Generic dispatcher: takes `scenario_id` (`discord-status-reactions-tool-only`, `discord-thread-reply-filepath-attachment`, `slack-desktop-smoke`, `web-ui-chat-proof`), `baseline_ref`, `candidate_ref`, `pr_number`, and forwards to the matching scenario workflow.                  |
-| `Mantis Slack Desktop Smoke`      | manual dispatch | Leases a Crabbox Linux desktop (defaults to `aws`, choice of `hetzner`), runs `slack-desktop-smoke --gateway-setup` against the candidate, records the desktop, generates a motion preview, uploads artifacts, posts PR evidence when a PR number is given.                            |
-| `Mantis Web UI Chat Proof`        | manual dispatch | Runs the focused OpenClaw Control UI chat Playwright proof against the candidate, verifies the browser sends through the mocked Gateway, captures screenshot/video artifacts, and posts PR evidence. This lane is web chat proof only, not WinUI/native-app or arbitrary visual proof. |
+| Workflow                          | Trigger         | What it does                                                                                                                                                                                                                                                                     |
+| --------------------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Mantis Discord Smoke`            | manual dispatch | Runs `discord-smoke` against a chosen ref.                                                                                                                                                                                                                                       |
+| `Mantis Discord Status Reactions` | manual dispatch | Builds separate baseline/candidate worktrees, runs `discord-status-reactions-tool-only` on each, renders each lane's timeline in a Crabbox desktop browser, generates motion-trimmed GIF/MP4 previews with `crabbox media preview`, uploads artifacts, posts inline PR evidence. |
+| `Mantis Scenario`                 | manual dispatch | Generic dispatcher: takes `scenario_id` (`discord-status-reactions-tool-only`, `discord-thread-reply-filepath-attachment`, `slack-desktop-smoke`, `web-ui-chat-proof`), `baseline_ref`, `candidate_ref`, `pr_number`, and forwards to the matching scenario workflow.            |
+| `Mantis Slack Desktop Smoke`      | manual dispatch | Leases a Crabbox Linux desktop (defaults to `aws`, choice of `hetzner`), runs `slack-desktop-smoke --gateway-setup` against the candidate, records the desktop, generates a motion preview, uploads artifacts, posts PR evidence when a PR number is given.                      |
+| `Mantis Web UI Chat Proof`        | manual dispatch | Runs the focused Control UI chat Playwright proof against the candidate, captures screenshots/video, audits the recording with Gemini in a separate trusted job, and posts combined PR evidence. This lane covers web chat, not WinUI/native-app or arbitrary visual proof.      |
+
+The Control UI candidate job runs without provider credentials. A separate
+audit job checks out the trusted workflow SHA, builds the QA runtime, and
+downloads the captured bundle. Only its audit step receives the existing
+`GEMINI_API_KEY` secret through `qa-live-shared`. The job retains artifacts
+even when the audit fails; publishing uses the exact returned audited
+manifest, so missing video, unavailable audits, or candidate defects cannot
+produce a passing PR verdict.
 
 `Mantis Discord Status Reactions` accepts `baseline_ref`/`candidate_ref` and
 validates that the resolved SHA is either an
 ancestor of `origin/main`, a release tag (`v*`), or the head of an open PR
 before running with secret-bearing credentials.
+
+The Discord and Slack capture workflows retain the persisted video audit
+reports without another model call. Candidate visual defects veto a pass;
+baseline visual defects remain reproduction evidence. The thread-attachment
+workflow can skip its optional logged-in viewer capture, in which case it
+explicitly reports functional evidence without a video audit.
 
 The scenario workflows remain available through manual Actions dispatch.
 
@@ -324,6 +477,7 @@ Credential and environment names used across Mantis commands and workflows:
 - `OPENCLAW_QA_REDACT_PUBLIC_METADATA=1` for public artifact uploads
 - `OPENCLAW_QA_CONVEX_SITE_URL`, `OPENCLAW_QA_CONVEX_SECRET_CI`
 - `OPENAI_API_KEY`
+- `GEMINI_API_KEY` for video audits; the Control UI audit job uses the existing GitHub secret of the same name.
 - `CRABBOX_COORDINATOR` / `CRABBOX_COORDINATOR_TOKEN` (workflows also accept
   `OPENCLAW_QA_MANTIS_CRABBOX_COORDINATOR` / `_TOKEN` as a fallback and map
   them onto the plain names before invoking Crabbox)
@@ -344,8 +498,10 @@ environment does not read as a product regression:
 - **Harness failure**: environment setup, credentials, transport API, browser,
   or provider failed before the oracle was meaningful.
 
-Candidate-only browser proof reports whether the candidate passed the mocked
-Gateway and visible UI assertions; it does not claim baseline reproduction.
+Candidate-only browser proof combines the mocked Gateway and visible UI
+assertions with the recording's video audit; it does not claim baseline
+reproduction. Missing visual coverage or an unavailable audit blocks a
+passing result.
 
 ## Adding a scenario
 

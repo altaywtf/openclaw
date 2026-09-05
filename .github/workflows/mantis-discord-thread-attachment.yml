@@ -217,6 +217,7 @@ jobs:
         id: run_mantis
         shell: bash
         env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENCLAW_QA_CONVEX_SITE_URL: ${{ secrets.OPENCLAW_QA_CONVEX_SITE_URL }}
           OPENCLAW_QA_CONVEX_SECRET_CI: ${{ secrets.OPENCLAW_QA_CONVEX_SECRET_CI }}
           OPENCLAW_QA_REDACT_PUBLIC_METADATA: "1"
@@ -275,6 +276,7 @@ jobs:
           run_lane baseline
           run_lane candidate
 
+          smoke_audit_args=()
           capture_candidate_discord_web() {
             if [[ -z "${MANTIS_DISCORD_VIEWER_CHROME_PROFILE_TGZ_B64:-}" && -z "${MANTIS_DISCORD_VIEWER_CHROME_PROFILE_DIR:-}" ]]; then
               echo "::notice::No Mantis Discord viewer browser profile is configured; skipping logged-in Discord Web video."
@@ -308,6 +310,7 @@ jobs:
             if [[ -n "${MANTIS_DISCORD_VIEWER_CHROME_PROFILE_DIR:-}" ]]; then
               profile_args+=(--browser-profile-dir "$MANTIS_DISCORD_VIEWER_CHROME_PROFILE_DIR")
             fi
+            local smoke_exit=0
             pnpm openclaw qa mantis desktop-browser-smoke \
               --browser-url "$discord_url" \
               "${profile_args[@]}" \
@@ -316,9 +319,12 @@ jobs:
               --provider hetzner \
               --class standard \
               --idle-timeout 30m \
-              --ttl 90m
+              --ttl 90m || smoke_exit=$?
+            smoke_audit_args+=(--smoke candidate "$desktop_dir/mantis-desktop-browser-smoke-summary.json" "$smoke_exit")
 
-            cp "$desktop_dir/desktop-browser-smoke.png" "$root/candidate/discord-thread-reply-filepath-attachment-discord-web.png"
+            if [[ -f "$desktop_dir/desktop-browser-smoke.png" ]]; then
+              cp "$desktop_dir/desktop-browser-smoke.png" "$root/candidate/discord-thread-reply-filepath-attachment-discord-web.png"
+            fi
             if [[ -f "$desktop_dir/desktop-browser-smoke.mp4" ]]; then
               cp "$desktop_dir/desktop-browser-smoke.mp4" "$root/candidate/discord-thread-reply-filepath-attachment-discord-web.mp4"
             fi
@@ -357,7 +363,6 @@ jobs:
           if [[ "$baseline_status" == "fail" && "$candidate_status" == "pass" ]]; then
             comparison_status="pass"
           fi
-          echo "comparison_status=${comparison_status}" >> "$GITHUB_OUTPUT"
 
           jq -n \
             --arg baselineRef "$BASELINE_LABEL" \
@@ -381,7 +386,7 @@ jobs:
             echo "- Candidate: \`${CANDIDATE_SHA}\`"
             echo "- Baseline status: \`${baseline_status}\`"
             echo "- Candidate status: \`${candidate_status}\`"
-            echo "- Result: \`${comparison_status}\`"
+            echo "- Functional comparison result: \`${comparison_status}\`"
             echo "- Baseline screenshot: \`baseline/discord-thread-reply-filepath-attachment-attachment.png\`"
             echo "- Candidate screenshot: \`candidate/discord-thread-reply-filepath-attachment-attachment.png\`"
             if [[ -f "$root/candidate/discord-thread-reply-filepath-attachment-discord-web.png" ]]; then
@@ -408,7 +413,7 @@ jobs:
               schemaVersion: 2,
               id: "discord-thread-attachment",
               title: "Mantis Discord Thread Attachment QA",
-              summary: "Mantis reproduced the Discord thread-reply filePath attachment bug with a synthetic baseline that reverts only the thread attachment fix, then verified the candidate preserves the attachment.",
+              summary: "Mantis compares Discord thread-reply attachments against a synthetic baseline that reverts the attachment fix. When a logged-in desktop capture is available, its video audit also gates the candidate result.",
               scenario: "discord-thread-reply-filepath-attachment",
               comparison: {
                 outcome: (if $pass then "pass" else "fail" end),
@@ -430,7 +435,14 @@ jobs:
               ]
             }' > "$root/mantis-evidence.json"
 
+          comparison_status="$(node scripts/mantis/attach-smoke-video-audits.mjs "$root/mantis-evidence.json" "${smoke_audit_args[@]}")"
+          echo "comparison_status=${comparison_status}" >> "$GITHUB_OUTPUT"
+          jq --slurpfile manifest "$root/mantis-evidence.json" \
+            '.pass = $manifest[0].comparison.pass | .outcome = $manifest[0].comparison.outcome | .videoAudit = $manifest[0].videoAudit' \
+            "$root/comparison.json" > "$root/comparison-final.json"
+          mv "$root/comparison-final.json" "$root/comparison.json"
           cat "$root/mantis-report.md" >> "$GITHUB_STEP_SUMMARY"
+          cat "$root/mantis-smoke-video-audits.md" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Mantis thread attachment artifacts
         id: upload_artifact

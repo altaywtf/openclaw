@@ -4,7 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { auditMantisVideo } from "./video-audit.runtime.js";
 import { runMantisVisualDriver, runMantisVisualTask } from "./visual-task.runtime.js";
+
+vi.mock("./video-audit.runtime.js", () => ({ auditMantisVideo: vi.fn() }));
 
 async function expectPathMissing(targetPath: string): Promise<void> {
   try {
@@ -37,7 +40,8 @@ describe("mantis visual task runtime", () => {
   beforeEach(async () => {
     vi.restoreAllMocks();
     vi.useRealTimers();
-    repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mantis-visual-task-"));
+    vi.mocked(auditMantisVideo).mockReset();
+    repoRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mantis-visual-task-")));
   });
 
   afterEach(async () => {
@@ -46,106 +50,140 @@ describe("mantis visual task runtime", () => {
     vi.useRealTimers();
   });
 
-  it("records a visible browser task and keeps screenshot/video artifacts", async () => {
-    const commands: { args: readonly string[]; command: string }[] = [];
-    const runner = vi.fn(async (command: string, args: readonly string[]) => {
-      commands.push({ command, args });
-      if (command === "/tmp/crabbox" && args[0] === "warmup") {
-        return { stdout: "ready lease cbx_abc123\n", stderr: "" };
-      }
-      if (command === "/tmp/crabbox" && args[0] === "inspect") {
-        return {
-          stdout: `${JSON.stringify({
-            id: "cbx_abc123",
-            provider: "hetzner",
-            slug: "brisk-mantis",
-            state: "active",
-          })}\n`,
-          stderr: "",
+  it.each([
+    { visionMode: "metadata" as const, auditStatus: "pass" as const, expected: "pass" },
+    { visionMode: "image-describe" as const, auditStatus: "pass" as const, expected: "pass" },
+    { visionMode: "image-describe" as const, auditStatus: "fail" as const, expected: "fail" },
+    { visionMode: "image-describe" as const, auditStatus: "error" as const, expected: "fail" },
+  ])(
+    "retains finalized evidence with $visionMode and $auditStatus audit",
+    async ({ visionMode, auditStatus, expected }) => {
+      vi.mocked(auditMantisVideo).mockImplementation(async ({ videoPath, outputDir }) => {
+        // Audit must see the finalized destination, after the recorder's .part was renamed.
+        expect(path.basename(videoPath)).toBe("visual-task.mp4");
+        expect(await fs.readFile(videoPath, "utf8")).toBe("mp4");
+        const identity = {
+          provider: "google" as const,
+          model: "gemini-3.8-flash" as const,
+          processing: "agentic" as const,
+          videoPath,
+          reportPath: path.join(outputDir, "video-audit.md"),
+          summaryPath: path.join(outputDir, "video-audit.json"),
         };
-      }
-      if (command === "/tmp/crabbox" && args[0] === "record") {
-        const outputPath = requireArgAfter(args, "--output");
-        const outputDir = requireArgAfter(args, "--output-dir");
-        await fs.mkdir(path.dirname(outputPath), { recursive: true });
-        await fs.writeFile(outputPath, "mp4");
-        await fs.writeFile(path.join(outputDir, "visual-task.png"), "png");
-        await fs.writeFile(
-          path.join(outputDir, "mantis-visual-task-driver-result.json"),
-          `${JSON.stringify({
-            browserUrl: "https://example.net",
-            finishedAt: "2026-05-04T12:00:05.000Z",
-            matched: true,
-            outputDir,
-            screenshotPath: path.join(outputDir, "visual-task.png"),
-            startedAt: "2026-05-04T12:00:01.000Z",
-            status: "pass",
-            vision: {
-              mode: "metadata",
-              timeoutMs: 120000,
-            },
-          })}\n`,
-        );
-      }
-      return { stdout: "", stderr: "" };
-    });
+        return auditStatus === "error"
+          ? { ...identity, status: "error", error: "Navigation unverified" }
+          : {
+              ...identity,
+              status: auditStatus,
+              summary: "Temporal review",
+              coverage: "Full recording",
+              complete: true,
+              findings: [],
+              events: [],
+              sha256: "fixture",
+            };
+      });
+      const commands: { args: readonly string[]; command: string }[] = [];
+      const runner = vi.fn(async (command: string, args: readonly string[]) => {
+        commands.push({ command, args });
+        if (command === "/tmp/crabbox" && args[0] === "warmup") {
+          return { stdout: "ready lease cbx_abc123\n", stderr: "" };
+        }
+        if (command === "/tmp/crabbox" && args[0] === "inspect") {
+          return {
+            stdout: `${JSON.stringify({
+              id: "cbx_abc123",
+              provider: "hetzner",
+              slug: "brisk-mantis",
+              state: "active",
+            })}\n`,
+            stderr: "",
+          };
+        }
+        if (command === "/tmp/crabbox" && args[0] === "record") {
+          const outputPath = requireArgAfter(args, "--output");
+          const outputDir = requireArgAfter(args, "--output-dir");
+          await fs.mkdir(path.dirname(outputPath), { recursive: true });
+          await fs.writeFile(outputPath, "mp4");
+          await fs.writeFile(path.join(outputDir, "visual-task.png"), "png");
+          await fs.writeFile(
+            path.join(outputDir, "mantis-visual-task-driver-result.json"),
+            `${JSON.stringify({
+              browserUrl: "https://example.net",
+              finishedAt: "2026-05-04T12:00:05.000Z",
+              matched: true,
+              outputDir,
+              screenshotPath: path.join(outputDir, "visual-task.png"),
+              startedAt: "2026-05-04T12:00:01.000Z",
+              status: "pass",
+              vision: {
+                mode: "metadata",
+                timeoutMs: 120000,
+              },
+            })}\n`,
+          );
+        }
+        return { stdout: "", stderr: "" };
+      });
 
-    const result = await runMantisVisualTask({
-      commandRunner: runner,
-      crabboxBin: "/tmp/crabbox",
-      duration: "12s",
-      env: { PATH: process.env.PATH },
-      now: () => new Date("2026-05-04T12:00:00.000Z"),
-      outputDir: ".artifacts/qa-e2e/mantis/visual-task-test",
-      repoRoot,
-      settleMs: 0,
-      visionMode: "metadata",
-    });
+      const result = await runMantisVisualTask({
+        commandRunner: runner,
+        crabboxBin: "/tmp/crabbox",
+        duration: "12s",
+        env: { PATH: process.env.PATH },
+        now: () => new Date("2026-05-04T12:00:00.000Z"),
+        outputDir: ".artifacts/qa-e2e/mantis/visual-task-test",
+        repoRoot,
+        settleMs: 0,
+        visionMode,
+      });
 
-    expect(result.status).toBe("pass");
-    expect(commands.map((entry) => [entry.command, entry.args[0]])).toEqual([
-      ["/tmp/crabbox", "warmup"],
-      ["/tmp/crabbox", "inspect"],
-      ["/tmp/crabbox", "record"],
-      ["/tmp/crabbox", "stop"],
-    ]);
-    const recordArgs = commands.find((entry) => entry.args[0] === "record")?.args ?? [];
-    const finalVideoPath = path.join(
-      repoRoot,
-      ".artifacts/qa-e2e/mantis/visual-task-test/visual-task.mp4",
-    );
-    const stagedVideoPath = recordArgs[recordArgs.indexOf("--output") + 1];
-    expectArgsContainSequence(recordArgs, ["--duration", "12s"]);
-    expectArgsContainSequence(recordArgs, ["--output", stagedVideoPath ?? ""]);
-    expectArgsContainSequence(recordArgs, [
-      "--while",
-      "--",
-      "pnpm",
-      "--dir",
-      repoRoot,
-      "openclaw",
-      "qa",
-      "mantis",
-      "visual-driver",
-    ]);
-    expect(stagedVideoPath).not.toBe(finalVideoPath);
-    expect(path.basename(stagedVideoPath ?? "")).toContain(path.basename(finalVideoPath));
-    expect(path.basename(stagedVideoPath ?? "")).toMatch(/\.part$/);
-    await expectPathMissing(stagedVideoPath ?? "");
-    await expect(fs.readFile(result.screenshotPath ?? "", "utf8")).resolves.toBe("png");
-    await expect(fs.readFile(result.videoPath ?? "", "utf8")).resolves.toBe("mp4");
-    const summary = JSON.parse(await fs.readFile(result.summaryPath, "utf8")) as {
-      crabbox: { id: string; vncCommand: string };
-      status: string;
-      visionMode: string;
-    };
-    expect(summary.crabbox.id).toBe("cbx_abc123");
-    expect(summary.crabbox.vncCommand).toBe(
-      "/tmp/crabbox vnc --provider hetzner --id cbx_abc123 --open",
-    );
-    expect(summary.status).toBe("pass");
-    expect(summary.visionMode).toBe("metadata");
-  });
+      expect(result.status).toBe(expected);
+      expect(commands.map((entry) => [entry.command, entry.args[0]])).toEqual([
+        ["/tmp/crabbox", "warmup"],
+        ["/tmp/crabbox", "inspect"],
+        ["/tmp/crabbox", "record"],
+        ...(expected === "pass" ? [["/tmp/crabbox", "stop"]] : []),
+      ]);
+      expect(auditMantisVideo).toHaveBeenCalledTimes(visionMode === "metadata" ? 0 : 1);
+      const recordArgs = commands.find((entry) => entry.args[0] === "record")?.args ?? [];
+      const finalVideoPath = path.join(
+        repoRoot,
+        ".artifacts/qa-e2e/mantis/visual-task-test/visual-task.mp4",
+      );
+      const stagedVideoPath = recordArgs[recordArgs.indexOf("--output") + 1];
+      expectArgsContainSequence(recordArgs, ["--duration", "12s"]);
+      expectArgsContainSequence(recordArgs, ["--output", stagedVideoPath ?? ""]);
+      expectArgsContainSequence(recordArgs, [
+        "--while",
+        "--",
+        "pnpm",
+        "--dir",
+        repoRoot,
+        "openclaw",
+        "qa",
+        "mantis",
+        "visual-driver",
+      ]);
+      expect(stagedVideoPath).not.toBe(finalVideoPath);
+      expect(path.basename(stagedVideoPath ?? "")).toContain(path.basename(finalVideoPath));
+      expect(path.basename(stagedVideoPath ?? "")).toMatch(/\.part$/);
+      await expectPathMissing(stagedVideoPath ?? "");
+      await expect(fs.readFile(result.screenshotPath ?? "", "utf8")).resolves.toBe("png");
+      await expect(fs.readFile(result.videoPath ?? "", "utf8")).resolves.toBe("mp4");
+      const summary = JSON.parse(await fs.readFile(result.summaryPath, "utf8")) as {
+        crabbox: { id: string; vncCommand: string };
+        status: string;
+        visionMode: string;
+      };
+      expect(summary.crabbox.id).toBe("cbx_abc123");
+      expect(summary.crabbox.vncCommand).toBe(
+        "/tmp/crabbox vnc --provider hetzner --id cbx_abc123 --open",
+      );
+      expect(summary.status).toBe(expected);
+      expect(summary.visionMode).toBe(visionMode);
+    },
+  );
 
   it("fails when recording breaks after the visual driver passes", async () => {
     const commands: { args: readonly string[]; command: string }[] = [];

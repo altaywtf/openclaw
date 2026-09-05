@@ -1,10 +1,16 @@
 // Qa Lab tests cover slack desktop smoke plugin behavior.
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { shellQuote } from "./crabbox-runtime.js";
 import { runMantisSlackDesktopSmoke } from "./slack-desktop-smoke.runtime.js";
+
+const videoAuditMocks = vi.hoisted(() => ({ auditMantisVideo: vi.fn() }));
+vi.mock("./video-audit.runtime.js", () => videoAuditMocks);
 
 function describeFetchInput(input: RequestInfo | URL) {
   if (typeof input === "string") {
@@ -93,10 +99,135 @@ function mockMantisCliRuntime(runMantisSlackDesktopSmokeCommand = vi.fn()) {
   return runMantisSlackDesktopSmokeCommand;
 }
 
+async function executeRecordingLifecycle(remoteScript: string, fixtureDir: string, qaExit: number) {
+  const binDir = path.join(fixtureDir, "bin");
+  const remoteDir = path.join(fixtureDir, "remote");
+  const eventsPath = path.join(fixtureDir, "events.jsonl");
+  const shimPath = path.join(fixtureDir, "commands.mjs");
+  await fs.mkdir(binDir, { recursive: true });
+  await fs.writeFile(
+    shimPath,
+    `
+import { spawn, spawnSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+const [command, ...args] = process.argv.slice(2);
+const eventsPath = ${JSON.stringify(eventsPath)};
+const activePath = ${JSON.stringify(path.join(fixtureDir, "recording-active"))};
+const qaExit = ${qaExit};
+const event = (value) => fs.appendFileSync(eventsPath, JSON.stringify(value) + "\\n");
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+if (command === "node") {
+  if (args[0] === "--experimental-strip-types") process.exit(0);
+  if (args[0] === "--version") console.log("v24.15.0");
+  else if (args[0] === "-e") console.log("12.0.0 " + "0".repeat(128));
+  else process.exit(spawnSync(process.execPath, args, { stdio: "inherit" }).status ?? 1);
+} else if (command === "pnpm") {
+  if (args[0] === "--version") console.log("12.0.0");
+  else if (args[0] === "install" || args[0] === "build") event(args[0]);
+  else if (args.includes("slack")) {
+    event("qa-start");
+    const checkpointDir = process.env.OPENCLAW_QA_SLACK_APPROVAL_CHECKPOINT_DIR;
+    if (checkpointDir) {
+      const scenarioId = "slack-approval-exec-native";
+      for (const state of ["pending", "resolved"]) {
+        fs.writeFileSync(path.join(checkpointDir, scenarioId + "." + state + ".json"), JSON.stringify({ state, message: { text: state } }));
+        while (!fs.existsSync(path.join(checkpointDir, scenarioId + "." + state + ".ack.json"))) await delay(20);
+        event(state);
+      }
+    }
+    event(fs.existsSync(activePath) ? "qa-recorded" : "qa-unrecorded");
+    if (qaExit === 124) await new Promise(() => { setInterval(() => {}, 1000); });
+    event("qa-end");
+    process.exit(qaExit);
+  }
+} else if (command === "ffmpeg") {
+  event("recording-start");
+  fs.writeFileSync(activePath, "active");
+  const progress = args.indexOf("-progress");
+  const finish = () => {
+    fs.rmSync(activePath, { force: true });
+    fs.writeFileSync(args.at(-1), "mp4");
+    if (progress >= 0) fs.appendFileSync(args[progress + 1], "progress=end\\n");
+    event("recording-finalized");
+    process.exit(255);
+  };
+  process.on("SIGTERM", finish);
+  if (progress >= 0) fs.writeFileSync(args[progress + 1], "frame=1\\nprogress=continue\\n");
+  setTimeout(finish, 3000);
+} else if (command === "timeout") {
+  const child = spawn(args[2], args.slice(3), { detached: true, stdio: "inherit" });
+  const timer = setInterval(() => {
+    if (qaExit === 124 && fs.existsSync(eventsPath) && fs.readFileSync(eventsPath, "utf8").includes('"qa-start"')) {
+      clearInterval(timer);
+      process.kill(-child.pid, "SIGTERM");
+    }
+  }, 20);
+  child.on("exit", (code) => { clearInterval(timer); process.exit(qaExit === 124 ? 124 : code ?? 1); });
+} else if (command === "scrot") fs.writeFileSync(args[0], "png");
+else if (command === "google-chrome") {
+  const screenshot = args.find((arg) => arg.startsWith("--screenshot="));
+  if (screenshot) fs.writeFileSync(screenshot.slice("--screenshot=".length), "png");
+} else if (command === "sleep") await delay(10);
+else if (command === "mktemp") console.log(path.join(path.dirname(eventsPath), "probe.ts"));
+`,
+  );
+  for (const command of [
+    "node",
+    "pnpm",
+    "ffmpeg",
+    "timeout",
+    "scrot",
+    "google-chrome",
+    "sleep",
+    "mktemp",
+  ]) {
+    await fs.writeFile(
+      path.join(binDir, command),
+      `#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(shimPath)} ${shellQuote(command)} "$@"\n`,
+      { mode: 0o755 },
+    );
+  }
+  // Only relocate the remote artifact path; execute the generated shell body unchanged.
+  const script = remoteScript.replace(/^out=.*$/mu, `out=${shellQuote(remoteDir)}`);
+  await promisify(execFile)("bash", ["-c", script], {
+    cwd: fixtureDir,
+    env: {
+      PATH: `${binDir}:${process.env.PATH}`,
+      BROWSER: path.join(binDir, "google-chrome"),
+      HOME: process.env.HOME,
+      OPENCLAW_MANTIS_SLACK_BROWSER_PROFILE_DIR: path.join(fixtureDir, "profile"),
+    },
+    timeout: 10_000,
+  });
+  return {
+    events: (await fs.readFile(eventsPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line)),
+    metadata: JSON.parse(await fs.readFile(path.join(remoteDir, "remote-metadata.json"), "utf8")),
+    video: await fs.readFile(path.join(remoteDir, "slack-desktop-smoke.mp4"), "utf8"),
+  };
+}
+
 describe("mantis Slack desktop smoke runtime", () => {
   let repoRoot: string;
 
   beforeEach(async () => {
+    videoAuditMocks.auditMantisVideo
+      .mockReset()
+      .mockImplementation(
+        async ({ outputDir, videoPath }: { outputDir: string; videoPath: string }) => {
+          expect(await fs.readFile(videoPath, "utf8")).toBe("mp4");
+          return {
+            status: "pass",
+            reportPath: path.join(outputDir, "mantis-video-audit.md"),
+            summaryPath: path.join(outputDir, "mantis-video-audit.json"),
+            summary: "No temporal defects observed in the recording.",
+            findings: [],
+          };
+        },
+      );
     repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mantis-slack-desktop-smoke-"));
   });
 
@@ -106,190 +237,273 @@ describe("mantis Slack desktop smoke runtime", () => {
     await fs.rm(repoRoot, { force: true, recursive: true });
   });
 
-  it("leases a desktop box, runs Slack QA inside it, copies artifacts, and stops on pass", async () => {
-    const commands: { args: readonly string[]; command: string; env?: NodeJS.ProcessEnv }[] = [];
-    const runtimeEnv = {
-      PATH: process.env.PATH,
-      OPENAI_API_KEY: "openai-runtime-key",
-      OPENCLAW_QA_SLACK_CHANNEL_ID: "C123",
-      OPENCLAW_QA_SLACK_DRIVER_BOT_TOKEN: "driver-token",
-      OPENCLAW_QA_SLACK_SUT_APP_TOKEN: "app-token",
-      OPENCLAW_QA_SLACK_SUT_BOT_TOKEN: "sut-token",
-    };
-    const runner = vi.fn(
-      async (command: string, args: readonly string[], options: { env?: NodeJS.ProcessEnv }) => {
-        commands.push({ command, args, env: options.env });
-        if (command === "/tmp/crabbox" && args[0] === "warmup") {
-          return { stdout: "ready lease cbx_abc123\n", stderr: "" };
-        }
-        if (command === "/tmp/crabbox" && args[0] === "inspect") {
-          return {
-            stdout: `${JSON.stringify({
-              host: "203.0.113.10",
-              id: "cbx_abc123",
-              provider: "hetzner",
-              slug: "bright-mantis",
-              sshKey: "/tmp/key",
-              sshPort: "2222",
-              sshUser: "crabbox",
-              state: "active",
-            })}\n`,
-            stderr: "",
-          };
-        }
-        if (command === "rsync") {
-          const outputDir = args.at(-1);
-          expect(outputDir).toBeTypeOf("string");
-          await fs.mkdir(outputDir as string, { recursive: true });
-          if (String(outputDir).endsWith("slack-qa/")) {
-            await fs.writeFile(path.join(outputDir as string, "qa-suite-report.md"), "# Slack\n");
-          } else {
-            await fs.writeFile(path.join(outputDir as string, "slack-desktop-smoke.png"), "png");
-            await fs.writeFile(path.join(outputDir as string, "slack-desktop-smoke.mp4"), "mp4");
-            await fs.writeFile(
-              path.join(outputDir as string, "remote-metadata.json"),
-              `${JSON.stringify({ qaExitCode: 0 })}\n`,
-            );
-            await fs.writeFile(path.join(outputDir as string, "chrome.log"), "chrome\n");
-            await fs.writeFile(path.join(outputDir as string, "ffmpeg.log"), "ffmpeg\n");
-            await fs.writeFile(path.join(outputDir as string, "slack-desktop-command.log"), "qa\n");
+  it.skipIf(process.platform === "win32").each([
+    { qaExit: 0, approvalCheckpoints: false },
+    { qaExit: 7, approvalCheckpoints: false },
+    { qaExit: 124, approvalCheckpoints: false },
+    { qaExit: 0, approvalCheckpoints: true },
+  ])(
+    "finalizes recording after QA exit $qaExit (checkpoints: $approvalCheckpoints)",
+    async ({ qaExit, approvalCheckpoints }) => {
+      let remoteScript = "";
+      await runMantisSlackDesktopSmoke({
+        commandRunner: async (command, args) => {
+          if (command === "/tmp/crabbox" && args[0] === "inspect") {
+            return {
+              stdout: JSON.stringify({
+                id: "cbx_capture",
+                host: "203.0.113.10",
+                sshKey: "/tmp/key",
+                sshPort: "2222",
+                sshUser: "crabbox",
+              }),
+              stderr: "",
+            };
+          }
+          if (command === "/tmp/crabbox" && args[0] === "run") {
+            remoteScript = args.at(-1) ?? "";
           }
           return { stdout: "", stderr: "" };
-        }
-        return { stdout: "", stderr: "" };
-      },
-    );
+        },
+        crabboxBin: "/tmp/crabbox",
+        leaseId: "cbx_capture",
+        repoRoot,
+        approvalCheckpoints,
+        scenarioIds: approvalCheckpoints ? ["slack-approval-exec-native"] : ["slack-canary"],
+        slackUrl: "https://app.slack.com/client/T123/C123",
+      });
+      const proof = await executeRecordingLifecycle(
+        remoteScript,
+        path.join(repoRoot, "shell"),
+        qaExit,
+      );
+      expect(proof.metadata.qaExitCode).toBe(qaExit);
+      expect(proof.video).toBe("mp4");
+      expect(proof.events).toEqual([
+        "install",
+        "build",
+        "recording-start",
+        "qa-start",
+        ...(approvalCheckpoints ? ["pending", "resolved"] : []),
+        "qa-recorded",
+        ...(qaExit === 124 ? [] : ["qa-end"]),
+        "recording-finalized",
+      ]);
+    },
+    15_000,
+  );
 
-    const result = await runMantisSlackDesktopSmoke({
-      commandRunner: runner,
-      crabboxBin: "/tmp/crabbox",
-      env: runtimeEnv,
-      freshPr: "openclaw/openclaw#85141",
-      now: () => new Date("2026-05-04T13:00:00.000Z"),
-      outputDir: ".artifacts/qa-e2e/mantis/slack-desktop-test",
-      primaryModel: "openai/gpt-5.4",
-      repoRoot,
-      scenarioIds: ["slack-canary"],
-      slackUrl: "https://app.slack.com/client/T123/C123",
-    });
+  it.each(["pass", "fail"] as const)(
+    "combines successful Slack QA with video audit status: %s",
+    async (auditStatus) => {
+      videoAuditMocks.auditMantisVideo.mockResolvedValueOnce({
+        status: auditStatus,
+        reportPath: "mantis-video-audit.md",
+        summaryPath: "mantis-video-audit.json",
+        summary:
+          auditStatus === "pass"
+            ? "No setup defects observed."
+            : "Transient rendering defect observed.",
+        findings: [],
+      });
+      const commands: { args: readonly string[]; command: string; env?: NodeJS.ProcessEnv }[] = [];
+      const runtimeEnv = {
+        PATH: process.env.PATH,
+        OPENAI_API_KEY: "openai-runtime-key",
+        OPENCLAW_QA_SLACK_CHANNEL_ID: "C123",
+        OPENCLAW_QA_SLACK_DRIVER_BOT_TOKEN: "driver-token",
+        OPENCLAW_QA_SLACK_SUT_APP_TOKEN: "app-token",
+        OPENCLAW_QA_SLACK_SUT_BOT_TOKEN: "sut-token",
+      };
+      const runner = vi.fn(
+        async (command: string, args: readonly string[], options: { env?: NodeJS.ProcessEnv }) => {
+          commands.push({ command, args, env: options.env });
+          if (command === "/tmp/crabbox" && args[0] === "warmup") {
+            return { stdout: "ready lease cbx_abc123\n", stderr: "" };
+          }
+          if (command === "/tmp/crabbox" && args[0] === "inspect") {
+            return {
+              stdout: `${JSON.stringify({
+                host: "203.0.113.10",
+                id: "cbx_abc123",
+                provider: "hetzner",
+                slug: "bright-mantis",
+                sshKey: "/tmp/key",
+                sshPort: "2222",
+                sshUser: "crabbox",
+                state: "active",
+              })}\n`,
+              stderr: "",
+            };
+          }
+          if (command === "rsync") {
+            const outputDir = args.at(-1);
+            expect(outputDir).toBeTypeOf("string");
+            await fs.mkdir(outputDir as string, { recursive: true });
+            if (String(outputDir).endsWith("slack-qa/")) {
+              await fs.writeFile(path.join(outputDir as string, "qa-suite-report.md"), "# Slack\n");
+            } else {
+              await fs.writeFile(path.join(outputDir as string, "slack-desktop-smoke.png"), "png");
+              await fs.writeFile(path.join(outputDir as string, "slack-desktop-smoke.mp4"), "mp4");
+              await fs.writeFile(
+                path.join(outputDir as string, "remote-metadata.json"),
+                `${JSON.stringify({ qaExitCode: 0 })}\n`,
+              );
+              await fs.writeFile(path.join(outputDir as string, "chrome.log"), "chrome\n");
+              await fs.writeFile(path.join(outputDir as string, "ffmpeg.log"), "ffmpeg\n");
+              await fs.writeFile(
+                path.join(outputDir as string, "slack-desktop-command.log"),
+                "qa\n",
+              );
+            }
+            return { stdout: "", stderr: "" };
+          }
+          return { stdout: "", stderr: "" };
+        },
+      );
 
-    expect(result.status).toBe("pass");
-    expect(commands.map((entry) => [entry.command, entry.args[0]])).toEqual([
-      ["/tmp/crabbox", "warmup"],
-      ["/tmp/crabbox", "inspect"],
-      ["/tmp/crabbox", "run"],
-      ["rsync", "-az"],
-      ["/tmp/crabbox", "stop"],
-    ]);
-    expect(
-      commands.every((entry) => entry.env?.OPENCLAW_LIVE_OPENAI_KEY === "openai-runtime-key"),
-    ).toBe(true);
-    const runArgs = commands.find(
-      (entry) => entry.command === "/tmp/crabbox" && entry.args[0] === "run",
-    )?.args;
-    expect(runArgs).toContain("--no-hydrate");
-    expect(runArgs).toContain("--fresh-pr");
-    expect(runArgs).toContain("openclaw/openclaw#85141");
-    expect(runArgs).not.toContain("--no-sync");
-    const remoteScript = runArgs?.at(-1);
-    expect(remoteScript).toContain("hydrate_mode='source'");
-    expect(remoteScript).toContain("${BROWSER:-}");
-    expect(remoteScript).toContain("${CHROME_BIN:-}");
-    expect(remoteScript).toContain("PNPM_STORE_DIR");
-    expect(remoteScript).toContain("build-essential python3");
-    expect(remoteScript).toContain("node_supports_type_stripping");
-    expect(remoteScript).toContain("scripts/crabbox-untrusted-bootstrap.sh");
-    expect(remoteScript).toContain(
-      "curl -fsSL --connect-timeout 10 --max-time 120 https://deb.nodesource.com/setup_22.x",
-    );
-    expect(remoteScript).toContain(
-      'curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-max-time 120 --retry-all-errors "$node_base_url/SHASUMS256.txt"',
-    );
-    expect(remoteScript).toContain(
-      'curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-max-time 120 --retry-all-errors "$node_base_url/$node_archive"',
-    );
-    expect(remoteScript).toContain('grep "  $node_archive$" SHASUMS256.txt | sha256sum -c -');
-    expect(remoteScript).toContain('export PATH="$node_root/bin:$PATH"');
-    expect(remoteScript).toContain("packageManager ??");
-    expect(remoteScript).toContain("[0-9a-f]{128}");
-    expect(remoteScript).toContain('console.log(match[1] + " " + match[2])');
-    expect(remoteScript).toContain('active_pnpm_version="$(pnpm --version 2>/dev/null || true)"');
-    expect(remoteScript).toContain(
-      "curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-max-time 120 --retry-all-errors",
-    );
-    expect(remoteScript).toContain('"https://registry.npmjs.org/pnpm/-/pnpm-$pnpm_version.tgz"');
-    expect(remoteScript?.match(/--connect-timeout 10 --max-time 120/gu)?.length).toBe(4);
-    expect(remoteScript?.match(/--retry 3 --retry-max-time 120 --retry-all-errors/gu)?.length).toBe(
-      3,
-    );
-    expect(remoteScript).toContain('sha512sum "$pnpm_archive"');
-    expect(remoteScript).toContain('chmod +x "$pnpm_cli"');
-    expect(remoteScript).toContain('ln -sfn "$pnpm_cli" "$pnpm_bin_dir/pnpm"');
-    expect(remoteScript).toContain('export PATH="$pnpm_bin_dir:$PATH"');
-    expect(remoteScript).toContain("Expected pnpm $pnpm_version, got $active_pnpm_version.");
-    expect(remoteScript).toContain("pnpm install --frozen-lockfile --prefer-offline");
-    expect(remoteScript).toContain("pnpm build");
-    expect(remoteScript).toContain("ffmpeg");
-    expect(remoteScript).toContain('sudo apt-get update -y >>"$out/apt.log" 2>&1 || true');
-    expect(remoteScript).toContain("slack-desktop-smoke.mp4");
-    expect(remoteScript).not.toContain("-video_size");
-    expect(remoteScript).toContain("openclaw qa slack");
-    expect(remoteScript).toContain("--scenario 'slack-canary'");
-    expect(remoteScript).toContain(
-      'slack_qa_output_dir=".artifacts/qa-e2e/mantis/$(basename "$out")/slack-qa"',
-    );
-    expect(remoteScript).toContain('--output-dir "$slack_qa_output_dir"');
-    expect(remoteScript).toContain("copy_slack_qa_artifacts");
-    expect(remoteScript).not.toContain('--output-dir "$out/slack-qa"');
-    expect(remoteScript).toContain("remote_command_timeout_seconds=");
-    expect(remoteScript).toContain("remote-command-timeout.txt");
-    expect(remoteScript).toContain(
-      'timeout --kill-after=15s "${remote_command_timeout_seconds}s" bash -c run_mantis_remote_body >"$out/slack-desktop-command.log" 2>&1 &',
-    );
-    expect(remoteScript).toContain("MANTIS_REMOTE_HEARTBEAT");
-    expect(remoteScript).toContain("qa_status=$?");
-    expect(remoteScript).toContain("MANTIS_REMOTE_FAILURE_DIAGNOSTICS_BEGIN");
-    expect(remoteScript).toContain("$out/slack-qa/qa-suite-report.md");
-    expect(remoteScript).toContain("$out/slack-qa/qa-suite-summary.json");
-    expect(remoteScript).toContain("$out/slack-qa/qa-evidence.json");
-    expect(remoteScript).toContain('tail -n 200 "$diagnostic_file"');
-    expect(remoteScript).toContain("Slack desktop screenshot is missing or empty");
-    expect(remoteScript).not.toContain('test -s "$out/slack-desktop-smoke.png"');
-    expect(remoteScript).toContain("OPENCLAW_MANTIS_SLACK_BROWSER_PROFILE_DIR");
-    expect(remoteScript)
-      .toContain(`const response = await fetch("https://slack.com/api/auth.test", {
+      const result = await runMantisSlackDesktopSmoke({
+        commandRunner: runner,
+        crabboxBin: "/tmp/crabbox",
+        env: runtimeEnv,
+        freshPr: "openclaw/openclaw#85141",
+        now: () => new Date("2026-05-04T13:00:00.000Z"),
+        outputDir: ".artifacts/qa-e2e/mantis/slack-desktop-test",
+        primaryModel: "openai/gpt-5.4",
+        repoRoot,
+        scenarioIds: ["slack-canary"],
+        slackUrl: "https://app.slack.com/client/T123/C123",
+      });
+
+      expect(result.status).toBe(auditStatus);
+      expect(videoAuditMocks.auditMantisVideo).toHaveBeenCalledOnce();
+      expect(videoAuditMocks.auditMantisVideo).toHaveBeenCalledWith(
+        expect.objectContaining({
+          videoPath: result.videoPath,
+          prompt: expect.stringContaining("throughout QA"),
+        }),
+      );
+      expect(commands.map((entry) => [entry.command, entry.args[0]])).toEqual([
+        ["/tmp/crabbox", "warmup"],
+        ["/tmp/crabbox", "inspect"],
+        ["/tmp/crabbox", "run"],
+        ["rsync", "-az"],
+        ["/tmp/crabbox", "stop"],
+      ]);
+      expect(
+        commands.every((entry) => entry.env?.OPENCLAW_LIVE_OPENAI_KEY === "openai-runtime-key"),
+      ).toBe(true);
+      const runArgs = commands.find(
+        (entry) => entry.command === "/tmp/crabbox" && entry.args[0] === "run",
+      )?.args;
+      expect(runArgs).toContain("--no-hydrate");
+      expect(runArgs).toContain("--fresh-pr");
+      expect(runArgs).toContain("openclaw/openclaw#85141");
+      expect(runArgs).not.toContain("--no-sync");
+      const remoteScript = runArgs?.at(-1);
+      expect(remoteScript).toContain("hydrate_mode='source'");
+      expect(remoteScript).toContain("${BROWSER:-}");
+      expect(remoteScript).toContain("${CHROME_BIN:-}");
+      expect(remoteScript).toContain("PNPM_STORE_DIR");
+      expect(remoteScript).toContain("build-essential python3");
+      expect(remoteScript).toContain("node_supports_type_stripping");
+      expect(remoteScript).toContain("scripts/crabbox-untrusted-bootstrap.sh");
+      expect(remoteScript).toContain(
+        "curl -fsSL --connect-timeout 10 --max-time 120 https://deb.nodesource.com/setup_22.x",
+      );
+      expect(remoteScript).toContain(
+        'curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-max-time 120 --retry-all-errors "$node_base_url/SHASUMS256.txt"',
+      );
+      expect(remoteScript).toContain(
+        'curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-max-time 120 --retry-all-errors "$node_base_url/$node_archive"',
+      );
+      expect(remoteScript).toContain('grep "  $node_archive$" SHASUMS256.txt | sha256sum -c -');
+      expect(remoteScript).toContain('export PATH="$node_root/bin:$PATH"');
+      expect(remoteScript).toContain("packageManager ??");
+      expect(remoteScript).toContain("[0-9a-f]{128}");
+      expect(remoteScript).toContain('console.log(match[1] + " " + match[2])');
+      expect(remoteScript).toContain('active_pnpm_version="$(pnpm --version 2>/dev/null || true)"');
+      expect(remoteScript).toContain(
+        "curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-max-time 120 --retry-all-errors",
+      );
+      expect(remoteScript).toContain('"https://registry.npmjs.org/pnpm/-/pnpm-$pnpm_version.tgz"');
+      expect(remoteScript?.match(/--connect-timeout 10 --max-time 120/gu)?.length).toBe(4);
+      expect(
+        remoteScript?.match(/--retry 3 --retry-max-time 120 --retry-all-errors/gu)?.length,
+      ).toBe(3);
+      expect(remoteScript).toContain('sha512sum "$pnpm_archive"');
+      expect(remoteScript).toContain('chmod +x "$pnpm_cli"');
+      expect(remoteScript).toContain('ln -sfn "$pnpm_cli" "$pnpm_bin_dir/pnpm"');
+      expect(remoteScript).toContain('export PATH="$pnpm_bin_dir:$PATH"');
+      expect(remoteScript).toContain("Expected pnpm $pnpm_version, got $active_pnpm_version.");
+      expect(remoteScript).toContain("pnpm install --frozen-lockfile --prefer-offline");
+      expect(remoteScript).toContain("pnpm build");
+      // FFmpeg 7.1 does not poll termination signals with -nostdin.
+      expect(remoteScript).toContain("ffmpeg -stdin ");
+      expect(remoteScript).toContain("-framerate 30");
+      expect(remoteScript).toContain('sudo apt-get update -y >>"$out/apt.log" 2>&1 || true');
+      expect(remoteScript).toContain("slack-desktop-smoke.mp4");
+      expect(remoteScript).not.toContain("-video_size");
+      expect(remoteScript).toContain("openclaw qa slack");
+      expect(remoteScript).toContain("--scenario 'slack-canary'");
+      expect(remoteScript).toContain(
+        'slack_qa_output_dir=".artifacts/qa-e2e/mantis/$(basename "$out")/slack-qa"',
+      );
+      expect(remoteScript).toContain('--output-dir "$slack_qa_output_dir"');
+      expect(remoteScript).toContain("copy_slack_qa_artifacts");
+      expect(remoteScript).not.toContain('--output-dir "$out/slack-qa"');
+      expect(remoteScript).toContain("remote_command_timeout_seconds=");
+      expect(remoteScript).toContain("remote-command-timeout.txt");
+      expect(remoteScript).toContain(
+        'timeout --kill-after=15s "${remote_command_timeout_seconds}s" bash -c run_mantis_remote_body >"$out/slack-desktop-command.log" 2>&1 &',
+      );
+      expect(remoteScript).toContain("MANTIS_REMOTE_HEARTBEAT");
+      expect(remoteScript).toContain("qa_status=$?");
+      expect(remoteScript).toContain("MANTIS_REMOTE_FAILURE_DIAGNOSTICS_BEGIN");
+      expect(remoteScript).toContain("$out/slack-qa/qa-suite-report.md");
+      expect(remoteScript).toContain("$out/slack-qa/qa-suite-summary.json");
+      expect(remoteScript).toContain("$out/slack-qa/qa-evidence.json");
+      expect(remoteScript).toContain('tail -n 200 "$diagnostic_file"');
+      expect(remoteScript).toContain("Slack desktop screenshot is missing or empty");
+      expect(remoteScript).not.toContain('test -s "$out/slack-desktop-smoke.png"');
+      expect(remoteScript).toContain("OPENCLAW_MANTIS_SLACK_BROWSER_PROFILE_DIR");
+      expect(remoteScript)
+        .toContain(`const response = await fetch("https://slack.com/api/auth.test", {
   method: "POST",
   headers: { authorization: \`Bearer \${token}\` },
   signal: AbortSignal.timeout(15_000),
 });`);
-    const rsyncArgs = commands
-      .filter((entry) => entry.command === "rsync")
-      .flatMap((entry) => entry.args);
-    expect(rsyncArgs).not.toContain("--delete");
-    expect(rsyncArgs).toContain(
-      "crabbox@203.0.113.10:/tmp/openclaw-mantis-slack-desktop-2026-05-04T13-00-00-000Z/",
-    );
-    await expect(fs.readFile(result.screenshotPath ?? "", "utf8")).resolves.toBe("png");
-    await expect(fs.readFile(result.videoPath ?? "", "utf8")).resolves.toBe("mp4");
-    const summary = JSON.parse(await fs.readFile(result.summaryPath, "utf8")) as {
-      crabbox: { id: string; vncCommand: string };
-      hydrateMode: string;
-      status: string;
-      timings: { phases: { name: string; status: string }[]; totalMs: number };
-    };
-    expect(summary.crabbox.id).toBe("cbx_abc123");
-    expect(summary.crabbox.vncCommand).toBe(
-      "/tmp/crabbox vnc --provider hetzner --id cbx_abc123 --open",
-    );
-    expect(summary.hydrateMode).toBe("source");
-    expect(summary.status).toBe("pass");
-    expect(summary.timings.totalMs).toBeGreaterThanOrEqual(0);
-    expect(summary.timings.phases.map((phase) => phase.name)).toContain("crabbox.warmup");
-    expect(summary.timings.phases.map((phase) => phase.name)).toContain("crabbox.inspect");
-    expect(summary.timings.phases.map((phase) => phase.name)).toContain("credentials.prepare");
-    expect(summary.timings.phases.map((phase) => phase.name)).toContain("crabbox.remote_run");
-    expect(summary.timings.phases.map((phase) => phase.name)).toContain("artifacts.copy");
-  });
+      const rsyncArgs = commands
+        .filter((entry) => entry.command === "rsync")
+        .flatMap((entry) => entry.args);
+      expect(rsyncArgs).not.toContain("--delete");
+      expect(rsyncArgs).toContain(
+        "crabbox@203.0.113.10:/tmp/openclaw-mantis-slack-desktop-2026-05-04T13-00-00-000Z/",
+      );
+      await expect(fs.readFile(result.screenshotPath ?? "", "utf8")).resolves.toBe("png");
+      await expect(fs.readFile(result.videoPath ?? "", "utf8")).resolves.toBe("mp4");
+      const summary = JSON.parse(await fs.readFile(result.summaryPath, "utf8")) as {
+        crabbox: { id: string; vncCommand: string };
+        hydrateMode: string;
+        status: string;
+        videoAudit: { status: string };
+        timings: { phases: { name: string; status: string }[]; totalMs: number };
+      };
+      expect(summary.crabbox.id).toBe("cbx_abc123");
+      expect(summary.crabbox.vncCommand).toBe(
+        "/tmp/crabbox vnc --provider hetzner --id cbx_abc123 --open",
+      );
+      expect(summary.hydrateMode).toBe("source");
+      expect(summary.status).toBe(auditStatus);
+      expect(summary.videoAudit.status).toBe(auditStatus);
+      expect(summary.timings.totalMs).toBeGreaterThanOrEqual(0);
+      expect(summary.timings.phases.map((phase) => phase.name)).toContain("crabbox.warmup");
+      expect(summary.timings.phases.map((phase) => phase.name)).toContain("crabbox.inspect");
+      expect(summary.timings.phases.map((phase) => phase.name)).toContain("credentials.prepare");
+      expect(summary.timings.phases.map((phase) => phase.name)).toContain("crabbox.remote_run");
+      expect(summary.timings.phases.map((phase) => phase.name)).toContain("artifacts.copy");
+    },
+  );
 
   it("runs approval checkpoint mode with default approval scenarios and records screenshots", async () => {
     const commands: { args: readonly string[]; command: string }[] = [];
@@ -320,6 +534,7 @@ describe("mantis Slack desktop smoke runtime", () => {
           await fs.writeFile(path.join(outputDir as string, "qa-suite-report.md"), "# Slack\n");
         } else {
           await fs.writeFile(path.join(outputDir as string, "slack-desktop-smoke.png"), "png");
+          await fs.writeFile(path.join(outputDir as string, "slack-desktop-smoke.mp4"), "mp4");
           await fs.writeFile(
             path.join(outputDir as string, "remote-metadata.json"),
             `${JSON.stringify({ qaExitCode: 0 })}\n`,
@@ -508,6 +723,7 @@ describe("mantis Slack desktop smoke runtime", () => {
         await fs.mkdir(outputDir, { recursive: true });
         if (!outputDir.endsWith("slack-qa/")) {
           await fs.writeFile(path.join(outputDir, "slack-desktop-smoke.png"), "png");
+          await fs.writeFile(path.join(outputDir, "slack-desktop-smoke.mp4"), "mp4");
           await fs.writeFile(
             path.join(outputDir, "remote-metadata.json"),
             `${JSON.stringify({ qaExitCode: 0 })}\n`,
@@ -581,6 +797,7 @@ describe("mantis Slack desktop smoke runtime", () => {
         await fs.mkdir(outputDir as string, { recursive: true });
         if (!String(outputDir).endsWith("slack-qa/")) {
           await fs.writeFile(path.join(outputDir as string, "slack-desktop-smoke.png"), "png");
+          await fs.writeFile(path.join(outputDir as string, "slack-desktop-smoke.mp4"), "mp4");
           await fs.writeFile(
             path.join(outputDir as string, "remote-metadata.json"),
             `${JSON.stringify({ hydrateMode: "prehydrated", qaExitCode: 0 })}\n`,
@@ -680,6 +897,7 @@ describe("mantis Slack desktop smoke runtime", () => {
             await fs.mkdir(outputDir as string, { recursive: true });
             if (!String(outputDir).endsWith("slack-qa/")) {
               await fs.writeFile(path.join(outputDir as string, "slack-desktop-smoke.png"), "png");
+              await fs.writeFile(path.join(outputDir as string, "slack-desktop-smoke.mp4"), "mp4");
               await fs.writeFile(
                 path.join(outputDir as string, "remote-metadata.json"),
                 `${JSON.stringify({
@@ -781,6 +999,7 @@ describe("mantis Slack desktop smoke runtime", () => {
         await fs.mkdir(outputDir as string, { recursive: true });
         if (!String(outputDir).endsWith("slack-qa/")) {
           await fs.writeFile(path.join(outputDir as string, "slack-desktop-smoke.png"), "png");
+          await fs.writeFile(path.join(outputDir as string, "slack-desktop-smoke.mp4"), "mp4");
           await fs.writeFile(path.join(outputDir as string, "remote-metadata.json"), "{}\n");
         }
       }
@@ -833,6 +1052,7 @@ describe("mantis Slack desktop smoke runtime", () => {
         await fs.mkdir(outputDir as string, { recursive: true });
         if (!String(outputDir).endsWith("slack-qa/")) {
           await fs.writeFile(path.join(outputDir as string, "slack-desktop-smoke.png"), "png");
+          await fs.writeFile(path.join(outputDir as string, "slack-desktop-smoke.mp4"), "mp4");
           await fs.writeFile(
             path.join(outputDir as string, "remote-metadata.json"),
             `${JSON.stringify({
@@ -903,6 +1123,7 @@ describe("mantis Slack desktop smoke runtime", () => {
           await fs.writeFile(path.join(outputDir as string, "qa-suite-report.md"), "# Slack\n");
         } else {
           await fs.writeFile(path.join(outputDir as string, "slack-desktop-smoke.png"), "png");
+          await fs.writeFile(path.join(outputDir as string, "slack-desktop-smoke.mp4"), "mp4");
           await fs.writeFile(
             path.join(outputDir as string, "remote-metadata.json"),
             `${JSON.stringify({ qaExitCode: 0 })}\n`,
@@ -934,6 +1155,12 @@ describe("mantis Slack desktop smoke runtime", () => {
   });
 
   it("copies the screenshot before reporting a failed remote Slack QA run", async () => {
+    videoAuditMocks.auditMantisVideo.mockResolvedValueOnce({
+      status: "error",
+      reportPath: "mantis-video-audit.md",
+      summaryPath: "mantis-video-audit.json",
+      error: "Google authentication unavailable",
+    });
     const runner = vi.fn(async (command: string, args: readonly string[]) => {
       if (command === "/tmp/crabbox" && args[0] === "inspect") {
         return {
@@ -983,6 +1210,7 @@ describe("mantis Slack desktop smoke runtime", () => {
       error?: string;
       hydrateMode: string;
       status: string;
+      videoAudit: { status: string; error: string };
       timings: { phases: { name: string; status: string }[]; totalMs: number };
     };
     expect(summary.status).toBe("fail");
@@ -990,6 +1218,7 @@ describe("mantis Slack desktop smoke runtime", () => {
     expect(summary.timings.totalMs).toBeGreaterThanOrEqual(0);
     expect(phaseStatus(summary.timings.phases, "crabbox.remote_run")).toBe("fail");
     expect(summary.error).toContain("remote Slack QA failed");
+    expect(summary.videoAudit.error).toBe("Google authentication unavailable");
     expect(summary.artifacts.screenshotPath).toContain("slack-desktop-smoke.png");
     expect(summary.artifacts.videoPath).toContain("slack-desktop-smoke.mp4");
   });
@@ -1016,6 +1245,7 @@ describe("mantis Slack desktop smoke runtime", () => {
           return { stdout: "", stderr: "" };
         }
         await fs.writeFile(path.join(outputDir as string, "slack-desktop-smoke.png"), "png");
+        await fs.writeFile(path.join(outputDir as string, "slack-desktop-smoke.mp4"), "mp4");
         await fs.writeFile(
           path.join(outputDir as string, "remote-metadata.json"),
           `${JSON.stringify({ qaExitCode: 7 })}\n`,

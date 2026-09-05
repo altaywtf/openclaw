@@ -36,59 +36,68 @@ vi.mock("../agents/model-auth.js", async () => {
 });
 
 describe("runCapability video provider wiring", () => {
-  it("truncates provider output without splitting a boundary emoji", async () => {
-    await withVideoFixture("openclaw-video-utf16-output", async ({ ctx, media, cache }) => {
-      const prefix = "v".repeat(79);
-      const result = await runCapability({
-        capability: "video",
-        cfg: {
-          models: {
-            providers: {
-              moonshot: {
-                apiKey: "test-key",
-                models: [],
-              },
-            },
-          },
-          tools: {
-            media: {
-              models: [
-                {
-                  provider: "moonshot",
-                  model: "kimi-k2.5",
-                  maxChars: 80,
-                  capabilities: ["video"],
+  it.each([undefined, false, true])(
+    "preserves processing evidence (%s) while safely truncating video text",
+    async (verified) => {
+      await withVideoFixture("openclaw-video-utf16-output", async ({ ctx, media, cache }) => {
+        const prefix = "v".repeat(79);
+        const result = await runCapability({
+          capability: "video",
+          cfg: {
+            models: {
+              providers: {
+                moonshot: {
+                  apiKey: "test-key",
+                  models: [],
                 },
-              ],
-              video: {
-                enabled: true,
               },
             },
-          },
-        } as unknown as OpenClawConfig,
-        ctx,
-        attachments: cache,
-        media,
-        providerRegistry: new Map<string, MediaUnderstandingProvider>([
-          [
-            "moonshot",
-            {
-              id: "moonshot",
-              capabilities: ["video"],
-              describeVideo: async (req) => ({
-                text: `${prefix}${String.fromCodePoint(0x1f600)}tail`,
-                model: req.model,
-              }),
+            tools: {
+              media: {
+                models: [
+                  {
+                    provider: "moonshot",
+                    model: "kimi-k2.5",
+                    maxChars: 80,
+                    capabilities: ["video"],
+                  },
+                ],
+                video: {
+                  enabled: true,
+                },
+              },
             },
-          ],
-        ]),
-      });
+          } as unknown as OpenClawConfig,
+          ctx,
+          attachments: cache,
+          media,
+          providerRegistry: new Map<string, MediaUnderstandingProvider>([
+            [
+              "moonshot",
+              {
+                id: "moonshot",
+                capabilities: ["video"],
+                describeVideo: async (req) => ({
+                  text: `${prefix}${String.fromCodePoint(0x1f600)}tail`,
+                  model: req.model,
+                  ...(verified === undefined
+                    ? {}
+                    : { processing: { mode: "agentic" as const, verified } }),
+                }),
+              },
+            ],
+          ]),
+        });
 
-      const output = expectDefined(result.outputs[0], "media output 0");
-      expect(output.text).toBe(prefix);
-      expect(output.text).not.toContain(String.fromCharCode(0xd83d));
-    });
-  });
+        const output = expectDefined(result.outputs[0], "media output 0");
+        expect(output.text).toBe(prefix);
+        expect(output.text).not.toContain(String.fromCharCode(0xd83d));
+        expect(output.processing).toEqual(
+          verified === undefined ? undefined : { mode: "agentic", verified },
+        );
+      });
+    },
+  );
 
   it("merges video baseUrl and headers with entry precedence", async () => {
     let seenBaseUrl: string | undefined;

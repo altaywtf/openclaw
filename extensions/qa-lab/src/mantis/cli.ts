@@ -1,5 +1,8 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 // Qa Lab plugin module implements cli behavior.
 import type { Command } from "commander";
+import { resolveRepoRelativeOutputDir } from "../cli-paths.js";
 import { createLazyCliRuntimeLoader } from "../live-transports/shared/live-transport-cli.js";
 import type { MantisDesktopBrowserSmokeOptions } from "./desktop-browser-smoke.runtime.js";
 import type { MantisDiscordSmokeOptions } from "./discord-smoke.runtime.js";
@@ -179,6 +182,60 @@ export function registerMantisCli(qa: Command) {
     .description("Run Mantis before/after and live-smoke verification flows");
 
   mantis
+    .command("audit-evidence")
+    .description("Audit the full videos in a Mantis evidence bundle and retain a new manifest")
+    .requiredOption("--manifest <path>", "Mantis evidence manifest")
+    .option("--json", "Emit JSON without startup logs")
+    .option("--repo-root <path>", "Repository root")
+    .action(async (opts: { manifest: string; repoRoot?: string }) => {
+      const repoRoot = path.resolve(opts.repoRoot ?? process.cwd());
+      const runtime = await loadMantisCliRuntime();
+      await runtime.runMantisEvidenceAuditCommand({
+        repoRoot,
+        manifestPath: path.resolve(repoRoot, opts.manifest),
+      });
+    });
+
+  mantis
+    .command("audit-video")
+    .description("Audit a recorded UI flow with Gemini 3.8 Flash agentic video understanding")
+    .requiredOption("--file <path>", "Finalized video to audit")
+    .option("--json", "Emit JSON without startup logs")
+    .option("--repo-root <path>", "Repository root")
+    .option("--output-dir <path>", "Repository-relative audit artifact parent")
+    .option("--prompt <text>", "Expected behavior to inspect (up to 512 characters)")
+    .option("--events-file <path>", "JSON recording-relative events: id, timestampMs, description")
+    .action(
+      async (opts: {
+        file: string;
+        repoRoot?: string;
+        outputDir?: string;
+        prompt?: string;
+        eventsFile?: string;
+      }) => {
+        const repoRoot = path.resolve(opts.repoRoot ?? process.cwd());
+        let events: unknown;
+        if (opts.eventsFile) {
+          const file = path.resolve(repoRoot, opts.eventsFile);
+          if ((await fs.stat(file)).size > 4096) {
+            throw new Error("Video event evidence must not exceed 4096 bytes.");
+          }
+          events = JSON.parse(await fs.readFile(file, "utf8"));
+        }
+        const runtime = await loadMantisCliRuntime();
+        await runtime.runMantisVideoAuditCommand({
+          repoRoot,
+          outputDir:
+            resolveRepoRelativeOutputDir(repoRoot, opts.outputDir) ??
+            path.join(repoRoot, ".artifacts/qa-e2e/mantis"),
+          videoPath: path.resolve(repoRoot, opts.file),
+          prompt: opts.prompt,
+          events,
+        });
+      },
+    );
+
+  mantis
     .command("run")
     .description("Run a Mantis before/after scenario against baseline and candidate refs")
     .requiredOption("--transport <transport>", "Transport to verify; currently only discord")
@@ -353,7 +410,7 @@ export function registerMantisCli(qa: Command) {
   mantis
     .command("visual-task")
     .description(
-      "Lease or reuse a Crabbox desktop, drive visible browser UI, record MP4, screenshot it, and optionally run image-understanding assertions",
+      "Record a Crabbox browser task, check its screenshot, and audit the full video with Gemini 3.8 Flash",
     )
     .option("--repo-root <path>", "Repository root to target when running from a neutral cwd")
     .option("--output-dir <path>", "Mantis visual-task artifact directory")
@@ -368,7 +425,10 @@ export function registerMantisCli(qa: Command) {
     .option("--browser-url <url>", "URL to open in the visible browser")
     .option("--duration <duration>", "Desktop recording duration")
     .option("--settle-ms <ms>", "Milliseconds to wait after launch before screenshot")
-    .option("--vision-mode <mode>", "Vision mode: image-describe or metadata")
+    .option(
+      "--vision-mode <mode>",
+      "image-describe with video audit (default), or metadata capture only",
+    )
     .option("--vision-prompt <text>", "Prompt for image understanding")
     .option("--vision-model <provider/model>", "Image-capable provider/model ref")
     .option("--vision-timeout-ms <ms>", "Image understanding timeout in milliseconds")
