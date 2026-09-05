@@ -1,4 +1,4 @@
-/** Projects physical catalog rows for browse/presentation; never runtime execution. */
+/** Projects physical catalog rows into separate presentation and runtime metadata. */
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import { isCanonicalDottedDecimalIPv4, isLoopbackIpAddress } from "@openclaw/net-policy/ip";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
@@ -104,14 +104,6 @@ export function resolveConfiguredModelCatalogOverrides(params: {
   return Object.keys(overrides).length > 0 ? overrides : undefined;
 }
 
-function sameLogicalModel(
-  a: ModelCatalogEntry,
-  identity: ModelCatalogLogicalIdentity,
-  policy: ModelCatalogRoutePolicy,
-): boolean {
-  return policy.resolveIdentity(a)?.key === identity.key;
-}
-
 function logicalIdentity(
   entry: ModelCatalogEntry,
   id: string,
@@ -140,72 +132,52 @@ function applyLogicalOverrides(
   return overrides ? { ...entry, ...overrides } : entry;
 }
 
-/** Finds the exact physical row that supplied a selected provider route. */
-export function findModelCatalogRouteDonor(params: {
-  entry: ModelCatalogEntry;
-  route: ProviderModelRouteCandidate;
-  policy: ModelCatalogRoutePolicy;
-  catalog?: readonly ModelCatalogEntry[];
-}): ModelCatalogEntry | undefined {
-  const identity = params.policy.resolveIdentity(params.entry);
-  const physicalDonor = identity
-    ? params.catalog?.find(
-        (candidate) =>
-          sameLogicalModel(candidate, identity, params.policy) &&
-          params.policy.matchesRoute(candidate, params.route),
-      )
-    : undefined;
-  if (physicalDonor) {
-    return physicalDonor;
-  }
-  return params.policy.matchesRoute(params.entry, params.route) ? params.entry : undefined;
-}
-
 /**
- * Builds one allowlisted logical catalog row.
+ * Builds allowlisted public and private runtime projections from one donor.
  *
  * Selected-route capabilities come only from a physical row accepted by the
  * provider-owned matcher. Unresolved managed routes expose identity only.
  * Auth, runtime, request overrides, and other private transport facts never
- * enter the returned catalog shape.
+ * enter the public catalog shape.
  */
 export function projectModelCatalogEntryForRoute(params: {
   entry: ModelCatalogEntry;
   projection: ModelCatalogRouteProjection;
   catalog?: readonly ModelCatalogEntry[];
   overrides?: ModelCatalogLogicalOverrides;
-}): ModelCatalogEntry {
+}): { entry: ModelCatalogEntry; runtimeEntry: ModelCatalogEntry } {
   if (params.projection.kind === "unmanaged") {
-    return applyLogicalOverrides(params.entry, params.overrides);
+    const entry = applyLogicalOverrides(params.entry, params.overrides);
+    return { entry, runtimeEntry: entry };
   }
-  const identity = params.projection.policy.resolveIdentity(params.entry) ?? {
-    id: splitTrailingAuthProfile(params.entry.id).model,
-    key: `${normalizeProviderId(params.entry.provider)}/${normalizeExactModelId(params.entry.id)}`,
-  };
+  const identity = params.projection.policy.resolveIdentity(params.entry);
+  const id = identity?.id ?? splitTrailingAuthProfile(params.entry.id).model;
   if (params.projection.kind === "unresolved") {
-    return applyLogicalOverrides(
-      logicalIdentity(params.entry, identity.id, params.entry.name),
+    const entry = applyLogicalOverrides(
+      logicalIdentity(params.entry, id, params.entry.name),
       params.overrides,
     );
+    return { entry, runtimeEntry: entry };
   }
 
   const { policy, route } = params.projection;
   const donor: (ModelCatalogEntry & ThinkingCatalogPolicyCarrier) | undefined =
-    findModelCatalogRouteDonor({
-      entry: params.entry,
-      route,
-      policy,
-      catalog: params.catalog,
-    });
+    (identity
+      ? params.catalog?.find(
+          (candidate) =>
+            policy.resolveIdentity(candidate)?.key === identity.key &&
+            policy.matchesRoute(candidate, route),
+        )
+      : undefined) ?? (policy.matchesRoute(params.entry, route) ? params.entry : undefined);
   const projected = logicalIdentity(
     params.entry,
-    identity.id,
+    id,
     donor?.name ?? params.entry.name,
     donor ?? params.entry,
   );
   // Only the selected physical donor can supply its prepared policy owner.
   const thinkingPolicy = donor?.[PREPARED_THINKING_POLICY];
-  return applyLogicalOverrides(
+  const entry = applyLogicalOverrides(
     {
       ...projected,
       api: route.api,
@@ -222,4 +194,14 @@ export function projectModelCatalogEntryForRoute(params: {
     },
     params.overrides,
   );
+  return {
+    entry,
+    runtimeEntry: donor
+      ? {
+          ...entry,
+          ...(Object.hasOwn(donor, "compat") ? { compat: donor.compat } : {}),
+          ...(Object.hasOwn(donor, "params") ? { params: donor.params } : {}),
+        }
+      : entry,
+  };
 }

@@ -12,7 +12,6 @@ import {
   type ModelCatalogDecisionContext,
   type ModelCatalogDecisionFacts,
 } from "./model-catalog-decisions.js";
-import { findModelCatalogRouteDonor } from "./model-catalog-route.js";
 import {
   prepareLogicalVisibleModelCatalog,
   resolveLogicalModelCatalogEntryState,
@@ -85,7 +84,7 @@ export async function prepareModelCatalogView(params: ModelCatalogViewParams) {
     manifestPlugins: params.metadataSnapshot,
   });
   const evaluations = new Map<string, ModelAuthAvailabilityEvaluation>();
-  const readCatalog = await prepareLogicalVisibleModelCatalog({
+  const rows = await prepareLogicalVisibleModelCatalog({
     cfg: params.cfg,
     catalog,
     defaultProvider: DEFAULT_PROVIDER,
@@ -104,12 +103,11 @@ export async function prepareModelCatalogView(params: ModelCatalogViewParams) {
         normalizeProviderId(entry.provider) !== "openai" &&
         evaluation.availability === undefined &&
         evaluation.evidence === "synthetic";
-      const state = resolveLogicalModelCatalogEntryState({
+      return resolveLogicalModelCatalogEntryState({
         evaluation,
         authBacked: evaluation.availability === true || syntheticLocal,
         routePolicy: openAIModelCatalogRoutePolicy,
       });
-      return () => state;
     },
   });
   const configuredEntries = resolveConfiguredModelEntries({
@@ -123,31 +121,16 @@ export async function prepareModelCatalogView(params: ModelCatalogViewParams) {
   const runtimes = new Map<string, GatewayAgentRuntime | undefined>();
   const runtimeChoices = new Map<string, readonly string[]>();
   const labelsByProvider = new Map<string, Set<string | undefined>>();
-  const entries = readCatalog().map((entry) => {
+  const entries: ModelCatalogEntry[] = [];
+  const runtimeCatalog: ModelCatalogEntry[] = [];
+  for (const { entry, runtimeEntry } of rows) {
     const configured = configuredEntries.byKey.get(`${entry.provider}/${entry.id}`);
     const alias = configured?.aliasDisabled
       ? undefined
       : (configured?.aliases.at(-1) ?? entry.alias);
-    return alias === entry.alias ? entry : Object.assign({}, entry, { alias });
-  });
-  const runtimeCatalog = entries.map((entry) => {
-    const route = evaluations.get(resolveModelCatalogIdentityKey(entry))?.selectedRoute;
-    const donor = route
-      ? findModelCatalogRouteDonor({
-          entry,
-          route,
-          policy: openAIModelCatalogRoutePolicy,
-          catalog: decisions.variants(entry),
-        })
-      : undefined;
-    return donor
-      ? {
-          ...entry,
-          ...(Object.hasOwn(donor, "compat") ? { compat: donor.compat } : {}),
-          ...(Object.hasOwn(donor, "params") ? { params: donor.params } : {}),
-        }
-      : entry;
-  });
+    entries.push(alias === entry.alias ? entry : { ...entry, alias });
+    runtimeCatalog.push(alias === runtimeEntry.alias ? runtimeEntry : { ...runtimeEntry, alias });
+  }
   const resolveFastMode = createModelCatalogFastModeResolver({
     cfg: params.cfg,
     agentId: params.agentId,

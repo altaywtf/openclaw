@@ -2,7 +2,7 @@
  * Regression coverage for model catalog visibility filtering.
  * Keeps provider/model allow and hide rules aligned with catalog row metadata.
  */
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   resolveLogicalModelCatalogEntryState,
@@ -15,8 +15,8 @@ import { openAIModelCatalogRoutePolicy } from "./openai-model-routes.js";
 async function readVisibleModelCatalog(
   params: Parameters<typeof prepareLogicalVisibleModelCatalog>[0],
 ) {
-  const readCatalog = await prepareLogicalVisibleModelCatalog(params);
-  return readCatalog();
+  const rows = await prepareLogicalVisibleModelCatalog(params);
+  return rows.map(({ entry }) => entry);
 }
 
 describe("prepareLogicalVisibleModelCatalog", () => {
@@ -35,6 +35,8 @@ describe("prepareLogicalVisibleModelCatalog", () => {
     contextWindow: 1_000_000,
     reasoning: true,
     input: ["text", "image"],
+    params: { platformOnly: true },
+    compat: { supportsTools: false },
   };
   const chatGPT: ModelCatalogEntry = {
     provider: "openai",
@@ -45,9 +47,11 @@ describe("prepareLogicalVisibleModelCatalog", () => {
     contextWindow: 400_000,
     reasoning: false,
     input: ["text"],
+    params: { chatGPTOnly: true },
+    compat: { supportsTools: true },
   };
 
-  const prepareAvailableEntry = async () => () =>
+  const prepareAvailableEntry = async () =>
     resolveLogicalModelCatalogEntryState({
       evaluation: { availability: true, routeResolution: null },
       routePolicy: openAIModelCatalogRoutePolicy,
@@ -107,7 +111,7 @@ describe("prepareLogicalVisibleModelCatalog", () => {
       defaultProvider: "openai",
       view: "all",
       routePolicy: openAIModelCatalogRoutePolicy,
-      prepareEntry: async () => () =>
+      prepareEntry: async () =>
         resolveLogicalModelCatalogEntryState({
           evaluation: {
             availability: true,
@@ -166,19 +170,19 @@ describe("prepareLogicalVisibleModelCatalog", () => {
   });
 
   it.each(["all", "default", "configured"] as const)(
-    "dedupes physical routes after selected-route projection in the %s view",
+    "returns one selected-route model in both projections of the %s view",
     async (view) => {
       const catalog = [
         { ...platform, alias: "platform" },
         { ...chatGPT, alias: "selected" },
       ];
-      const result = await readVisibleModelCatalog({
+      const rows = await prepareLogicalVisibleModelCatalog({
         cfg: {} as OpenClawConfig,
         catalog,
         defaultProvider: "openai",
         view,
         routePolicy: openAIModelCatalogRoutePolicy,
-        prepareEntry: async () => () =>
+        prepareEntry: async () =>
           resolveLogicalModelCatalogEntryState({
             evaluation: {
               availability: true,
@@ -189,7 +193,7 @@ describe("prepareLogicalVisibleModelCatalog", () => {
           }),
       });
 
-      expect(result).toEqual([
+      expect(rows.map(({ entry }) => entry)).toEqual([
         {
           provider: "openai",
           id: "gpt-5.5",
@@ -202,6 +206,21 @@ describe("prepareLogicalVisibleModelCatalog", () => {
           input: ["text"],
         },
       ]);
+      expect(rows.map(({ runtimeEntry }) => runtimeEntry)).toEqual([
+        {
+          provider: "openai",
+          id: "gpt-5.5",
+          name: "ChatGPT GPT-5.5",
+          alias: view === "all" ? "platform" : "selected",
+          api: "openai-chatgpt-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          contextWindow: 400_000,
+          reasoning: false,
+          input: ["text"],
+          params: { chatGPTOnly: true },
+          compat: { supportsTools: true },
+        },
+      ]);
     },
   );
 
@@ -212,13 +231,13 @@ describe("prepareLogicalVisibleModelCatalog", () => {
     const platformAvailable = { ...platform, status: "available" as const };
     const chatGPTSelected = { ...chatGPT, status };
     const catalog = [platformAvailable, chatGPTSelected];
-    const result = await readVisibleModelCatalog({
+    const rows = await prepareLogicalVisibleModelCatalog({
       cfg: {} as OpenClawConfig,
       catalog,
       routeVariants: catalog,
       defaultProvider: "openai",
       routePolicy: openAIModelCatalogRoutePolicy,
-      prepareEntry: async () => () =>
+      prepareEntry: async () =>
         resolveLogicalModelCatalogEntryState({
           evaluation: {
             availability: true,
@@ -229,7 +248,8 @@ describe("prepareLogicalVisibleModelCatalog", () => {
         }),
     });
 
-    expect(result.map((entry) => entry.id)).toEqual(expectedIds);
+    expect(rows.map(({ entry }) => entry.id)).toEqual(expectedIds);
+    expect(rows.map(({ runtimeEntry }) => runtimeEntry.id)).toEqual(expectedIds);
   });
 
   it("omits physical capabilities while managed route selection is unresolved", async () => {
@@ -239,7 +259,7 @@ describe("prepareLogicalVisibleModelCatalog", () => {
       defaultProvider: "openai",
       view: "all",
       routePolicy: openAIModelCatalogRoutePolicy,
-      prepareEntry: async () => () =>
+      prepareEntry: async () =>
         resolveLogicalModelCatalogEntryState({
           evaluation: {
             availability: false,
@@ -266,8 +286,14 @@ describe("prepareLogicalVisibleModelCatalog", () => {
         name: "ChatGPT Nano",
       };
       const routeVariants = reverse ? [platformNano, chatGPTNano] : [chatGPTNano, platformNano];
-      const prepareEntry = vi.fn(
-        async (_entry: ModelCatalogEntry, _variants: readonly ModelCatalogEntry[]) => () =>
+      const result = await readVisibleModelCatalog({
+        cfg: {} as OpenClawConfig,
+        catalog: [platformNano],
+        routeVariants,
+        defaultProvider: "openai",
+        view: "all",
+        routePolicy: openAIModelCatalogRoutePolicy,
+        prepareEntry: async () =>
           resolveLogicalModelCatalogEntryState({
             evaluation: {
               availability: true,
@@ -276,20 +302,8 @@ describe("prepareLogicalVisibleModelCatalog", () => {
             },
             routePolicy: openAIModelCatalogRoutePolicy,
           }),
-      );
-
-      const result = await readVisibleModelCatalog({
-        cfg: {} as OpenClawConfig,
-        catalog: [platformNano],
-        routeVariants,
-        defaultProvider: "openai",
-        view: "all",
-        routePolicy: openAIModelCatalogRoutePolicy,
-        prepareEntry,
       });
 
-      expect(prepareEntry).toHaveBeenCalledOnce();
-      expect(prepareEntry.mock.calls[0]?.[1]).toEqual(routeVariants);
       expect(result).toEqual([
         {
           provider: "openai",

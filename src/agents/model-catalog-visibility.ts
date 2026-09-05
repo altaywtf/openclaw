@@ -103,15 +103,11 @@ type LogicalModelCatalogParams = {
   routeVariants?: readonly ModelCatalogEntry[];
 };
 
-/** Prepare host facts once; observe revocable state only in the synchronous publication. */
 export async function prepareLogicalVisibleModelCatalog(
   params: LogicalModelCatalogParams & {
-    prepareEntry(
-      entry: ModelCatalogEntry,
-      routeVariants: readonly ModelCatalogEntry[],
-    ): Promise<() => LogicalModelCatalogEntryState>;
+    prepareEntry(entry: ModelCatalogEntry): Promise<LogicalModelCatalogEntryState>;
   },
-): Promise<() => ModelCatalogEntry[]> {
+) {
   const policy =
     params.policy ??
     createModelVisibilityPolicy({
@@ -151,130 +147,98 @@ export async function prepareLogicalVisibleModelCatalog(
           ...policy.allowedCatalog,
           ...retained,
         ];
-  const readers = new Map<string, () => LogicalModelCatalogEntryState>();
+  const states = new Map<string, LogicalModelCatalogEntryState>();
   for (const entry of candidates) {
     const key = keyOf(entry);
-    if (!readers.has(key)) {
+    if (!states.has(key)) {
       const variants = variantsOf(entry);
-      readers.set(key, await params.prepareEntry(variants[0] ?? entry, variants));
+      states.set(key, await params.prepareEntry(variants[0] ?? entry));
     }
   }
   const catalogKeys = new Set(params.catalog.map(keyOf));
-  const projections = new Map<
-    ModelCatalogEntry,
-    {
-      overrides: ReturnType<typeof resolveConfiguredModelCatalogOverrides>;
-      rows: Map<
-        | ModelCatalogRouteProjection["kind"]
-        | Extract<ModelCatalogRouteProjection, { kind: "selected" }>["route"],
-        ModelCatalogEntry
-      >;
+  const getEntryState = (entry: ModelCatalogEntry) => {
+    const state = states.get(keyOf(entry));
+    if (!state) {
+      throw new Error("Model catalog publication omitted prepared entry state");
     }
-  >();
-  return () => {
-    // Membership and row availability consume this one observation after every await.
-    const states = new Map([...readers].map(([key, read]) => [key, read()]));
-    const getEntryState = (entry: ModelCatalogEntry) => {
-      const state = states.get(keyOf(entry));
-      if (!state) {
-        throw new Error("Model catalog publication omitted prepared entry state");
-      }
-      return state;
-    };
-    const projectEntries = (entries: readonly ModelCatalogEntry[]) => {
-      const projected = entries.map((entry) => {
-        const projection = getEntryState(entry).routeProjection;
-        let cached = projections.get(entry);
-        if (!cached) {
-          cached = {
-            overrides: resolveConfiguredModelCatalogOverrides({
-              cfg: params.cfg,
-              entry,
-              policy: params.routePolicy,
-            }),
-            rows: new Map(),
-          };
-          projections.set(entry, cached);
-        }
-        const route = projection.kind === "selected" ? projection.route : projection.kind;
-        let row = cached.rows.get(route);
-        if (!row) {
-          row = projectModelCatalogEntryForRoute({
-            entry,
-            projection,
-            catalog: variantsOf(entry),
-            ...(cached.overrides ? { overrides: cached.overrides } : {}),
-          });
-          cached.rows.set(route, row);
-        }
-        return row;
-      });
-      return sortModelCatalogEntries(
-        dedupeLogicalModelCatalogEntries(projected, params.routePolicy),
-      );
-    };
-    if (params.view === "all") {
-      return projectEntries(params.catalog);
-    }
-    const defaultVisibleCatalog = wildcard
-      ? sortModelCatalogEntries(
-          dedupeModelCatalogEntries([
-            ...configuredCatalog,
-            ...params.catalog.filter((entry) => getEntryState(entry).authBacked),
-          ]),
-        )
-      : [];
-    const visible = sortModelCatalogEntries(
-      dedupeModelCatalogEntries(
-        policy.visibleCatalog({
-          catalog: params.catalog,
-          defaultVisibleCatalog,
-          view: params.view,
-        }),
-      ),
-    ).filter((entry) => catalogKeys.has(keyOf(entry)) || configuredKeys.has(keyOf(entry)));
-    const preferredKeys = new Set([...visible, ...retained].map(keyOf));
-    const preferred: ModelCatalogEntry[] = [];
-    const routeBacked = new Set<ModelCatalogEntry>();
-    for (const entry of params.catalog) {
-      const key = keyOf(entry);
-      const preferredKey = preferredKeys.has(key);
-      const wildcardRoute =
-        policy.allowAny ||
-        (policy.hasProviderWildcards &&
-          policy.allowsByWildcard({ provider: entry.provider, model: entry.id }));
-      if (!preferredKey && !wildcardRoute) {
-        continue;
-      }
-      const state = getEntryState(entry);
-      if (!state.compatible && !configuredKeys.has(key)) {
-        continue;
-      }
-      if (
-        preferredKey &&
-        state.routeProjection.kind === "selected" &&
-        params.routePolicy.matchesRoute(entry, state.routeProjection.route)
-      ) {
-        preferred.push(entry);
-      }
-      if (wildcardRoute && state.routeManaged && state.authBacked) {
-        routeBacked.add(entry);
-      }
-    }
-    const kept = visible.filter((entry) => {
-      const state = getEntryState(entry);
-      const configured = configuredKeys.has(keyOf(entry));
-      return (
-        (state.compatible || configured) &&
-        (!state.routeManaged || configured || routeBacked.has(entry))
-      );
-    });
-    // Selected physical routes must lead dedupe so sibling metadata cannot win.
-    return projectEntries([...preferred, ...kept, ...retained, ...routeBacked]).filter(
-      (entry) =>
-        (!policy.hasProviderWildcards ||
-          policy.allows({ provider: entry.provider, model: entry.id })) &&
-        isPickerVisibleCatalogEntry(entry, configuredKeys, params.routePolicy),
-    );
+    return state;
   };
+  const projectEntries = (entries: readonly ModelCatalogEntry[]) =>
+    dedupeLogicalModelCatalogEntries(entries, params.routePolicy)
+      .map((entry) =>
+        projectModelCatalogEntryForRoute({
+          entry,
+          projection: getEntryState(entry).routeProjection,
+          catalog: variantsOf(entry),
+          overrides: resolveConfiguredModelCatalogOverrides({
+            cfg: params.cfg,
+            entry,
+            policy: params.routePolicy,
+          }),
+        }),
+      )
+      .toSorted((left, right) => compareModelCatalogEntries(left.entry, right.entry));
+  if (params.view === "all") {
+    return projectEntries(params.catalog);
+  }
+  const defaultVisibleCatalog = wildcard
+    ? sortModelCatalogEntries(
+        dedupeModelCatalogEntries([
+          ...configuredCatalog,
+          ...params.catalog.filter((entry) => getEntryState(entry).authBacked),
+        ]),
+      )
+    : [];
+  const visible = sortModelCatalogEntries(
+    dedupeModelCatalogEntries(
+      policy.visibleCatalog({
+        catalog: params.catalog,
+        defaultVisibleCatalog,
+        view: params.view,
+      }),
+    ),
+  ).filter((entry) => catalogKeys.has(keyOf(entry)) || configuredKeys.has(keyOf(entry)));
+  const preferredKeys = new Set([...visible, ...retained].map(keyOf));
+  const preferred: ModelCatalogEntry[] = [];
+  const routeBacked = new Set<ModelCatalogEntry>();
+  for (const entry of params.catalog) {
+    const key = keyOf(entry);
+    const preferredKey = preferredKeys.has(key);
+    const wildcardRoute =
+      policy.allowAny ||
+      (policy.hasProviderWildcards &&
+        policy.allowsByWildcard({ provider: entry.provider, model: entry.id }));
+    if (!preferredKey && !wildcardRoute) {
+      continue;
+    }
+    const state = getEntryState(entry);
+    if (!state.compatible && !configuredKeys.has(key)) {
+      continue;
+    }
+    if (
+      preferredKey &&
+      state.routeProjection.kind === "selected" &&
+      params.routePolicy.matchesRoute(entry, state.routeProjection.route)
+    ) {
+      preferred.push(entry);
+    }
+    if (wildcardRoute && state.routeManaged && state.authBacked) {
+      routeBacked.add(entry);
+    }
+  }
+  const kept = visible.filter((entry) => {
+    const state = getEntryState(entry);
+    const configured = configuredKeys.has(keyOf(entry));
+    return (
+      (state.compatible || configured) &&
+      (!state.routeManaged || configured || routeBacked.has(entry))
+    );
+  });
+  // Selected physical routes must lead dedupe so sibling metadata cannot win.
+  return projectEntries([...preferred, ...kept, ...retained, ...routeBacked]).filter(
+    ({ entry }) =>
+      (!policy.hasProviderWildcards ||
+        policy.allows({ provider: entry.provider, model: entry.id })) &&
+      isPickerVisibleCatalogEntry(entry, configuredKeys, params.routePolicy),
+  );
 }

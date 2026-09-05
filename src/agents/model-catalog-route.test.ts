@@ -8,7 +8,6 @@ import * as activeThinkingPolicy from "../plugins/provider-thinking-active.js";
 import { prepareModelCatalogThinkingPolicies } from "../plugins/provider-thinking.js";
 import type { ProviderDefaultThinkingPolicyContext } from "../plugins/provider-thinking.types.js";
 import {
-  findModelCatalogRouteDonor,
   type ModelCatalogRoutePolicy,
   projectModelCatalogEntryForRoute,
   resolveConfiguredModelCatalogOverrides,
@@ -67,16 +66,25 @@ const chatGPTEntry: ModelCatalogEntry = {
 };
 
 describe("projectModelCatalogEntryForRoute", () => {
-  it("finds the exact selected-route donor regardless of catalog order", () => {
-    expect(
-      findModelCatalogRouteDonor({
+  it.each([false, true])(
+    "uses the selected donor for both projections regardless of catalog order (reverse=%s)",
+    (reverse) => {
+      const { entry, runtimeEntry } = projectModelCatalogEntryForRoute({
         entry: platformEntry,
-        route: chatGPTRoute,
-        policy: routePolicy,
-        catalog: [platformEntry, chatGPTEntry],
-      }),
-    ).toBe(chatGPTEntry);
-  });
+        projection: { kind: "selected", route: chatGPTRoute, policy: routePolicy },
+        catalog: reverse ? [chatGPTEntry, platformEntry] : [platformEntry, chatGPTEntry],
+      });
+      expect(entry).toMatchObject({ contextWindow: 400_000, input: ["text"] });
+      expect(entry).not.toHaveProperty("params");
+      expect(entry).not.toHaveProperty("compat");
+      expect(runtimeEntry).toMatchObject({
+        contextWindow: 400_000,
+        input: ["text"],
+        params: { chatGPTOnly: true },
+        compat: { supportsTools: true },
+      });
+    },
+  );
 
   it("prefers the physical route donor over a matching merged logical row", () => {
     const logicalEntry: ModelCatalogEntry = {
@@ -85,14 +93,16 @@ describe("projectModelCatalogEntryForRoute", () => {
       params: { logicalOnly: true },
     };
 
-    expect(
-      findModelCatalogRouteDonor({
-        entry: logicalEntry,
-        route: chatGPTRoute,
-        policy: routePolicy,
-        catalog: [platformEntry, chatGPTEntry],
-      }),
-    ).toBe(chatGPTEntry);
+    const { runtimeEntry } = projectModelCatalogEntryForRoute({
+      entry: logicalEntry,
+      projection: { kind: "selected", route: chatGPTRoute, policy: routePolicy },
+      catalog: [platformEntry, chatGPTEntry],
+    });
+
+    expect(runtimeEntry).toMatchObject({
+      compat: { supportsTools: true },
+      params: { chatGPTOnly: true },
+    });
   });
 
   it("projects one physical row onto the selected route capabilities", () => {
@@ -101,7 +111,7 @@ describe("projectModelCatalogEntryForRoute", () => {
         entry: platformEntry,
         projection: { kind: "selected", route: platformRoute, policy: routePolicy },
         catalog: [platformEntry, chatGPTEntry],
-      }),
+      }).entry,
     ).toEqual({
       provider: "openai",
       id: "gpt-5.5",
@@ -120,7 +130,7 @@ describe("projectModelCatalogEntryForRoute", () => {
         entry: platformEntry,
         projection: { kind: "selected", route: chatGPTRoute, policy: routePolicy },
         catalog: [platformEntry, chatGPTEntry],
-      }),
+      }).entry,
     ).toEqual({
       provider: "openai",
       id: "gpt-5.5",
@@ -136,19 +146,19 @@ describe("projectModelCatalogEntryForRoute", () => {
   });
 
   it("omits sibling-route capabilities when no selected-route row exists", () => {
-    expect(
-      projectModelCatalogEntryForRoute({
-        entry: platformEntry,
-        projection: { kind: "selected", route: chatGPTRoute, policy: routePolicy },
-        catalog: [platformEntry],
-      }),
-    ).toEqual({
+    const rows = projectModelCatalogEntryForRoute({
+      entry: platformEntry,
+      projection: { kind: "selected", route: chatGPTRoute, policy: routePolicy },
+      catalog: [platformEntry],
+    });
+    expect(rows.entry).toEqual({
       provider: "openai",
       id: "gpt-5.5",
       name: "GPT-5.5",
       api: "openai-chatgpt-responses",
       baseUrl: "https://chatgpt.com/backend-api/codex",
     });
+    expect(rows.runtimeEntry).toEqual(rows.entry);
   });
 
   it.each([
@@ -198,7 +208,7 @@ describe("projectModelCatalogEntryForRoute", () => {
         .spyOn(activeThinkingPolicy, "resolveActiveProviderThinkingProfile")
         .mockReturnValue({ levels: [{ id: "off" }], defaultLevel: "off" });
       try {
-        const projected = projectModelCatalogEntryForRoute({
+        const { entry: projected } = projectModelCatalogEntryForRoute({
           entry: expectDefined(catalog.entries[0], "prepared route test entry"),
           projection: route
             ? { kind: "selected", route, policy: routePolicy }
@@ -229,71 +239,94 @@ describe("projectModelCatalogEntryForRoute", () => {
   );
 
   it("returns the physical row unchanged for unmanaged models", () => {
-    expect(
-      projectModelCatalogEntryForRoute({
-        entry: platformEntry,
-        projection: { kind: "unmanaged" },
-      }),
-    ).toBe(platformEntry);
+    const { entry, runtimeEntry } = projectModelCatalogEntryForRoute({
+      entry: platformEntry,
+      projection: { kind: "unmanaged" },
+    });
+    expect(entry).toEqual(platformEntry);
+    expect(runtimeEntry).toEqual(platformEntry);
   });
 
   it("removes physical route facts while managed selection is unresolved", () => {
-    expect(
-      projectModelCatalogEntryForRoute({
-        entry: platformEntry,
-        projection: { kind: "unresolved", policy: routePolicy },
-      }),
-    ).toEqual({ provider: "openai", id: "gpt-5.5", name: "GPT-5.5" });
+    const { entry, runtimeEntry } = projectModelCatalogEntryForRoute({
+      entry: platformEntry,
+      projection: { kind: "unresolved", policy: routePolicy },
+    });
+    expect(entry).toEqual({ provider: "openai", id: "gpt-5.5", name: "GPT-5.5" });
+    expect(runtimeEntry).toEqual(entry);
   });
 
   it("does not copy private route policy facts into the catalog row", () => {
-    const projected = projectModelCatalogEntryForRoute({
+    const donor = {
+      ...chatGPTEntry,
+      apiKey: "fixture-key",
+      headers: { Authorization: "fixture-token" },
+    };
+    const { entry, runtimeEntry } = projectModelCatalogEntryForRoute({
       entry: platformEntry,
       projection: { kind: "selected", route: chatGPTRoute, policy: routePolicy },
-      catalog: [chatGPTEntry],
+      catalog: [donor],
     });
-    expect(projected).not.toHaveProperty("authRequirement");
-    expect(projected).not.toHaveProperty("requestTransportOverrides");
-    expect(projected).not.toHaveProperty("params");
-    expect(projected).not.toHaveProperty("compat");
+    for (const row of [entry, runtimeEntry]) {
+      expect(row).not.toHaveProperty("authRequirement");
+      expect(row).not.toHaveProperty("requestTransportOverrides");
+      expect(row).not.toHaveProperty("apiKey");
+      expect(row).not.toHaveProperty("headers");
+    }
+    expect(entry).not.toHaveProperty("params");
+    expect(entry).not.toHaveProperty("compat");
   });
 
-  it("applies explicit logical context overrides after physical route selection", () => {
-    const cfg = {
-      models: {
-        providers: {
-          openai: {
-            baseUrl: "https://api.openai.com/v1",
-            models: [
-              {
-                id: "gpt-5.5",
-                contextTokens: 160_000,
-                thinkingLevelMap: { off: "none", max: null },
-              },
-            ],
+  it.each([false, true])(
+    "applies explicit logical overrides to both projections (donor=%s)",
+    (hasDonor) => {
+      const cfg = {
+        models: {
+          providers: {
+            openai: {
+              baseUrl: "https://api.openai.com/v1",
+              models: [
+                {
+                  id: "gpt-5.5",
+                  name: "Configured model",
+                  contextWindow: 200_000,
+                  contextTokens: 160_000,
+                  reasoning: false,
+                  thinkingLevelMap: { off: "none", max: null },
+                  input: ["text", "image"],
+                  cost: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0.2 },
+                  maxTokens: 8_000,
+                },
+              ],
+            },
           },
         },
-      },
-    } as unknown as OpenClawConfig;
-    const overrides = resolveConfiguredModelCatalogOverrides({ cfg, entry: platformEntry });
+      } satisfies OpenClawConfig;
+      const overrides = resolveConfiguredModelCatalogOverrides({ cfg, entry: platformEntry });
 
-    expect(
-      projectModelCatalogEntryForRoute({
+      const { entry, runtimeEntry } = projectModelCatalogEntryForRoute({
         entry: platformEntry,
         projection: { kind: "selected", route: chatGPTRoute, policy: routePolicy },
-        catalog: [platformEntry],
-        ...(overrides ? { overrides } : {}),
-      }),
-    ).toEqual({
-      provider: "openai",
-      id: "gpt-5.5",
-      name: "GPT-5.5",
-      api: "openai-chatgpt-responses",
-      baseUrl: "https://chatgpt.com/backend-api/codex",
-      contextTokens: 160_000,
-      thinkingLevelMap: { off: "none", max: null },
-    });
-  });
+        catalog: hasDonor ? [platformEntry, chatGPTEntry] : [platformEntry],
+        overrides,
+      });
+      for (const row of [entry, runtimeEntry]) {
+        expect(row).toMatchObject({
+          provider: "openai",
+          id: "gpt-5.5",
+          name: "Configured model",
+          api: "openai-chatgpt-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          contextWindow: 200_000,
+          contextTokens: 160_000,
+          reasoning: false,
+          configuredReasoning: false,
+          thinkingLevelMap: { off: "none", max: null },
+          input: ["text", "image"],
+        });
+      }
+    },
+  );
 
   it("marks configured reasoning overrides as authoritative", () => {
     const cfg = {
