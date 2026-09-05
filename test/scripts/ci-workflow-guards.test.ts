@@ -6141,7 +6141,13 @@ server.listen(0, "127.0.0.1", () => {
             }),
           );
         writeConsumerManifest("1.0.0");
-        const installArgs = ["install", "--ignore-scripts", "--config.engine-strict=false"];
+        // The fixture registry serves only its test package, not the preserved project pnpm pin.
+        const installArgs = [
+          "install",
+          "--ignore-scripts",
+          "--config.engine-strict=false",
+          "--pm-on-fail=ignore",
+        ];
         const onlineArgs = [...installArgs, `--registry=${registryUrl}`];
         const seeded = runPnpm([...onlineArgs, "--lockfile-only"], workspace);
         expect(seeded.status, `${seeded.stdout}${seeded.stderr}`).toBe(0);
