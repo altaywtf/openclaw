@@ -268,9 +268,9 @@ support is unchanged.
 
 The test toolchain pins stable Vitest `5.0.0`, including its browser and coverage
 packages. Use `describe(name, { concurrent: false }, callback)` for ordered
-suites. Await asynchronous assertions, keep `vi.mock`/`vi.hoisted` at module
-scope, and perform actions whose mock calls you assert inside the test:
-Vitest clears mock history before each test, including calls from `beforeAll`.
+suites. Await asynchronous assertions and keep `vi.mock`/`vi.hoisted` at module
+scope. OpenClaw sets `clearMocks: false` to preserve calls recorded during
+shared setup and `beforeAll`; tests own any per-case mock-history resets.
 Name patterns spanning suites use `suite > test`; native JSON retains its
 space-joined `fullName`, so evidence readers match `ancestorTitles` plus `title`.
 

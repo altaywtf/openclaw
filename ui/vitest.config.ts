@@ -210,6 +210,9 @@ export default defineConfig({
     projects: [
       defineProject({
         plugins: [controlUiLocaleModulesPlugin()],
+        resolve: {
+          alias: workspaceSourceAliases,
+        },
         test: {
           ...sharedUiTestConfig,
           deps: jsdomOptimizedDeps,
@@ -236,6 +239,9 @@ export default defineConfig({
       }),
       defineProject({
         plugins: [controlUiLocaleModulesPlugin()],
+        resolve: {
+          alias: workspaceSourceAliases,
+        },
         test: {
           ...sharedUiTestConfig,
           // Reuse the canonical singleton-sensitive list so the package and
@@ -250,6 +256,9 @@ export default defineConfig({
       }),
       defineProject({
         plugins: [controlUiLocaleModulesPlugin()],
+        resolve: {
+          alias: workspaceSourceAliases,
+        },
         test: {
           ...sharedUiTestConfig,
           deps: jsdomOptimizedDeps,
