@@ -1679,8 +1679,9 @@ function assertUpdateRunSelfUpgrade([file]) {
 function assertMobilePairingEvidence(files) {
   const expectedPhases = ["baseline", "candidate-first", "candidate-restart", "final"];
   const expectedNodeSurfaceAdditions = ["watch.notify", "watch.status"];
+  const baselineReason = "baseline-before-candidate";
+  const alreadyAdmittedReason = "baseline-already-admitted-ios-iphone-watch-relay";
   const expectedReasons = {
-    "not-applicable": "baseline-before-candidate",
     required: "selected-gateway-admits-ios-iphone-watch-relay",
     "omitted-gateway-unsupported": "selected-gateway-does-not-admit-ios-iphone-watch-relay",
   };
@@ -1715,11 +1716,17 @@ function assertMobilePairingEvidence(files) {
         JSON.stringify(expectedNodeSurfaceAdditions);
     const mode = value?.nodeSurfaceReapprovalMode;
     assert(
-      Object.hasOwn(expectedReasons, mode),
+      mode === "not-applicable" || Object.hasOwn(expectedReasons, mode),
       "mobile node pairing reapproval mode missing or unknown",
     );
+    const expectedReason =
+      index === 0
+        ? baselineReason
+        : mode === "not-applicable"
+          ? alreadyAdmittedReason
+          : expectedReasons[mode];
     assert(
-      value?.nodeSurfaceReapprovalReason === expectedReasons[mode],
+      value?.nodeSurfaceReapprovalReason === expectedReason,
       "mobile node pairing reapproval reason changed",
     );
     assert(
@@ -1728,8 +1735,6 @@ function assertMobilePairingEvidence(files) {
     );
     if (index === 0) {
       assert(mode === "not-applicable", "baseline mobile node pairing mode changed");
-    } else {
-      assert(mode !== "not-applicable", "candidate mobile node pairing mode was not selected");
     }
     assert(value?.missingPasswordReason === true, "mobile pairing password_missing proof missing");
     assert(

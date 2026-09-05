@@ -404,6 +404,31 @@ describe("upgrade survivor mobile pairing client", () => {
       nodeSurfaceReapprovalMode: "required",
       nodeSurfaceReapprovalReason: "selected-gateway-admits-ios-iphone-watch-relay",
     });
+    expect(
+      validatePairingAudit({
+        devicePairing: { pending: [], paired: [{ deviceId: "device-1" }] },
+        nodePairing: {
+          pending: [],
+          paired: [
+            {
+              ...pairedNode,
+              commands: ["camera.snap", "watch.status", "watch.notify"],
+            },
+          ],
+        },
+        deviceId: "device-1",
+        mobileWatchReapprovalMode: "required",
+      }),
+    ).toEqual({
+      pendingDevicePairingCount: 0,
+      pendingNodePairingCount: 0,
+      pairedDevicePresent: true,
+      pairedNodePresent: true,
+      nodeSurfaceReapprovalRequired: false,
+      nodeSurfaceCommandAdditions: [],
+      nodeSurfaceReapprovalMode: "not-applicable",
+      nodeSurfaceReapprovalReason: "baseline-already-admitted-ios-iphone-watch-relay",
+    });
     expect(() =>
       validatePairingAudit({
         devicePairing: { pending: [], paired: [{ deviceId: "device-1" }] },
@@ -453,6 +478,17 @@ describe("upgrade survivor mobile pairing client", () => {
       validatePairingAudit({
         devicePairing: { pending: [], paired: [{ deviceId: "device-1" }] },
         nodePairing: { pending: [], paired: [pairedNode] },
+        deviceId: "device-1",
+        mobileWatchReapprovalMode: "required",
+      }),
+    ).toThrow(/omitted the expected command-surface reapproval/);
+    expect(() =>
+      validatePairingAudit({
+        devicePairing: { pending: [], paired: [{ deviceId: "device-1" }] },
+        nodePairing: {
+          pending: [],
+          paired: [{ ...pairedNode, commands: ["camera.snap", "watch.status"] }],
+        },
         deviceId: "device-1",
         mobileWatchReapprovalMode: "required",
       }),

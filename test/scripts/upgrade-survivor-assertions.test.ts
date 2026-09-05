@@ -15,14 +15,16 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type { PluginInstallRecord } from "../../src/config/types.plugins.js";
+import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 import {
   writePluginInspectFixture,
   type PluginInspectFixture,
 } from "./plugin-inspect.test-support.js";
 
 const ASSERTIONS_PATH = "scripts/e2e/lib/upgrade-survivor/assertions.mjs";
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 function writeJson(path: string, value: unknown): void {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
@@ -1392,6 +1394,70 @@ process.stdout.write(sessionDir + "\\n");
     } finally {
       rmSync(root, { force: true, recursive: true });
     }
+  });
+
+  it("accepts a clean candidate when the baseline already owns the watch commands", () => {
+    const root = tempDirs.make("openclaw-mobile-pairing-preapproved-");
+    const phases = ["baseline", "candidate-first", "candidate-restart", "final"];
+    const hashes = ["a", "b", "c", "d", "e"].map((value) => value.repeat(64));
+    const files = phases.map((phase, index) => {
+      const file = join(root, `${phase}.json`);
+      writeJson(file, {
+        phase,
+        ok: true,
+        health: true,
+        connectedDevicePresent: true,
+        pendingPairingCount: 0,
+        pendingDevicePairingCount: 0,
+        pendingNodePairingCount: 0,
+        pairedDevicePresent: true,
+        pairedNodePresent: true,
+        nodeSurfaceReapprovalRequired: false,
+        nodeSurfaceCommandAdditions: [],
+        nodeSurfaceReapprovalMode: "not-applicable",
+        nodeSurfaceReapprovalReason:
+          index === 0
+            ? "baseline-before-candidate"
+            : "baseline-already-admitted-ios-iphone-watch-relay",
+        missingPasswordReason: true,
+        missingPasswordClose1008: true,
+        credentials: {
+          node: {
+            usedTokenHash: hashes[index],
+            storedTokenHash: hashes[index + 1],
+            deviceTokenReturned: true,
+            tokenRotated: true,
+          },
+          operator: {
+            usedTokenHash: hashes[0],
+            storedTokenHash: hashes[0],
+            deviceTokenReturned: true,
+            tokenRotated: false,
+          },
+        },
+      });
+      return file;
+    });
+    const verify = () =>
+      execFileSync(
+        process.execPath,
+        [ASSERTIONS_PATH, "assert-mobile-pairing-evidence", ...files],
+        { stdio: "pipe" },
+      );
+    const candidateRestart = files[2];
+    if (!candidateRestart) {
+      throw new Error("candidate restart evidence fixture missing");
+    }
+
+    expect(verify).not.toThrow();
+    const stale = JSON.parse(readFileSync(candidateRestart, "utf8"));
+    stale.nodeSurfaceReapprovalReason = "baseline-before-candidate";
+    writeJson(candidateRestart, stale);
+    expect(verify).toThrow(/reapproval reason changed/);
+    stale.nodeSurfaceReapprovalMode = "omitted-gateway-unsupported";
+    stale.nodeSurfaceReapprovalReason = "selected-gateway-does-not-admit-ios-iphone-watch-relay";
+    writeJson(candidateRestart, stale);
+    expect(verify).toThrow(/modes changed across reconnects/);
   });
 
   it.each(["base", "sqlite-volume"])(

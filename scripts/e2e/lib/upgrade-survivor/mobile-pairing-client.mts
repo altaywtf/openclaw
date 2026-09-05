@@ -179,6 +179,7 @@ const MOBILE_WATCH_REAPPROVAL_REASONS: Record<MobileWatchReapprovalMode, string>
   required: "selected-gateway-admits-ios-iphone-watch-relay",
   "omitted-gateway-unsupported": "selected-gateway-does-not-admit-ios-iphone-watch-relay",
 };
+const MOBILE_WATCH_ALREADY_ADMITTED_REASON = "baseline-already-admitted-ios-iphone-watch-relay";
 const BASELINE_PAIRING_POLL_ATTEMPTS = 50;
 const BASELINE_PAIRING_POLL_INTERVAL_MS = 100;
 const RESPONSE_TIMEOUT_MS = 15_000;
@@ -696,9 +697,24 @@ export function validatePairingAudit(params: {
   if (!isRecord(pairedNode)) {
     throw new Error("paired mobile node missing");
   }
+  const pairedCommands = new Set(
+    requireStringArray(pairedNode.commands ?? [], "paired node commands"),
+  );
   if (params.nodePairing.pending.length === 0) {
     if (params.mobileWatchReapprovalMode === "required") {
-      throw new Error("mobile node pairing omitted the expected command-surface reapproval");
+      if (!EXPECTED_UPGRADE_COMMAND_ADDITIONS.every((command) => pairedCommands.has(command))) {
+        throw new Error("mobile node pairing omitted the expected command-surface reapproval");
+      }
+      return {
+        pendingDevicePairingCount: 0,
+        pendingNodePairingCount: 0,
+        pairedDevicePresent: true,
+        pairedNodePresent: true,
+        nodeSurfaceReapprovalRequired: false,
+        nodeSurfaceCommandAdditions: [],
+        nodeSurfaceReapprovalMode: "not-applicable",
+        nodeSurfaceReapprovalReason: MOBILE_WATCH_ALREADY_ADMITTED_REASON,
+      };
     }
     return {
       pendingDevicePairingCount: 0,
@@ -719,9 +735,6 @@ export function validatePairingAudit(params: {
   if (!isRecord(pendingNode) || pendingNode.nodeId !== params.deviceId) {
     throw new Error("mobile node pairing pending identity changed");
   }
-  const pairedCommands = new Set(
-    requireStringArray(pairedNode.commands ?? [], "paired node commands"),
-  );
   const pendingCommands = requireStringArray(pendingNode.commands ?? [], "pending node commands");
   const commandAdditions = pendingCommands
     .filter((command) => !pairedCommands.has(command))
