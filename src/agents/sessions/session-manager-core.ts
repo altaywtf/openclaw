@@ -1,5 +1,5 @@
 import {
-  inspectTranscriptEventsSync,
+  inspectRuntimeTranscriptEventsSync,
   type SessionTranscriptRuntimeTarget,
 } from "../../config/sessions/session-accessor.js";
 import {
@@ -81,7 +81,7 @@ export class SessionManagerCore extends SessionEntryNavigation<SessionEntry> {
     const bounded = this.boundedContextLimits
       ? readSessionTranscriptBoundedActiveContextCore(target, this.boundedContextLimits)
       : undefined;
-    const inspected = bounded ? undefined : inspectTranscriptEventsSync(target);
+    const inspected = bounded ? undefined : inspectRuntimeTranscriptEventsSync(target);
     const entries = (bounded?.events ?? inspected?.events ?? []) as FileEntry[];
     this.boundedContextIncomplete = bounded !== undefined;
     this.persistedBoundaryCount = bounded?.boundaryCount;

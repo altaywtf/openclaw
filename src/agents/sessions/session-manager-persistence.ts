@@ -262,7 +262,9 @@ export class SessionManagerPersistence extends SessionManagerCore {
     prepared.clampOpaqueFileEntryIndexes();
     prepared.buildIndex();
     restoreOmittedParentAncestry();
-    prepared.leafId = prepared.resolveCanonicalParentId(replacementParentId);
+    // The predecessor may be outside a bounded window but is still the durable active leaf.
+    // Preserve its opaque identity so the serialized leaf control can restore it on a full reopen.
+    prepared.leafId = replacementParentId;
     prepared.appendParentId = replacementParentId;
     const events = prepared.getPersistedFileEntries(prepared.appendParentId, prepared.appendMode);
     const suffixEvents = preparedSuffixOffset > 0 ? events.slice(preparedSuffixOffset) : events;

@@ -347,7 +347,7 @@ describe("stripSessionsYieldArtifacts", () => {
     stripSessionsYieldArtifacts(session);
 
     expect(session.agent.state.messages).toEqual([toolResult]);
-    expect(readSessionTranscriptWatermark(scope).generation).toBe(generationBefore);
+    expect(readSessionTranscriptWatermark(scope).generation).not.toBe(generationBefore);
     expect(SessionManager.open(scope, dir).buildSessionContext().messages).toEqual([toolResult]);
     expect(await loadTranscriptEvents(scope)).not.toEqual(
       expect.arrayContaining([

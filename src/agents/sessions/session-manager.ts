@@ -7,7 +7,7 @@
 import type { AgentMessage } from "../../../packages/agent-core/src/types.js";
 import {
   appendTranscriptMessageSync,
-  inspectTranscriptEventsSync,
+  inspectRuntimeTranscriptEventsSync,
   type SessionTranscriptRuntimeTarget,
 } from "../../config/sessions/session-accessor.js";
 import { readSessionTranscriptBoundedActiveContextCore } from "../../config/sessions/session-accessor.sqlite-active-context.js";
@@ -106,7 +106,7 @@ export class SessionManager extends SessionManagerBranching {
         ...(cwdOverride !== undefined ? { cwd: cwdOverride } : {}),
       });
     }
-    const inspected = inspectTranscriptEventsSync(target);
+    const inspected = inspectRuntimeTranscriptEventsSync(target);
     const entries = inspected.events as FileEntry[];
     const header = entries.find(
       (entry) => typeof entry === "object" && entry !== null && entry.type === "session",

@@ -267,7 +267,7 @@ describe("SessionManager persistence compatibility", () => {
       }),
     ).toBe(1);
 
-    expect(readSessionTranscriptWatermark(scope).generation).toBe(generationBefore);
+    expect(readSessionTranscriptWatermark(scope).generation).not.toBe(generationBefore);
     expect(await loadTranscriptEvents(scope)).toMatchObject([
       { type: "session" },
       { id: "user", parentId: null, type: "message" },

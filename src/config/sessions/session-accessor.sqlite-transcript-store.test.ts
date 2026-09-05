@@ -535,6 +535,75 @@ describe("SQLite exact transcript suffix replacement", () => {
     }, events);
   });
 
+  it("reconciles when an active root-level suffix can expose older durable history", async () => {
+    const activeRoot = {
+      type: "message",
+      id: "active-root",
+      parentId: null,
+      message: { role: "assistant", content: "active root" },
+    } as const;
+    const events = [...rewriteEvents, activeRoot] as const;
+
+    await withRewriteFixture(async ({ db, snapshot, scope }) => {
+      await waitForSessionTranscriptIndexReconcile(scope);
+      replaceTranscriptSuffixForTest(scope, events, rewriteEvents, rewriteEvents.length);
+
+      expect(snapshot().raw).toHaveLength(rewriteEvents.length);
+      expect(sessionTranscriptIndexNeedsReconcile(db, scope.sessionId)).toBe(true);
+      await waitForSessionTranscriptIndexReconcile(scope);
+      expect(snapshot()).toMatchObject({
+        active: [
+          expect.objectContaining({ event_seq: 0 }),
+          expect.objectContaining({ event_seq: 1 }),
+          expect.objectContaining({ event_seq: 2 }),
+        ],
+        search: expect.arrayContaining([
+          expect.objectContaining({ message_id: "user", text: "question" }),
+          expect.objectContaining({ message_id: "answer", text: "answer" }),
+        ]),
+      });
+      expect(sessionTranscriptIndexNeedsReconcile(db, scope.sessionId)).toBe(false);
+    }, events);
+  });
+
+  it("reconciles when an inactive suffix starts at a root-level side branch", async () => {
+    const inactiveEvent = {
+      type: "message",
+      id: "inactive-root",
+      parentId: null,
+      appendMode: "side",
+      message: { role: "assistant", content: "inactive root" },
+    } as const;
+    const activeEvent = {
+      type: "message",
+      id: "active-child",
+      parentId: "user",
+      message: { role: "assistant", content: "active child" },
+    } as const;
+    const events = [rewriteEvents[0], rewriteEvents[1], inactiveEvent, activeEvent] as const;
+    const nextEvents = [rewriteEvents[0], rewriteEvents[1], activeEvent] as const;
+
+    await withRewriteFixture(async ({ db, snapshot, scope }) => {
+      await waitForSessionTranscriptIndexReconcile(scope);
+      replaceTranscriptSuffixForTest(scope, events, nextEvents, 2);
+
+      expect(snapshot().raw).toHaveLength(nextEvents.length);
+      await waitForSessionTranscriptIndexReconcile(scope);
+      expect(snapshot()).toMatchObject({
+        active: [
+          expect.objectContaining({ event_seq: 0 }),
+          expect.objectContaining({ event_seq: 1 }),
+          expect.objectContaining({ event_seq: 2 }),
+        ],
+        search: expect.arrayContaining([
+          expect.objectContaining({ message_id: "user", text: "question" }),
+          expect.objectContaining({ message_id: "active-child", text: "active child" }),
+        ]),
+      });
+      expect(sessionTranscriptIndexNeedsReconcile(db, scope.sessionId)).toBe(false);
+    }, events);
+  });
+
   it.each([
     {
       name: "row",
@@ -881,13 +950,13 @@ describe("SQLite exact transcript suffix replacement", () => {
     }, duplicateKeyEvents);
   });
 
-  it("preserves generation while updating raw, identity, active, and FTS rows", async () => {
+  it("rotates generation while updating raw, identity, active, and FTS rows", async () => {
     await withRewriteFixture(({ db, snapshot, scope }) => {
       const before = snapshot();
       replaceTranscriptSuffixForTest(scope, rewriteEvents, rewriteEvents.slice(0, 2));
 
       const after = snapshot();
-      expect(after.generation).toBe(before.generation);
+      expect(after.generation).not.toBe(before.generation);
       expect(after.raw).toHaveLength(2);
       expect(after.identities).toHaveLength(2);
       expect(after.active).toHaveLength(2);
@@ -896,7 +965,7 @@ describe("SQLite exact transcript suffix replacement", () => {
     });
   });
 
-  it("preserves generation when an already-dirty projection needs reconciliation", async () => {
+  it("rotates generation when an already-dirty projection needs reconciliation", async () => {
     await withRewriteFixture(async ({ db, snapshot, scope }) => {
       const before = snapshot();
       db.prepare(
@@ -905,10 +974,11 @@ describe("SQLite exact transcript suffix replacement", () => {
 
       replaceTranscriptSuffixForTest(scope, rewriteEvents, rewriteEvents.slice(0, 2));
 
-      expect(snapshot().generation).toBe(before.generation);
+      const rotatedGeneration = snapshot().generation;
+      expect(rotatedGeneration).not.toBe(before.generation);
       await waitForSessionTranscriptIndexReconcile(scope);
       expect(snapshot()).toMatchObject({
-        generation: before.generation,
+        generation: rotatedGeneration,
         raw: expect.arrayContaining([expect.objectContaining({ seq: 1 })]),
       });
       expect(snapshot().raw).toHaveLength(2);

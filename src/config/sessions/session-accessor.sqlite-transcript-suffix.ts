@@ -12,6 +12,7 @@ import {
 import { getSessionKysely, type ResolvedTranscriptScope } from "./session-accessor.sqlite-scope.js";
 import {
   readTranscriptMutationStateInTransaction,
+  rotateTranscriptGenerationInTransaction,
   touchTranscriptMutationInTransaction,
 } from "./session-accessor.sqlite-transcript-state.js";
 import {
@@ -366,9 +367,9 @@ function prepareIncrementalTranscriptSuffixMutation(
       .where("session_id", "=", resolved.sessionId)
       .where("event_seq", "=", startSeq),
   );
-  if (anchorId && (!anchor || !changedEventWasActive)) {
-    // Inactive branches may have inactive or active parents. Rebuild their derived rows after the
-    // fenced raw mutation instead of treating later active descendants as part of the mutation.
+  if (!changedEventWasActive || !anchorId || !anchor) {
+    // Root-level and inactive branches can expose durable history outside the prepared suffix.
+    // Rebuild their derived rows after the fenced mutation instead of publishing an incomplete view.
     return prepareReconciledIncrementalSuffixMutation({
       database,
       expectedMutationAt: currentMutationAt,
@@ -492,7 +493,7 @@ export function prepareSqliteTranscriptSuffixMutation(
   return prepareFullTranscriptSuffixMutation(database, resolved, expectedEvents, nextEvents);
 }
 
-/** Mutates an exact transcript suffix without rotating generation or invalidating its projection. */
+/** Mutates an exact transcript suffix while retaining a healthy materialized projection. */
 export function replaceSqliteTranscriptSuffixInTransaction(
   database: OpenClawAgentDatabase,
   resolved: ResolvedTranscriptScope,
@@ -650,6 +651,9 @@ export function replaceSqliteTranscriptSuffixInTransaction(
     }
   }
 
+  // Destructive suffix rewrites may reuse removed sequence positions. Rotate the raw and visible
+  // cursor generation in the same transaction so a resumed reader cannot silently skip replacements.
+  rotateTranscriptGenerationInTransaction(database, resolved.sessionId);
   if (projectionIsHealthy) {
     replaceSessionTranscriptIndexSuffixInTransaction(database.db, resolved.sessionId, {
       unchangedBeforeSeq: plan.startSeq,

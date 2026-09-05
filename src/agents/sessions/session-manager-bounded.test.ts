@@ -4,7 +4,9 @@ import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js"
 import {
   appendTranscriptMessage,
   loadTranscriptEvents,
+  readSessionTranscriptVisibleMessageDeltaCore,
   readSessionTranscriptWatermark,
+  readTranscriptRawDelta,
   replaceTranscriptEventsSync,
   SessionTranscriptProjectionUnavailableError,
   upsertSessionEntryCore,
@@ -161,6 +163,12 @@ it("excludes interleaved display payloads without inventing events or losing fen
       const fenced = SessionManager.openBounded(scope, limits);
       expect(fenced.getAppendParentId()).toBe(tailId);
       expect(fenced.buildSessionContext()).toEqual(manager.buildSessionContext());
+      expect(SessionManager.open(scope, dir).buildSessionContext()).toEqual(
+        manager.buildSessionContext(),
+      );
+      const retargeted = SessionManager.inMemory(dir);
+      retargeted.setSessionTarget(scope);
+      expect(retargeted.buildSessionContext()).toEqual(manager.buildSessionContext());
     },
   );
   expect(SessionManager.open(scope, dir).getBranch().at(-1)?.id).toBe(appended.entryId);
@@ -204,6 +212,35 @@ it.each([1, 2])("retains the forward cut after %i excluded first-kept entries", 
   expect(SessionManager.open(scope, dir).buildSessionContext().messages).toMatchObject([
     ...expected.messages,
     { role: "user", content: "after reopen" },
+  ]);
+});
+
+it("preserves the durable leaf when bounded cleanup removes the whole selected window", async () => {
+  const dir = tempDirs.make("openclaw-session-manager-whole-window-");
+  const scope = {
+    agentId: "main",
+    sessionId: "whole-window-session",
+    sessionKey: "agent:main:whole-window-session",
+    storePath: path.join(dir, "sessions.json"),
+  };
+  await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 1 });
+  const seed = SessionManager.open(scope, dir);
+  const durableId = seed.appendMessage({ role: "user", content: "durable", timestamp: 1 });
+  const removableId = seed.appendMessage(buildAssistantMessage("temporary"));
+  await waitForSessionTranscriptIndexReconcile({
+    agentId: scope.agentId,
+    path: path.join(dir, "openclaw-agent.sqlite"),
+  });
+
+  const bounded = SessionManager.openBounded(scope, { cwd: dir, maxBytes: 4096, maxEvents: 1 });
+  expect(bounded.removeTrailingEntries((entry) => entry.id === removableId)).toBe(1);
+  const reopened = SessionManager.open(scope, dir);
+  expect(reopened.getAppendParentId()).toBe(durableId);
+  expect(reopened.buildSessionContext().messages).toMatchObject([{ content: "durable" }]);
+  reopened.appendMessage({ role: "user", content: "after cleanup", timestamp: 2 });
+  expect(SessionManager.open(scope, dir).buildSessionContext().messages).toMatchObject([
+    { content: "durable" },
+    { content: "after cleanup" },
   ]);
 });
 
@@ -287,6 +324,43 @@ it.each([
   ).toEqual({ event_json: "{excluded-row-is-not-json" });
 });
 
+it("invalidates raw and visible cursors while keeping the projection available", async () => {
+  const dir = tempDirs.make("openclaw-session-manager-cursor-rewrite-");
+  const scope = {
+    agentId: "main",
+    sessionId: "cursor-rewrite-session",
+    sessionKey: "agent:main:cursor-rewrite-session",
+    storePath: path.join(dir, "sessions.json"),
+  };
+  await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 1 });
+  const manager = SessionManager.open(scope, dir);
+  manager.appendMessage({ role: "user", content: "retained", timestamp: 1 });
+  const removableId = manager.appendMessage(buildAssistantMessage("temporary"));
+  await waitForSessionTranscriptIndexReconcile({
+    agentId: scope.agentId,
+    path: path.join(dir, "openclaw-agent.sqlite"),
+  });
+  const raw = readTranscriptRawDelta(scope);
+  const visible = readSessionTranscriptVisibleMessageDeltaCore(scope);
+  if (raw.kind !== "page" || visible.kind !== "page") {
+    throw new Error("missing cursor fixture");
+  }
+
+  expect(manager.removeTrailingEntries((entry) => entry.id === removableId)).toBe(1);
+  manager.appendMessage(buildAssistantMessage("replacement"));
+
+  expect(readTranscriptRawDelta(scope, { cursor: raw.cursor })).toMatchObject({
+    kind: "reset",
+    reason: "generation_mismatch",
+  });
+  expect(
+    readSessionTranscriptVisibleMessageDeltaCore(scope, { cursor: visible.cursor }),
+  ).toMatchObject({ kind: "reset", reason: "generation_mismatch" });
+  expect(() =>
+    SessionManager.openBounded(scope, { cwd: dir, maxBytes: 4096, maxEvents: 4 }),
+  ).not.toThrow();
+});
+
 it("keeps a long transcript projection available when removing a trailing entry", async () => {
   const dir = tempDirs.make("openclaw-session-manager-long-suffix-");
   const scope = {
@@ -328,7 +402,7 @@ it("keeps a long transcript projection available when removing a trailing entry"
     manager.removeTrailingEntries((entry) => entry.id === `message-${SYNC_REBUILD_MAX_ROWS - 1}`),
   ).toBe(1);
 
-  expect(readSessionTranscriptWatermark(scope)?.generation).toBe(generationBefore);
+  expect(readSessionTranscriptWatermark(scope)?.generation).not.toBe(generationBefore);
   expect(() =>
     SessionManager.openBounded(scope, {
       cwd: dir,
@@ -416,7 +490,7 @@ it("preserves inactive siblings when the bounded active branch fits its limits",
     { content: "active" },
   ]);
   expect(manager.removeTrailingEntries((entry) => entry.id === activeId)).toBe(1);
-  expect(readSessionTranscriptWatermark(scope).generation).toBe(generationBefore);
+  expect(readSessionTranscriptWatermark(scope).generation).not.toBe(generationBefore);
   expect(openBounded).not.toThrow();
   await expect(loadTranscriptEvents(scope)).resolves.toEqual(
     expect.arrayContaining([

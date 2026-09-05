@@ -97,7 +97,7 @@ export function loadTranscriptEventsSync(scope: SessionTranscriptReadScope): Tra
   );
 }
 
-/** Reads a complete transcript and its lifecycle snapshot from one SQLite read transaction. */
+/** Reads a complete maintenance transcript and its lifecycle snapshot from one transaction. */
 export function inspectTranscriptEventsSync(scope: SessionTranscriptReadScope): {
   events: TranscriptEvent[];
   snapshot: SessionStateDeleteSnapshot;
@@ -113,6 +113,31 @@ export function inspectTranscriptEventsSync(scope: SessionTranscriptReadScope): 
     {
       databaseLabel: database.path,
       operationLabel: "session transcript inspection",
+    },
+  );
+}
+
+/** Reads the runtime-visible transcript and mutation snapshot under the current admission fence. */
+export function inspectRuntimeTranscriptEventsSync(scope: SessionTranscriptReadScope): {
+  events: TranscriptEvent[];
+  snapshot: SessionStateDeleteSnapshot;
+} {
+  const resolved = resolveSqliteTranscriptReadScope(scope);
+  const database = openOpenClawAgentDatabase(toDatabaseOptions(resolved));
+  return runSqliteDeferredTransactionSync(
+    database.db,
+    () => {
+      const fence = resolveSqliteSessionTranscriptReadFence({ database, ...resolved });
+      return {
+        events: loadTranscriptEventsFromDatabase(database, resolved.sessionId, {
+          beforeEventSeq: fence?.beforeRawSeq,
+        }),
+        snapshot: readSessionStateDeleteSnapshot(database.db, resolved.sessionId),
+      };
+    },
+    {
+      databaseLabel: database.path,
+      operationLabel: "session transcript runtime inspection",
     },
   );
 }
