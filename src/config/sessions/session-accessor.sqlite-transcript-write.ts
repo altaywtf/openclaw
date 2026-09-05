@@ -408,12 +408,12 @@ export function appendTranscriptEventSync(
       resolved,
       resolveTranscriptEventAppendParent(database, resolved.sessionId, event, options),
     );
-    if (appended) {
+    if (appended !== false) {
       options.captureMutationAtInTransaction?.(
         readTranscriptMutationStateInTransaction(database, resolved.sessionId).updatedAt,
       );
     }
-    result = ok(appended);
+    result = ok(appended !== false);
   }, toDatabaseOptions(resolved));
   if (fencedScope.expectedWriterRunId !== undefined && !result.ok) {
     throw new SessionTranscriptWriterClaimReboundError(result.error);
