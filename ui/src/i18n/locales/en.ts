@@ -283,6 +283,7 @@ export const en: TranslationMap & {
     widgetLoading: "Loading session progress…",
     widgetEmpty: "No progress card yet",
     widgetUnavailable: "Session progress is unavailable.",
+    ownerUnsupported: "Update the Gateway to view progress for this session's agent.",
     widgetAccessDenied: "Select a session you can access or change sharing for this session.",
     countLabel: "{completed} of {total} completed",
     activity: {
@@ -3236,6 +3237,7 @@ export const en: TranslationMap & {
     ctaAppStore: "App Store",
     ctaPlayStore: "Google Play",
     ctaDownload: "Download",
+    ctaOpenMac: "Open in Mac app",
     ctaDocs: "Docs",
     ctaSetupGuide: "Setup guide",
     ctaChromeWebStore: "Chrome Web Store",
