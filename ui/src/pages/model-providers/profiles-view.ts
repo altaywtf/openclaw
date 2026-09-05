@@ -4,6 +4,7 @@ import { strokeIcon } from "../../components/icons-tools.ts";
 import { icons } from "../../components/icons.ts";
 import { renderSettingsStatus } from "../../components/settings-ui.ts";
 import { t } from "../../i18n/index.ts";
+import { registerSettingsEnglish } from "../../i18n/locales/en-settings.ts";
 import { moveArrayEntry, type ArrayDropPosition } from "../../lib/array-order.ts";
 import { formatDurationHuman } from "../../lib/format.ts";
 import type {
@@ -11,6 +12,8 @@ import type {
   ModelProviderPendingLogout,
   ModelProviderProfileOrderLock,
 } from "./data.ts";
+
+registerSettingsEnglish();
 
 type ProviderProfile = ModelProviderCard["profiles"][number];
 

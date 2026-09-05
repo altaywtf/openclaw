@@ -272,6 +272,7 @@ export function projectChatTranscript(
   const messageRowKeysById = new Map<string, string>();
   const resolveReplyPreview = createReplyPreviewResolver(loadedReplySources, props);
   const sharedMessageRenderOptions = {
+    presented: props.presented,
     onReply: props.onSetReply
       ? (target) => state.transcriptRenderContext.onSetReply?.(target)
       : undefined,
@@ -617,7 +618,10 @@ export function projectChatTranscript(
     getToolTitlesVersion(),
     JSON.stringify([...latestBrowserTabs]),
     props.sessionKey,
-    props.selectedSession,
+    props.presented,
+    // Session activity/title patches do not change settled rows. Their visible
+    // session facts (gutter, reasoning, context window, recap) own invalidation.
+    isDirectThread,
     props.boardProvider,
     props.boardProvider?.canPinWidgets,
     props.boardProvider?.canPinMcpApps,

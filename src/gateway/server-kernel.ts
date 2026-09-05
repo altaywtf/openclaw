@@ -12,6 +12,7 @@ import { prepareGatewayLifecycle } from "./server-lifecycle.js";
 import { registerGatewayModelCatalogPrivateAccess } from "./server-model-catalog-auth.js";
 import type { GatewayServerOptions } from "./server-public.js";
 import { prepareGatewayKernelState } from "./server-runtime-state-prepare.js";
+import { rethrowGatewayStartupError } from "./server-shutdown.js";
 import { prepareGatewayServerBootstrap } from "./server-startup-bootstrap.js";
 
 type LoadGatewayModelCatalog = typeof import("./server-model-catalog.js").loadGatewayModelCatalog;
@@ -205,20 +206,24 @@ export async function createGatewayKernel(
       await coreRuntime.startEarlyRuntime();
     }
     return await runtime.startupTrace.measure("gateway.request-runtime", () =>
-      prepareGatewayKernelRequestRuntime({ coreRuntime, log, logHealth }),
+      prepareGatewayKernelRequestRuntime({
+        coreRuntime,
+        log,
+        logHealth,
+        hostLifecycle: opts.hostLifecycle,
+      }),
     );
   } catch (error) {
-    try {
+    return await rethrowGatewayStartupError(error, async () => {
       if (lifecycleRuntime) {
+        // The lifecycle releases metadata only after its required joins succeed.
         await lifecycleRuntime.closeOnStartupFailure();
       } else {
         kernelState?.mentionInbox.dispose();
         clearGatewayAgentCliShim();
         clearSecretsRuntimeSnapshotState();
+        releasePluginMetadata();
       }
-    } finally {
-      releasePluginMetadata();
-    }
-    throw error;
+    });
   }
 }

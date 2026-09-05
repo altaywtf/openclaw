@@ -19,6 +19,7 @@ export {
 
 // Validator names mirror schemas so callers can pair them with wire contracts.
 export const validateCommandsListParams = compile(S.CommandsListParamsSchema);
+export const validateCanvasDocumentViewParams = compile(S.CanvasDocumentViewParamsSchema);
 export const validateConnectParams = compile(S.ConnectParamsSchema);
 export const validateWorkerAdmissionHandshake = compile(S.WorkerAdmissionHandshakeSchema);
 export const validateWorkerConnectRequestFrame = compile(S.WorkerConnectRequestFrameSchema);
@@ -504,6 +505,10 @@ export const validatePluginsSetEnabledParams = compile(S.PluginsSetEnabledParams
 export const validatePluginsUninstallParams = compile(S.PluginsUninstallParamsSchema);
 export const validatePluginsUiDescriptorsParams = compile(S.PluginsUiDescriptorsParamsSchema);
 export const validatePluginsUiDescriptorsResult = compile(S.PluginsUiDescriptorsResultSchema);
+export const validatePluginsControlUiListParams = compile(S.PluginsControlUiListParamsSchema);
+export const validatePluginsControlUiReloadParams = compile(S.PluginsControlUiReloadParamsSchema);
+export const validatePluginsControlUiReportParams = compile(S.PluginsControlUiReportParamsSchema);
+export const validatePluginsControlUiStatusParams = compile(S.PluginsControlUiStatusParamsSchema);
 export const validatePluginsSessionActionParams = compile(S.PluginsSessionActionParamsSchema);
 export const validatePluginsSessionActionResult = compile(S.PluginsSessionActionResultSchema);
 export const validateExecApprovalsNodeGetParams = compile(S.ExecApprovalsNodeGetParamsSchema);
@@ -512,6 +517,7 @@ export const validateExecApprovalsNodeSnapshot = compile(S.ExecApprovalsNodeSnap
 export const validateLogsTailParams = compile(S.LogsTailParamsSchema);
 export const validateModelsProbeParams = compile(S.ModelsProbeParamsSchema);
 export const validateChatHistoryParams = compile(S.ChatHistoryParamsSchema);
+export const validateChatStartupParams = compile(S.ChatStartupParamsSchema);
 export const validateChatMetadataParams = compile(S.ChatMetadataParamsSchema);
 export const validateChatMessageGetParams = compile(S.ChatMessageGetParamsSchema);
 export const validateChatToolTitlesParams = compile(S.ChatToolTitlesParamsSchema);

@@ -201,6 +201,7 @@ export function dispatchAgentRunFromGateway(params: {
     ? createCronCreatorAuthorityCapability(
         params.cronCreatorAuthority.runId,
         params.cronCreatorAuthority.callerOrigin,
+        params.cronCreatorAuthority.controlUiAdmin,
       )
     : undefined;
   const ingressOptsWithSpawnFacts = withAgentCommandExecutionIdentitySpawnFacts(
@@ -265,7 +266,7 @@ export function dispatchAgentRunFromGateway(params: {
         params.abortController.signal,
       )
     : runAgent();
-  void agentRun
+  return agentRun
     .then(async (result) => {
       const recordedOutcome = readAgentRunTerminalOutcome(result);
       const signalStopReason = resolveResolvedAgentTimeoutStopReason(
