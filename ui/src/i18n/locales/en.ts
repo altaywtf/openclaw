@@ -5662,6 +5662,7 @@ export const en: TranslationMap & {
       stillListening: "Still listening",
       stopVoiceInput: "Stop voice input",
       systemDefaultMicrophone: "System default",
+      useSystemDefaultMicrophoneForCall: "Use System default for this call",
       systemDefaultCamera: "System default",
       switchCamera: "Switch camera",
       turnCameraOff: "Turn camera off",
