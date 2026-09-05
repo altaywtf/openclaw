@@ -974,8 +974,8 @@ and use `args: ["app-server", "--listen", "stdio://"]`; the patch below shows
 these settings. Narrow any bind exposing the runtime installation, then recreate
 the affected sandbox. Protected native overrides still trust the operator to
 select an actual Codex executable; these checks do not attest third-party native
-program behavior. Supported extra arguments are configuration (`-c`/`--config`,
-`-p`/`--profile`), feature (`--enable`/`--disable`), `--listen`, and
+program behavior. Supported extra arguments are configuration (`-c`/`--config`),
+feature (`--enable`/`--disable`), `--listen`, and
 `--analytics-default-enabled`, `--stdio`, and `--strict-config` options. The runtime
 installation and package-manager cache remain trusted operator state, including
 package-manager hard links; keep their files and any aliases out of writable mounts.
