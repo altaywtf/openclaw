@@ -75,6 +75,48 @@ describeTelegramDispatch("dispatchTelegramMessage progress-rendering", () => {
     );
   });
 
+  it("renders a progress-card summary and checklist without raw markup or code styling", async () => {
+    const draftStream = createSequencedDraftStream(2001);
+    createTelegramDraftStream.mockReturnValue(draftStream);
+    dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ replyOptions }) => {
+      await replyOptions?.onToolStart?.({
+        name: "progress_card",
+        phase: "start",
+        args: {
+          markdown: '<progress aria-label="Browser Use Setup, 2/3" value="2" max="3"></progress>',
+          plan: [{ step: "Search the skills registry", status: "completed" }],
+        },
+      });
+      await replyOptions?.onPlanUpdate?.({
+        phase: "update",
+        explanation: "1/2 complete",
+        steps: [
+          { step: "Search the skills registry", status: "completed" },
+          { step: "Configure Browser Use", status: "in_progress" },
+        ],
+      });
+      return { queuedFinal: false };
+    });
+
+    await dispatchWithContext({
+      context: createContext(),
+      streamMode: "progress",
+      telegramCfg: {
+        streaming: { mode: "progress", progress: { toolProgress: true, label: false } },
+      },
+    });
+
+    const preview = draftStream.updatePreview.mock.calls.at(-1)?.[0];
+    expect(preview).toEqual(
+      telegramProgressPreview(
+        "1/2 complete\n\n✅ Search the skills registry\n▸ Configure Browser Use",
+        "<b>1/2 complete</b><br>✅ Search the skills registry<br>▸ Configure Browser Use",
+      ),
+    );
+    expect(preview?.text).not.toContain("<progress");
+    expect(preview?.text).not.toContain("<code>");
+  });
+
   it("renders plan checklists when the explanation is omitted", async () => {
     const draftStream = createSequencedDraftStream(2001);
     createTelegramDraftStream.mockReturnValue(draftStream);

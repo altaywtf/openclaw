@@ -19,6 +19,7 @@ import type {
   StreamingMode,
   TextChunkMode,
 } from "../config/types.base.js";
+import { isAgentPlanProgressToolName } from "../session-cards/progress-card-channel-summary.js";
 import { DEFAULT_PROGRESS_DRAFT_LABELS, selectProgressLabel } from "../shared/progress-labels.js";
 import { compactProgressText } from "../shared/text-truncate.js";
 import { asBoolean } from "../utils/boolean.js";
@@ -540,6 +541,11 @@ export function buildChannelProgressDraftLine(
 ): ChannelProgressDraftLine | undefined {
   switch (input.event) {
     case "tool": {
+      // Plan/card tools publish one authoritative plan event after a successful
+      // write. Generic argument rows would duplicate it and expose card markup.
+      if (isAgentPlanProgressToolName(input.name)) {
+        return undefined;
+      }
       const itemId = input.itemId ?? (input.toolCallId ? `tool:${input.toolCallId}` : undefined);
       const commandBearing = isCommandBearingToolCall(input.name, input.args);
       return buildNamedProgressLine(
@@ -560,6 +566,9 @@ export function buildChannelProgressDraftLine(
     }
     case "item": {
       const name = input.name ?? itemKindToToolName(input.itemKind);
+      if (isAgentPlanProgressToolName(name)) {
+        return undefined;
+      }
       const meta =
         options?.commandText !== "raw" && isCommandProgressItem(input)
           ? undefined

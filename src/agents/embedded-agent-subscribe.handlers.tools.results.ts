@@ -14,6 +14,7 @@ import {
   parseJsonMessageParam,
 } from "../infra/outbound/message-action-params.js";
 import { hasReplyPayloadContent } from "../interactive/payload.js";
+import { formatProgressCardChannelSummary } from "../session-cards/progress-card-channel-summary.js";
 import {
   normalizeProgressCardInput,
   ProgressCardInputError,
@@ -60,15 +61,23 @@ export function resolveFallbackToolTerminalObserver(ctx: ToolHandlerContext) {
   return created;
 }
 
-export function readProgressCardPlanInput(args: unknown): { steps: AgentPlanStep[] } | undefined {
+export function readProgressCardPlanInput(
+  args: unknown,
+): { steps: AgentPlanStep[]; explanation?: string } | undefined {
   const params = readRecordField(args);
   if (!params) {
     return undefined;
   }
   try {
+    const normalized = normalizeProgressCardInput({ markdown: params.markdown, plan: params.plan });
+    const steps = normalized.steps ?? [];
+    const explanation = formatProgressCardChannelSummary({
+      hasMarkdown: normalized.markdown !== undefined,
+      steps,
+    });
     return {
-      steps:
-        normalizeProgressCardInput({ markdown: params.markdown, plan: params.plan }).steps ?? [],
+      steps,
+      ...(explanation ? { explanation } : {}),
     };
   } catch (error) {
     if (error instanceof ProgressCardInputError) {

@@ -897,6 +897,61 @@ describe("createCliToolSummaryTracker", () => {
     expect(deliver).not.toHaveBeenCalled();
   });
 
+  it("leaves plan tools to the authoritative plan event instead of summarizing arguments", async () => {
+    const deliver = vi.fn();
+    const tracker = createCliToolSummaryTracker({
+      commandDetailsVisible: true,
+      shouldEmitToolResult: () => true,
+      shouldEmitToolOutput: () => true,
+      deliver,
+    });
+    await tracker.noteToolEvent({
+      name: "progress_card",
+      phase: "start",
+      args: {
+        markdown: '<progress aria-label="CI · 2/3" value="2" max="3"></progress>',
+      },
+      toolCallId: "plan-1",
+    });
+    await tracker.noteToolEvent({
+      name: "progress_card",
+      phase: "result",
+      toolCallId: "plan-1",
+      isError: false,
+      result: { content: [{ type: "text", text: "Progress card updated" }] },
+    });
+
+    expect(deliver).not.toHaveBeenCalled();
+  });
+
+  it("preserves plan-tool error summaries when no authoritative plan event exists", async () => {
+    const deliver = vi.fn();
+    const tracker = createCliToolSummaryTracker({
+      commandDetailsVisible: false,
+      shouldEmitToolResult: () => true,
+      shouldEmitToolOutput: () => false,
+      deliver,
+    });
+    await tracker.noteToolEvent({
+      name: "progress_card",
+      phase: "start",
+      args: { markdown: "Working" },
+      toolCallId: "plan-error",
+    });
+    await tracker.noteToolEvent({
+      name: "progress_card",
+      phase: "result",
+      toolCallId: "plan-error",
+      isError: true,
+      result: { content: [{ type: "text", text: "write failed" }] },
+    });
+
+    expect(deliver).toHaveBeenCalledWith({
+      text: expect.stringContaining("Progress Card"),
+      isError: true,
+    });
+  });
+
   it("propagates tool errors on the summary payload", async () => {
     const deliver = vi.fn();
     const tracker = createCliToolSummaryTracker({

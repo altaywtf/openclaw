@@ -25,6 +25,25 @@ describe("buildChannelProgressDraftLine", () => {
     expect(isChannelProgressDraftWorkToolName("update_plan")).toBe(false);
   });
 
+  it.each(["progress_card", "update_plan"])(
+    "keeps %s arguments out of generic tool and item rows",
+    (name) => {
+      const args = {
+        markdown: '<progress aria-label="CI · 2/3" value="2" max="3"></progress>',
+        plan: [{ step: "Inspect", status: "in_progress" }],
+      };
+      expect(buildChannelProgressDraftLine({ event: "tool", name, args })).toBeUndefined();
+      expect(
+        buildChannelProgressDraftLine({
+          event: "item",
+          itemKind: "tool",
+          name,
+          meta: String(args.markdown),
+        }),
+      ).toBeUndefined();
+    },
+  );
+
   it("omits generic completed status from successful command output with title", () => {
     const line = buildChannelProgressDraftLine(
       {
