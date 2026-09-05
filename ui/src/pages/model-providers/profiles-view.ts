@@ -5,7 +5,7 @@ import { icons } from "../../components/icons.ts";
 import { renderSettingsStatus } from "../../components/settings-ui.ts";
 import { t } from "../../i18n/index.ts";
 import { registerSettingsEnglish } from "../../i18n/locales/en-settings.ts";
-import { moveArrayEntry } from "../../lib/array-order.ts";
+import { moveArrayEntry, type ArrayDropPosition } from "../../lib/array-order.ts";
 import { formatDurationHuman } from "../../lib/format.ts";
 import type {
   ModelProviderCard,
@@ -27,6 +27,8 @@ export type ProviderProfilesViewProps = {
   onRequestLogout: (pending: ModelProviderPendingLogout) => void;
 };
 
+const DRAGGING_CLASS = "model-providers__profile--dragging";
+const SORTING_CLASS = "model-providers__profiles--sorting";
 const logoutIcon = strokeIcon(svg` <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
   <polyline points="16 17 21 12 16 7" />
   <line x1="21" x2="9" y1="12" y2="12" />`);
@@ -186,6 +188,138 @@ function profileGroups(card: ModelProviderCard, drafts: Record<string, string[]>
   });
 }
 
+function rowsIn(section: HTMLElement, selector: string): HTMLElement[] {
+  return [...section.querySelectorAll<HTMLElement>(selector)];
+}
+
+function clearDragState(section: HTMLElement): void {
+  section.classList.remove(SORTING_CLASS);
+  for (const row of rowsIn(section, ".model-providers__profile")) {
+    row.classList.remove(DRAGGING_CLASS);
+    row.style.removeProperty("translate");
+  }
+}
+
+function startPointerDrag(params: {
+  event: PointerEvent;
+  canMove: boolean;
+  provider: string;
+  move: (targetId: string, position: ArrayDropPosition) => void;
+}): void {
+  if (!params.canMove || params.event.button !== 0) {
+    return;
+  }
+  const grip = params.event.currentTarget;
+  if (!(grip instanceof HTMLElement)) {
+    return;
+  }
+  const row = grip.closest<HTMLElement>(".model-providers__profile");
+  const section = grip.closest<HTMLElement>(".model-providers__profiles");
+  if (!row || !section) {
+    return;
+  }
+  const sectionTop = section.getBoundingClientRect().top;
+  // Use the original slots for hit testing. Measuring animated neighbors would
+  // make the insertion point oscillate as they move out from under the pointer.
+  const slots = rowsIn(section, ".model-providers__profile")
+    .filter((candidate) => candidate.dataset.profileProvider === params.provider)
+    .map((element) => ({ element, bounds: element.getBoundingClientRect() }));
+  const source = slots.find((slot) => slot.element === row);
+  if (!source) {
+    return;
+  }
+  const others = slots.filter((slot) => slot !== source);
+  let target: (typeof slots)[number] | undefined;
+  let position: ArrayDropPosition = "before";
+  params.event.preventDefault();
+  section.classList.add(SORTING_CLASS);
+  row.classList.add(DRAGGING_CLASS);
+  try {
+    grip.setPointerCapture?.(params.event.pointerId);
+  } catch {
+    // Synthetic pointers can lack the active pointer required for capture.
+  }
+
+  const update = (event: PointerEvent) => {
+    if (event.pointerId !== params.event.pointerId) {
+      return;
+    }
+    const scrollOffset = sectionTop - section.getBoundingClientRect().top;
+    const deltaY = event.clientY - params.event.clientY + scrollOffset;
+    row.style.translate = `${event.clientX - params.event.clientX}px ${deltaY}px`;
+    const hit = document.elementFromPoint(event.clientX, event.clientY);
+    const hitRow = hit?.closest<HTMLElement>(".model-providers__profile");
+    const pointerY = event.clientY + scrollOffset;
+    const inside =
+      hit &&
+      section.contains(hit) &&
+      (!hitRow || hitRow.dataset.profileProvider === params.provider) &&
+      slots.some(
+        ({ bounds }) =>
+          event.clientX >= bounds.left &&
+          event.clientX <= bounds.right &&
+          pointerY >= bounds.top &&
+          pointerY <= bounds.bottom,
+      );
+    const centerY = source.bounds.top + source.bounds.height / 2 + deltaY;
+    target = inside
+      ? others.find(({ bounds }) => centerY < bounds.top + bounds.height / 2)
+      : undefined;
+    position = target ? "before" : "after";
+    if (inside && !target) {
+      target = others.at(-1);
+    }
+    const preview = target ? moveArrayEntry(slots, source, target, position) : slots;
+    if (preview.indexOf(source) === slots.indexOf(source)) {
+      target = undefined;
+    }
+    let top = slots[0]?.bounds.top ?? 0;
+    for (const slot of preview) {
+      if (slot !== source) {
+        slot.element.style.translate = `0px ${top - slot.bounds.top}px`;
+      }
+      top += slot.bounds.height;
+    }
+  };
+  const finish = (event: PointerEvent, apply: boolean) => {
+    if (event.pointerId !== params.event.pointerId) {
+      return;
+    }
+    update(event);
+    const targetId = target?.element.dataset.profileId;
+    clearDragState(section);
+    grip.removeEventListener("pointermove", handleMove);
+    grip.removeEventListener("pointerup", handleUp);
+    grip.removeEventListener("pointercancel", handleCancel);
+    grip.removeEventListener("lostpointercapture", handleCancel);
+    document.removeEventListener("keydown", handleKeyDown, true);
+    try {
+      grip.releasePointerCapture?.(params.event.pointerId);
+    } catch {
+      // Pointer cancellation may release capture before this cleanup runs.
+    }
+    if (apply && targetId) {
+      params.move(targetId, position);
+    }
+  };
+  const handleMove = (event: PointerEvent) => update(event);
+  const handleUp = (event: PointerEvent) => finish(event, true);
+  const handleCancel = (event: PointerEvent) => finish(event, false);
+  const handleKeyDown = (event: KeyboardEvent) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      finish(params.event, false);
+    }
+  };
+  grip.addEventListener("pointermove", handleMove);
+  grip.addEventListener("pointerup", handleUp);
+  grip.addEventListener("pointercancel", handleCancel);
+  grip.addEventListener("lostpointercapture", handleCancel);
+  // A drag owns Escape before the Settings shell handles its back shortcut.
+  document.addEventListener("keydown", handleKeyDown, true);
+}
+
 export function renderProviderProfiles(card: ModelProviderCard, props: ProviderProfilesViewProps) {
   if (card.profiles.length === 0) {
     return nothing;
@@ -256,6 +390,15 @@ export function renderProviderProfiles(card: ModelProviderCard, props: ProviderP
             const reorderBlocked = !props.canMutate
               ? (props.mutationBlockedReason ?? "")
               : (group.explanation ?? "");
+            const reorder = (targetId: string, position: ArrayDropPosition) => {
+              if (canMove) {
+                props.onProfileOrderChange(
+                  card.id,
+                  provider,
+                  moveArrayEntry(order, profile.profileId, targetId, position),
+                );
+              }
+            };
             const move = (event: Event, delta: -1 | 1) => {
               const targetId = order[index + delta];
               if (!canMove || !targetId) {
@@ -264,22 +407,13 @@ export function renderProviderProfiles(card: ModelProviderCard, props: ProviderP
               const control = event.currentTarget;
               const restoreFocus =
                 control instanceof HTMLButtonElement && document.activeElement === control;
-              props.onProfileOrderChange(
-                card.id,
-                provider,
-                moveArrayEntry(order, profile.profileId, targetId, delta < 0 ? "before" : "after"),
-              );
+              reorder(targetId, delta < 0 ? "before" : "after");
               if (restoreFocus) {
-                // Lit reinserts keyed rows while reordering. Keep keyboard focus on
-                // this account; at an endpoint, move it to the remaining direction.
+                // Lit reinserts keyed rows while reordering. Keep keyboard focus
+                // on this account so the next move still acts on the same row.
                 queueMicrotask(() => {
                   if (control.isConnected && document.activeElement === document.body) {
-                    const next = control.disabled
-                      ? control.parentElement?.querySelector<HTMLButtonElement>(
-                          ".model-providers__profile-move:not(:disabled)",
-                        )
-                      : control;
-                    next?.focus({ preventScroll: true });
+                    control.focus({ preventScroll: true });
                   }
                 });
               }
@@ -291,6 +425,27 @@ export function renderProviderProfiles(card: ModelProviderCard, props: ProviderP
                 data-profile-id=${profile.profileId}
                 data-profile-provider=${provider}
               >
+                ${
+                  showMoves
+                    ? html`<button
+                        type="button"
+                        class="model-providers__profile-grip"
+                        ?disabled=${!canMove}
+                        aria-label=${t("modelProviders.profiles.reorder", { account: identity, position: String(index + 1) })}
+                        aria-keyshortcuts=${canMove ? "ArrowUp ArrowDown" : nothing}
+                        title=${reorderBlocked || t("modelProviders.profiles.reorderHint")}
+                        @pointerdown=${(event: PointerEvent) => startPointerDrag({ event, canMove, provider, move: reorder })}
+                        @keydown=${(event: KeyboardEvent) => {
+                          if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+                            event.preventDefault();
+                            move(event, event.key === "ArrowUp" ? -1 : 1);
+                          }
+                        }}
+                      >
+                        ${icons.gripVertical}
+                      </button>`
+                    : html`<span aria-hidden="true"></span>`
+                }
                 <span class="model-providers__profile-avatar" aria-hidden="true"
                   >${profileInitials(profile)}</span
                 >
@@ -312,39 +467,6 @@ export function renderProviderProfiles(card: ModelProviderCard, props: ProviderP
                           })}
                           >${index + 1}</span
                         >`
-                      : nothing
-                  }
-                  ${
-                    showMoves
-                      ? ([-1, 1] as const).map(
-                          (delta) => html`
-                            <button
-                              type="button"
-                              class="btn btn--sm btn--ghost model-providers__profile-move"
-                              data-direction=${delta < 0 ? "up" : "down"}
-                              ?disabled=${
-                                !canMove || index + delta < 0 || index + delta >= order.length
-                              }
-                              aria-label=${t(
-                                delta < 0
-                                  ? "modelProviders.profiles.moveUpFor"
-                                  : "modelProviders.profiles.moveDownFor",
-                                { account: identity },
-                              )}
-                              title=${
-                                reorderBlocked ||
-                                t(
-                                  delta < 0
-                                    ? "modelProviders.profiles.moveUp"
-                                    : "modelProviders.profiles.moveDown",
-                                )
-                              }
-                              @click=${(event: Event) => move(event, delta)}
-                            >
-                              ${delta < 0 ? icons.arrowUp : icons.arrowDown}
-                            </button>
-                          `,
-                        )
                       : nothing
                   }
                   ${

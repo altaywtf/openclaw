@@ -36,9 +36,9 @@ describe("ModelProvidersPage profile actions", () => {
       return originalRequest(method);
     });
 
-    page.setProfileOrder("openai", "openai", ["openai:two", "openai:one"]);
+    page.profileActions.setOrder("openai", "openai", ["openai:two", "openai:one"]);
     await vi.waitFor(() => expect(requestCount(request, "models.authOrderSet")).toBe(1));
-    page.setProfileOrder("openai", "openai", ["openai:one", "openai:two"]);
+    page.profileActions.setOrder("openai", "openai", ["openai:one", "openai:two"]);
     expect(page.profileOrders.openai).toEqual(["openai:one", "openai:two"]);
     expect(requestCount(request, "models.authOrderSet")).toBe(1);
     runtimeConfig.state.configSaving = true;
@@ -103,11 +103,16 @@ describe("ModelProvidersPage profile actions", () => {
         (row) => row.dataset.profileId,
       );
     const moveFirstAccount = (page: HTMLElement, direction: "up" | "down") => {
-      const move = page.querySelector<HTMLButtonElement>(
-        `[data-profile-id="openai:one"] [data-direction="${direction}"]`,
+      const grip = page.querySelector<HTMLButtonElement>(
+        '[data-profile-id="openai:one"] .model-providers__profile-grip',
       )!;
-      expect(move.disabled).toBe(false);
-      move.click();
+      expect(grip.disabled).toBe(false);
+      grip.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: direction === "up" ? "ArrowUp" : "ArrowDown",
+          bubbles: true,
+        }),
+      );
     };
     const oldPage = appendPage(context);
     await waitForFast(() => expect(rows(oldPage)).toHaveLength(3));
@@ -165,7 +170,7 @@ describe("ModelProvidersPage profile actions", () => {
       updatedAt: 1,
     };
 
-    page.setProfileOrder("anthropic", "anthropic", ["claude:two", "claude:one"]);
+    page.profileActions.setOrder("anthropic", "anthropic", ["claude:two", "claude:one"]);
 
     await vi.waitFor(() => expect(requestCount(request, "models.authOrderSet")).toBe(1));
     await vi.waitFor(() => expect(page.profileOrders.anthropic).toBeUndefined());
@@ -225,7 +230,7 @@ describe("ModelProvidersPage profile actions", () => {
 
     const refreshing = page.refresh({ force: true });
     await vi.waitFor(() => expect(requestCount(request, "models.authStatus")).toBe(1));
-    page.setProfileOrder("openai", "openai", ["openai:two", "openai:one"]);
+    page.profileActions.setOrder("openai", "openai", ["openai:two", "openai:one"]);
     await vi.waitFor(() => expect(requestCount(request, "models.authOrderSet")).toBe(1));
     await vi.waitFor(() => expect(authStatusCalls).toBe(2));
     await vi.waitFor(() => expect(page.profileOrders.openai).toBeUndefined());
@@ -291,6 +296,9 @@ describe("ModelProvidersPage profile actions", () => {
       }
       return originalRequest(method);
     });
+    const shell = document.body.appendChild(document.createElement("div"));
+    shell.className = "shell";
+    const toast = shell.appendChild(document.createElement("openclaw-toast-host"));
     const page = appendPage(context);
     try {
       await waitForFast(() =>
@@ -326,6 +334,19 @@ describe("ModelProvidersPage profile actions", () => {
       );
       expect(page.querySelectorAll(".model-providers__profile")).toHaveLength(2);
       expect(modal.querySelector<HTMLButtonElement>("button.danger")!.disabled).toBe(false);
+      await toast.updateComplete;
+      expect(toast.querySelector('[role="status"]')).toBeNull();
+      expect(page.querySelector(".model-providers__row > .callout")).toBeNull();
+
+      modal.querySelector<HTMLButtonElement>("button[autofocus]")!.click();
+      await page.updateComplete;
+      expect(page.querySelector("openclaw-modal-dialog")).toBeNull();
+      expect(page.querySelector('[role="alert"]')).toBeNull();
+      expect(page.messages.anthropic).toBeUndefined();
+      expect(requestCount(request, "models.authLogout")).toBe(1);
+
+      ({ modal } = await openConfirmation());
+      expect(modal.querySelector('[role="alert"]')).toBeNull();
       modal.querySelector<HTMLButtonElement>("button.danger")!.click();
       await page.updateComplete;
       expect(request).toHaveBeenCalledWith("models.authLogout", {
@@ -345,6 +366,13 @@ describe("ModelProvidersPage profile actions", () => {
           (row) => row.dataset.profileId,
         ),
       ).toEqual(["personal"]);
+      await toast.updateComplete;
+      expect(toast.isConnected).toBe(true);
+      expect(toast.parentElement).toBe(shell);
+      expect(toast.querySelector(".app-toast--bottom .app-toast__icon")).not.toBeNull();
+      expect(toast.querySelector('[role="status"]')?.textContent).toContain("Logged out.");
+      expect(page.querySelector(".model-providers__row > .callout")).toBeNull();
+      expect(page.messages.anthropic).toBeUndefined();
     } finally {
       logout.resolve();
       page.remove();

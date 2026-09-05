@@ -16,7 +16,7 @@ import { t } from "../../i18n/index.ts";
 import { normalizeAgentLabel } from "../../lib/agents/display.ts";
 import { isGatewayMethodAdvertised } from "../../lib/gateway-methods.ts";
 import { normalizeAgentId } from "../../lib/sessions/session-key.ts";
-import { showToast } from "../../lib/toast.ts";
+import { showToast, type ToastOptions } from "../../lib/toast.ts";
 import { GatewayPageController } from "../../lit/gateway-page-controller.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 import { SubscriptionsController } from "../../lit/subscriptions-controller.ts";
@@ -34,7 +34,6 @@ import {
   readModelProviderConfig,
   type DefaultModelSelection,
   type ModelProviderPendingLogout,
-  type ModelProviderLogoutTarget,
 } from "./data.ts";
 import {
   EMPTY_MODEL_PROVIDERS_DATA,
@@ -58,6 +57,10 @@ import { renderModelProviders, type ModelProviderRowMessage } from "./view.ts";
 const MODEL_PROVIDERS_DOCS_URL = "https://docs.openclaw.ai/concepts/model-providers";
 
 type DefaultsDraft = DefaultModelSelection & ModelBehaviorConfig;
+
+function showProfileToast(options: ToastOptions) {
+  showToast({ placement: "bottom", ...options });
+}
 
 export class ModelProvidersPage extends OpenClawLightDomElement {
   @consume({ context: applicationContext, subscribe: true })
@@ -163,9 +166,10 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
     setData: (data) => (this.data = data),
     setError: (cardId, error) => {
       const text = modelProviderErrorMessage(error);
-      this.setMessage(cardId, { kind: "error", text });
-      if (this.pendingLogout?.cardId !== cardId) {
-        showToast({ message: text });
+      if (this.pendingLogout?.cardId === cardId) {
+        this.setMessage(cardId, { kind: "error", text });
+      } else {
+        showProfileToast({ message: text, icon: icons.alertTriangle, durationMs: 12_000 });
       }
     },
     setOrders: (orders) => (this.profileOrders = orders),
@@ -177,13 +181,9 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
     isBusy: (key) => Boolean(this.busy[key]),
     setBusy: (key, value) => this.setBusy(key, value),
     clearProbe: (cardId) => this.clearProbe(cardId),
-    clearPendingLogout: (cardId) => {
-      if (this.pendingLogout?.cardId === cardId) {
-        this.pendingLogout = null;
-      }
-    },
-    setLogoutSuccess: (cardId) =>
-      this.setMessage(cardId, { kind: "success", text: t("modelProviders.logout.done") }),
+    clearPendingLogout: (cardId) => this.clearPendingLogout(cardId),
+    setLogoutSuccess: () =>
+      showProfileToast({ message: t("modelProviders.logout.done"), icon: icons.check }),
   });
   private readonly subscriptions = new SubscriptionsController(this)
     .watch(
@@ -533,12 +533,11 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
     }
   }
 
-  private async logout(cardId: string, targets: ModelProviderLogoutTarget[]) {
-    await this.profileActions.logout(cardId, targets);
-  }
-
-  private setProfileOrder(cardId: string, provider: string, profileIds: string[] | null) {
-    this.profileActions.setOrder(cardId, provider, profileIds);
+  private clearPendingLogout(cardId = this.pendingLogout?.cardId) {
+    if (this.pendingLogout && this.pendingLogout.cardId === cardId) {
+      this.setMessage(this.pendingLogout.cardId, null);
+      this.pendingLogout = null;
+    }
   }
 
   private async addProvider() {
@@ -688,10 +687,10 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
         this.setMessage(pending.cardId, null);
         this.pendingLogout = pending;
       },
-      onCancelLogout: () => (this.pendingLogout = null),
-      onLogout: (cardId, providers) => void this.logout(cardId, providers),
+      onCancelLogout: () => this.clearPendingLogout(),
+      onLogout: (cardId, providers) => void this.profileActions.logout(cardId, providers),
       onProfileOrderChange: (cardId, provider, profileIds) =>
-        this.setProfileOrder(cardId, provider, profileIds),
+        this.profileActions.setOrder(cardId, provider, profileIds),
       onAddProviderToggle: () => {
         this.addProviderOpen = !this.addProviderOpen;
         this.addProviderKey = "";

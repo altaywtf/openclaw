@@ -602,13 +602,14 @@ describe("ModelProvidersPage agent scope", () => {
 
   it("stops queued agent-scoped logouts after the selected agent changes", async () => {
     const { agentSelection, context, notifySelection, request } = createHarness("main");
+    const toast = document.body.appendChild(document.createElement("openclaw-toast-host"));
     const page = appendPage(context);
     await waitForFast(() => expect(page.data?.config).toEqual({}));
     request.mockClear();
     const firstLogout = deferred<unknown>();
     request.mockImplementationOnce(async () => firstLogout.promise);
 
-    const loggingOut = page.logout("openai", [
+    const loggingOut = page.profileActions.logout("openai", [
       { provider: "openai", profileIds: ["openai:first"] },
       { provider: "alias", profileIds: ["openai:second"] },
     ]);
@@ -631,6 +632,8 @@ describe("ModelProvidersPage agent scope", () => {
     await loggingOut;
 
     expect(request.mock.calls.filter(([method]) => method === "models.authLogout")).toHaveLength(1);
+    await toast.updateComplete;
+    expect(toast.querySelector('[role="status"]')).toBeNull();
   });
 
   it("re-resolves a configured profile order after Reset", async () => {
@@ -670,7 +673,7 @@ describe("ModelProvidersPage agent scope", () => {
     initialProvider.profileOrder = ["openai:one", "openai:two"];
     initialProvider.profileOrderStored = true;
 
-    page.setProfileOrder("openai", "openai", null);
+    page.profileActions.setOrder("openai", "openai", null);
 
     await vi.waitFor(() =>
       expect(page.data?.authStatus?.providers[0]?.profileOrder).toEqual([
@@ -700,14 +703,14 @@ describe("ModelProvidersPage agent scope", () => {
       return originalRequest(method);
     });
 
-    page.setProfileOrder("openai", "openai", ["openai:two", "openai:one"]);
+    page.profileActions.setOrder("openai", "openai", ["openai:two", "openai:one"]);
     await vi.waitFor(() => expect(requestCount(request, "models.authOrderSet")).toBe(1));
     agentSelection.state.selectedId = "writer";
     agentSelection.state.scopeId = "writer";
     notifySelection();
     await vi.waitFor(() => expect(page.selectedAgentId).toBe("writer"));
     await waitForFast(() => expect(page.data?.config).toEqual({}));
-    page.setProfileOrder("openai", "openai", ["openai:one", "openai:two"]);
+    page.profileActions.setOrder("openai", "openai", ["openai:one", "openai:two"]);
 
     firstSave.resolve({});
     await vi.waitFor(() => expect(requestCount(request, "models.authOrderSet")).toBe(2));
@@ -753,40 +756,42 @@ describe("ModelProvidersPage agent scope", () => {
     await page.updateComplete;
     request.mockRejectedValueOnce(new Error("Priority could not be saved"));
     page
-      .querySelector<HTMLButtonElement>('[data-profile-id="openai:two"] [data-direction="up"]')!
-      .click();
+      .querySelector<HTMLButtonElement>(
+        '[data-profile-id="openai:two"] .model-providers__profile-grip',
+      )!
+      .dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
     await vi.waitFor(() =>
-      expect(page.messages.openai?.text).toContain("Priority could not be saved"),
+      expect(toast.querySelector('[role="status"]')?.textContent).toContain(
+        "Priority could not be saved",
+      ),
     );
     await page.updateComplete;
-    await toast.updateComplete;
 
-    expect(toast.querySelector('[role="status"]')?.textContent).toContain(
-      "Priority could not be saved",
-    );
-    expect(page.querySelector('[role="alert"]')?.textContent).toContain(
-      "Priority could not be saved",
-    );
+    expect(page.querySelector('[role="alert"]')).toBeNull();
+    expect(page.messages.openai).toBeUndefined();
+    expect(toast.querySelector(".app-toast--bottom .app-toast__icon")).not.toBeNull();
     expect(
       [...page.querySelectorAll<HTMLElement>(".model-providers__profile")].map(
         (row) => row.dataset.profileId,
       ),
     ).toEqual(["openai:one", "openai:two"]);
     expect(
-      page.querySelector<HTMLButtonElement>('[data-profile-id="openai:two"] [data-direction="up"]')
-        ?.disabled,
+      page.querySelector<HTMLButtonElement>(
+        '[data-profile-id="openai:two"] .model-providers__profile-grip',
+      )?.disabled,
     ).toBe(false);
   });
 
   it("stops queued agent-scoped logouts when route data changes the selected agent", async () => {
     const { agentSelection, context, request, snapshot } = createHarness("main");
+    const toast = document.body.appendChild(document.createElement("openclaw-toast-host"));
     const page = appendPage(context);
     await waitForFast(() => expect(page.data?.config).toEqual({}));
     request.mockClear();
     const firstLogout = deferred<unknown>();
     request.mockImplementationOnce(async () => firstLogout.promise);
 
-    const loggingOut = page.logout("openai", [
+    const loggingOut = page.profileActions.logout("openai", [
       { provider: "openai", profileIds: ["openai:first"] },
       { provider: "alias", profileIds: ["openai:second"] },
     ]);
@@ -836,6 +841,8 @@ describe("ModelProvidersPage agent scope", () => {
     await loggingOut;
 
     expect(request.mock.calls.filter(([method]) => method === "models.authLogout")).toHaveLength(1);
+    await toast.updateComplete;
+    expect(toast.querySelector('[role="status"]')).toBeNull();
   });
 
   it("reloads credential status when the agent selector changes", async () => {

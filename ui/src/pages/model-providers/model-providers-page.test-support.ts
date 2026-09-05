@@ -2,13 +2,10 @@ import { vi } from "vitest";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { ModelsProbeResult } from "../../api/types.ts";
 import type { ApplicationContext, ApplicationGatewaySnapshot } from "../../app/context.ts";
-import type {
-  DefaultModelSelection,
-  ModelProviderLogoutTarget,
-  ModelProviderPendingLogout,
-} from "./data.ts";
+import type { DefaultModelSelection, ModelProviderPendingLogout } from "./data.ts";
 import { EMPTY_MODEL_PROVIDERS_DATA, type ModelProvidersData } from "./load.ts";
 import type { ModelBehaviorConfig } from "./model-behavior.ts";
+import type { ModelProviderProfileActionsController } from "./profile-actions-controller.ts";
 import type { ModelProvidersRouteData } from "./route.ts";
 import "./model-providers-page.ts";
 
@@ -24,7 +21,7 @@ export type ModelProvidersPageTestElement = HTMLElement & {
   defaultsDraft: (DefaultModelSelection & Partial<ModelBehaviorConfig>) | null;
   keyDraft: string;
   keyEditorProvider: string | null;
-  logout: (cardId: string, targets: ModelProviderLogoutTarget[]) => Promise<void>;
+  profileActions: Pick<ModelProviderProfileActionsController, "logout" | "setOrder">;
   messages: Record<string, { kind: "success" | "error"; text: string; warning?: string }>;
   pendingLogout: ModelProviderPendingLogout | null;
   profileOrders: Record<string, string[]>;
@@ -35,7 +32,6 @@ export type ModelProvidersPageTestElement = HTMLElement & {
   requestUpdate: () => void;
   saveDefaults: () => Promise<void>;
   saveKey: (provider: string, configKey: string) => Promise<void>;
-  setProfileOrder: (cardId: string, provider: string, profileIds: string[] | null) => void;
   selectedAgentId: string;
 };
 

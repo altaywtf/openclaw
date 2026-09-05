@@ -857,61 +857,6 @@ describe("renderModelProviders", () => {
     expect(onProbe).toHaveBeenCalledWith("openai", ["anthropic", "claude-cli"]);
   });
 
-  it("retains focus across repeated moves and switches controls at the list boundary", async () => {
-    let viewProps = props({
-      refreshing: true,
-      cards: [
-        card({
-          profiles: [
-            { profileId: "openai:one", type: "oauth", status: "ok", email: "one@example.com" },
-            { profileId: "openai:two", type: "oauth", status: "ok", email: "two@example.com" },
-            { profileId: "openai:three", type: "oauth", status: "ok", email: "three@example.com" },
-          ],
-          profileProviderIds: {
-            "openai:one": "openai",
-            "openai:two": "openai",
-            "openai:three": "openai",
-          },
-          profileOrders: { openai: ["openai:one", "openai:two", "openai:three"] },
-        }),
-      ],
-      onProfileOrderChange: (_cardId, provider, order) => {
-        if (!order) {
-          throw new Error("Expected a profile move");
-        }
-        viewProps = { ...viewProps, profileOrders: { [provider]: order } };
-        queueMicrotask(() => render(renderModelProviders(viewProps), container));
-      },
-    });
-    const container = mount(viewProps);
-    const moveDown = container.querySelector<HTMLButtonElement>(
-      '[data-profile-id="openai:one"] [data-direction="down"]',
-    )!;
-    const moveUp = container.querySelector<HTMLButtonElement>(
-      '[data-profile-id="openai:one"] [data-direction="up"]',
-    )!;
-    expect(moveUp.disabled).toBe(true);
-    moveDown.focus();
-
-    for (const { order, focused } of [
-      { order: ["openai:two", "openai:one", "openai:three"], focused: moveDown },
-      { order: ["openai:two", "openai:three", "openai:one"], focused: moveUp },
-    ]) {
-      expect(document.activeElement).toBe(moveDown);
-      moveDown.click();
-      await vi.waitFor(() => {
-        expect(
-          [...container.querySelectorAll<HTMLElement>(".model-providers__profile")].map(
-            (row) => row.dataset.profileId,
-          ),
-        ).toEqual(order);
-        expect(document.activeElement).toBe(focused);
-      });
-    }
-    expect(moveDown.disabled).toBe(true);
-    expect(moveUp.disabled).toBe(false);
-  });
-
   it("uses the original config key for credential mutations", () => {
     const onSaveKey = vi.fn();
     const onRemoveKey = vi.fn();
