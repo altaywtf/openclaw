@@ -1,11 +1,17 @@
-// Codex tests cover the agent-end context handed to OpenClaw side effects.
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import * as agentHarnessRuntime from "openclaw/plugin-sdk/agent-harness-runtime";
-import { describe, expect, it, vi } from "vitest";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
+import { formatSqliteSessionFileMarker } from "openclaw/plugin-sdk/sqlite-runtime-testing";
+import { beforeEach, describe, expect, it, onTestFailed, vi } from "vitest";
+import { dynamicToolBuildState } from "./dynamic-tool-build-state.js";
 import {
   createParams,
+  createRuntimeDynamicTool,
   createStartedThreadHarness,
   runCodexAppServerAttempt,
+  setCodexTestModelSupportsTools,
   setupRunAttemptTestHooks,
   tempDir,
 } from "./run-attempt-test-harness.js";
@@ -13,22 +19,155 @@ import {
 setupRunAttemptTestHooks();
 
 describe("runCodexAppServerAttempt agent-end context", () => {
-  it("hands the foreground prompt context to agent-end side effects", async () => {
-    const sessionFile = path.join(tempDir, "agent-end-context.jsonl");
-    const workspaceDir = path.join(tempDir, "agent-end-context-workspace");
-    const harness = createStartedThreadHarness();
-    const runAgentEndSideEffects = vi.spyOn(agentHarnessRuntime, "runAgentEndSideEffects");
-    const params = createParams(sessionFile, workspaceDir);
-    params.messageChannel = "discord";
-    params.memberRoleIds = ["maintainer-role"];
-
-    const run = runCodexAppServerAttempt(params);
-    await harness.waitForMethod("turn/start");
-    await harness.completeTurn({ threadId: "thread-1", turnId: "turn-1" });
-    await run;
-
-    const ctx = runAgentEndSideEffects.mock.calls.at(-1)?.[0]?.ctx;
-    expect(ctx?.foregroundPromptContext?.memberRoleIds).toEqual(["maintainer-role"]);
-    expect(typeof ctx?.foregroundPromptContext?.agentDir).toBe("string");
+  beforeEach(() => {
+    // Context assertions own the clock; cold preparation must not consume the
+    // attempt budget before the fixture sends its terminal outcome.
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
   });
+
+  it.each(["completed", "aborted", "provider refusal"] as const)(
+    "hands deep-turn context to agent-end without reviewing a refusal: %s",
+    async (outcome) => {
+      const startedAt = performance.now();
+      let phase = "seed session";
+      const phaseTimingsMs: Record<string, number> = { [phase]: 0 };
+      const markPhase = (nextPhase: string) => {
+        phase = nextPhase;
+        phaseTimingsMs[phase] = performance.now() - startedAt;
+      };
+      let lastRequest: string | undefined;
+      let promptPersisted = false;
+      let agentEndObserved = false;
+      onTestFailed(() => {
+        console.error("agent-end context fixture", {
+          outcome,
+          phase,
+          phaseTimingsMs,
+          lastRequest,
+          promptPersisted,
+          agentEndObserved,
+        });
+      });
+      const source = {
+        agentId: "main",
+        sessionId: "session-1",
+        sessionKey: "agent:main:session-1",
+        storePath: path.join(tempDir, "agent-end-context.sqlite"),
+      };
+      const sessionFile = formatSqliteSessionFileMarker(source);
+      await upsertSessionEntry({
+        ...source,
+        entry: { sessionFile, sessionId: source.sessionId, updatedAt: Date.now() },
+      });
+      markPhase("fixture setup");
+      const workspaceDir = path.join(tempDir, "agent-end-context-workspace");
+      const turnStarted = createDeferred<void>();
+      const harness = createStartedThreadHarness(async (method) => {
+        lastRequest = method;
+        if (method === "turn/start") {
+          turnStarted.resolve();
+        }
+      });
+      const runAgentEndSideEffects = vi
+        .spyOn(agentHarnessRuntime, "runAgentEndSideEffects")
+        .mockImplementation(() => {
+          agentEndObserved = true;
+        });
+      const params = createParams(sessionFile, workspaceDir);
+      const abortController = new AbortController();
+      params.abortSignal = abortController.signal;
+      params.sessionTarget = source;
+      params.messageChannel = "discord";
+      params.memberRoleIds = ["maintainer-role"];
+      params.onUserMessagePersisted = () => {
+        promptPersisted = true;
+      };
+      setCodexTestModelSupportsTools(params, true);
+      dynamicToolBuildState.openClawCodingToolsFactory = () => [
+        createRuntimeDynamicTool("skill_workshop"),
+      ];
+
+      markPhase("turn/start");
+      const run = runCodexAppServerAttempt(params);
+      // Preserve an early attempt error instead of waiting on a readiness
+      // signal that a failed attempt can never produce.
+      await Promise.race([
+        turnStarted.promise,
+        run.then(() => {
+          throw new Error("Codex attempt settled before turn/start");
+        }),
+      ]);
+      for (let index = 0; index < 10; index++) {
+        markPhase(`raw response ${index}`);
+        await harness.notify({
+          method: "rawResponse/completed",
+          params: {
+            threadId: "thread-1",
+            turnId: "turn-1",
+            responseId: `response-${index}`,
+          },
+        });
+      }
+      markPhase("terminal outcome");
+      if (outcome === "aborted") {
+        abortController.abort("user cancelled");
+      } else {
+        const error =
+          outcome === "provider refusal"
+            ? { message: "Provider declined this request.", codexErrorInfo: "cyberPolicy" as const }
+            : undefined;
+        if (error) {
+          await harness.notify({
+            method: "error",
+            params: {
+              threadId: "thread-1",
+              turnId: "turn-1",
+              error,
+              willRetry: false,
+            },
+          });
+        }
+        await harness.notify({
+          method: "turn/completed",
+          params: {
+            threadId: "thread-1",
+            turnId: "turn-1",
+            turn: {
+              id: "turn-1",
+              status: error ? "failed" : "completed",
+              items: error ? [] : [{ type: "agentMessage", id: "msg-1", text: "final answer" }],
+              ...(error ? { error } : {}),
+            },
+          },
+        });
+      }
+      markPhase("attempt settlement");
+      const result = await run;
+
+      markPhase("context assertions");
+      // A slow passing first case still needs evidence about its cold owner.
+      if (performance.now() - startedAt > 10_000) {
+        console.info("agent-end context fixture timing", { outcome, phaseTimingsMs });
+      }
+      const ctx = runAgentEndSideEffects.mock.calls.at(-1)?.[0]?.ctx;
+      expect(ctx?.foregroundPromptContext?.memberRoleIds).toEqual(["maintainer-role"]);
+      expect(typeof ctx?.foregroundPromptContext?.agentDir).toBe("string");
+      expect(ctx?.modelIterations).toBe(10);
+      expect(ctx?.skillWorkshopAvailable).toBe(true);
+      const reviewSource =
+        runAgentEndSideEffects.mock.calls.at(-1)?.[0]?.skillExperienceReviewSource;
+      if (outcome === "provider refusal") {
+        expect(result.terminal).toEqual({ kind: "ok" });
+        expect(result.currentAttemptAssistant).toMatchObject({
+          stopReason: "error",
+          diagnostics: [
+            { type: "provider_refusal", details: { provider: "openai", category: "cyber" } },
+          ],
+        });
+        expect(reviewSource).toBeUndefined();
+      } else {
+        expect(reviewSource).toMatchObject(source);
+      }
+    },
+  );
 });

@@ -76,6 +76,8 @@ Principles:
   Ordinary revisits restore it. Gallery links with `?dashboard=expanded` explicitly
   make Dashboard main and focus it. Placement changes reuse the mounted content
   so widget frames, browser views, terminals, and chat drafts survive a swap.
+  The task toolbar and side-panel tab header align above their respective panes
+  in left/right layouts; stacked layouts keep each header above its own pane.
 - **Drag:** user drags widgets; grid auto-compacts (widgets float up, neighbors
   reflow). Resize by handle snaps to size steps. No pixel placement — for
   anyone.
@@ -232,10 +234,17 @@ access nor the proxy's origin. Inline views adopt only the wrapper's private
 prompt channel; dashboard views initialize their separate ticket-bound bridge.
 
 The shared loader fetches board HTML while the sandbox proxy starts, then
-delivers it only after that exact proxy reports ready. Mounted widgets retain
-their loaded document across presentation changes and ticket renewal. Inline
-views share concurrent reads of the same document only within one client and
-connection generation; each view still owns its own sandbox and prompt channel.
+delivers it only after that exact proxy reports ready. Dashboard widgets keep a
+themed loading placeholder until the proxy confirms that the current inner
+document has loaded. This rendering signal is separate from HTML delivery and
+bridge initialization, so an empty widget can finish loading without reporting
+a positive content height. Focused dashboard routes reuse an already resolved
+session key and agent owner to avoid a second session lookup.
+
+Mounted widgets retain their loaded document across presentation changes and
+ticket renewal. Inline views share concurrent reads of the same document only
+within one client and connection generation; each view still owns its own sandbox
+and prompt channel.
 Managed `[embed ref="..."]` previews use that authenticated path whenever their
 effective sandbox policy permits scripts, including the default with no explicit
 sandbox field. Explicit strict previews remain script-free.
