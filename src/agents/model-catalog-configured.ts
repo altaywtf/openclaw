@@ -8,42 +8,45 @@ import {
 } from "./model-visibility-policy.js";
 import { resolveModelCatalogIdentityKey } from "./openai-model-routes.js";
 
-export function includeConfiguredStaticCatalogEntries(params: {
+export function mergeStaticModelCatalogEntries(params: {
   cfg: OpenClawConfig;
   agentId: string;
   snapshot: ModelCatalogSnapshot;
   defaultModel?: string;
   metadataSnapshot: PluginMetadataSnapshot;
-  enabled: boolean;
+  view: "default" | "configured" | "all";
 }): ModelCatalogEntry[] {
-  if (!params.enabled || !params.snapshot.staticEntries?.length) {
-    return [...params.snapshot.entries];
-  }
-  const policy = createModelVisibilityPolicy({
-    cfg: params.cfg,
-    catalog: [...params.snapshot.entries],
-    defaultProvider: DEFAULT_PROVIDER,
-    defaultModel: params.defaultModel,
-    agentId: params.agentId,
-    ...RUNTIME_MODEL_VISIBILITY_NORMALIZATION,
-    manifestPlugins: params.metadataSnapshot,
-  });
-  const configuredKeys = new Set(
-    [...policy.configuredKeys].map((key) => {
-      const separator = key.indexOf("/");
-      return separator > 0
-        ? resolveModelCatalogIdentityKey({
-            provider: key.slice(0, separator),
-            id: key.slice(separator + 1),
-          })
-        : key;
-    }),
-  );
   const catalog = [...params.snapshot.entries];
+  if (params.view === "default" || !params.snapshot.staticEntries?.length) {
+    return catalog;
+  }
+  const configuredKeys = new Set<string>();
+  if (params.view === "configured") {
+    const policy = createModelVisibilityPolicy({
+      cfg: params.cfg,
+      catalog,
+      defaultProvider: DEFAULT_PROVIDER,
+      defaultModel: params.defaultModel,
+      agentId: params.agentId,
+      ...RUNTIME_MODEL_VISIBILITY_NORMALIZATION,
+      manifestPlugins: params.metadataSnapshot,
+    });
+    for (const key of policy.configuredKeys) {
+      const separator = key.indexOf("/");
+      configuredKeys.add(
+        separator > 0
+          ? resolveModelCatalogIdentityKey({
+              provider: key.slice(0, separator),
+              id: key.slice(separator + 1),
+            })
+          : key,
+      );
+    }
+  }
   const seen = new Set(catalog.map(resolveModelCatalogIdentityKey));
   for (const entry of params.snapshot.staticEntries) {
     const key = resolveModelCatalogIdentityKey(entry);
-    if (!seen.has(key) && configuredKeys.has(key)) {
+    if (!seen.has(key) && (params.view === "all" || configuredKeys.has(key))) {
       seen.add(key);
       catalog.push(entry);
     }

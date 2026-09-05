@@ -6,7 +6,7 @@ import { resolveConfiguredModelEntries } from "./configured-model-entries.js";
 import { DEFAULT_PROVIDER } from "./defaults.js";
 import type { ModelAuthAvailabilityEvaluation } from "./model-auth-availability.js";
 import { createModelCatalogFastModeResolver } from "./model-catalog-capabilities.js";
-import { includeConfiguredStaticCatalogEntries } from "./model-catalog-configured.js";
+import { mergeStaticModelCatalogEntries } from "./model-catalog-configured.js";
 import {
   getPreparedModelCatalogDecisions,
   type ModelCatalogDecisionContext,
@@ -68,10 +68,10 @@ export async function prepareModelCatalogView(params: ModelCatalogViewParams) {
   });
   const catalog = (
     params.inventoryEntries ??
-    includeConfiguredStaticCatalogEntries({
+    mergeStaticModelCatalogEntries({
       ...params,
       defaultModel,
-      enabled: view === "configured",
+      view,
     })
   ).filter((entry) => isVisibleProvider(entry.provider));
   const decisions = getPreparedModelCatalogDecisions(params);

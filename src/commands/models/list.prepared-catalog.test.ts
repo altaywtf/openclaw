@@ -145,6 +145,177 @@ describe("models list prepared catalog boundary", () => {
   });
 
   it.each([
+    { view: "all", provider: "catalog-provider", cli: false },
+    { view: "provider", provider: "catalog-provider", cli: false },
+    { view: "all", provider: "fixture-cli", cli: true },
+    { view: "provider", provider: "fixture-cli", cli: true },
+  ])(
+    "keeps same-generation static rows in $view browse (CLI: $cli)",
+    async ({ view, provider, cli }) => {
+      const staticModel: ModelCatalogEntry = {
+        provider,
+        id: cli ? "cli-model" : "static-fallback",
+        name: cli ? "Prepared CLI Model" : "Prepared Static Fallback",
+        api: "openai-completions",
+        baseUrl: cli ? "cli://fixture" : "https://catalog.example.test/v1",
+        contextWindow: 64_000,
+        input: ["text", "image"],
+      };
+      owner.config.agents = {
+        defaults: {
+          model: {
+            primary: "catalog-provider/pinned",
+            fallbacks: [`${provider}/${staticModel.id}`],
+          },
+        },
+        entries: { main: {} },
+      };
+      if (cli) {
+        cliBackendsTesting.setDepsForTest({
+          resolveRuntimeCliBackends: () => [
+            { id: provider, pluginId: "fixture", config: { command: "fixture-cli" } },
+          ],
+          resolvePluginSetupRegistry: () => ({
+            providers: [],
+            cliBackends: [],
+            configMigrations: [],
+            autoEnableProbes: [],
+            diagnostics: [],
+          }),
+        });
+        owner.authStore.profiles["fixture-cli:test"] = {
+          type: "api_key",
+          provider,
+          key: "fixture-cli-key",
+        };
+        owner.config.models = {
+          providers: {
+            [provider]: {
+              api: "openai-completions",
+              baseUrl: "cli://fixture",
+              models: [
+                {
+                  id: staticModel.id,
+                  name: staticModel.name,
+                  reasoning: false,
+                  input: ["text", "image"],
+                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                  contextWindow: 64_000,
+                  maxTokens: 4096,
+                },
+              ],
+            },
+          },
+        };
+      }
+      const liveEntries = owner.modelCatalog.entries;
+      const routeVariants = [...liveEntries, staticModel];
+      const configuredOwner: ResolvedPublishedModelCatalogOwner = {
+        ...owner,
+        modelCatalog: {
+          entries: [...liveEntries, staticModel],
+          routeVariants,
+          staticEntries: [staticModel],
+        },
+      };
+      const fullOwner: ResolvedPublishedModelCatalogOwner = {
+        ...owner,
+        modelCatalog: markPreparedModelCatalogFull({
+          entries: liveEntries,
+          routeVariants: liveEntries,
+          staticEntries: [staticModel],
+        }),
+      };
+      mocks.loadOwner.mockImplementation(async (params) =>
+        params?.readOnly ? configuredOwner : fullOwner,
+      );
+      const expectedRow = expect.objectContaining({
+        key: `${provider}/${staticModel.id}`,
+        name: staticModel.name,
+        contextWindow: 64_000,
+        input: "text+image",
+        available: true,
+      });
+
+      await modelsListCommand({ json: true }, runtime);
+      expect(runtime.writeJson).toHaveBeenLastCalledWith(
+        expect.objectContaining({ models: expect.arrayContaining([expectedRow]) }),
+        2,
+      );
+
+      await modelsListCommand(
+        { json: true, ...(view === "all" ? { all: true } : { provider }) },
+        runtime,
+      );
+
+      expect(mocks.loadOwner).toHaveBeenLastCalledWith(
+        expect.objectContaining({ readOnly: false, refreshFullCatalog: true }),
+      );
+      expect(runtime.writeJson).toHaveBeenLastCalledWith(
+        expect.objectContaining({ models: expect.arrayContaining([expectedRow]) }),
+        2,
+      );
+    },
+  );
+
+  it("keeps replace-mode default output limited to authored provider models", async () => {
+    const pinned = owner.modelCatalog.entries[0]!;
+    const outside: ModelCatalogEntry = {
+      provider: "catalog-provider",
+      id: "outside-replacement",
+      name: "Outside Replacement",
+      api: "anthropic-messages",
+      baseUrl: "https://catalog.example.test",
+      input: ["text"],
+      contextWindow: 32_000,
+    };
+    owner.config = {
+      agents: {
+        defaults: {
+          model: {
+            primary: "catalog-provider/pinned",
+            fallbacks: ["catalog-provider/outside-replacement"],
+          },
+        },
+        entries: { main: {} },
+      },
+      models: {
+        mode: "replace",
+        providers: {
+          "catalog-provider": {
+            api: "anthropic-messages",
+            baseUrl: "https://catalog.example.test",
+            models: [
+              {
+                id: "pinned",
+                name: pinned.name,
+                reasoning: false,
+                input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 200_000,
+                maxTokens: 4096,
+              },
+            ],
+          },
+        },
+      },
+    };
+    owner.modelCatalog = markPreparedModelCatalogFull({
+      entries: [pinned],
+      routeVariants: [pinned, outside],
+      staticEntries: [outside],
+    });
+
+    await modelsListCommand({ json: true }, runtime);
+
+    expect(runtime.writeJson).toHaveBeenLastCalledWith(
+      { count: 1, models: [expect.objectContaining({ key: "catalog-provider/pinned" })] },
+      2,
+    );
+    expect(mocks.loadOwner).toHaveBeenCalledWith(expect.objectContaining({ readOnly: true }));
+  });
+
+  it.each([
     { credential: "unknown", available: null },
     { credential: "expired", available: false },
   ])(

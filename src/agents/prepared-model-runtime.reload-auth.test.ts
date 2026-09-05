@@ -12,7 +12,9 @@ import {
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
 import { getPreparedModelFullCatalogAuth } from "./prepared-model-runtime-auth.js";
+import { withPreparedModelRuntimePluginGenerationScope } from "./prepared-model-runtime-generation-scope.js";
 import {
+  acquireAgentRunPreparedModelRuntime,
   loadPublishedGatewayReplyDispatchRuntime,
   prepareModelRuntimeSnapshot,
   registerPreparedModelRuntimePublicationListener,
@@ -172,6 +174,7 @@ describe("prepared model runtime reload auth adoption", () => {
       config: {},
     });
     const original = await snapshot.loadFullModelCatalog!();
+    const dispatch = (await loadPublishedGatewayReplyDispatchRuntime({ agentId: "default" }))!;
     const listener = vi.fn();
     const unregister = registerPreparedModelRuntimePublicationListener(listener);
     const failure = new Error("catalog service unavailable");
@@ -181,6 +184,39 @@ describe("prepared model runtime reload auth adoption", () => {
       expect(snapshot.readFullModelCatalog!()).toBe(original);
       expect(snapshot.readFullModelCatalog!()?.refreshFailed).toBe(true);
       expect(listener).toHaveBeenCalledWith({ phase: "catalog-failed", error: failure });
+      const input = {
+        config: dispatch.config,
+        agentId: dispatch.agentId,
+        agentDir: dispatch.agentDir,
+        workspaceDir: dispatch.workspaceDir,
+        runtimePluginSelections: [{ provider: "custom", modelId: "model", runtime: "openclaw" }],
+      };
+      const lease = await acquireAgentRunPreparedModelRuntime(input, {
+        pluginGeneration: dispatch.pluginGeneration,
+      });
+      let active = true;
+      try {
+        await withPreparedModelRuntimePluginGenerationScope(
+          lease.pluginGeneration,
+          async () => {
+            const nested = await acquireAgentRunPreparedModelRuntime(input, {
+              pluginGeneration: lease.pluginGeneration,
+            });
+            try {
+              expect(nested.snapshot).toBe(lease.snapshot);
+            } finally {
+              nested.release();
+            }
+          },
+          () => (active ? lease.snapshot : undefined),
+        );
+        expect(await loadPublishedGatewayReplyDispatchRuntime({ agentId: "default" })).toBe(
+          dispatch,
+        );
+      } finally {
+        active = false;
+        lease.release();
+      }
       await snapshot.loadFullModelCatalog!({ refresh: true });
       expect(snapshot.readFullModelCatalog!()?.refreshFailed).toBeUndefined();
     } finally {
