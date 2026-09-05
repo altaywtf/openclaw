@@ -17,7 +17,6 @@ import {
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { buildAgentRunTerminalReplySnapshot } from "../agents/agent-run-terminal-reply.js";
 import { testing as agentStepTesting } from "../agents/tools/agent-step.test-support.js";
-import { REPLY_SKIP_TOKEN } from "../agents/tools/sessions-send-tokens.js";
 import { runSessionsSendA2AFlow } from "../agents/tools/sessions-send-tool.a2a.js";
 import {
   loadSessionEntry,
@@ -695,22 +694,24 @@ describe("sessions_send agent targeting", () => {
         await prepareGatewayReplyRuntimeForTest({ force: true });
 
         const spy = agentCommandMock as unknown as Mock<(opts: unknown) => Promise<void>>;
-        // Only the first orion turn is the awaited reply; every later mocked turn
-        // (announce and ping-pong follow-ups) answers REPLY_SKIP so the detached
-        // tail ends after one step instead of spending the row budget on five turns.
-        let orionReplied = false;
-        spy.mockImplementation(async (opts: unknown) => {
-          const sessionKey = (opts as { sessionKey?: string }).sessionKey;
-          const isFirstOrionTurn = sessionKey === "agent:orion:main" && !orionReplied;
-          if (sessionKey === "agent:orion:main") {
-            orionReplied = true;
-          }
-          return emitLifecycleAssistantReply({
+        spy.mockImplementation(async (opts: unknown) =>
+          emitLifecycleAssistantReply({
             opts,
             defaultSessionId: "orion-created",
-            resolveText: () => (isFirstOrionTurn ? "orion response" : REPLY_SKIP_TOKEN),
-          });
-        });
+            // The detached announce flow keeps stepping this same mock after the
+            // awaited reply; skipping both follow-up steps ends the tail instead of
+            // running five ping-pong turns no row asserts on.
+            resolveText: (extraSystemPrompt) => {
+              if (extraSystemPrompt?.includes("Agent-to-agent reply step")) {
+                return "REPLY_SKIP";
+              }
+              if (extraSystemPrompt?.includes("Agent-to-agent announce step")) {
+                return "ANNOUNCE_SKIP";
+              }
+              return "orion response";
+            },
+          }),
+        );
         spy.mockClear();
 
         const tool = createOpenClawTools({
