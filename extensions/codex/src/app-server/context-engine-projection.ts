@@ -349,7 +349,7 @@ function renderMessagesForCodexContext(
   // Count the discarded prefix for the existing marker, but never materialize the
   // whole history. Sigil neutralization preserves UTF-16 length and cannot span separators.
   for (let index = messages.length - 1; index >= 0; index--) {
-    const message = messages[index];
+    const message = messages[index]!;
     const text = renderMessageBody(message, options);
     if (!text) {
       continue;
