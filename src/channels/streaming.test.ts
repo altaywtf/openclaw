@@ -38,7 +38,7 @@ describe("buildChannelProgressDraftLine", () => {
           event: "item",
           itemKind: "tool",
           name,
-          meta: String(args.markdown),
+          meta: args.markdown,
         }),
       ).toBeUndefined();
     },

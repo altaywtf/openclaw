@@ -916,6 +916,7 @@ describe("createCliToolSummaryTracker", () => {
     await tracker.noteToolEvent({
       name: "progress_card",
       phase: "result",
+      args: undefined,
       toolCallId: "plan-1",
       isError: false,
       result: { content: [{ type: "text", text: "Progress card updated" }] },
@@ -941,6 +942,7 @@ describe("createCliToolSummaryTracker", () => {
     await tracker.noteToolEvent({
       name: "progress_card",
       phase: "result",
+      args: undefined,
       toolCallId: "plan-error",
       isError: true,
       result: { content: [{ type: "text", text: "write failed" }] },
