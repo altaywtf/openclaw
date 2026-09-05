@@ -126,3 +126,40 @@ it("separates canonical roster capture and deferrals from child session queries"
     "roster-next",
   ]);
 });
+
+it("settles a replacement after its deferred predecessor socket closes", async ({
+  gatewayPage,
+}) => {
+  const { window, execute } = gatewayPage;
+  execute(
+    createControlUiMockGatewayInitScript({
+      deferredMethods: ["models.list", "models.list"],
+    }),
+  );
+  const gateway = (window as typeof window & { openclawControlUiE2eGateway?: ControlUiMockGateway })
+    .openclawControlUiE2eGateway;
+  if (!gateway) {
+    throw new Error("Mock Gateway was not installed");
+  }
+
+  const first = gatewayPage.connect("ws://mock-gateway/first");
+  await flush();
+  first.send("models-first", "models.list");
+  await flush();
+  gateway.closeLatest();
+
+  const replacement = gatewayPage.connect("ws://mock-gateway/replacement");
+  await flush();
+  replacement.send("models-replacement", "models.list");
+  await flush();
+  gateway.resolveDeferred("models.list");
+
+  expect(replacement.frames.at(-1)).toMatchObject({
+    id: "models-replacement",
+    ok: true,
+  });
+  expect(gateway.findRequests("models.list").map((request) => request.id)).toEqual([
+    "models-first",
+    "models-replacement",
+  ]);
+});

@@ -2473,6 +2473,13 @@ function installControlUiMockGateway(
         window.clearInterval(this.tickTimer);
         this.tickTimer = null;
       }
+      // A closed socket cannot deliver its queued responses. Release only its
+      // captures so method settlement can reach a live replacement.
+      for (let i = deferredResponses.length - 1; i >= 0; i -= 1) {
+        if (deferredResponses[i]?.socket === this) {
+          deferredResponses.splice(i, 1);
+        }
+      }
       sessionMessageSubscriptions.clear();
       stopRepeatingSessionEvents();
       this.dispatchEvent(new CloseEvent("close", { code, reason }));
