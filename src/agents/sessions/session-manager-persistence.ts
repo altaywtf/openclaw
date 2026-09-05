@@ -80,10 +80,12 @@ export class SessionManagerPersistence extends SessionManagerCore {
       }
       candidatePreservedStart -= 1;
     }
+    const removableEntryIds = new Set<string>();
     let candidateRemoveStart = candidatePreservedStart;
     while (candidateRemoveStart > 1) {
       const entry = this.fileEntries[candidateRemoveStart - 1];
       if (isIndexedSessionEntry(entry) && predicate(entry)) {
+        removableEntryIds.add(entry.id);
         candidateRemoveStart -= 1;
         continue;
       }
@@ -166,7 +168,7 @@ export class SessionManagerPersistence extends SessionManagerCore {
     let removeStart = preservedStart;
     while (removeStart > 1) {
       const entry = prepared.fileEntries[removeStart - 1];
-      if (!isIndexedSessionEntry(entry) || !predicate(entry)) {
+      if (!isIndexedSessionEntry(entry) || !removableEntryIds.has(entry.id)) {
         break;
       }
       removeStart -= 1;
