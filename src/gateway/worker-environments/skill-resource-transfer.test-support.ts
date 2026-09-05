@@ -24,13 +24,13 @@ export function prependResourceReceiver(prefix: string) {
   );
 }
 
-export async function createResourceCarrier(root: string, kind = "ssh") {
+export async function createResourceCarrier(root: string, kind = "ssh", generation = 1) {
   const home = await fs.realpath(root);
   const binding = {
     gatewayNamespace: "gateway",
     environmentId: "environment",
     sessionId: "session",
-    generation: 1,
+    generation,
   };
   const runtime =
     kind === "node"

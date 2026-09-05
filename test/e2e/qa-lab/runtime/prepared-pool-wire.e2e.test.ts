@@ -2,6 +2,7 @@ import { watch, type FSWatcher } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
+import { isRfc1918Ipv4Address } from "@openclaw/net-policy/ip";
 import type { GatewayClient } from "openclaw/plugin-sdk/gateway-runtime";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -9,6 +10,10 @@ import {
   startQaMockOpenAiServer,
 } from "../../../../extensions/qa-lab/api.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../../../src/infra/kysely-sync.js";
+import {
+  pickMatchingExternalInterfaceAddress,
+  readNetworkInterfaces,
+} from "../../../../src/infra/network-interfaces.js";
 import {
   NODE_WORKER_SUPERVISOR_LAUNCH_COMMAND,
   NODE_WORKER_WORKSPACE_PREPARE_COMMAND,
@@ -71,7 +76,16 @@ describe("prepared pool real Gateway wire", () => {
     ReturnType<ReturnType<typeof createProductionGatewayArtifact>["prepare"]>
   >;
   let artifact: ReturnType<typeof createProductionGatewayArtifact> | undefined;
+  let gatewayHost: string;
   beforeAll(async () => {
+    const host = pickMatchingExternalInterfaceAddress(readNetworkInterfaces(), {
+      family: "IPv4",
+      matches: isRfc1918Ipv4Address,
+    });
+    if (!host) {
+      throw new Error("Prepared pool wire proof requires a private non-loopback IPv4 interface");
+    }
+    gatewayHost = host;
     artifact = createProductionGatewayArtifact(process.cwd());
     production = await artifact.prepare();
   }, PRODUCTION_GATEWAY_ARTIFACT_TIMEOUT_MS);
@@ -83,6 +97,7 @@ describe("prepared pool real Gateway wire", () => {
       const root = await fs.realpath(tempDirs.make("openclaw-prepared-pool-wire-"));
       const gatewayOwner = createQaGatewayChild();
       let gateway: WireGateway | undefined;
+      let workerGatewayUrl = "";
       let operator: GatewayClient | undefined;
       let published: PublishedWireWorkspace | undefined;
       let model: Awaited<ReturnType<typeof startQaMockOpenAiServer>> | undefined;
@@ -104,6 +119,7 @@ describe("prepared pool real Gateway wire", () => {
           command: {
             executablePath: process.execPath,
             argsPrefix: [path.join(production.repoRoot, "dist/index.js")],
+            argsSuffix: ["--bind", "lan"],
             cwd: production.repoRoot,
             usePackagedPlugins: true,
           },
@@ -113,31 +129,38 @@ describe("prepared pool real Gateway wire", () => {
           alternateModel: MODEL_REF,
           transportBaseUrl: "http://127.0.0.1",
           controlUiEnabled: false,
-          mutateConfig: (config) => ({
-            ...config,
-            gateway: {
-              ...config.gateway,
-              remote: { ...config.gateway?.remote, url: `ws://127.0.0.1:${config.gateway?.port}` },
-            },
-            plugins: {
-              ...config.plugins,
-              allow: [...new Set([...(config.plugins?.allow ?? []), PLUGIN_ID])],
-              load: { ...config.plugins?.load, paths: [pluginDir] },
-              entries: {
-                ...config.plugins?.entries,
-                [PLUGIN_ID]: { enabled: true, config: providerConfig },
+          mutateConfig: (config) => {
+            workerGatewayUrl = `ws://${gatewayHost}:${config.gateway?.port}`;
+            return {
+              ...config,
+              gateway: {
+                ...config.gateway,
+                bind: "lan",
+                remote: { ...config.gateway?.remote, url: workerGatewayUrl },
               },
-            },
-            cloudWorkers: {
-              profiles: { [PROFILE]: { provider: PLUGIN_ID, install: "bundle", readyWorkers: 1 } },
-              preparedPool: { maxTotal: 1 },
-            },
-            tools: { ...config.tools, exec: { ...config.tools?.exec, mode: "full" } },
-            nodeHost: { ...config.nodeHost, workerRuns: { enabled: true } },
-          }),
+              plugins: {
+                ...config.plugins,
+                allow: [...new Set([...(config.plugins?.allow ?? []), PLUGIN_ID])],
+                load: { ...config.plugins?.load, paths: [pluginDir] },
+                entries: {
+                  ...config.plugins?.entries,
+                  [PLUGIN_ID]: { enabled: true, config: providerConfig },
+                },
+              },
+              cloudWorkers: {
+                profiles: {
+                  [PROFILE]: { provider: PLUGIN_ID, install: "bundle", readyWorkers: 1 },
+                },
+                preparedPool: { maxTotal: 1 },
+              },
+              tools: { ...config.tools, exec: { ...config.tools?.exec, mode: "full" } },
+              nodeHost: { ...config.nodeHost, workerRuns: { enabled: true } },
+            };
+          },
         });
         operator = await connectWireClient({ gateway, role: "operator", identity: null });
-        provider.connect(gateway, operator);
+        // The enrolled node must use the real advertised interface, including the setup URL check.
+        provider.connect({ ...gateway, wsUrl: workerGatewayUrl }, operator);
         const createSession = async (suffix: string) => {
           const key = `agent:qa:prepared-pool-wire-${suffix}`;
           await gateway!.call("sessions.create", {

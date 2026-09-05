@@ -103,6 +103,12 @@ it("correlates real IPC with the current turn, bounds duplicates, and keeps canc
   if (mode === "startup-hold") return;
   previousStartup = { ...frame, phase: "first-inference", workerTimeMs: 20 };
   for (let count = 0; count < 20; count++) await send(previousStartup);
+  const releasePath = path.join(descriptor.assignment.workspaceDir, descriptor.assignment.turnId + ".startup-release");
+  const releaseDeadline = Date.now() + 5_000;
+  while (!fs.existsSync(releasePath)) {
+    if (Date.now() >= releaseDeadline) throw new Error("startup release timed out");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
   finish(descriptor, completedResult, true);
 } else if (mode === "admission-rearm") {`,
     ),
@@ -126,10 +132,21 @@ it("correlates real IPC with the current turn, bounds duplicates, and keeps canc
     };
     return launch;
   };
+  const waitForStartup = (launchId: string, phase: string) =>
+    vi.waitFor(async () =>
+      expect(await events()).toContainEqual(expect.objectContaining({ launchId, phase })),
+    );
+  const completeTurn = async (launchId: string) => {
+    // IPC send completion does not acknowledge parent receipt. Keep this synthetic
+    // turn live until its telemetry arrives; stdout completion closes the observer.
+    await waitForStartup(launchId, "first-inference");
+    fs.writeFileSync(path.join(workspaceDir, `${launchId}.startup-release`), "");
+    return await waitForNodeWorkerTerminal(supervisor, launchId);
+  };
   let owner: Awaited<ReturnType<typeof supervisor.launch>> | undefined;
   try {
     owner = await supervisor.launch(input, TEST_WORKER_ENDPOINT);
-    expect((await waitForNodeWorkerTerminal(supervisor, input.launchId)).state).toBe("completed");
+    expect((await completeTurn(input.launchId)).state).toBe("completed");
     const count = (await events()).length;
     await supervisor.launch(input, TEST_WORKER_ENDPOINT);
     expect(await events()).toHaveLength(count);
@@ -137,24 +154,17 @@ it("correlates real IPC with the current turn, bounds duplicates, and keeps canc
     expect(await supervisor.launch(second, TEST_WORKER_ENDPOINT)).toMatchObject({
       worker: owner.worker,
     });
-    await waitForNodeWorkerTerminal(supervisor, second.launchId);
+    await completeTurn(second.launchId);
     const cancelled = next("startup-cancelled", "startup-hold");
     await supervisor.launch(cancelled, TEST_WORKER_ENDPOINT);
-    await vi.waitFor(async () =>
-      expect(await events()).toContainEqual(
-        expect.objectContaining({
-          launchId: cancelled.launchId,
-          phase: "hello-ready",
-        }),
-      ),
-    );
+    await waitForStartup(cancelled.launchId, "hello-ready");
     expect(await supervisor.cancel(testNodeWorkerLaunchIdentity(cancelled))).toMatchObject({
       state: "cancelled",
     });
     const final = next("startup-final");
     const replacement = await supervisor.launch(final, TEST_WORKER_ENDPOINT);
     expect(replacement.worker).not.toEqual(owner.worker);
-    await waitForNodeWorkerTerminal(supervisor, final.launchId);
+    await completeTurn(final.launchId);
 
     for (const launch of [input, second, cancelled, final]) {
       const observed = (await events()).filter((event) => event.launchId === launch.launchId);

@@ -136,14 +136,10 @@ describe("worker placement startup cleanup ownership", () => {
         profileSnapshot: { settings: { region: "test" } },
         provisionOperationId: "provision:startup-fenced",
       });
-      workerEnvironmentSupport.testState.store.transition({
+      const pendingEnvironment = workerEnvironmentSupport.testState.store.transition({
         environmentId,
         from: requestedEnvironment.state,
         to: "provisioning",
-      });
-      const pendingEnvironment = workerEnvironmentSupport.testState.store.requestDestroy({
-        environmentId,
-        state: "provisioning",
       });
       const placements = createWorkerSessionPlacementStore({
         database: workerEnvironmentSupport.testState.stateDb,
@@ -212,6 +208,10 @@ describe("worker placement startup cleanup ownership", () => {
           pendingEnvironment,
         );
       }
+      workerEnvironmentSupport.testState.store.requestDestroy({
+        environmentId,
+        state: "provisioning",
+      });
       expect(failed).toMatchObject({
         state: "failed",
         environmentId,
