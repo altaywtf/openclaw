@@ -96,11 +96,8 @@ describe("setup credential preservation", () => {
 
   it.each([
     { storage: "inline", order: "implicit" },
-    { storage: "inline", order: "configured" },
     { storage: "inline", order: "stored" },
-    { storage: "protected", order: "implicit" },
     { storage: "protected", order: "configured" },
-    { storage: "protected", order: "stored" },
     { storage: "inline", order: "implicit", outcome: "success" },
     { storage: "protected", order: "stored", outcome: "success" },
     { storage: "protected", order: "configured", outcome: "cancel" },

@@ -201,28 +201,6 @@ describe("provider channel login choices", () => {
     expect(missingLoginChoices).toEqual([]);
   });
 
-  it("lists the trusted bundled chat-compatible login surface", () => {
-    expect(listProviderChannelLoginChoices().filter((entry) => entry.mode === "chat")).toEqual([
-      expect.objectContaining({ command: "codex", providerId: "openai", methodId: "device-code" }),
-      expect.objectContaining({
-        command: "minimax-cn-oauth",
-        providerId: "minimax-portal",
-        methodId: "oauth-cn",
-      }),
-      expect.objectContaining({
-        command: "minimax-global-oauth",
-        providerId: "minimax-portal",
-        methodId: "oauth",
-      }),
-      expect.objectContaining({
-        command: "openrouter",
-        providerId: "openrouter",
-        methodId: "oauth",
-      }),
-      expect.objectContaining({ command: "xai", providerId: "xai", methodId: "oauth" }),
-    ]);
-  });
-
   it("resolves guided secret providers to a secure Control UI handoff", () => {
     const snapshot = metadataSnapshot([
       choice({

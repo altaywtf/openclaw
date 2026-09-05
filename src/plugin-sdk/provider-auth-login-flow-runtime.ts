@@ -37,7 +37,7 @@ type ProviderChannelLoginPreparation =
       modelAccessChoice?: ModelsAuthLoginFlowOptions["modelAccessChoice"];
     };
 
-export type ProviderLoginSessionEntry = {
+type ProviderLoginSessionEntry = {
   sessionId: string;
   providerOverride?: string;
   modelProvider?: string;
@@ -46,7 +46,7 @@ export type ProviderLoginSessionEntry = {
   authProfileOverrideCompactionCount?: number;
 };
 
-export type ProviderLoginSessionAdoption =
+type ProviderLoginSessionAdoption =
   | { status: "unchanged" }
   | {
       status: "patch";
@@ -446,7 +446,7 @@ export function formatProviderLoginFailed(choice: ProviderChannelLoginChoice): s
   return `${choice.providerLabel} login did not complete. Send \`${formatProviderLoginCommand(choice)}\` to try again.`;
 }
 
-export function formatProviderLoginControlUiHandoff(choice: ProviderChannelLoginChoice): string {
+function formatProviderLoginControlUiHandoff(choice: ProviderChannelLoginChoice): string {
   if (choice.mode === "setup") {
     return `${choice.label} needs provider setup. Open Control UI → Models → Connect, then choose “${choice.label}” under Provider setup.`;
   }
@@ -512,8 +512,6 @@ export function buildProviderLoginChoicesReply(
     },
   };
 }
-
-export { resolveProviderChannelLoginChoice };
 
 /** A persisted row proves a patch only when it carries the exact login profile we wrote. */
 export function isProviderLoginPatchPersisted(

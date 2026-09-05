@@ -39,6 +39,7 @@ import {
   type BoundVerifySetupInferenceResult,
   type CompleteSetupInferenceResult,
   invalidSetupConfigError,
+  parseInferenceRef,
   redactSetupInferenceError,
   SETUP_INFERENCE_TEST_PROMPT,
   SETUP_INFERENCE_TEST_TIMEOUT_MS,
@@ -94,13 +95,6 @@ type SetupTurnSuccess = {
   auth: AgentExecutionAuthBinding;
 };
 
-function parseRef(modelRef: string): { provider: string; model: string } {
-  const slash = modelRef.indexOf("/");
-  return slash === -1
-    ? { provider: modelRef, model: "" }
-    : { provider: modelRef.slice(0, slash), model: modelRef.slice(slash + 1) };
-}
-
 /** CLI backends need a hard tool-free mode; the probe must not let a CLI act on the host. */
 function resolveToolFreeCliSetupError(route: SystemAgentConfiguredRoute): string | undefined {
   if (route.runner !== "cli") {
@@ -112,7 +106,7 @@ function resolveToolFreeCliSetupError(route: SystemAgentConfiguredRoute): string
   if (backend?.sideQuestionToolMode === "disabled") {
     return undefined;
   }
-  const geminiCliProvider = parseRef(GEMINI_CLI_DEFAULT_MODEL_REF).provider;
+  const geminiCliProvider = parseInferenceRef(GEMINI_CLI_DEFAULT_MODEL_REF).provider;
   if (backend?.nativeToolMode === "none" && route.provider !== geminiCliProvider) {
     return undefined;
   }

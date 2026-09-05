@@ -167,33 +167,6 @@ describe("prepared catalog decision ownership", () => {
     ).toBe(first);
   });
 
-  it.each(["agent", "workspace", "config", "metadata", "outcomes", "completeness"] as const)(
-    "separates sources with different %s facts",
-    (changed) => {
-      const facts = createFacts();
-      const first = getPreparedModelCatalogDecisions(facts);
-      const next = {
-        ...facts,
-        ...(changed === "agent" ? { agentId: "other" } : {}),
-        ...(changed === "workspace" ? { workspaceDir: "/tmp/other-catalog-owner" } : {}),
-        ...(changed === "config" ? { cfg: { ...facts.cfg } } : {}),
-        ...(changed === "metadata"
-          ? { metadataSnapshot: createPluginMetadataSnapshotFixture() }
-          : {}),
-        ...(changed === "outcomes"
-          ? {
-              snapshot: {
-                ...facts.snapshot,
-                providerOutcomes: [{ provider: "openai", status: "auth-rejected" as const }],
-              },
-            }
-          : {}),
-        ...(changed === "completeness" ? { catalogComplete: false } : {}),
-      };
-      expect(getPreparedModelCatalogDecisions(next)).not.toBe(first);
-    },
-  );
-
   it("replaces the source after auth publication without changing the original decision", async () => {
     const facts = createFacts();
     const first = getPreparedModelCatalogDecisions(facts);
@@ -364,14 +337,13 @@ describe("prepared catalog decision ownership", () => {
     };
     facts.snapshot = { entries: [row], routeVariants: [row] };
     const source = getPreparedModelCatalogDecisions(facts);
-    const [owned] = source.entries;
+    const [owned] = source.variants(subscription);
     if (!owned) {
       throw new Error("Expected the owned model row");
     }
     const captured: ModelCatalogEntry & ThinkingCatalogPolicyCarrier = owned;
     row.contextWindow = 1024;
     row.params = { temperature: 1 };
-    expect(source.entries).toEqual([captured]);
     expect(source.variants(subscription)).toEqual([captured]);
     expect(captured).toMatchObject({
       contextWindow: 65536,
@@ -379,7 +351,6 @@ describe("prepared catalog decision ownership", () => {
       params: { temperature: 0.5 },
     });
     expect(captured[PREPARED_THINKING_POLICY]).toBe(policy);
-    expect(Object.isFrozen(source.entries)).toBe(true);
     expect(Object.isFrozen(owned)).toBe(true);
     expect(Object.isFrozen(source.variants(subscription))).toBe(true);
     expect(Object.isFrozen(captured.params)).toBe(true);

@@ -429,9 +429,8 @@ async function pickProviderTokenMethod(params: {
 
 async function persistProviderAuthResult(params: {
   result: ProviderAuthResult;
-  profiles?: ProviderAuthResult["profiles"];
+  profiles: ProviderAuthResult["profiles"];
   config: OpenClawConfig;
-  agentId: string;
   agentDir: string;
   runtime: RuntimeEnv;
   setDefault?: boolean;
@@ -442,7 +441,6 @@ async function persistProviderAuthResult(params: {
   const defaultModel = params.result.defaultModel
     ? normalizeAgentModelRefForConfig(params.result.defaultModel)
     : undefined;
-  const profiles = params.profiles ?? params.result.profiles;
   const persistedProfiles: ProviderAuthResult["profiles"] = [];
   const patch = params.result.configPatch;
   const connectionPatch =
@@ -472,7 +470,7 @@ async function persistProviderAuthResult(params: {
     persistentEffectStarted = true;
   };
 
-  for (const candidate of profiles) {
+  for (const candidate of params.profiles) {
     await beginPersistentEffect();
     const prepared = prepareProviderAuthProfilesForPersistence({
       profiles: [candidate],
@@ -618,7 +616,6 @@ async function promotePersistedAuthProfile(params: {
 
 async function runProviderAuthMethod(params: {
   config: OpenClawConfig;
-  agentId: string;
   agentDir: string;
   workspaceDir: string;
   provider: ProviderPlugin;
@@ -664,7 +661,6 @@ async function runProviderAuthMethod(params: {
     result,
     profiles,
     config: params.config,
-    agentId: params.agentId,
     agentDir: params.agentDir,
     runtime: params.runtime,
     setDefault: params.setDefault,
@@ -741,7 +737,6 @@ export async function modelsAuthSetupTokenCommand(
   });
   const pendingLogin = await runProviderAuthMethod({
     config,
-    agentId,
     agentDir,
     workspaceDir,
     provider,
@@ -1003,7 +998,6 @@ export async function modelsAuthAddCommand(opts: { agent?: string }, runtime: Ru
       });
       const pendingLogin = await runProviderAuthMethod({
         config,
-        agentId,
         agentDir,
         workspaceDir,
         provider: providerPlugin,
@@ -1361,7 +1355,6 @@ export async function runModelsAuthLoginFlowCore(
 
   const pendingLogin = await runProviderAuthMethod({
     config: context.config,
-    agentId: context.agentId,
     agentDir: context.agentDir,
     workspaceDir: context.workspaceDir,
     provider: selectedProvider,

@@ -48,6 +48,7 @@ import {
   type ActivateSetupInferenceResult,
   AUTO_LOCAL_MODEL_LEAN_ANNOUNCEMENT,
   invalidSetupConfigError,
+  parseInferenceRef,
   parseProviderAutoSetupChoiceId,
   redactSetupInferenceError,
   resolveSetupInferenceWorkspace,
@@ -55,7 +56,6 @@ import {
   throwIfSetupInferenceCancelled,
 } from "./setup-inference-core.js";
 import {
-  parseRef,
   type StageContext,
   type StagedCandidate,
   type StageFailure,
@@ -75,8 +75,8 @@ function resolveRouteModelRef(
   defaultModelRef: string,
 ): string | StageFailure {
   const modelRef = requested?.trim() || defaultModelRef;
-  const selected = parseRef(modelRef);
-  const expected = parseRef(defaultModelRef);
+  const selected = parseInferenceRef(modelRef);
+  const expected = parseInferenceRef(defaultModelRef);
   if (
     !selected.model ||
     normalizeProviderId(selected.provider) !== normalizeProviderId(expected.provider)
@@ -243,7 +243,7 @@ async function stageCandidate(ctx: StageContext): Promise<StagedCandidate | Stag
       if (typeof modelRef !== "string") {
         return modelRef;
       }
-      const ref = parseRef(modelRef);
+      const ref = parseInferenceRef(modelRef);
       // Backend metadata owns whether a CLI runtime aliases a canonical provider.
       const persistProvider =
         resolveCliRuntimeCanonicalProvider({
@@ -363,7 +363,7 @@ async function activateSetupInferenceUnredacted(
       ...(staged.agentRuntimeId ? { agentRuntimeId: staged.agentRuntimeId } : {}),
       ...(staged.authProfileId ? { authProfileId: staged.authProfileId } : {}),
     });
-  const provider = parseRef(staged.modelRef).provider;
+  const provider = parseInferenceRef(staged.modelRef).provider;
   const buildCandidate = async (base: OpenClawConfig) => {
     const patched = applyMergePatch(base, providerPatch) as OpenClawConfig;
     const lean = applyAutoLocalModelLean({

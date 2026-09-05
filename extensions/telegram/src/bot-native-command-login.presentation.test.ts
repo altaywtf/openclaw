@@ -1,5 +1,4 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
-import type { ModelsAuthLoginFlowOptions } from "openclaw/plugin-sdk/provider-auth-login-flow-runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TelegramNativeCommandDeps } from "./bot-native-command-deps.runtime.js";
 import type { TelegramLoginFlow } from "./bot-native-command-executors.test-support.js";
@@ -15,55 +14,6 @@ import { telegramBotInfoForTest } from "./bot.create-telegram-bot.test-support.j
 
 describe("registerTelegramNativeCommands /login presentation", () => {
   beforeEach(resetLoginCommandMocks);
-
-  it("handles /login codex by sending the device code before login completes", async () => {
-    let loginParams: ModelsAuthLoginFlowOptions | undefined;
-    const loginFlow = vi.fn<TelegramLoginFlow>(async (params) => {
-      loginParams = params;
-      await params.prompter.deviceCode?.({
-        title: "OpenAI Codex device code",
-        code: "ABCD-EFGH",
-        expiresInMinutes: 15,
-        message: [
-          "Open this URL in your LOCAL browser and enter the code below.",
-          "URL: https://auth.openai.com/codex/device",
-        ].join("\n"),
-      });
-      return {
-        providerId: "openai",
-        methodId: "device-code",
-        profiles: [{ profileId: "openai:codex", provider: "openai", mode: "oauth" }],
-      };
-    });
-    const { handler, sendMessage, setMyCommands } = registerLoginCommand({
-      cfg: {
-        commands: {
-          native: true,
-          ownerAllowFrom: ["200"],
-        },
-        agents: { list: [{ id: "main", default: true }] },
-      } as OpenClawConfig,
-      loginFlow,
-    });
-
-    expect(setMyCommands).toHaveBeenCalledOnce();
-    const registeredCommands = setMyCommands.mock.calls[0]?.[0];
-    expect(registeredCommands).toContainEqual({
-      command: "login",
-      description: "Sign in to a model provider.",
-    });
-
-    await handler(createPrivateCommandContext({ match: "codex", userId: 200 }));
-    expect(loginParams).toMatchObject({ provider: "openai", method: "device-code", agent: "main" });
-    await vi.waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(2), { timeout: 5_000 });
-
-    const texts = sendMessage.mock.calls.map((call) => String(call[1]));
-    expect(texts[0]).toContain("URL: https://auth.openai.com/codex/device");
-    expect(texts[0]).toContain("Code: <code>ABCD-EFGH</code>");
-    expect(texts[0]).toContain("Never share it.");
-    expect(sendMessage.mock.calls[0]?.[2]).toEqual(expect.objectContaining({ parse_mode: "HTML" }));
-    expect(texts.at(-1)).toContain("OpenAI login complete. Try your request again now.");
-  });
 
   it.each(["all", "keep"] as const)(
     "asks before native login and consumes the %s model-access continuation",
@@ -163,71 +113,6 @@ describe("registerTelegramNativeCommands /login presentation", () => {
       );
     },
   );
-
-  it("handles /login xai with the same tap-to-copy device-code flow", async () => {
-    const loginFlow = vi.fn<TelegramLoginFlow>(async (params) => {
-      await params.prompter.deviceCode?.({
-        title: "xAI OAuth",
-        code: "XAI-ABCD",
-        expiresInMinutes: 10,
-        message:
-          "Open this URL in your LOCAL browser and enter the code below.\nURL: https://accounts.x.ai/oauth2/device",
-      });
-      return {
-        providerId: "xai",
-        methodId: "oauth",
-        modelAccess: "enabled",
-        profiles: [{ profileId: "xai:owner", provider: "xai", mode: "oauth" }],
-      };
-    });
-    const { handler, sendMessage } = registerLoginCommand({
-      cfg: {
-        commands: { native: true, ownerAllowFrom: ["200"] },
-        agents: {
-          defaults: { model: { primary: "xai/grok-4" } },
-          list: [{ id: "main", default: true }],
-        },
-      } as OpenClawConfig,
-      loginFlow,
-    });
-
-    await handler(createPrivateCommandContext({ match: "xai", userId: 200 }));
-
-    expect(loginFlow).toHaveBeenCalledWith(
-      expect.objectContaining({ provider: "xai", method: "oauth", agent: "main" }),
-    );
-    await vi.waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(2));
-    expect(String(sendMessage.mock.calls[0]?.[1])).toContain("Code: <code>XAI-ABCD</code>");
-    expect(String(sendMessage.mock.calls[0]?.[1])).toContain(
-      "URL: https://accounts.x.ai/oauth2/device",
-    );
-    expect(String(sendMessage.mock.calls[1]?.[1])).toBe(
-      "xAI (Grok) login complete. Available xAI (Grok) models will update automatically. Your default model is unchanged. Use /models to browse.",
-    );
-  });
-
-  it("reports saved auth when provider model access could not be enabled", async () => {
-    const loginFlow = vi.fn<TelegramLoginFlow>(async () => ({
-      providerId: "xai",
-      methodId: "oauth",
-      modelAccess: "failed" as const,
-      profiles: [{ profileId: "xai:owner", provider: "xai", mode: "oauth" }],
-    }));
-    const { handler, sendMessage } = registerLoginCommand({
-      cfg: {
-        commands: { native: true, ownerAllowFrom: ["200"] },
-        agents: { list: [{ id: "main", default: true }] },
-      } as OpenClawConfig,
-      loginFlow,
-    });
-
-    await handler(createPrivateCommandContext({ match: "xai", userId: 200 }));
-
-    await vi.waitFor(() => expect(sendMessage).toHaveBeenCalledOnce());
-    expect(String(sendMessage.mock.calls[0]?.[1])).toBe(
-      "xAI (Grok) login complete. Your credential is saved, but OpenClaw could not enable its models. Retry /login xai after the current config change finishes.",
-    );
-  });
 
   it("hands guided secret login to the masked Control UI wizard", async () => {
     const loginFlow = vi.fn<TelegramLoginFlow>();

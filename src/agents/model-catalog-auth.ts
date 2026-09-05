@@ -15,10 +15,7 @@ import {
   type ModelAuthAvailabilityEvaluation,
 } from "./model-auth-availability.js";
 import type { ModelCatalogEntry } from "./model-catalog.types.js";
-import {
-  openAIModelCatalogRoutePolicy,
-  resolveModelCatalogIdentityKey,
-} from "./openai-model-routes.js";
+import { openAIModelCatalogRoutePolicy } from "./openai-model-routes.js";
 
 function listEnabledSyntheticAuthProviderRefs(
   metadataSnapshot: PluginMetadataSnapshot,
@@ -63,81 +60,69 @@ export function createModelCatalogAuthResolver(params: {
   });
 }
 
-export function createModelCatalogEntryEvaluator(params: {
-  cfg: OpenClawConfig;
-  agentId: string;
-  authResolver: ModelAuthAvailabilityResolver;
-  metadataSnapshot: PluginMetadataSnapshot;
-  providerOutcomes?: readonly ProviderCatalogOutcome[];
-  preferredProfileId?: string;
-  lockedProfileId?: string;
-  runtimeId?: string;
-}): (
+export function evaluateModelCatalogEntry(
+  params: {
+    cfg: OpenClawConfig;
+    agentId: string;
+    authResolver: ModelAuthAvailabilityResolver;
+    metadataSnapshot: PluginMetadataSnapshot;
+    providerOutcomes?: readonly ProviderCatalogOutcome[];
+    preferredProfileId?: string;
+    lockedProfileId?: string;
+    runtimeId?: string;
+  },
   entry: ModelCatalogEntry,
-  routeVariants?: readonly ModelCatalogEntry[],
-) => Promise<ModelAuthAvailabilityEvaluation> {
-  const pending = new Map<string, Promise<ModelAuthAvailabilityEvaluation>>();
-  return (entry, routeVariants = [entry]) => {
-    const identity = openAIModelCatalogRoutePolicy.resolveIdentity(entry);
-    const cacheKey = resolveModelCatalogIdentityKey(entry);
-    const cached = pending.get(cacheKey);
-    if (cached) {
-      return cached;
-    }
-    const next = Promise.resolve().then((): ModelAuthAvailabilityEvaluation => {
-      const policy = resolveConfiguredAgentHarnessPolicy({
-        config: params.cfg,
-        agentId: params.agentId,
-        provider: entry.provider,
-        modelId: entry.id,
-        modelApi: entry.api,
-        modelBaseUrl: entry.baseUrl,
-      });
-      const runtimeId =
-        params.runtimeId ?? (policy.runtime === "auto" ? undefined : policy.runtime);
-      const evaluation = params.authResolver.evaluateModelAuth(entry.provider, {
-        modelId: identity?.id ?? entry.id,
-        runtimeId,
-        ...(normalizeProviderId(entry.provider) === "openai"
-          ? {}
-          : { api: entry.api, baseUrl: entry.baseUrl }),
-        ...(params.preferredProfileId ? { preferredProfileId: params.preferredProfileId } : {}),
-        ...(params.lockedProfileId ? { lockedProfileId: params.lockedProfileId } : {}),
-        observedRoutes: routeVariants.map((variant) => ({
-          api: variant.api,
-          baseUrl: variant.baseUrl,
-        })),
-      });
-      const resolved = applyCliRuntimeModelAuthAvailability({
-        authResolver: params.authResolver,
-        evaluation,
-        cfg: params.cfg,
-        metadataSnapshot: params.metadataSnapshot,
-        provider: entry.provider,
-        nativeRuntime: entry.nativeRuntime,
-        runtimeId,
-        lockedProfileId: params.lockedProfileId,
-      });
-      const provider = normalizeProviderId(entry.provider);
-      // Stored credentials prove presence, not acceptance. Apply the live rejection only to the
-      // profile discovery tested; widening it would hide routes backed by another valid profile.
-      return params.providerOutcomes?.some(
-        (outcome) =>
-          outcome.status === "auth-rejected" &&
-          outcome.rejectionScope !== "catalog" &&
-          resolved.runtimeAuth?.source !== "native" &&
-          normalizeProviderId(outcome.provider) === provider &&
-          (outcome.profileId === undefined || outcome.profileId === resolved.selectedProfileId),
-      )
-        ? {
-            ...resolved,
-            availability: false,
-            unavailableReason: "auth-failed",
-            unavailableUntil: undefined,
-          }
-        : resolved;
-    });
-    pending.set(cacheKey, next);
-    return next;
-  };
+  routeVariants: readonly ModelCatalogEntry[],
+): ModelAuthAvailabilityEvaluation {
+  const identity = openAIModelCatalogRoutePolicy.resolveIdentity(entry);
+  const policy = resolveConfiguredAgentHarnessPolicy({
+    config: params.cfg,
+    agentId: params.agentId,
+    provider: entry.provider,
+    modelId: entry.id,
+    modelApi: entry.api,
+    modelBaseUrl: entry.baseUrl,
+  });
+  const runtimeId = params.runtimeId ?? (policy.runtime === "auto" ? undefined : policy.runtime);
+  const evaluation = params.authResolver.evaluateModelAuth(entry.provider, {
+    modelId: identity?.id ?? entry.id,
+    runtimeId,
+    ...(normalizeProviderId(entry.provider) === "openai"
+      ? {}
+      : { api: entry.api, baseUrl: entry.baseUrl }),
+    ...(params.preferredProfileId ? { preferredProfileId: params.preferredProfileId } : {}),
+    ...(params.lockedProfileId ? { lockedProfileId: params.lockedProfileId } : {}),
+    observedRoutes: routeVariants.map((variant) => ({
+      api: variant.api,
+      baseUrl: variant.baseUrl,
+    })),
+  });
+  const resolved = applyCliRuntimeModelAuthAvailability({
+    authResolver: params.authResolver,
+    evaluation,
+    cfg: params.cfg,
+    metadataSnapshot: params.metadataSnapshot,
+    provider: entry.provider,
+    nativeRuntime: entry.nativeRuntime,
+    runtimeId,
+    lockedProfileId: params.lockedProfileId,
+  });
+  const provider = normalizeProviderId(entry.provider);
+  // Stored credentials prove presence, not acceptance. Apply the live rejection only to the
+  // profile discovery tested; widening it would hide routes backed by another valid profile.
+  return params.providerOutcomes?.some(
+    (outcome) =>
+      outcome.status === "auth-rejected" &&
+      outcome.rejectionScope !== "catalog" &&
+      resolved.runtimeAuth?.source !== "native" &&
+      normalizeProviderId(outcome.provider) === provider &&
+      (outcome.profileId === undefined || outcome.profileId === resolved.selectedProfileId),
+  )
+    ? {
+        ...resolved,
+        availability: false,
+        unavailableReason: "auth-failed",
+        unavailableUntil: undefined,
+      }
+    : resolved;
 }

@@ -41,6 +41,7 @@ import { createQuickstartNotePrompter } from "./setup-apply.js";
 import { supportsSetupManualSecret } from "./setup-inference-auth-options.js";
 import {
   type ActivateSetupInferenceParams,
+  parseInferenceRef,
   type SetupInferenceDeps,
   SetupInferenceCancelledError,
   throwIfSetupInferenceCancelled,
@@ -69,19 +70,12 @@ export type StageContext = {
   beforePersistentEffect: (effect?: "credential") => Promise<void>;
 };
 
-export function parseRef(modelRef: string): { provider: string; model: string } {
-  const slash = modelRef.indexOf("/");
-  return slash === -1
-    ? { provider: modelRef, model: "" }
-    : { provider: modelRef.slice(0, slash), model: modelRef.slice(slash + 1) };
-}
-
 function selectedSetupProfileId(
   result: ProviderAuthResult,
   modelRef: string,
   config: OpenClawConfig,
 ): string | undefined {
-  const provider = resolveProviderIdForAuth(parseRef(modelRef).provider, { config });
+  const provider = resolveProviderIdForAuth(parseInferenceRef(modelRef).provider, { config });
   return result.profiles.find(
     (profile) => resolveProviderIdForAuth(profile.credential.provider, { config }) === provider,
   )?.profileId;
@@ -189,13 +183,13 @@ function resolveSetupModel(params: {
 }): string | StageFailure {
   const selected = params.modelRef?.trim() || params.defaultModel;
   const modelRef = selected ? normalizeAgentModelRefForConfig(selected) : "";
-  if (!modelRef || !parseRef(modelRef).model) {
+  if (!modelRef || !parseInferenceRef(modelRef).model) {
     return { error: `${params.label} does not expose a starter model for app-guided setup.` };
   }
   const provider = params.defaultModel
-    ? parseRef(normalizeAgentModelRefForConfig(params.defaultModel)).provider
+    ? parseInferenceRef(normalizeAgentModelRefForConfig(params.defaultModel)).provider
     : params.providerId;
-  if (normalizeProviderId(parseRef(modelRef).provider) !== normalizeProviderId(provider)) {
+  if (normalizeProviderId(parseInferenceRef(modelRef).provider) !== normalizeProviderId(provider)) {
     return { error: `${modelRef} is not compatible with the ${params.label} inference route.` };
   }
   return modelRef;
@@ -282,7 +276,7 @@ async function runProviderManualSecretMethod(
     const configuredModel = configured.agents?.defaults?.model;
     const defaultModel =
       typeof configuredModel === "string" &&
-      normalizeProviderId(parseRef(configuredModel).provider) ===
+      normalizeProviderId(parseInferenceRef(configuredModel).provider) ===
         normalizeProviderId(choice.providerId)
         ? configuredModel
         : method.starterModel;

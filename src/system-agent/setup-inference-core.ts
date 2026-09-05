@@ -263,6 +263,13 @@ export function parseProviderAutoSetupChoiceId(kind: string): string | undefined
   }
 }
 
+export function parseInferenceRef(modelRef: string): { provider: string; model: string } {
+  const slash = modelRef.indexOf("/");
+  return slash === -1
+    ? { provider: modelRef, model: "" }
+    : { provider: modelRef.slice(0, slash), model: modelRef.slice(slash + 1) };
+}
+
 export function invalidSetupConfigError(snapshot: {
   path: string;
   issues?: Array<{ path?: string; message: string }>;

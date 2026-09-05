@@ -108,12 +108,7 @@ export async function prepareLogicalVisibleModelCatalog(
     routeVariantsByKey.set(key, variants);
   }
   const variantsOf = (entry: ModelCatalogEntry) => routeVariantsByKey.get(keyOf(entry)) ?? [entry];
-  const normalizePolicyKey = (key: string) => {
-    const slash = key.indexOf("/");
-    return slash > 0 ? keyOf({ provider: key.slice(0, slash), id: key.slice(slash + 1) }) : key;
-  };
-  const configuredKeys = new Set([...policy.configuredKeys].map(normalizePolicyKey));
-  const retainedKeys = new Set([...policy.retainedKeys].map(normalizePolicyKey));
+  const { configuredKeys, retainedKeys } = policy;
   const retained = params.catalog.filter((entry) => retainedKeys.has(keyOf(entry)));
   const wildcard = policy.allowAny || policy.hasProviderWildcards;
   const configuredCatalog = wildcard ? sortModelCatalogEntries([...policy.configuredCatalog]) : [];

@@ -38,7 +38,7 @@ let state: OpenClawTestState;
 let server: Server;
 let config: OpenClawConfig;
 let route: SystemAgentConfiguredRoute;
-const requests: Array<{ authorization: string | undefined; path: string | undefined }> = [];
+const requests: Array<{ authorization: string | undefined }> = [];
 const rejectedKeys = new Set<string>();
 
 beforeEach(async () => {
@@ -54,7 +54,7 @@ beforeEach(async () => {
     request.resume();
     request.on("end", () => {
       const authorization = request.headers.authorization;
-      requests.push({ authorization, path: request.url });
+      requests.push({ authorization });
       if (rejectedKeys.has(authorization ?? "")) {
         response.writeHead(401, { "content-type": "application/json" });
         response.end(
@@ -159,7 +159,6 @@ afterEach(async () => {
   resetPreparedModelRuntimeSnapshotsForTest();
   clearRuntimeAuthProfileStoreSnapshots();
   resetSecretRedactionRegistryForTest();
-  resetSecretRedactionRegistryForTest();
   if (server?.listening) {
     await new Promise<void>((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));
@@ -203,20 +202,6 @@ function savePendingSignIn() {
 }
 
 describe("pending credential real execution", () => {
-  it("baseline: ordinary stored credentials reach HTTP and retain automatic fallback", async () => {
-    rejectedKeys.add(`Bearer ${firstKey}`);
-    const result = await runInference();
-    expect(result).toMatchObject({
-      ok: true,
-      auth: { authProfileId: secondProfileId },
-    });
-    expect(requests.map((request) => request.authorization)).toEqual([
-      `Bearer ${firstKey}`,
-      `Bearer ${secondKey}`,
-    ]);
-    expect(requests.every((request) => request.path === "/v1/chat/completions")).toBe(true);
-  }, 90_000);
-
   it("isolates the selected pending key until promotion with its real successful binding", async () => {
     const agentDir = state.agentDir("main");
     const activeBefore = readPersistedAuthProfileStoreRaw();

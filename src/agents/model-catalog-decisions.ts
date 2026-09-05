@@ -13,10 +13,7 @@ import type { RuntimeAuthMaterialization } from "./auth-profiles/runtime-materia
 import type { AuthProfileStore } from "./auth-profiles/types.js";
 import { resolveConfiguredAgentHarnessPolicy } from "./harness/policy.js";
 import type { ModelAuthAvailabilityEvaluation } from "./model-auth-availability.js";
-import {
-  createModelCatalogAuthResolver,
-  createModelCatalogEntryEvaluator,
-} from "./model-catalog-auth.js";
+import { createModelCatalogAuthResolver, evaluateModelCatalogEntry } from "./model-catalog-auth.js";
 import { createPreparedModelCatalogProviderNormalizer } from "./model-catalog-provider-normalizer.js";
 import type { ModelCatalogEntry, ModelCatalogSnapshot } from "./model-catalog.types.js";
 import { buildConfiguredModelCatalog } from "./model-selection-shared.js";
@@ -46,7 +43,6 @@ export type ModelCatalogDecisionContext = {
 };
 
 export type PreparedModelCatalogDecisions = {
-  readonly entries: readonly ModelCatalogEntry[];
   variants(entry: Pick<ModelCatalogEntry, "provider" | "id">): readonly ModelCatalogEntry[];
   evaluate(
     entry: ModelCatalogEntry,
@@ -202,7 +198,7 @@ function createDecisionSource(
     ),
     preparedRuntimeAuthMaterializations: [],
   });
-  const contexts = new Map<string, ReturnType<typeof createModelCatalogEntryEvaluator>>();
+  const evaluations = new Map<string, Promise<ModelAuthAvailabilityEvaluation>>();
   const resolveOwnedEntry = (entry: ModelCatalogEntry): ModelCatalogEntry =>
     canonicalRows.get(resolveModelCatalogIdentityKey(entry)) ?? {
       provider: entry.provider,
@@ -210,7 +206,6 @@ function createDecisionSource(
       name: entry.id,
     };
   const source: PreparedModelCatalogDecisions = Object.freeze({
-    entries: Object.freeze([...canonicalRows.values()]),
     variants: (entry: Pick<ModelCatalogEntry, "provider" | "id">) =>
       routeGroups.get(resolveModelCatalogIdentityKey(entry)) ?? EMPTY_CATALOG_ROWS,
     evaluate(entry: ModelCatalogEntry, context: ModelCatalogDecisionContext = {}) {
@@ -221,73 +216,66 @@ function createDecisionSource(
           normalizeCatalogProvider(entry.provider)
           ? context
           : {};
-      const contextKey = JSON.stringify([
+      const modelKey = resolveModelCatalogIdentityKey(entry);
+      const runtimeId = context.runtimeOverride?.id;
+      const key = JSON.stringify([
+        modelKey,
         purpose,
         preferredProfileId ?? null,
         lockedProfileId ?? null,
-        context.runtimeOverride?.id ?? null,
+        runtimeId ?? null,
       ]);
-      let evaluateEntry = contexts.get(contextKey);
-      if (!evaluateEntry) {
-        if (purpose === "image") {
-          const pending = new Map<string, Promise<ModelAuthAvailabilityEvaluation>>();
-          evaluateEntry = (imageEntry, variants = []) => {
-            const key = resolveModelCatalogIdentityKey(imageEntry);
-            let evaluation = pending.get(key);
-            if (!evaluation) {
-              evaluation = Promise.resolve(
-                Object.freeze({
-                  availability: directAuthResolver.resolveProviderAuthAvailability(
-                    imageEntry.provider,
-                    {
-                      modelId: imageEntry.id,
-                      preferredProfileId,
-                      lockedProfileId,
-                      observedRoutes: variants.map((variant) => ({
-                        api: variant.api,
-                        baseUrl: variant.baseUrl,
-                      })),
-                    },
-                  ),
-                  routeResolution: null,
-                }),
-              );
-              pending.set(key, evaluation);
-            }
-            return evaluation;
-          };
-        } else {
-          evaluateEntry = createModelCatalogEntryEvaluator({
-            cfg,
-            agentId,
-            authResolver: purpose === "agent" ? authResolver : directAuthResolver,
-            metadataSnapshot,
-            providerOutcomes,
-            preferredProfileId,
-            lockedProfileId,
-            runtimeId: context.runtimeOverride?.id,
-          });
-        }
-        contexts.set(contextKey, evaluateEntry);
+      const cached = evaluations.get(key);
+      if (cached) {
+        return cached;
       }
       const ownedEntry = resolveOwnedEntry(entry);
       const { nativeRuntime: _nativeRuntime, ...directEntry } = ownedEntry;
-      const evaluation = evaluateEntry(
-        purpose === "agent" ? ownedEntry : directEntry,
-        routeGroups.get(resolveModelCatalogIdentityKey(ownedEntry)) ?? [ownedEntry],
-      );
-      if (
-        !catalogComplete ||
-        !liveCatalogProviders.has(normalizeProviderId(ownedEntry.provider)) ||
-        publishedOrConfiguredKeys.has(resolveModelCatalogIdentityKey(ownedEntry))
-      ) {
-        return evaluation;
-      }
-      return evaluation.then((result) =>
-        result.availability === true && !result.runtimeAuth
-          ? { ...result, availability: undefined }
-          : result,
-      );
+      const variants = routeGroups.get(modelKey) ?? [ownedEntry];
+      const evaluation: Promise<ModelAuthAvailabilityEvaluation> =
+        purpose === "image"
+          ? Promise.resolve(
+              Object.freeze({
+                availability: directAuthResolver.resolveProviderAuthAvailability(
+                  ownedEntry.provider,
+                  {
+                    modelId: ownedEntry.id,
+                    preferredProfileId,
+                    lockedProfileId,
+                    observedRoutes: variants.map(({ api, baseUrl }) => ({ api, baseUrl })),
+                  },
+                ),
+                routeResolution: null,
+              }),
+            )
+          : Promise.resolve().then(() =>
+              evaluateModelCatalogEntry(
+                {
+                  cfg,
+                  agentId,
+                  authResolver: purpose === "agent" ? authResolver : directAuthResolver,
+                  metadataSnapshot,
+                  providerOutcomes,
+                  preferredProfileId,
+                  lockedProfileId,
+                  runtimeId,
+                },
+                purpose === "agent" ? ownedEntry : directEntry,
+                variants,
+              ),
+            );
+      const result =
+        catalogComplete &&
+        liveCatalogProviders.has(normalizeProviderId(ownedEntry.provider)) &&
+        !publishedOrConfiguredKeys.has(modelKey)
+          ? evaluation.then((result) =>
+              result.availability === true && !result.runtimeAuth
+                ? { ...result, availability: undefined }
+                : result,
+            )
+          : evaluation;
+      evaluations.set(key, result);
+      return result;
     },
     async runtime(
       entry: ModelCatalogEntry,
