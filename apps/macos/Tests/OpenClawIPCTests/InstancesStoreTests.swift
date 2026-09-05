@@ -50,42 +50,30 @@ struct InstancesStoreTests {
         try await TestIsolation.withIsolatedState {
             let fixture = InstancesGatewayFixture()
             let store = InstancesStore(control: fixture.control)
-            let refresh = Task { await store.refresh() }
-            func cleanup() async {
-                refresh.cancel()
-                await fixture.stop()
-                await refresh.value
+            fixture.onHeldRequest.setValue { [revision = fixture.revision] request in
+                if replaceGateway { revision.setValue(2) }
+                InstancesGatewayFixture.respond(request, failure: failPresence)
             }
-            do {
-                let deadline = ContinuousClock.now + .seconds(2)
-                while fixture.held.value == nil, ContinuousClock.now < deadline {
-                    try await Task.sleep(for: .milliseconds(2))
-                }
-                let held = try #require(fixture.held.value)
-                let beforeReply = fixture.requests.value.count
-                if replaceGateway { fixture.revision.setValue(2) }
-                InstancesGatewayFixture.respond(held, failure: failPresence)
-                await refresh.value
+            await store.refresh()
+            let result = (instances: store.instances, statusMessage: store.statusMessage, isLoading: store.isLoading)
+            let requests = fixture.requests.value
+            await fixture.stop()
 
-                #expect(!store.isLoading)
-                if replaceGateway {
-                    #expect(store.instances.isEmpty)
-                    #expect(store.statusMessage == nil)
-                    #expect(!fixture.requests.value.dropFirst(beforeReply).contains {
-                        $0.owner == "B" && $0.method == "health"
-                    })
-                } else if failPresence {
-                    #expect(store.instances.contains { $0.text.contains("Gateway A linked=true") })
-                    #expect(store.statusMessage?.contains("local fallback") == true)
-                } else {
-                    #expect(store.instances.map(\.host) == ["Gateway A"])
-                    #expect(store.statusMessage == nil)
-                }
-            } catch {
-                await cleanup()
-                throw error
+            let requestIndex = try #require(requests.firstIndex { $0.method == "system-presence" })
+            #expect(!result.isLoading)
+            if replaceGateway {
+                #expect(result.instances.isEmpty)
+                #expect(result.statusMessage == nil)
+                #expect(!requests.dropFirst(requestIndex + 1).contains {
+                    $0.owner == "B" && $0.method == "health"
+                })
+            } else if failPresence {
+                #expect(result.instances.contains { $0.text.contains("Gateway A linked=true") })
+                #expect(result.statusMessage?.contains("local fallback") == true)
+            } else {
+                #expect(result.instances.map(\.host) == ["Gateway A"])
+                #expect(result.statusMessage == nil)
             }
-            await cleanup()
         }
     }
 
@@ -360,6 +348,7 @@ private final class InstancesGatewayFixture {
     let revision = LockIsolated<UInt64>(1)
     let requests = LockIsolated<[Request]>([])
     let held = LockIsolated<Request?>(nil)
+    let onHeldRequest = LockIsolated<(@Sendable (Request) -> Void)?>(nil)
     let holdHealth = LockIsolated(false)
     let holdPreflight = LockIsolated(true)
     let endpointUnavailable = LockIsolated(false)
@@ -378,6 +367,7 @@ private final class InstancesGatewayFixture {
         let revision = self.revision
         let requests = self.requests
         let held = self.held
+        let onHeldRequest = self.onHeldRequest
         let holdHealth = self.holdHealth
         let holdPreflight = self.holdPreflight
         let endpointUnavailable = self.endpointUnavailable
@@ -400,7 +390,11 @@ private final class InstancesGatewayFixture {
                 if request.method == heldMethod, heldMethod != "health" || holdHealth.value,
                    !isPreflight || holdPreflight.value
                 {
-                    held.setValue(request)
+                    if let onHeldRequest = onHeldRequest.value {
+                        onHeldRequest(request)
+                    } else {
+                        held.setValue(request)
+                    }
                 } else {
                     Self.respond(request)
                 }
@@ -419,6 +413,16 @@ private final class InstancesGatewayFixture {
             currentEndpointRevision: { revision.value },
             sessionBox: WebSocketSessionBox(session: session))
         self.control = ControlChannel(gateway: self.gateway, endpointRevision: { revision.value })
+    }
+
+    func connectAndHoldHealth() async throws {
+        do {
+            _ = try await self.gateway.acquireServerLease()
+            self.holdHealth.setValue(true)
+        } catch {
+            await self.stop()
+            throw error
+        }
     }
 
     func stop() async {
@@ -473,43 +477,34 @@ struct GatewayHealthOwnershipTests {
     {
         try await TestIsolation.withIsolatedState {
             let fixture = InstancesGatewayFixture(holding: "health")
-            _ = try await fixture.gateway.acquireServerLease()
-            fixture.holdHealth.setValue(true)
+            try await fixture.connectAndHoldHealth()
             let store = HealthStore(control: fixture.control)
-            let refresh = Task { await store.refresh(onDemand: true) }
-            func cleanup() async {
-                refresh.cancel()
-                await fixture.stop()
-                await refresh.value
+            fixture.onHeldRequest.setValue { [revision = fixture.revision] request in
+                if replaceGateway { revision.setValue(2) }
+                InstancesGatewayFixture.respond(request, failure: failHealth)
             }
-            do {
-                let deadline = ContinuousClock.now + .seconds(2)
-                while fixture.held.value == nil, ContinuousClock.now < deadline {
-                    try await Task.sleep(for: .milliseconds(2))
-                }
-                let held = try #require(fixture.held.value)
-                if replaceGateway { fixture.revision.setValue(2) }
-                InstancesGatewayFixture.respond(held, failure: failHealth)
-                await refresh.value
-                #expect(!store.isRefreshing)
-                if replaceGateway {
-                    #expect(store.snapshot == nil)
-                    #expect(store.lastSuccess == nil)
-                    #expect(store.lastError == nil)
-                } else if failHealth {
-                    #expect(store.lastError != nil)
-                    #expect(store.snapshot == nil)
-                } else {
-                    #expect(store.snapshot?.channelLabels?["fixture"] == "Gateway A")
-                    #expect(store.lastSuccess != nil)
-                    #expect(store.lastError == nil)
-                    #expect(fixture.control.lastPingMs != nil)
-                }
-            } catch {
-                await cleanup()
-                throw error
+            await store.refresh(onDemand: true)
+            let result = (
+                snapshot: store.snapshot, lastSuccess: store.lastSuccess, lastError: store.lastError,
+                isRefreshing: store.isRefreshing, lastPingMs: fixture.control.lastPingMs)
+            let requests = fixture.requests.value
+            await fixture.stop()
+
+            try #require(requests.contains { $0.method == "health" && !$0.isPreflight })
+            #expect(!result.isRefreshing)
+            if replaceGateway {
+                #expect(result.snapshot == nil)
+                #expect(result.lastSuccess == nil)
+                #expect(result.lastError == nil)
+            } else if failHealth {
+                #expect(result.lastError != nil)
+                #expect(result.snapshot == nil)
+            } else {
+                #expect(result.snapshot?.channelLabels?["fixture"] == "Gateway A")
+                #expect(result.lastSuccess != nil)
+                #expect(result.lastError == nil)
+                #expect(result.lastPingMs != nil)
             }
-            await cleanup()
         }
     }
 
@@ -517,8 +512,7 @@ struct GatewayHealthOwnershipTests {
     func `replacement health refresh owns loading and publication`() async throws {
         try await TestIsolation.withIsolatedState {
             let fixture = InstancesGatewayFixture(holding: "health")
-            _ = try await fixture.gateway.acquireServerLease()
-            fixture.holdHealth.setValue(true)
+            try await fixture.connectAndHoldHealth()
             let store = HealthStore(control: fixture.control)
             let first = Task { await store.refresh() }
             var second: Task<Void, Never>?
@@ -555,19 +549,21 @@ struct GatewayHealthOwnershipTests {
         try await TestIsolation.withIsolatedState {
             let fixture = InstancesGatewayFixture(holding: "health")
             let store = HealthStore(control: fixture.control)
-            await store.refresh()
-            let lease = try #require(await fixture.gateway.captureServerLease())
-            let previousSuccess = store.lastSuccess
-            let socket = try #require(fixture.requests.value.last?.socket)
-            socket.emitReceiveFailure()
-            let deadline = ContinuousClock.now + .seconds(2)
-            while fixture.gateway.serverLeaseMatchesCurrentState(lease), ContinuousClock.now < deadline {
-                try await Task.sleep(for: .milliseconds(2))
-            }
-            #expect(!fixture.gateway.serverLeaseMatchesCurrentState(lease))
-            fixture.holdHealth.setValue(true)
-            let refresh = Task { await store.refresh() }
+            var refresh: Task<Void, Never>?
             do {
+                await store.refresh()
+                let lease = try #require(await fixture.gateway.captureServerLease())
+                let previousSuccess = store.lastSuccess
+                let socket = try #require(fixture.requests.value.last?.socket)
+                socket.emitReceiveFailure()
+                let deadline = ContinuousClock.now + .seconds(2)
+                while fixture.gateway.serverLeaseMatchesCurrentState(lease), ContinuousClock.now < deadline {
+                    try await Task.sleep(for: .milliseconds(2))
+                }
+                #expect(!fixture.gateway.serverLeaseMatchesCurrentState(lease))
+                fixture.holdHealth.setValue(true)
+                let pendingRefresh = Task { await store.refresh() }
+                refresh = pendingRefresh
                 let first = try await fixture.waitForHeld()
                 #expect(store.snapshot?.channelLabels?["fixture"] == "Gateway A")
                 #expect(store.lastSuccess == previousSuccess)
@@ -579,7 +575,7 @@ struct GatewayHealthOwnershipTests {
                     read = first
                 }
                 InstancesGatewayFixture.respond(read, failure: true)
-                await refresh.value
+                await pendingRefresh.value
                 #expect(store.snapshot?.channelLabels?["fixture"] == "Gateway A")
                 #expect(store.lastSuccess == previousSuccess)
                 #expect(store.lastError != nil)
@@ -588,9 +584,9 @@ struct GatewayHealthOwnershipTests {
                 #expect(store.lastSuccess == nil)
                 #expect(store.lastError == nil)
             } catch {
-                refresh.cancel()
+                refresh?.cancel()
                 await fixture.stop()
-                await refresh.value
+                await refresh?.value
                 throw error
             }
             await fixture.stop()

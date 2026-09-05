@@ -258,8 +258,10 @@ struct OnboardingSystemAgentChatTests {
                         // An expired ownerless marker can arrive during an existing-model probe.
                         // Completing it does not turn that probe into a fresh activation.
                         OnboardingSystemAgentResumeStore.markPending(
-                            routeIdentity: "local", activationTimeoutMs: 0,
-                            defaults: callbackDefaults, now: Date(timeIntervalSinceNow: -10))
+                            routeIdentity: "local",
+                            activationTimeoutMs: 0,
+                            defaults: callbackDefaults,
+                            now: Date(timeIntervalSinceNow: -10))
                     }
                     task.emitReceiveSuccess(.data(verifiedInferenceResponse(id: id)))
                 default:
@@ -415,11 +417,9 @@ struct OnboardingSystemAgentChatTests {
             scheduledDeadlines.append((deadline, routeIdentity))
         }
         view.aiSetup.retryFromScratch()
+        // Verification persists before the retry caller schedules its deadline.
         for _ in 0..<200 {
-            if case .verified = OnboardingSystemAgentResumeStore.pendingState(
-                for: "local",
-                defaults: defaults)
-            {
+            if scheduledDeadlines.count == 1 {
                 break
             }
             try? await Task.sleep(nanoseconds: 5_000_000)
