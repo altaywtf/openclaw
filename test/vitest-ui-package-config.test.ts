@@ -101,6 +101,8 @@ describe("ui package vitest config", () => {
 
   it("preserves native Chromium discovery when loaded as a file project", async ({ signal }) => {
     const root = tempDirs.make("ui-browser-project-root-");
+    const topLevelRoot = tempDirs.make("ui-browser-top-level-root-");
+    const testRoot = tempDirs.make("ui-browser-test-root-");
     const reportPath = path.join(root, "discovery.json");
     const home = path.join(root, "home");
     const tmp = path.join(root, "tmp");
@@ -110,7 +112,7 @@ describe("ui package vitest config", () => {
       new URL("./fixtures/vitest-browser-project-root.mjs", import.meta.url),
     );
     const result = await runVitestShutdownCommand({
-      args: [fixture, reportPath],
+      args: [fixture, reportPath, topLevelRoot, testRoot],
       signal,
       timeoutMs: DEFAULT_VITEST_TEST_TIMEOUT_MS,
       env: {
@@ -129,16 +131,17 @@ describe("ui package vitest config", () => {
     });
     expect(result.code, result.stderr).toBe(0);
     const reports = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
-      projects: Array<{ name: string; root: string; setupFiles: string[] }>;
+      projects: Array<{ name: string; root: string; viteRoot: string; setupFiles: string[] }>;
       files: string[];
     }>;
-    expect(reports).toHaveLength(2);
-    const [standalone, embedded] = reports;
+    expect(reports).toHaveLength(4);
+    const [standalone, embedded, topLevel, testOption] = reports;
     const uiRoot = path.join(process.cwd(), "ui");
     expect(standalone?.projects).toEqual([
       {
         name: "chromium",
         root: uiRoot,
+        viteRoot: uiRoot,
         setupFiles: [path.join(uiRoot, "src/test-helpers/lit-warnings.setup.ts")],
       },
     ]);
@@ -146,6 +149,22 @@ describe("ui package vitest config", () => {
       path.join(uiRoot, "src/components/markdown-mermaid.runtime.browser.test.ts"),
     );
     expect(embedded).toEqual(standalone);
+    expect(topLevel?.projects).toEqual([
+      {
+        name: "chromium",
+        root: topLevelRoot,
+        viteRoot: topLevelRoot,
+        setupFiles: [path.join(topLevelRoot, "src/test-helpers/lit-warnings.setup.ts")],
+      },
+    ]);
+    expect(testOption?.projects).toEqual([
+      {
+        name: "chromium",
+        root: testRoot,
+        viteRoot: testRoot,
+        setupFiles: [path.join(testRoot, "src/test-helpers/lit-warnings.setup.ts")],
+      },
+    ]);
   });
 
   it("keeps native Chromium files out of root jsdom without dropping Node-driven Playwright files", async () => {

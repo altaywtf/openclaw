@@ -224,7 +224,7 @@ index 50abf4fbed1dc8670b7941ee466a7c8443840c5f..4420ea94f7ef53526cd5426b54f4a5de
  		const errors = results.filter((result) => result.status === "rejected").map((result) => result.reason);
  		if (errors.length > 0) throw new AggregateError(errors, "Errors occurred while running tests. For more information, see serialized error.");
  	}
-@@ -12545,6 +12572,22 @@ async function resolveDeclaredProjectEntries(context, definitions) {
+@@ -12545,6 +12572,25 @@ async function resolveDeclaredProjectEntries(context, definitions) {
  	const fileProjects = [...configFiles, ...nonConfigDirectories];
  	const promises = [];
  	projectConfigs.forEach((options, index) => {
@@ -232,9 +232,12 @@ index 50abf4fbed1dc8670b7941ee466a7c8443840c5f..4420ea94f7ef53526cd5426b54f4a5de
 +			const configRoot = parentConfig.root;
 +			const configFile = resolve(configRoot, options.config);
 +			const { config: _, root: optionRoot, test: testOptions, ...restOptions } = options;
-+			const { root: testRoot, ...test } = testOptions ?? {};
-+			const customRoot = testRoot ?? optionRoot;
-+			const root = customRoot ? resolve(configRoot, customRoot) : dirname(configFile);
++			const customRoot = testOptions?.root ?? optionRoot;
++			const root = customRoot === void 0 ? dirname(configFile) : resolve(configRoot, customRoot);
++			const test = customRoot === void 0 ? testOptions : {
++				...testOptions,
++				root
++			};
 +			debug?.(`project at ${configFile} resolves its own Vite config with root ${root}`);
 +			promises.push(concurrent(() => resolveSingleProjectEntry(context, {
 +				...restOptions,

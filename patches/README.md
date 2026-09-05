@@ -15,13 +15,13 @@ runner, and `@vitest/runner@5.0.0` is not published, so no standalone runner
 dependency or patch remains. The published package integrity is
 `sha512-gpsMNoRhMjMktVxPtstOH4/PJuPyovVaMDr4oDilXaGH1EcqM2OE96SoHT2VIQ6fTGtTjqmHDrEu2X9RQiXf8Q==`.
 The patch SHA-256 is
-`5adad89c1aff44a5433fe411edf16a3d0f9fd487ab9d848d0e869dc3917fc9b7`
+`5be95735cfbcc46632b96b1bfda848f632b39e844d18f919e2c0b66e09bb0ddc`
 and it changes exactly these seven published files:
 
 | Target | Published SHA-256 | Patched SHA-256 |
 | --- | --- | --- |
 | `dist/chunks/cac.D805sv8h.js` | `a0971660b8c52884366a1ca3dceb6a7eb7ff41e2e3cfaed27b98395ed054e1d0` | `f37acc539be54a668448c9ae1faeacc4b37df68f81952a21001c377a775da55e` |
-| `dist/chunks/index.B89dZ0-N.js` | `7ae1406d3a808a5a2915895eede01e4e79fac5838f5a6457adbffd78df1bf56d` | `62f69ba1c89552451d86aaa2ffae13b8857fcd375069f0eecfac1fff0d5adeb0` |
+| `dist/chunks/index.B89dZ0-N.js` | `7ae1406d3a808a5a2915895eede01e4e79fac5838f5a6457adbffd78df1bf56d` | `7ba00f429646a774d1813c8d450c98240570edadc43cdb0c66c0009cb0796954` |
 | `dist/chunks/index.OVGXnVRj.js` | `57c89e884bab20623afc06a58119c70c4f2e06397ae63e961ad0a0810c9a94b5` | `c4b8a1c9f865c4719d1bf01d871d89fd405b9a3141f2ef9bc9690e1d5078d0a8` |
 | `dist/chunks/init-forks.CiCtIMPj.js` | `ef8cf8283d7b420d2fae017b8f284555ed67e207ea12fa9f53ab28421168adfc` | `ce9b827f016907bd054c9c8041e70db67ba28943c13a0b66b8551b5b51f1fafa` |
 | `dist/chunks/plugin.d.BbcoZhuj.d.ts` | `fc8d53b3329bf55bc3dba0709c2280e997a860d2b45189589f43ea21b4076087` | `f51eb09836507b090c03467cd4949c9a7fae9ffca0bc4998088cecf99bdb4925` |
@@ -52,11 +52,13 @@ The patch owns these temporary invariants and removal gates:
   `test/scripts/run-vitest-state-cleanup.test.ts`, and
   `test/scripts/run-vitest-profile.test.ts`.
 - **File-backed report projects (`index.B89dZ0-N.js`,
-  `plugin.d.BbcoZhuj.d.ts`):** a Vitest-owned `{ config, root }` descriptor
-  loads its config exactly once, preserves the explicit root, and derives its
-  final name after Vite hooks. Remove these hunks when stock Vitest passes
+  `plugin.d.BbcoZhuj.d.ts`):** a Vitest-owned `{ config, root? }` descriptor
+  loads its config exactly once, keeps the file-owned root when omitted,
+  preserves the explicit root when supplied, and derives its final name after
+  Vite hooks. Remove these hunks when stock Vitest passes
   `test/scripts/vitest-report-owner.test.ts` without pre-resolving configs or
-  injecting captured names.
+  injecting captured names and `test/vitest-ui-package-config.test.ts` without
+  losing omitted or explicit project roots.
 - **Trailing task updates (`run.CQOUYP-x.js`):** the bundled runner accepts the
   exact batching deadline and clears a consumed timer before re-entering the
   throttle, so an early callback can rearm without losing the trailing update.
