@@ -213,9 +213,11 @@ export function renderProviderProfiles(card: ModelProviderCard, props: ProviderP
               { count: String(rows.length) },
             )}${additionalCredentialSource ? ` · ${additionalCredentialSource}` : ""}</span
           >
-          ${reorderOffered
-            ? html`<span>${t("modelProviders.profiles.reorderHint")}</span>`
-            : nothing}
+          ${
+            reorderOffered
+              ? html`<span>${t("modelProviders.profiles.reorderHint")}</span>`
+              : nothing
+          }
           ${explanations.map((explanation) => html`<span>${explanation}</span>`)}
           ${saving ? html`<span role="status">${t("modelProviders.saving")}</span>` : nothing}
         </div>
@@ -298,66 +300,74 @@ export function renderProviderProfiles(card: ModelProviderCard, props: ProviderP
                 </span>
                 <span class="model-providers__profile-status">${profileStatus(profile)}</span>
                 <span class="model-providers__profile-actions">
-                  ${complete && index >= 0
-                    ? html`<span
-                        class="model-providers__profile-position"
-                        aria-label=${t("modelProviders.profiles.priority", {
-                          position: String(index + 1),
-                        })}
-                        title=${t("modelProviders.profiles.priority", {
-                          position: String(index + 1),
-                        })}
-                        >${index + 1}</span
-                      >`
-                    : nothing}
-                  ${showMoves
-                    ? ([-1, 1] as const).map(
-                        (delta) => html`
-                          <button
-                            type="button"
-                            class="btn btn--sm btn--ghost model-providers__profile-move"
-                            data-direction=${delta < 0 ? "up" : "down"}
-                            ?disabled=${!canMove ||
-                            index + delta < 0 ||
-                            index + delta >= order.length}
-                            aria-label=${t(
-                              delta < 0
-                                ? "modelProviders.profiles.moveUpFor"
-                                : "modelProviders.profiles.moveDownFor",
-                              { account: identity },
-                            )}
-                            title=${reorderBlocked ||
-                            t(
-                              delta < 0
-                                ? "modelProviders.profiles.moveUp"
-                                : "modelProviders.profiles.moveDown",
-                            )}
-                            @click=${(event: Event) => move(event, delta)}
-                          >
-                            ${delta < 0 ? icons.arrowUp : icons.arrowDown}
-                          </button>
-                        `,
-                      )
-                    : nothing}
-                  ${profile.logoutSupported === true && logoutProvider
-                    ? html`<button
-                        type="button"
-                        class="model-providers__profile-logout"
-                        aria-label=${logoutLabel}
-                        title=${logoutBlocked}
-                        ?disabled=${!props.canMutate || props.busy[`logout:${card.id}`]}
-                        @click=${() =>
-                          props.onRequestLogout({
-                            cardId: card.id,
-                            label: identity,
-                            targets: [
-                              { provider: logoutProvider, profileIds: [profile.profileId] },
-                            ],
+                  ${
+                    complete && index >= 0
+                      ? html`<span
+                          class="model-providers__profile-position"
+                          aria-label=${t("modelProviders.profiles.priority", {
+                            position: String(index + 1),
                           })}
-                      >
-                        ${logoutIcon}
-                      </button>`
-                    : nothing}
+                          title=${t("modelProviders.profiles.priority", {
+                            position: String(index + 1),
+                          })}
+                          >${index + 1}</span
+                        >`
+                      : nothing
+                  }
+                  ${
+                    showMoves
+                      ? ([-1, 1] as const).map(
+                          (delta) => html`
+                            <button
+                              type="button"
+                              class="btn btn--sm btn--ghost model-providers__profile-move"
+                              data-direction=${delta < 0 ? "up" : "down"}
+                              ?disabled=${
+                                !canMove || index + delta < 0 || index + delta >= order.length
+                              }
+                              aria-label=${t(
+                                delta < 0
+                                  ? "modelProviders.profiles.moveUpFor"
+                                  : "modelProviders.profiles.moveDownFor",
+                                { account: identity },
+                              )}
+                              title=${
+                                reorderBlocked ||
+                                t(
+                                  delta < 0
+                                    ? "modelProviders.profiles.moveUp"
+                                    : "modelProviders.profiles.moveDown",
+                                )
+                              }
+                              @click=${(event: Event) => move(event, delta)}
+                            >
+                              ${delta < 0 ? icons.arrowUp : icons.arrowDown}
+                            </button>
+                          `,
+                        )
+                      : nothing
+                  }
+                  ${
+                    profile.logoutSupported === true && logoutProvider
+                      ? html`<button
+                          type="button"
+                          class="model-providers__profile-logout"
+                          aria-label=${logoutLabel}
+                          title=${logoutBlocked}
+                          ?disabled=${!props.canMutate || props.busy[`logout:${card.id}`]}
+                          @click=${() =>
+                            props.onRequestLogout({
+                              cardId: card.id,
+                              label: identity,
+                              targets: [
+                                { provider: logoutProvider, profileIds: [profile.profileId] },
+                              ],
+                            })}
+                        >
+                          ${logoutIcon}
+                        </button>`
+                      : nothing
+                  }
                 </span>
               </div>
             `;
