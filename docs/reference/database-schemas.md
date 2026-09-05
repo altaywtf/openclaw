@@ -474,11 +474,12 @@ Normal admission remains bounded at 32 identities. Same-store alias repair sums 
 | 13      | State consolidation: cron jobs and subagent runs become JSON-canonical (113 projection columns, five unused indexes removed); installed_plugin_index and shared auth-profile singletons fold into config_machine_state; workspace_attestations merges into workspace_setup_state; gateway origin device tokens become canonical | Unreleased          |
 | 14      | Source-qualified cron creator capture; historical human job creators remain unknown                                                                                                                                                                                                                                             | Unreleased          |
 | 15      | Conversation bindings use exact target keys; redundant agent/session projections removed                                                                                                                                                                                                                                        | Unreleased          |
-| 16      | Prepared worker lifecycle facts and one-use node workspace bindings                                                                                                                                                                                                                                                             | Unreleased          |
+| 16      | Skill Workshop ownership moves from workspace/provenance columns to per-agent directory containment                                                                                                                                                                                                                             | Unreleased          |
+| 17      | Prepared worker lifecycle facts and one-use node workspace bindings                                                                                                                                                                                                                                                             | Unreleased          |
 
-### State schema 16
+### State schema 17
 
-Schema 16 records prepared cloud capacity in four nullable `worker_environments`
+Schema 17 records prepared cloud capacity in four nullable `worker_environments`
 columns: `preparation_key`, `preparation_demand_at_ms`,
 `preparation_expires_at_ms`, and `preparation_consumed_at_ms`. Existing workers
 keep all four values `NULL`; migration never classifies them as unused reserves.
@@ -503,22 +504,55 @@ records the exact environment; binding adds the session and owner epoch once.
 Retirement preserves that binding until machine teardown. Ordinary database open
 and migration leave this node-only table absent. Per-agent schemas do not change.
 
-Startup and `openclaw doctor --fix` add the environment columns and publish both
-version markers in one exclusive transaction. The tuple constraint is attached
-to the last added column, so no environment-table rebuild is needed. Existing
+Startup and `openclaw doctor --fix` apply the schema-16 Skill Workshop migration
+before the prepared-worker migration when opening a schema-15 database. A
+schema-16 database receives only the prepared-worker migration. Both paths
+publish schema 17 in both version markers in the same exclusive transaction;
+failure rolls back all database changes from that open. Workshop directory
+relocation runs afterward, outside that database transaction.
+
+The tuple constraint is attached to the last added column, so no
+environment-table rebuild is needed. Existing
 leases, credentials, placements, inference turns, and uncertain cleanup remain
 intact. Failed validation rolls back the additions and version markers. Adding
 the constraint scans existing environments once; no provider operation runs in
 the migration transaction.
 
 Before upgrading, stop older writers and create a verified, WAL-aware backup.
-Builds supporting state schema 15 or earlier refuse the migrated database. To
+Builds supporting state schema 16 or earlier refuse the migrated database. To
 roll back, use the compatible build to complete cloud cleanup, stop all writers,
 then restore the pre-upgrade backup into a separate state directory. Restoring
 does not retain changes made after that backup. Do not lower either version
 marker or erase a consumed binding. If cleanup is unresolved or the owner is
 offline, resources can continue incurring charges until deletion is confirmed.
 See [cloud workers](/gateway/cloud-workers) for reserve capacity settings.
+
+### State schema 16
+
+Schema 16 removes `workspace_dir` and `claim_released_time` from
+`skill_workshop_proposals`. It also removes `workspace_dir` and
+`idx_skill_workshop_collection_reviews_workspace_time` from collection review
+history and adds `owner_agent_id` plus its owner/time index. Proposal rows remain intact. A proposal whose claim a
+collection review had released becomes `stale` with a status reason, so the
+skill path it once created stays user-owned and Doctor never relocates it.
+
+Skill Workshop ownership is now the physical
+`<state-dir>/agents/<agentId>/agent/workshop-skills` directory. Startup and `openclaw doctor --fix`
+drop the retired columns and index in the shared schema transaction. Both then
+run the same migration to relocate applied legacy Workshop creates to the
+inferred owner agent and retarget eligible pending creates. Conflicts and ambiguous ownership become
+stale proposals and leave the legacy directories unchanged. Review history rows
+map to a unique owner agent when possible; otherwise the schema migration discards them as
+cache-class state.
+
+Skill-only workspace relocation uses the existing `migration_runs` and
+`migration_sources` tables to save pre-move directory identity, file hashes,
+and the workspace attestation timestamp. After relocation, only matching
+attestation-only state is retired; setup state, path aliases, and newer
+attestations remain intact. Interrupted migrations reuse the saved pre-move
+facts rather than inferring them from an empty directory. Workspace reset
+removes pending workspace-scoped receipts. No additional schema version or
+table is required.
 
 ### State schema 15
 

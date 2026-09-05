@@ -369,7 +369,7 @@ extensions/discord/src/monitor/inbound-job.ts	1
 extensions/discord/src/monitor/ingress.ts	6
 extensions/discord/src/monitor/listeners.ts	1
 extensions/discord/src/monitor/message-channel-info.ts	3
-extensions/discord/src/monitor/message-dispatcher.ts	5
+extensions/discord/src/monitor/message-dispatcher.ts	1
 extensions/discord/src/monitor/message-forwarded.ts	7
 extensions/discord/src/monitor/message-handler.batch-gate.ts	1
 extensions/discord/src/monitor/message-handler.hydration.ts	12
@@ -1822,7 +1822,7 @@ src/agents/embedded-agent-runner/thinking.ts	25
 src/agents/embedded-agent-runner/tool-call-argument-decoding.ts	5
 src/agents/embedded-agent-runner/tool-result-char-estimator.ts	9
 src/agents/embedded-agent-runner/tool-result-context-guard.ts	13
-src/agents/embedded-agent-runner/tool-result-truncation.ts	20
+src/agents/embedded-agent-runner/tool-result-truncation.ts	17
 src/agents/embedded-agent-runner/tool-schema-runtime.ts	1
 src/agents/embedded-agent-runner/transcript-rewrite.ts	2
 src/agents/embedded-agent-subscribe.handlers.messages.lifecycle.ts	2
@@ -2455,7 +2455,6 @@ src/commands/doctor-session-state-providers.ts	3
 src/commands/doctor-session-transcript-headers.ts	5
 src/commands/doctor-session-transcript-labels.ts	4
 src/commands/doctor-session-transcripts.ts	1
-src/commands/doctor-skill-workshop-sqlite.ts	1
 src/commands/doctor-skills.ts	1
 src/commands/doctor-sqlite-compact.ts	3
 src/commands/doctor-sqlite-maintenance-lock.ts	2
@@ -2826,7 +2825,7 @@ src/gateway/server-methods/agent-wait.ts	1
 src/gateway/server-methods/approval-publication.ts	4
 src/gateway/server-methods/approval-request-delivery.ts	1
 src/gateway/server-methods/approval-shared.ts	1
-src/gateway/server-methods/approval.ts	8
+src/gateway/server-methods/approval.ts	4
 src/gateway/server-methods/attachment-normalize.ts	1
 src/gateway/server-methods/base-hash.ts	1
 src/gateway/server-methods/channel-pairing.ts	3
@@ -3610,7 +3609,6 @@ src/skills/runtime/refresh.ts	3
 src/skills/runtime/remote-probe-utils.ts	2
 src/skills/runtime/remote-skills.ts	1
 src/skills/security/clawhub-verdicts.ts	2
-src/skills/workshop/experience-review.ts	1
 src/skills/workshop/history-scan.ts	2
 src/skills/workshop/policy.ts	1
 src/skills/workshop/store-record.ts	3

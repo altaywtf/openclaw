@@ -62,11 +62,9 @@ import {
 import {
   assertOpenClawStateDatabaseForMaintenance,
   markCurrentStateSchemaVersion,
-  migrateConversationBindingTargets,
-  migrateCronCreatorNamespaces,
-  migratePreparedWorkerOwnership,
   openClawStateMigrationAssertions,
   resolveDatabasePath,
+  versionedStateMigrations,
 } from "./openclaw-state-db-maintenance.js";
 import { openUnpublishedStateDatabase } from "./openclaw-state-db-open.js";
 import * as operatorApprovalMigration from "./openclaw-state-db-operator-approval-migration.js";
@@ -87,7 +85,6 @@ import {
   repairLegacyGatewayRestartHandoffsForStrictMigration,
 } from "./openclaw-state-db-schema-repair.js";
 import { migrateSingletonStateFoldInV12 } from "./openclaw-state-db-schema-v12-foldin.js";
-import { migrateJsonCanonicalWideRowsV13 } from "./openclaw-state-db-schema-v13-widerow.js";
 import { assertSupportedStateSchemaVersion } from "./openclaw-state-db-schema-version.js";
 import * as sessionWatchMigration from "./openclaw-state-db-session-watch-migration.js";
 import {
@@ -210,17 +207,10 @@ function repairStateSchema(
         assertCanonicalStateSchemaShape(db, pathname);
         if (tableExists(db, "audit_events")) {
           ensureAdditiveStateColumns(db);
-          if (migrateJsonCanonicalWideRowsV13(db, previousVersion)) {
-            applied.push("Consolidated shared state tables (v13)");
-          }
-          if (migrateCronCreatorNamespaces(db, previousVersion)) {
-            applied.push("Qualified historical cron creator attribution as unknown (v14)");
-          }
-          if (migrateConversationBindingTargets(db, previousVersion)) {
-            applied.push("Removed redundant conversation binding target projections (v15)");
-          }
-          if (migratePreparedWorkerOwnership(db, previousVersion)) {
-            applied.push("Recorded prepared worker ownership and one-use lifecycle (v16)");
+          for (const migration of versionedStateMigrations) {
+            if (migration.migrate(db, previousVersion)) {
+              applied.push(migration.applied);
+            }
           }
           db.exec(
             getOpenClawStateRuntimeSchema({
@@ -415,10 +405,9 @@ function ensureSchema(
           migrateWorkerPlacementExecutionModeSchema(db, previousVersion);
           const pathMigration: AgentPathSummary = migrateAgentPaths(db, previousVersion, pathname);
           ensureAdditiveStateColumns(db);
-          migrateJsonCanonicalWideRowsV13(db, previousVersion);
-          migrateCronCreatorNamespaces(db, previousVersion);
-          migrateConversationBindingTargets(db, previousVersion);
-          migratePreparedWorkerOwnership(db, previousVersion);
+          for (const migration of versionedStateMigrations) {
+            migration.migrate(db, previousVersion);
+          }
           sessionWatchMigration.migrateSessionWatchCursorProvenance(db);
           assertCanonicalStateSchemaShape(db, pathname);
           db.exec(
