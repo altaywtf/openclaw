@@ -70,7 +70,7 @@ struct GatewayNativeTransportDeviceAuthTests {
 
         fixture.closeConnection(at: 0)
         try await waitUntil("native legacy token rotation reconnect") {
-            await fixture.capturedAuth(at: 1) != nil
+            fixture.capturedAuth(at: 1) != nil
         }
         #expect(fixture.capturedAuth(at: 1) == .init(
             token: rotatedToken,
@@ -110,7 +110,7 @@ struct GatewayNativeTransportDeviceAuthTests {
 
         fixture.closeConnection(at: 0)
         try await waitUntil("native owner-bound reconnect") {
-            await fixture.capturedAuth(at: 1) != nil
+            fixture.capturedAuth(at: 1) != nil
         }
         #expect(fixture.capturedAuth(at: 1) == .init(
             token: issuedToken,
@@ -171,7 +171,7 @@ struct GatewayNativeTransportDeviceAuthTests {
 
         fixture.closeConnection(at: 1)
         try await waitUntil("native gateway-scoped token reconnect") {
-            await fixture.capturedAuth(at: 2) != nil
+            fixture.capturedAuth(at: 2) != nil
         }
         #expect(fixture.capturedAuth(at: 2) == .init(
             token: gatewayAScopedToken,
@@ -258,7 +258,7 @@ struct GatewayNativeTransportDeviceAuthTests {
 
         fixture.closeConnection(at: 0)
         try await waitUntil("native ownerless reconnect") {
-            await fixture.capturedAuth(at: 1) != nil
+            fixture.capturedAuth(at: 1) != nil
         }
         #expect(fixture.capturedAuth(at: 1) == .init(
             token: nil,
