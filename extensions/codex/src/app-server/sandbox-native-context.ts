@@ -18,6 +18,7 @@ const SANDBOX_RECOVERY =
 
 /** Own native configuration outside all model-writable mounts before starting its process. */
 export async function prepareCodexSandboxNativeContext(params: {
+  assertCurrent?: () => void;
   appServer: CodexAppServerRuntimeOptions;
   agentDir: string;
   effectiveWorkspace: string;
@@ -106,6 +107,8 @@ export async function prepareCodexSandboxNativeContext(params: {
       ? resolveCodexAppServerLocalHomeDir(appServer.start, agentDir)
       : codexHome;
   for (const directory of new Set([agentDir, nativeHomeDirectory])) {
+    // Earlier reads can outlive startup; never begin a write for an abandoned owner.
+    params.assertCurrent?.();
     await fs.mkdir(directory, { recursive: true, mode: 0o700 });
     const stat = await fs.lstat(directory);
     if (!stat.isDirectory() || stat.isSymbolicLink() || hasUnsafePosixPermissions(stat)) {

@@ -155,10 +155,6 @@ export async function startCodexAttemptThread(params: {
   onExecutionDisconnect?: (error: Error) => void;
   spawnedBy: EmbeddedRunAttemptParams["spawnedBy"];
 }): Promise<StartCodexAttemptThreadResult> {
-  const nativeContext = await prepareCodexSandboxNativeContext(params);
-  const agentDir = nativeContext?.agentDir ?? params.agentDir;
-  const appServer = nativeContext?.appServer ?? params.appServer;
-  let pluginAppServer = appServer;
   const startupRuntimeAuthProfileId =
     params.startupPreparedAuth?.kind === "profile"
       ? params.startupPreparedAuth.profileId
@@ -185,6 +181,21 @@ export async function startCodexAttemptThread(params: {
         startupClientForAbandonedRequestCleanup = undefined;
       },
       operation: async () => {
+        const assertStartupCurrent = () => {
+          if (startupAbandonController.signal.aborted) {
+            throw new CodexAppServerStartupError("aborted");
+          }
+          params.assertCurrent?.();
+        };
+        assertStartupCurrent();
+        const nativeContext = await prepareCodexSandboxNativeContext({
+          ...params,
+          assertCurrent: assertStartupCurrent,
+        });
+        // Filesystem preparation can finish after timeout or cancellation settled startup.
+        assertStartupCurrent();
+        const agentDir = nativeContext?.agentDir ?? params.agentDir;
+        const appServer = nativeContext?.appServer ?? params.appServer;
         const threadConfig = mergeCodexThreadConfigs(
           params.configuredMcpDynamicSurface
             ? undefined
@@ -211,7 +222,7 @@ export async function startCodexAttemptThread(params: {
               params.bundleMcpThreadConfig.userStaticServerNames,
               params.bundleMcpThreadConfig.configPatch?.mcp_servers,
             ));
-        pluginAppServer = mcpElicitationDelegationRequired
+        const pluginAppServer = mcpElicitationDelegationRequired
           ? {
               ...appServer,
               approvalPolicy: withMcpElicitationsApprovalPolicy(appServer.approvalPolicy),
@@ -541,6 +552,7 @@ export async function startCodexAttemptThread(params: {
               startupAttemptSucceeded = true;
               return {
                 client: activeStartupClient,
+                pluginAppServer,
                 turnRouter,
                 turnRoute: startupRoute,
                 thread: startupThread,
@@ -669,7 +681,6 @@ export async function startCodexAttemptThread(params: {
     }
     return {
       ...startupResult,
-      pluginAppServer,
       releaseSharedClientLease,
     };
   } catch (error) {

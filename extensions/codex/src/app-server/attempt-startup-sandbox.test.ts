@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { startCodexAttemptThread } from "./attempt-startup.js";
 import { bundleMcpThreadConfig, createAttemptParams } from "./attempt-startup.test-support.js";
@@ -8,7 +9,7 @@ import { resolveCodexAppServerLocalHomeDir } from "./auth-start-options.js";
 import { threadStartResult } from "./codex-app-server.test-fixtures.js";
 import { resolveCodexAppServerRuntimeOptions, resolveCodexComputerUseConfig } from "./config.js";
 import { createSandboxContext } from "./sandbox-exec-server.test-helpers.js";
-import { prepareCodexSandboxNativeContext } from "./sandbox-native-context.js";
+import * as sandboxNativeContext from "./sandbox-native-context.js";
 import {
   resetCodexTestBindingStore,
   testCodexAppServerBindingStore,
@@ -17,6 +18,8 @@ import type { CodexAppServerClientFactory } from "./shared-client.js";
 import { createCodexLifecycleHarness } from "./thread-lifecycle.test-fixtures.js";
 import { readCodexInheritedMcpServerNames } from "./thread-requests.js";
 import { buildTurnStartParams } from "./turn-params.js";
+
+const { prepareCodexSandboxNativeContext } = sandboxNativeContext;
 
 describe("sandboxed Codex native context", () => {
   let root: string;
@@ -89,6 +92,103 @@ describe("sandboxed Codex native context", () => {
     };
     return { params, factory };
   }
+
+  it.each(
+    (["timeout", "timeout-aborts-run", "abort", "revoked"] as const).flatMap((reason) =>
+      (["workspace", "hooks"] as const).map((stage) => ({ reason, stage })),
+    ),
+  )(
+    "settles $reason during $stage preparation without late writes or client acquisition",
+    async ({ reason, stage }) => {
+      const controller = new AbortController();
+      let revoked = false;
+      const revokedError = new Error("startup owner revoked");
+      const onStartupTimeout = vi.fn(() => {
+        if (reason === "timeout-aborts-run") {
+          controller.abort("codex_startup_timeout");
+        }
+      });
+      const { params, factory } = prepare({
+        signal: controller.signal,
+        startupTimeoutMs: 100,
+        onStartupTimeout,
+        assertCurrent: () => {
+          if (revoked) {
+            throw revokedError;
+          }
+        },
+      });
+      const nativeHome = path.join(params.agentDir, "codex-home");
+      await fs.mkdir(nativeHome, { mode: 0o700 });
+      const hooksPath = path.join(nativeHome, "hooks.json");
+      await fs.writeFile(hooksPath, "{}", { mode: 0o600 });
+      const entered = createDeferred<void>();
+      const release = createDeferred<void>();
+      const mkdir = vi.spyOn(fs, "mkdir");
+      const realpath = fs.realpath;
+      vi.spyOn(fs, "realpath").mockImplementation(async (...args) => {
+        const resolved = await realpath(...args);
+        if (stage === "workspace" && String(args[0]) === params.effectiveWorkspace) {
+          entered.resolve();
+          await release.promise;
+        }
+        return resolved;
+      });
+      const lstat = fs.lstat;
+      vi.spyOn(fs, "lstat").mockImplementation(async (...args) => {
+        const stat = await lstat(...args);
+        if (stage === "hooks" && String(args[0]) === hooksPath) {
+          entered.resolve();
+          await release.promise;
+        }
+        return stat;
+      });
+      let preparation: ReturnType<typeof prepareCodexSandboxNativeContext> | undefined;
+      vi.spyOn(sandboxNativeContext, "prepareCodexSandboxNativeContext").mockImplementation(
+        (input) => {
+          preparation = prepareCodexSandboxNativeContext(input);
+          return preparation;
+        },
+      );
+      vi.useFakeTimers();
+      const settled = vi.fn();
+      const run = startCodexAttemptThread(params).then(settled, settled);
+      let writesBeforeRelease = 0;
+      try {
+        await entered.promise;
+        writesBeforeRelease = mkdir.mock.calls.length;
+        expect(settled).not.toHaveBeenCalled();
+        expect(factory).not.toHaveBeenCalled();
+        if (reason === "abort") {
+          controller.abort("cancelled");
+        }
+        if (reason === "revoked") {
+          revoked = true;
+        } else {
+          await vi.advanceTimersByTimeAsync(100);
+          expect(settled).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({
+              code: "CODEX_APP_SERVER_STARTUP_CANCELLED",
+              reason: reason === "abort" ? "aborted" : "timed_out",
+            }),
+          );
+        }
+      } finally {
+        release.resolve();
+        await preparation?.catch(() => undefined);
+        await run;
+        await vi.advanceTimersByTimeAsync(100);
+        vi.useRealTimers();
+      }
+      expect(mkdir).toHaveBeenCalledTimes(writesBeforeRelease);
+      expect(factory).not.toHaveBeenCalled();
+      expect(settled).toHaveBeenCalledTimes(1);
+      expect(onStartupTimeout).toHaveBeenCalledTimes(reason.startsWith("timeout") ? 1 : 0);
+      if (reason === "revoked") {
+        expect(settled).toHaveBeenCalledWith(revokedError);
+      }
+    },
+  );
 
   function useWindowsMetadata(target: "directories" | "files" | "all" = "all") {
     vi.stubGlobal(
