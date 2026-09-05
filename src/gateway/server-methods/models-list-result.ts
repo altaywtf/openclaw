@@ -299,9 +299,9 @@ export async function prepareModelsListResult(
   params: BuildModelsListResultParams,
 ): Promise<PreparedModelsListResult> {
   const { source } = params;
-  const initialConfig =
-    source.kind === "gateway" ? source.context.getRuntimeConfig() : source.config;
   const getRuntimeConfig = source.context.getRuntimeConfig;
+  const runtimeConfig = getRuntimeConfig();
+  const initialConfig = source.kind === "gateway" ? runtimeConfig : source.config;
   const initialAgentId = normalizeAgentId(params.agentId ?? resolveDefaultAgentId(initialConfig));
   const view = params.params.view ?? "default";
   const preparedOnly = params.params.preparedOnly === true;
@@ -346,9 +346,9 @@ export async function prepareModelsListResult(
   const { metadataSnapshot, authStore: preparedAuthStore } = preparedProjectionOwner;
   const catalog = snapshot.entries;
   const publicationRevision = getPreparedModelRuntimePublicationRevision();
-  // Config turnover still invalidates prepared host facts.
+  // Track Gateway turnover, not the identity of an equal config clone held by the catalog.
   const isCurrent = () =>
-    getRuntimeConfig() === initialConfig &&
+    getRuntimeConfig() === runtimeConfig &&
     getPreparedModelRuntimePublicationRevision() === publicationRevision &&
     (source.kind !== "published" || source.projector.decisions.isCurrent());
   const { providerOutcomes } = snapshot;
