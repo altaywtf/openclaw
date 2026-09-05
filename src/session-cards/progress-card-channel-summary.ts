@@ -12,7 +12,7 @@ export function isAgentPlanProgressToolName(name: string | undefined): boolean {
 }
 
 /** Projects durable card state without interpreting renderer-owned Markdown or HTML. */
-export function formatProgressCardChannelSummary(params: {
+function formatProgressCardChannelSummary(params: {
   hasMarkdown: boolean;
   steps: readonly ProgressCardStep[];
 }): string | undefined {

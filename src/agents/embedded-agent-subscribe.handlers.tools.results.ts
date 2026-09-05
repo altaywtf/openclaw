@@ -56,9 +56,7 @@ export function resolveFallbackToolTerminalObserver(ctx: ToolHandlerContext) {
   return created;
 }
 
-export function readProgressCardPlanInput(
-  args: unknown,
-): { steps: AgentPlanStep[]; explanation?: string } | undefined {
+export function readProgressCardPlanInput(args: unknown) {
   const params = readRecordField(args);
   if (!params) {
     return undefined;
