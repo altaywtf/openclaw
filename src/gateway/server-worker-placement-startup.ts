@@ -259,6 +259,7 @@ export function createGatewayWorkerPlacementRuntime(
           key: sessionKey,
           agentId,
           clone: false,
+          exactRead: true,
         });
         const lifecycleIdentities = [
           sessionKey,
