@@ -3264,7 +3264,15 @@ describe("talk.client.create handler", () => {
                 talk: {
                   realtime: {
                     provider: "openai",
-                    ...(location === "top" ? { model } : { providers: { openai: { model } } }),
+                    // The lock exists only for an explicit strict auth selection; legacy
+                    // Auto keeps per-call overrides and is covered by the Auto tests.
+                    providers: {
+                      openai: {
+                        authMethod: "api-key",
+                        ...(location === "provider" ? { model } : {}),
+                      },
+                    },
+                    ...(location === "top" ? { model } : {}),
                   },
                 },
               }) as OpenClawConfig,
@@ -3301,6 +3309,92 @@ describe("talk.client.create handler", () => {
           params.runAgentConsult({ question: prompt }, signal),
       }),
     );
+  });
+
+  it("preserves deliberate per-call overrides for legacy Auto while saved defaults stay the fallback", () => {
+    const config = {
+      talk: {
+        realtime: {
+          provider: "openai",
+          model: "gpt-realtime-2.1",
+          providers: { openai: { apiKey: "***" } },
+        },
+      },
+    } as OpenClawConfig;
+    // Auto: per-call provider/model requests are accepted instead of rejected.
+    expect(buildTalkRealtimeConfig(config, "openai", "gpt-realtime-2.2").model).toBe(
+      "gpt-realtime-2.1",
+    );
+    expect(buildTalkRealtimeConfig(config).model).toBe("gpt-realtime-2.1");
+    // Fresh/upgrade config without strict auth never locks.
+    expect(
+      buildTalkRealtimeConfig(
+        { talk: { realtime: {} } } as OpenClawConfig,
+        "openai",
+        "custom-model",
+      ).model,
+    ).toBeUndefined();
+  });
+
+  it("locks per-call provider/model identity only for an explicit strict auth selection", () => {
+    const config = {
+      talk: {
+        realtime: {
+          provider: "openai",
+          model: "gpt-realtime-2.1",
+          providers: { openai: { apiKey: "***", authMethod: "api-key" } },
+        },
+      },
+    } as OpenClawConfig;
+    expect(() => buildTalkRealtimeConfig(config, "openai", "other-model")).toThrow(
+      "Talk model is selected on the Gateway",
+    );
+    expect(() => buildTalkRealtimeConfig(config, "other-provider")).toThrow(
+      "Talk provider is selected on the Gateway",
+    );
+    mocks.listRealtimeVoiceProviders.mockReturnValue([
+      {
+        id: "openai",
+        label: "OpenAI",
+        defaultModel: "gpt-realtime-2.1",
+        isConfigured: () => true,
+      },
+    ] as never);
+    const providerless = {
+      talk: {
+        realtime: { providers: { openai: { authMethod: "oauth" } } },
+      },
+    } as OpenClawConfig;
+    expect(buildTalkRealtimeConfig(providerless).provider).toBe("openai");
+    expect(buildTalkRealtimeConfig(providerless).model).toBe("gpt-realtime-2.1");
+    expect(() => buildTalkRealtimeConfig(providerless, "openai", "other-model")).toThrow(
+      "Talk model is selected on the Gateway",
+    );
+    expect(() => buildTalkRealtimeConfig(providerless, "other-provider")).toThrow(
+      "Talk provider is selected on the Gateway",
+    );
+    expect(() =>
+      buildTalkRealtimeConfig({
+        talk: {
+          realtime: {
+            providers: {
+              openai: { authMethod: "oauth" },
+              other: { authMethod: "api-key" },
+            },
+          },
+        },
+      } as OpenClawConfig),
+    ).toThrow("Talk strict authentication requires one selected provider");
+    expect(() =>
+      buildTalkRealtimeConfig({
+        talk: {
+          realtime: {
+            provider: "other",
+            providers: { openai: { authMethod: "oauth" } },
+          },
+        },
+      } as OpenClawConfig),
+    ).toThrow("Talk strict authentication conflicts with the selected provider");
   });
 
   it("builds realtime launch defaults from talk.realtime", () => {

@@ -162,6 +162,41 @@ class TalkRealtimeClientTest {
   }
 
   @Test
+  fun providerEventErrorsRemainRecoverableUntilATerminalSignal() =
+    runTest {
+      Dispatchers.setMain(UnconfinedTestDispatcher(testScheduler))
+      val states = mutableListOf<String>()
+      val failures = mutableListOf<String>()
+      val lease = GatewaySession.RequestLease("fixture", requestImpl = { _, _, _, _ -> "{}" })
+      val client = TalkRealtimeClient(RuntimeEnvironment.getApplication(), this, lease, "main", { states.add(it) }, { _, _, _ -> }, { failures.add(it) })
+      try {
+        val event = client.javaClass.getDeclaredMethod("handleProviderEvent", String::class.java).apply { isAccessible = true }
+        val state =
+          client.javaClass
+            .getDeclaredField("responseState")
+            .apply { isAccessible = true }
+            .get(client) as TalkRealtimeResponseState
+        state.requesting("create-event")
+        event.invoke(client, """{"type":"error","event_id":"evt-1","error":{"type":"invalid_request_error","message":"recoverable","event_id":"create-event"}}""")
+        event.invoke(client, """{"type":"conversation.item.input_audio_transcription.failed","event_id":"evt-2"}""")
+        assertTrue(failures.isEmpty())
+        assertFalse(
+          client.javaClass
+            .getDeclaredField("closed")
+            .apply { isAccessible = true }
+            .getBoolean(client),
+        )
+        assertEquals("Listening", states.last())
+        assertFalse(state.createInFlight)
+        event.invoke(client, """{"type":"response.created","response":{"id":"next"}}""")
+        assertEquals("Thinking", states.last())
+      } finally {
+        client.close()
+        Dispatchers.resetMain()
+      }
+    }
+
+  @Test
   fun providerVadCompletionArmsCancellationBeforeTheResponseIdArrives() =
     runTest {
       Dispatchers.setMain(UnconfinedTestDispatcher(testScheduler))

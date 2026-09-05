@@ -1,10 +1,12 @@
 package ai.openclaw.app.voice
 
+import ai.openclaw.app.gateway.GatewayRequestNotEnqueued
 import ai.openclaw.app.gateway.GatewaySession
 import ai.openclaw.app.i18n.NativeText
 import ai.openclaw.app.i18n.nativeText
 import ai.openclaw.app.i18n.verbatimText
 import android.content.Context
+import android.util.Log
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
@@ -51,6 +53,7 @@ internal class TalkRealtimeClient(
   private var gatewayTranscripts = false
   private var nativeDelegation = false
   private var nativeTranscriptSequence = 0
+  private var clientEventSequence = 0
   private var outputResponseId: String? = null
   private var transcriptTail: Deferred<Unit> = CompletableDeferred(Unit)
   private var queuedTranscripts = 0
@@ -75,6 +78,23 @@ internal class TalkRealtimeClient(
     )
   var snapshot: TalkRealtimeSnapshot? = null
     private set
+
+  private fun clientTransport() =
+    RealtimeAgentClientTransport(
+      request = { method, args, timeout ->
+        // Only new agent work is fenced at the synchronous final enqueue after
+        // transcript/transport waits. chat.abort/close cleanup stays unguarded.
+        val guard: ((() -> Unit) -> Unit) =
+          if (method == "talk.client.toolCall") {
+            { enqueue -> if (closed) throw GatewayRequestNotEnqueued("realtime call stopped") else enqueue() }
+          } else {
+            { it() }
+          }
+        if (method == "talk.client.toolCall") transcriptTail.await()
+        lease.request(method, args, timeout, guard)
+      },
+      submit = ::submitToolResult,
+    )
 
   /** The caller publishes under its lock; rejected ownership closes outside that lock. */
   suspend fun adopt(publish: () -> Boolean): Boolean {
@@ -131,13 +151,7 @@ internal class TalkRealtimeClient(
           RealtimeAgentSession(
             voiceId,
             sessionKey,
-            RealtimeAgentClientTransport(
-              request = { method, args, timeout ->
-                if (method == "talk.client.toolCall") transcriptTail.await()
-                lease.request(method, args, timeout)
-              },
-              submit = ::submitToolResult,
-            ),
+            clientTransport(),
           ),
         )
         peer.start { offer -> route.exchange(secret, headers, offer) }
@@ -262,8 +276,18 @@ internal class TalkRealtimeClient(
         }
       }
 
-      "error", "conversation.item.input_audio_transcription.failed" -> {
-        fail("Realtime provider reported an error")
+      "error" -> {
+        // The Realtime contract keeps most event errors recoverable. Clear only
+        // our correlated rejected response.create; unrelated errors stay open.
+        val error = event["error"] as? JsonObject
+        responseState.creationRejected(error?.string("event_id"))
+        Log.w("TalkRealtime", "Recoverable provider event error")
+        publishResponseStatus()
+      }
+
+      "conversation.item.input_audio_transcription.failed" -> {
+        Log.w("TalkRealtime", "Recoverable input transcription error")
+        publishResponseStatus()
       }
     }
   }
@@ -362,8 +386,14 @@ internal class TalkRealtimeClient(
   }
 
   private suspend fun sendResponse() {
-    if (!closed && responseState.requestResponse(toolBatch.hasPending)) {
-      peer.send("{\"type\":\"response.create\"}")
+    val eventId = "android-response-${++clientEventSequence}"
+    if (!closed && responseState.requestResponse(toolBatch.hasPending, eventId)) {
+      peer.send(
+        buildJsonObject {
+          put("type", "response.create")
+          put("event_id", eventId)
+        }.toString(),
+      )
     }
   }
 

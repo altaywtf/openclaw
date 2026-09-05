@@ -16,6 +16,7 @@ internal data class TalkModeGatewayConfigState(
   val silenceTimeoutMs: Long,
   val realtimeTransport: String?,
   val realtimeMode: String?,
+  val strictAuthSelected: Boolean,
 )
 
 internal object TalkModeGatewayConfigParser {
@@ -31,6 +32,11 @@ internal object TalkModeGatewayConfigParser {
       silenceTimeoutMs = resolvedSilenceTimeoutMs(talk),
       realtimeTransport = realtime?.get("transport").asStringOrNull(),
       realtimeMode = realtime?.get("mode").asStringOrNull(),
+      // Legacy Auto keeps relay recovery; only a deliberate strict auth choice is fail-closed.
+      strictAuthSelected =
+        (realtime?.get("providers") as? JsonObject)
+          ?.values
+          ?.any { provider -> provider.asObjectOrNull()?.containsKey("authMethod") == true } == true,
     )
   }
 

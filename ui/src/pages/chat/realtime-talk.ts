@@ -74,6 +74,7 @@ type RealtimeTalkConfigResult = {
     talk?: {
       realtime?: {
         transport?: unknown;
+        providers?: Record<string, { authMethod?: unknown }>;
       };
     };
   };
@@ -369,12 +370,24 @@ export class RealtimeTalkSession {
         if (!result.config || typeof result.config !== "object") {
           throw error;
         }
-        const configuredTransport = result.config?.talk?.realtime?.transport;
+        const configuredRealtime = result.config?.talk?.realtime;
+        const configuredTransport = configuredRealtime?.transport;
         if (configuredTransport !== undefined) {
           transport = normalizeLaunchTransport(configuredTransport);
           if (!transport) {
             throw error;
           }
+        }
+        // A deliberate strict auth selection is fail-closed; legacy Auto keeps the
+        // prior relay recovery so a failed client call can still use Gateway relay.
+        const strictAuthSelected = Object.values(configuredRealtime?.providers ?? {}).some(
+          (provider) => provider.authMethod !== undefined,
+        );
+        if (strictAuthSelected && transport !== "gateway-relay") {
+          throw error;
+        }
+        if (!transport) {
+          transport = "gateway-relay";
         }
       }
       // A failed client-owned call is terminal unless the Gateway explicitly selected a relay.

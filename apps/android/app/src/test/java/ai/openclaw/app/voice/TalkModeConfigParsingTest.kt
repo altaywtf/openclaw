@@ -3,11 +3,14 @@ package ai.openclaw.app.voice
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 
@@ -141,6 +144,25 @@ class TalkModeConfigParsingTest {
         requestedLanguage = null,
         deviceLocaleTag = "fr-FR",
       ),
+    )
+  }
+
+  @Test
+  fun strictAuthFlagFollowsOnlyDeliberateProviderSelections() {
+    assertFalse(parseTalkConfig(buildJsonObject { put("realtime", buildJsonObject {}) }).strictAuthSelected)
+    assertFalse(
+      parseTalkConfig(
+        buildJsonObject {
+          put("realtime", buildJsonObject { put("providers", buildJsonObject { put("openai", buildJsonObject { put("model", JsonPrimitive("gpt-realtime-2.1")) }) }) })
+        },
+      ).strictAuthSelected,
+    )
+    assertTrue(
+      parseTalkConfig(
+        buildJsonObject {
+          put("realtime", buildJsonObject { put("providers", buildJsonObject { put("openai", buildJsonObject { put("authMethod", JsonPrimitive("oauth")) }) }) })
+        },
+      ).strictAuthSelected,
     )
   }
 

@@ -2559,11 +2559,85 @@ class TalkModeManagerTest {
       }
     }
 
+  @Test
+  fun autoWebRtcFailureRecoversThroughGatewayRelay() =
+    runTest {
+      val methods = ConcurrentLinkedQueue<String>()
+      withStartedTalk(
+        responseForRequest = { request, _ ->
+          val method = request.getValue("method").jsonPrimitive.content
+          methods.add(method)
+          when (method) {
+            "talk.config" -> """{"config":{"talk":{"realtime":{}}}}"""
+            "talk.catalog" -> """{"realtime":{"activeProvider":"openai","providers":[{"id":"openai","transports":["webrtc","gateway-relay"]}]}}"""
+            else -> null
+          }
+        },
+        interceptRequest = { request, socket ->
+          val method = request.getValue("method").jsonPrimitive.content
+          if (method != "talk.client.create") {
+            false
+          } else {
+            methods.add(method)
+            val id = request.getValue("id").jsonPrimitive.content
+            socket.send("""{"type":"res","id":"$id","ok":false,"error":{"code":"UNAVAILABLE","message":"client transport unavailable"}}""")
+            true
+          }
+        },
+      ) { proof ->
+        assertTrue(proof.manager.isListening.value)
+        assertTrue(methods.contains("talk.client.create"))
+        assertTrue(methods.contains("talk.session.create"))
+        assertFalse(proof.manager.hasFailure.value)
+        val client =
+          proof.manager.javaClass
+            .getDeclaredField("realtimeClient")
+            .apply { isAccessible = true }
+            .get(proof.manager)
+        assertNull(client)
+      }
+    }
+
+  @Test
+  fun explicitStrictWebRtcFailureDoesNotRecoverThroughRelay() =
+    runTest {
+      val methods = ConcurrentLinkedQueue<String>()
+      withStartedTalk(
+        responseForRequest = { request, _ ->
+          val method = request.getValue("method").jsonPrimitive.content
+          methods.add(method)
+          when (method) {
+            "talk.config" -> """{"config":{"talk":{"realtime":{"providers":{"openai":{"authMethod":"oauth"}}}}}}"""
+            "talk.catalog" -> """{"realtime":{"activeProvider":"openai","providers":[{"id":"openai","transports":["webrtc","gateway-relay"]}]}}"""
+            else -> null
+          }
+        },
+        interceptRequest = { request, socket ->
+          val method = request.getValue("method").jsonPrimitive.content
+          if (method != "talk.client.create") {
+            false
+          } else {
+            methods.add(method)
+            val id = request.getValue("id").jsonPrimitive.content
+            socket.send("""{"type":"res","id":"$id","ok":false,"error":{"code":"UNAVAILABLE","message":"selected OAuth unavailable"}}""")
+            true
+          }
+        },
+        expectFailure = true,
+      ) { proof ->
+        assertFalse(proof.manager.isListening.value)
+        assertTrue(proof.manager.hasFailure.value)
+        assertTrue(methods.contains("talk.client.create"))
+        assertFalse(methods.contains("talk.session.create"))
+      }
+    }
+
   private suspend fun withStartedTalk(
     sessionKey: String = "main",
     captureRelayStopNotification: () -> ((() -> Boolean) -> Unit) = { {} },
     responseForRequest: (JsonObject, WebSocket) -> String? = { _, _ -> null },
     interceptRequest: (JsonObject, WebSocket) -> Boolean = { _, _ -> false },
+    expectFailure: Boolean = false,
     block: suspend (RealtimePlaybackProof) -> Unit,
   ) {
     val app = RuntimeEnvironment.getApplication()
@@ -2673,9 +2747,9 @@ class TalkModeManagerTest {
         manager.setMainSessionKey(sessionKey)
         manager.setEnabled(true)
         val deadline = System.nanoTime() + 5_000_000_000L
-        while (!manager.isListening.value) {
+        while (if (expectFailure) !manager.hasFailure.value else !manager.isListening.value) {
           scheduler.runCurrent()
-          check(System.nanoTime() < deadline) { "Real gateway session did not start realtime Talk: ${manager.statusText.value}" }
+          check(System.nanoTime() < deadline) { "Real gateway session did not reach expected Talk state: ${manager.statusText.value}" }
           withContext(Dispatchers.Default) { delay(10) }
         }
         ShadowAudioTrack.addAudioDataListener(listener)
@@ -2698,7 +2772,7 @@ class TalkModeManagerTest {
         scheduler.runCurrent()
         while (true) (captureTasks.poll() ?: break).run()
         scheduler.runCurrent()
-        withTimeout(5_000) { managerJob.join() }
+        withContext(Dispatchers.Default) { withTimeout(5_000) { managerJob.join() } }
         shadowOf(Looper.getMainLooper()).idle()
         scheduler.runCurrent()
         ShadowAudioTrack.removeAudioDataListener(listener)

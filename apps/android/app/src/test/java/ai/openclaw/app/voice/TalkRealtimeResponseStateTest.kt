@@ -11,12 +11,12 @@ class TalkRealtimeResponseStateTest {
   fun deferredToolContinuationIsConsumedOnceAfterAnotherToolBatch() {
     val state = TalkRealtimeResponseState()
     state.created("active")
-    assertFalse(state.requestResponse(hasPendingTools = false))
+    assertFalse(state.requestResponse(hasPendingTools = false, eventId = "event-1"))
     assertTrue(state.responsePending)
     state.completed("active")
-    assertFalse(state.requestResponse(hasPendingTools = true))
+    assertFalse(state.requestResponse(hasPendingTools = true, eventId = "event-2"))
     assertTrue(state.responsePending)
-    assertTrue(state.requestResponse(hasPendingTools = false))
+    assertTrue(state.requestResponse(hasPendingTools = false, eventId = "event-3"))
     assertFalse(state.responsePending)
     assertTrue(state.createInFlight)
     state.created("continuation")
@@ -28,13 +28,24 @@ class TalkRealtimeResponseStateTest {
   fun deferredContinuationDoesNotRaceVadCreationAndCancelClearsIt() {
     val state = TalkRealtimeResponseState()
     state.requesting()
-    assertFalse(state.requestResponse(hasPendingTools = false))
+    assertFalse(state.requestResponse(hasPendingTools = false, eventId = "event-4"))
     assertTrue(state.responsePending)
     state.cancel()
     assertFalse(state.responsePending)
     assertEquals("vad", state.created("vad"))
     state.completed("vad")
     assertFalse(state.responsePending)
+  }
+
+  @Test
+  fun onlyTheCorrelatedCreateErrorClearsInFlightState() {
+    val state = TalkRealtimeResponseState()
+    assertTrue(state.requestResponse(hasPendingTools = false, eventId = "create-1"))
+    assertFalse(state.creationRejected("other"))
+    assertTrue(state.createInFlight)
+    assertTrue(state.creationRejected("create-1"))
+    assertFalse(state.createInFlight)
+    assertTrue(state.requestResponse(hasPendingTools = false, eventId = "create-2"))
   }
 
   @Test

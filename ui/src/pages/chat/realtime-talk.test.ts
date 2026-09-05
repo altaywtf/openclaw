@@ -792,6 +792,26 @@ describe("RealtimeTalkSession", () => {
     expect(relayInstances).toHaveLength(0);
   });
 
+  it("never replaces an explicit per-call client transport with saved relay config", async () => {
+    const clientError = new Error("browser session unavailable");
+    const request = vi.fn(async (method: string) => {
+      if (method === "talk.client.create") {
+        throw clientError;
+      }
+      throw new Error(`Unexpected request: ${method}`);
+    });
+    const session = new RealtimeTalkSession(
+      { request } as never,
+      "main",
+      {},
+      { transport: "webrtc" },
+    );
+
+    await expect(session.start()).rejects.toBe(clientError);
+    expect(request.mock.calls.map(([method]) => method)).toEqual(["talk.client.create"]);
+    expect(relayInstances).toHaveLength(0);
+  });
+
   it("falls back to Gateway relay when config selects Gateway relay", async () => {
     const request = vi.fn(async (method: string) => {
       if (method === "talk.client.create") {
@@ -840,7 +860,7 @@ describe("RealtimeTalkSession", () => {
     expect(relayStart).toHaveBeenCalledTimes(1);
   });
 
-  it("does not replace a failed client-owned call with an implicit relay", async () => {
+  it("recovers a failed Auto client call through Gateway relay", async () => {
     const request = vi.fn(async (method: string) => {
       if (method === "talk.client.create") {
         throw new Error("browser session unavailable");
@@ -858,6 +878,27 @@ describe("RealtimeTalkSession", () => {
             inputSampleRateHz: 24000,
             outputEncoding: "pcm16",
             outputSampleRateHz: 24000,
+          },
+        };
+      }
+      throw new Error(`Unexpected request: ${method}`);
+    });
+    const session = new RealtimeTalkSession({ request } as never, "main");
+
+    await session.start();
+    expect(request.mock.calls.map(([method]) => method)).toContain("talk.session.create");
+    expect(relayInstances).toHaveLength(1);
+  });
+
+  it("keeps a failed explicit strict-auth call fail-closed instead of relay recovery", async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === "talk.client.create") {
+        throw new Error("browser session unavailable");
+      }
+      if (method === "talk.config") {
+        return {
+          config: {
+            talk: { realtime: { providers: { openai: { authMethod: "oauth" } } } },
           },
         };
       }

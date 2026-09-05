@@ -8,19 +8,24 @@ internal class TalkRealtimeResponseState {
     private set
   var responsePending = false
     private set
+  private var createEventId: String? = null
   private var cancelOnCreation = false
   private var cancelledId: String? = null
 
-  fun requesting() {
+  fun requesting(eventId: String? = null) {
     createInFlight = true
+    createEventId = eventId
   }
 
   /** Coalesce tool continuations and consume the deferred request only when it can start. */
-  fun requestResponse(hasPendingTools: Boolean): Boolean {
+  fun requestResponse(
+    hasPendingTools: Boolean,
+    eventId: String,
+  ): Boolean {
     responsePending = true
     if (responseId != null || createInFlight || hasPendingTools) return false
     responsePending = false
-    requesting()
+    requesting(eventId)
     return true
   }
 
@@ -28,9 +33,17 @@ internal class TalkRealtimeResponseState {
   fun created(id: String): String? {
     responseId = id
     createInFlight = false
+    createEventId = null
     val cancel = cancelOnCreation
     cancelOnCreation = false
     return if (cancel) claimCancellation(id) else null
+  }
+
+  fun creationRejected(eventId: String?): Boolean {
+    if (!createInFlight || eventId == null || createEventId != eventId) return false
+    createInFlight = false
+    createEventId = null
+    return true
   }
 
   fun cancel(): String? {

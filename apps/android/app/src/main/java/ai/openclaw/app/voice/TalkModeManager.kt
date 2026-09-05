@@ -1013,9 +1013,30 @@ class TalkModeManager internal constructor(
         } else {
           val configured = realtimeTransport
           val catalog = if (configured == null) json.parseToJsonElement(requestGateway("talk.catalog", "{}")).asObjectOrNull() else null
+          val strictAuthSelected = configCache.get().value.strictAuthSelected
           when (resolveAndroidRealtimeTransport(configured, catalog)) {
-            "webrtc" -> startRealtimeClient(generation)
-            "gateway-relay" -> startRealtimeRelay(generation)
+            "webrtc" -> {
+              try {
+                startRealtimeClient(generation)
+              } catch (err: Throwable) {
+                // Without a strict auth selection, keep the legacy relay recovery;
+                // explicit strict auth stays fail-closed instead of substituting.
+                if (strictAuthSelected || err is CancellationException) throw err
+                Log.w(tag, "client realtime unavailable; recovering with gateway relay")
+                synchronized(realtimeCapturePauseLock) {
+                  if (generation != startGeneration.get() || !_isEnabled.value || stopRequested) {
+                    throw CancellationException("realtime talk stopped before relay recovery")
+                  }
+                  // Retire the published provisional client before relay ownership starts.
+                  stopRealtimeRelay(closeSession = false, preserveStatus = true)
+                }
+                startRealtimeRelay(generation)
+              }
+            }
+
+            "gateway-relay" -> {
+              startRealtimeRelay(generation)
+            }
           }
         }
       } catch (err: Throwable) {
