@@ -33,9 +33,13 @@ internal class TalkRealtimePeer(
   private val onEvent: (String) -> Unit,
   private val onFailure: (String) -> Unit,
   private val preferredAudioInputDevice: () -> String? = { null },
+  private val onInputRequested: (String?) -> Unit = {},
 ) {
   private var factory: PeerConnectionFactory? = null
   private var audioDevice: JavaAudioDeviceModule? = null
+  private var audioRouting: WebRtcAudioRouting? = null
+  private var selectedAudioInputKey: String? = null
+  private var inputPreferenceSet = false
   private var source: AudioSource? = null
   private var track: AudioTrack? = null
   private var peer: PeerConnection? = null
@@ -59,21 +63,19 @@ internal class TalkRealtimePeer(
       }
     }
 
-  private fun resolvePreferredInput(): AudioDeviceInfo? {
-    val manager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-    return resolvePreferredAudioInput(manager.getDevices(AudioManager.GET_DEVICES_INPUTS).toList(), preferredAudioInputDevice())
-  }
-
   suspend fun start(exchangeOffer: suspend (String) -> String) =
     withContext(Dispatchers.Main.immediate) {
       check(!closed && peer == null) { "Realtime peer is not available" }
       try {
         PeerConnectionFactory.initialize(PeerConnectionFactory.InitializationOptions.builder(context).createInitializationOptions())
-        val audio = JavaAudioDeviceModule.builder(context).createAudioDeviceModule()
+        val audio =
+          JavaAudioDeviceModule
+            .builder(context)
+            .setAudioAttributes(RealtimeCommunicationAudio.playbackAttributes())
+            .createAudioDeviceModule()
         audioDevice = audio
-        // Apply the saved input before WebRTC creates its AudioRecord. Resolve
-        // current devices using the same key owner as native Talk/PTT capture.
-        audio.setPreferredInputDevice(resolvePreferredInput())
+        selectedAudioInputKey = preferredAudioInputDevice()
+        updateAudioRouting()
         val createdFactory = PeerConnectionFactory.builder().setAudioDeviceModule(audio).createPeerConnectionFactory()
         factory = createdFactory
         val config =
@@ -155,41 +157,101 @@ internal class TalkRealtimePeer(
   suspend fun setCaptureEnabled(enabled: Boolean) =
     withContext(Dispatchers.Main.immediate) {
       if (closed) return@withContext
-      captureEnabled = enabled
-      // Muting samples alone leaves AudioRecord alive and races PTT microphone ownership.
-      track?.setEnabled(enabled)
-      peer?.setAudioRecording(enabled)
+      updateAudioState {
+        captureEnabled = enabled
+        // Muting samples alone leaves AudioRecord alive and races PTT microphone ownership.
+        if (enabled) updateAudioRouting()
+        track?.setEnabled(enabled)
+        peer?.setAudioRecording(enabled)
+        if (!enabled) updateAudioRouting()
+      }
     }
 
   suspend fun setPlaybackEnabled(enabled: Boolean) =
     withContext(Dispatchers.Main.immediate) {
-      playbackEnabled = enabled
-      if (!closed) peer?.setAudioPlayout(enabled)
+      if (closed) return@withContext
+      updateAudioState {
+        playbackEnabled = enabled
+        if (enabled) updateAudioRouting()
+        peer?.setAudioPlayout(enabled)
+        if (!enabled) updateAudioRouting()
+      }
     }
+
+  private inline fun updateAudioState(action: () -> Unit) {
+    try {
+      action()
+    } catch (error: CancellationException) {
+      throw error
+    } catch (_: RuntimeException) {
+      fail("Realtime audio routing or focus unavailable")
+    }
+  }
+
+  private fun requestInput(
+    audio: JavaAudioDeviceModule,
+    device: AudioDeviceInfo?,
+  ) {
+    if (device != null) {
+      audio.setPreferredInputDevice(device)
+      inputPreferenceSet = true
+    } else if (inputPreferenceSet) {
+      // This pinned SDK dereferences null and has no public clear-preference API.
+      // A fresh call can use Auto; never retain a vanished device while claiming Auto.
+      fail("Realtime microphone route changed; restart Talk to use automatic input")
+    }
+  }
+
+  private fun updateAudioRouting() {
+    val audio = audioDevice ?: return
+    if (closed) return
+    if (captureEnabled || playbackEnabled) {
+      if (audioRouting == null) {
+        val manager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        audioRouting =
+          WebRtcAudioRouting.open(
+            manager,
+            selectedAudioInputKey,
+            { device -> requestInput(audio, device) },
+            isCurrent = { !closed && (captureEnabled || playbackEnabled) },
+            onFocusLost = { fail("Realtime audio focus lost") },
+            onInputRequested = onInputRequested,
+          )
+      }
+    } else {
+      audioRouting?.close()
+      audioRouting = null
+    }
+  }
 
   suspend fun close(): Unit =
     withContext(NonCancellable + Dispatchers.Main.immediate) {
       if (closed) return@withContext
       closed = true
-      ready.cancel()
-      events.close()
-      eventPump.cancel()
-      channel?.let {
-        it.unregisterObserver()
-        it.close()
-        it.dispose()
+      try {
+        ready.cancel()
+        events.close()
+        eventPump.cancel()
+        channel?.let {
+          it.unregisterObserver()
+          it.close()
+          it.dispose()
+        }
+        channel = null
+        peer?.dispose()
+        peer = null
+        track?.dispose()
+        track = null
+        source?.dispose()
+        source = null
+        factory?.dispose()
+        factory = null
+        audioDevice?.release()
+        audioDevice = null
+      } finally {
+        audioRouting?.close()
+        audioRouting = null
       }
-      channel = null
-      peer?.dispose()
-      peer = null
-      track?.dispose()
-      track = null
-      source?.dispose()
-      source = null
-      factory?.dispose()
-      factory = null
-      audioDevice?.release()
-      audioDevice = null
     }
 
   private fun checkCurrent(expected: PeerConnection) {
@@ -199,7 +261,11 @@ internal class TalkRealtimePeer(
   private fun fail(message: String) {
     if (closed) return
     ready.completeExceptionally(IllegalStateException(message))
-    onFailure(message)
+    try {
+      onFailure(message)
+    } finally {
+      scope.launch(Dispatchers.Main.immediate) { close() }
+    }
   }
 
   private val observer =

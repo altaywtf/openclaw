@@ -3,9 +3,6 @@ package ai.openclaw.app.voice
 import ai.openclaw.app.gateway.GatewaySession
 import ai.openclaw.app.i18n.nativeText
 import ai.openclaw.app.i18n.resolveNativeText
-import android.content.Context
-import android.media.AudioDeviceInfo
-import android.media.AudioManager
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -30,41 +27,37 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
-import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
-import org.robolectric.shadows.AudioDeviceInfoBuilder
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class TalkRealtimeClientTest {
   @Test
-  fun forwardsTheSavedMicrophoneToThePeerAndResolvesOnlyAvailableInputs() =
+  fun forwardsSavedMicrophoneIntentWithoutCallingItAnAppliedRoute() =
     runTest {
       Dispatchers.setMain(UnconfinedTestDispatcher(testScheduler))
-      val context = RuntimeEnvironment.getApplication()
-      val manager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-      val microphone = AudioDeviceInfoBuilder.newBuilder().setType(AudioDeviceInfo.TYPE_USB_DEVICE).build()
-      shadowOf(manager).setInputDevices(listOf(microphone))
-      var selected: String? = audioInputDeviceKey(microphone)
+      var selected: String? = "saved-input-key"
+      val requests = mutableListOf<String?>()
       val lease = GatewaySession.RequestLease("fixture", requestImpl = { _, _, _, _ -> "{}" })
-      val client = TalkRealtimeClient(context, this, lease, "main", {}, { _, _, _ -> }, {}, { selected })
+      val client = TalkRealtimeClient(RuntimeEnvironment.getApplication(), this, lease, "main", {}, { _, _, _ -> }, {}, { selected }, { requests.add(it) })
       try {
         val peer =
           client.javaClass
             .getDeclaredField("peer")
             .apply { isAccessible = true }
             .get(client)
-        val resolve = peer.javaClass.getDeclaredMethod("resolvePreferredInput").apply { isAccessible = true }
-        assertEquals(microphone, resolve.invoke(peer))
+        val readPreference =
+          peer.javaClass
+            .getDeclaredField("preferredAudioInputDevice")
+            .apply { isAccessible = true }
+            .get(peer) as Function0<*>
+        assertEquals(selected, readPreference())
         selected = null
-        assertNull(resolve.invoke(peer))
-        selected = audioInputDeviceKey(microphone)
-        shadowOf(manager).setInputDevices(emptyList())
-        assertNull(resolve.invoke(peer))
+        assertNull(readPreference())
+        assertTrue(requests.isEmpty())
       } finally {
         client.close()
-        shadowOf(manager).setInputDevices(emptyList())
         Dispatchers.resetMain()
       }
     }

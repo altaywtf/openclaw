@@ -474,13 +474,20 @@ Watch background behavior. See [Watch setup and limits](/platforms/ios#standalon
   a voice-note attachment. Start continuous Talk from the Talk waveform.
 - Dictation, voice-note recording, and Talk are mutually exclusive microphone
   paths; starting one stops or blocks the others.
-- Realtime Talk prefers a connected Bluetooth Classic or BLE headset
-  microphone; if it disconnects, the app requests another headset input or
-  falls back to the default microphone, restoring the default preference once
-  capture stops.
+- Realtime Talk uses the saved microphone preference when available; Automatic
+  prioritizes connected Bluetooth Classic or BLE microphones. Settings distinguishes
+  **Requested** from a route confirmed by native capture; the WebRTC SDK does not
+  expose its actual recorder route, so a request is not displayed as verified.
+  Preference changes apply to the next Talk session.
+- If an input disappears, Talk requests another available headset. Gateway-relay
+  capture can clear its preference and return to the default microphone. The pinned
+  WebRTC SDK cannot clear an already-set input preference; when that is required,
+  the call ends with a restart instruction rather than silently retaining the old input.
 - Realtime Talk requests Android communication mode and audio focus, using a
-  connected external output or the built-in speaker. Microphone audio is sent
-  during playback only while acoustic echo cancellation is enabled and the
+  connected external output or the built-in speaker. Pausing both capture and
+  playback releases that ownership; resuming reacquires it. Client-owned WebRTC
+  uses the SDK audio-processing pipeline. For Gateway-relay capture, microphone
+  audio is sent during playback only while acoustic echo cancellation is enabled and the
   communication mode and focus remain active. Without echo cancellation,
   microphone audio is not sent during playback. Android presentation timestamps
   estimate playback completion when available. Routes without usable timestamps use

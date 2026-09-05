@@ -63,6 +63,38 @@ describe("OpenAI realtime voice provider routing", () => {
     restoreTestEnvironment();
   });
 
+  it.each(["gpt-realtime-2.1", "gpt-live-1-codex"])(
+    "preserves Auto credential precedence with mixed credentials for %s",
+    async (model) => {
+      const oauthToken = createTestJwt({
+        "https://api.openai.com/auth": { chatgpt_account_id: "account-123" },
+      });
+      resolveProviderAuthProfileApiKeyMock.mockImplementation(
+        async ({ profileTypes }: { profileTypes?: readonly string[] }) =>
+          profileTypes?.includes("oauth") ? oauthToken : "test-api-key-platform",
+      );
+      mockRealtimeClientSecretResponse();
+      const { broker, createBrowserSession } = createQuicksilverBrowserBrokerFixture();
+      const provider = buildOpenAIRealtimeVoiceProvider({
+        quicksilverBrowserSessionBroker: broker,
+      });
+      const session = await provider.createBrowserSession?.({ model, providerConfig: {} });
+      if (model === "gpt-realtime-2.1") {
+        expect(session).toMatchObject({ authMethod: "api-key" });
+        expect(createBrowserSession).not.toHaveBeenCalled();
+        expect(fetchWithSsrFGuardMock).toHaveBeenCalledTimes(1);
+      } else {
+        expect(session).toMatchObject({ authMethod: "oauth" });
+        expect(createBrowserSession).toHaveBeenCalledWith(expect.objectContaining({ model }), {
+          type: "oauth",
+          token: oauthToken,
+          accountId: "account-123",
+        });
+        expect(fetchWithSsrFGuardMock).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   it.each([undefined, "oauth", "api-key"])(
     "preserves Auto missing-auth behavior while keeping explicit %s selection strict",
     async (authMethod) => {

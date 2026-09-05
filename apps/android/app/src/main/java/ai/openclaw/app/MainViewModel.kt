@@ -608,8 +608,8 @@ class MainViewModel private constructor(
   val appearanceThemeFamily: StateFlow<AppearanceThemeFamily> = prefs.appearanceThemeFamily
   val appearanceAccentArgb: StateFlow<Long?> = prefs.appearanceAccentArgb
   val voiceCaptureMode: StateFlow<VoiceCaptureMode> = runtimeState(initial = VoiceCaptureMode.Off) { it.voiceCaptureMode }
-  val activeAudioInputDevicePreference: StateFlow<String?> =
-    runtimeState(initial = null) { it.activeAudioInputDevicePreference }
+  val activeAudioInputDevicePreference: StateFlow<ai.openclaw.app.voice.AudioInputPreferenceState> =
+    runtimeState(initial = ai.openclaw.app.voice.AudioInputPreferenceState.Inactive) { it.activeAudioInputDevicePreference }
   val micEnabled: StateFlow<Boolean> = runtimeState(initial = false) { it.micEnabled }
 
   val micCooldown: StateFlow<Boolean> = runtimeState(initial = false) { it.micCooldown }

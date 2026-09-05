@@ -218,6 +218,7 @@ class TalkModeManager internal constructor(
   private val gatewayStableId: () -> String? = { null },
   private val preferredAudioInputDevice: () -> String? = { null },
   private val onAppliedAudioInputChanged: (String?) -> Unit = {},
+  private val onRequestedAudioInputChanged: (String?) -> Unit = {},
   private val onBeforeSpeak: suspend () -> Unit = {},
   private val onAfterSpeak: suspend () -> Unit = {},
   private val captureRelayStopNotification: () -> ((isCurrent: () -> Boolean) -> Unit) = { {} },
@@ -1263,6 +1264,11 @@ class TalkModeManager internal constructor(
           if (realtimeClient === client) disableRealtimeModeAndNotifyOwner(generation, nativeText("Talk failed: \$message", message))
         },
         preferredAudioInputDevice = preferredAudioInputDevice,
+        onInputRequested = { key ->
+          synchronized(realtimeCapturePauseLock) {
+            if (realtimeClient === client && realtimeCapturePause == null) onRequestedAudioInputChanged(key)
+          }
+        },
       )
     val admitted =
       client.adopt {

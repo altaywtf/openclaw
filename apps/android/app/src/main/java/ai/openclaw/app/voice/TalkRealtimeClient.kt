@@ -39,6 +39,7 @@ internal class TalkRealtimeClient(
   private val onTranscript: (String, String, Boolean) -> Unit,
   private val onFailure: (String) -> Unit,
   preferredAudioInputDevice: () -> String? = { null },
+  onInputRequested: (String?) -> Unit = {},
 ) {
   // NodeRuntime owns an IO scope; all client response/lifecycle state belongs to Main.
   private val scope = CoroutineScope(scope.coroutineContext + Dispatchers.Main.immediate)
@@ -64,7 +65,7 @@ internal class TalkRealtimeClient(
 
   private val completedResponses = mutableSetOf<String>()
   private val finalTranscripts = mutableSetOf<String>()
-  private val peer = TalkRealtimePeer(context, scope, ::handleProviderEvent, ::fail, preferredAudioInputDevice)
+  private val peer = TalkRealtimePeer(context, scope, ::handleProviderEvent, ::fail, preferredAudioInputDevice, onInputRequested)
   private val agent =
     RealtimeAgentCoordinator(
       parentScope = scope,
