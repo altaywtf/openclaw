@@ -51,6 +51,7 @@ import {
   CHAT_OPEN_DETAILS_SELECTOR,
   focusChatComposerFromPrintableKeydown,
 } from "./chat-pane-shared.ts";
+import { resolveSidebarLayoutForBoard } from "./chat-pane-sidebar-layout.ts";
 import {
   subscribeChatPaneSnapshotInvalidation,
   subscribeChatPaneStartup,
@@ -80,7 +81,6 @@ import {
   resolveChatSnapshotKey,
 } from "./session-message-cache.ts";
 import { closeSlot, isSidebarSlotVisible, openSlot, type SidebarSlotId } from "./sidebar-layout.ts";
-import { subscribeToolTitleChanges } from "./tool-titles.ts";
 
 export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
   private readonly sessionPanelToggles = new ChatPaneSessionPanelToggleController({
@@ -290,7 +290,6 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
     document.addEventListener("pointerdown", this.handleDocumentPointerdown, true);
     const chatState = this.chatState;
     chatState.addCleanup(() => publishChatWorkContext(this.context, this));
-    chatState.addCleanup(subscribeToolTitleChanges(() => this.state?.requestUpdate?.()));
     chatState.addCleanup(() => {
       document.removeEventListener("keydown", this.handleDocumentKeydown, true);
       document.removeEventListener("pointerdown", this.handleDocumentPointerdown, true);
@@ -452,6 +451,8 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
         }
         if (state) {
           if (event.event === "config.changed") {
+            state.mediaPolicyEpoch = (state.mediaPolicyEpoch ?? 0) + 1;
+            state.requestUpdate?.();
             chatAvatars.invalidateChatAvatarCache(state);
             state.assistantIdentityRequestVersion += 1;
             void chatAvatars.refreshChatAvatar(state).finally(() => state.requestUpdate?.());
@@ -582,6 +583,19 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
     const board = this.resolveBoardView();
     this.syncRetainedBoardSession(board);
     this.sessionPanelToggles.flush();
+    this.setConversationVisible(
+      Boolean(
+        this.state &&
+        isSidebarSlotVisible(
+          resolveSidebarLayoutForBoard({
+            board,
+            layout: this.state.sidebarLayout,
+            paneWidth: this.paneWidth,
+          }),
+          "conversation",
+        ),
+      ),
+    );
   }
 
   override disconnectedCallback() {
