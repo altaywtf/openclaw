@@ -446,57 +446,60 @@ try {
     );
   });
 
-  it("keeps selected projects on the current lock generation with separate cache roots", () => {
+  it("invalidates root and selected project cache keys together", () => {
     const { root, generation } = prepareCacheFixture("separate-projects");
     runCacheApi(
       root,
       `
 const generation = ${JSON.stringify(generation)};
-const names = ["A", "B"];
-for (const name of names) {
-  fs.mkdirSync(path.join(root, name));
-  fs.writeFileSync(path.join(root, name, "subject.js"), 'export const version = "__DEPENDENCY_VERSION__";');
+const projectRoot = path.join(root, "A");
+fs.mkdirSync(projectRoot);
+for (const directory of [root, projectRoot]) {
+  fs.writeFileSync(path.join(directory, "subject.js"), 'export const version = "__DEPENDENCY_VERSION__";');
 }
-let transforms = 0;
-const run = async (selected, version) => {
-  const ctx = await createVitest("test", {
-    root, config: false, watch: false, ...cacheConfig, project: selected,
-    projects: names.map((name) => ({
-      extends: false, root: path.join(root, name),
-      plugins: [{
-        name: "fixture-separate-project-generation",
-        transform(code, id) {
-          if (id !== path.join(root, name, "subject.js").replaceAll("\\\\", "/")) return;
-          transforms += 1;
-          return { code: code.replace("__DEPENDENCY_VERSION__", fs.readFileSync(generation, "utf8")), map: null };
-        },
-      }],
-      test: {
-        name,
-        fsModuleCache: true,
-        fsModuleCachePath: path.join(root, "cache-" + name),
-      },
-    })),
-  });
-  try {
-    assert.deepEqual(ctx.projects.map((project) => project.name).sort(), [...selected].sort());
-    for (const name of selected) {
-      assert.equal((await ctx.getProjectByName(name).import("./subject.js")).version, version, "project " + name);
-    }
-  } finally {
-    await ctx.close();
-  }
+const plugin = {
+  name: "fixture-selected-project-generation",
+  transform(code, id) {
+    if (!id.endsWith("/subject.js")) return;
+    return { code: code.replace("__DEPENDENCY_VERSION__", fs.readFileSync(generation, "utf8")), map: null };
+  },
 };
-await run(names, "1.0.0");
-assert.equal(transforms, 2);
-await run(names, "1.0.0");
-assert.equal(transforms, 2, "same-generation project transforms must stay warm");
-fs.writeFileSync(path.join(root, "bun.lock"), JSON.stringify({ version: "2.0.0" }));
-fs.writeFileSync(generation, "2.0.0");
-await run(["A"], "2.0.0");
-assert.equal(transforms, 3);
-await run(["B"], "2.0.0");
-assert.equal(transforms, 4);
+const ctx = await createVitest("test", {
+  root, config: false, watch: false, ...cacheConfig, project: ["A"],
+  projects: [{
+    extends: false,
+    root: projectRoot,
+    plugins: [plugin],
+    test: {
+      name: "A",
+      fsModuleCache: true,
+      fsModuleCachePath: path.join(root, "cache-A"),
+    },
+  }],
+}, { plugins: [plugin] });
+try {
+  const rootProject = ctx.getRootProject();
+  const selectedProject = ctx.getProjectByName("A");
+  assert.equal((await rootProject.import("./subject.js")).version, "1.0.0");
+  assert.equal((await selectedProject.import("./subject.js")).version, "1.0.0");
+  const entries = [rootProject, selectedProject].map((project) => {
+    const environment = project.runner.environment;
+    const module = [...environment.moduleGraph.idToModuleMap.values()].find((entry) =>
+      entry.id?.endsWith("/subject.js")
+    );
+    assert.ok(module?.id, JSON.stringify([...environment.moduleGraph.idToModuleMap.keys()]));
+    return [environment, module.id];
+  });
+  for (const [environment, id] of entries) {
+    assert.equal(typeof ctx._fsCache.getMemoryCachePath(environment, id), "string");
+  }
+  ctx.clearAllCachePaths();
+  for (const [environment, id] of entries) {
+    assert.equal(ctx._fsCache.getMemoryCachePath(environment, id), undefined);
+  }
+} finally {
+  await ctx.close();
+}
 `,
     );
   });

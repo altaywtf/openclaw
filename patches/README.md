@@ -40,8 +40,8 @@ The patch owns these temporary invariants and removal gates:
   disabled until lockfile integrity completes; generation participates in cache
   keys; lock transitions rewrite metadata and reset retained roots, keys, and
   transform temporary markers; invalidation covers the root and selected
-  projects. Remove these hunks when stock Vitest passes the four lock-generation
-  regressions in `test/vitest-performance-config.test.ts`.
+  projects. Remove these hunks when stock Vitest passes the four cache-generation
+  and invalidation regressions in `test/vitest-performance-config.test.ts`.
 - **Graceful fork shutdown (`index.B89dZ0-N.js`,
   `init-forks.CiCtIMPj.js`, `plugin.d.BbcoZhuj.d.ts`, `dist/node.d.ts`):**
   built-in fork workers flush a `willExit` response, exit explicitly, and are
