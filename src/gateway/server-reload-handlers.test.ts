@@ -312,7 +312,7 @@ const hoisted = vi.hoisted(() => ({
   ),
   refreshContextWindowCache: vi.fn(async (_cfg: OpenClawConfig) => {}),
   clearCurrentProviderAuthState: vi.fn(() => {}),
-  disposeAllSessionMcpRuntimes: vi.fn(async () => {}),
+  reloadSessionMcpRuntimes: vi.fn(async () => {}),
   buildGatewayCronService: vi.fn((_params?: { env?: NodeJS.ProcessEnv }) => ({
     cron: { start: vi.fn(async () => {}), stop: vi.fn() },
     storePath: "/tmp/rebuilt-cron.json",
@@ -442,7 +442,7 @@ vi.mock("../agents/model-provider-auth.js", () => ({
 }));
 
 vi.mock("../agents/agent-bundle-mcp-tools.js", () => ({
-  disposeAllSessionMcpRuntimes: hoisted.disposeAllSessionMcpRuntimes,
+  reloadSessionMcpRuntimes: hoisted.reloadSessionMcpRuntimes,
 }));
 
 vi.mock("../plugins/installed-plugin-index-records.js", () => ({
@@ -1042,8 +1042,8 @@ afterEach(() => {
   hoisted.refreshPreparedModelRuntimeSnapshots.mockClear();
   hoisted.refreshContextWindowCache.mockClear();
   hoisted.clearCurrentProviderAuthState.mockClear();
-  hoisted.disposeAllSessionMcpRuntimes.mockClear();
-  hoisted.disposeAllSessionMcpRuntimes.mockResolvedValue(undefined);
+  hoisted.reloadSessionMcpRuntimes.mockClear();
+  hoisted.reloadSessionMcpRuntimes.mockResolvedValue(undefined);
   hoisted.buildGatewayCronService.mockClear();
   clearSecretsRuntimeSnapshot();
   clearRuntimeConfigSnapshot();
@@ -2211,7 +2211,7 @@ describe("gateway hot reload model state", () => {
     expect(cron.stop).not.toHaveBeenCalled();
     expect(channels.start).not.toHaveBeenCalled();
     expect(channels.stop).not.toHaveBeenCalled();
-    expect(hoisted.disposeAllSessionMcpRuntimes).not.toHaveBeenCalled();
+    expect(hoisted.reloadSessionMcpRuntimes).not.toHaveBeenCalled();
     expect(logReload.info).toHaveBeenCalledWith(`config hot reload applied (${changedPath})`);
   });
 
@@ -2601,9 +2601,9 @@ describe("gateway hot reload model state", () => {
     });
   });
 
-  it("disposes cached MCP runtimes on MCP config hot reloads", async () => {
+  it("reconciles cached MCP owners on MCP config hot reloads", async () => {
     const logReload = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-    hoisted.disposeAllSessionMcpRuntimes.mockRejectedValueOnce(new Error("dispose failed"));
+    hoisted.reloadSessionMcpRuntimes.mockRejectedValueOnce(new Error("dispose failed"));
     const { applyHotReload, setState } = createReloadHandlersForTest(
       logReload,
       undefined,
@@ -2621,7 +2621,7 @@ describe("gateway hot reload model state", () => {
       nextConfig,
     );
 
-    expect(hoisted.disposeAllSessionMcpRuntimes).toHaveBeenCalledTimes(1);
+    expect(hoisted.reloadSessionMcpRuntimes).toHaveBeenCalledTimes(1);
     expect(setState).toHaveBeenCalledOnce();
     expect(logReload.warn).toHaveBeenCalledWith(
       "bundle-mcp runtime disposal during config reload failed: Error: dispose failed",
@@ -2792,6 +2792,112 @@ describe("gateway hot reload model state", () => {
   });
 });
 
+describe("gateway targeted service reload", () => {
+  it("forwards the service owner through managed config publication", async () => {
+    vi.useFakeTimers();
+    const registry = createTestRegistry([]);
+    registry.services.push({
+      pluginId: "exporter",
+      source: "test",
+      origin: "workspace",
+      service: { id: "exporter", reload: { configPrefixes: ["diagnostics.otel"] }, start() {} },
+    });
+    setActivePluginRegistry(registry);
+    const initialConfig: OpenClawConfig = { diagnostics: { otel: { enabled: true } } };
+    const nextConfig: OpenClawConfig = { diagnostics: { otel: { enabled: false } } };
+    const listener = createConfigWriteListenerRef();
+    const reloadPluginServices = vi.fn(async () => {});
+    const reloader = startManagedGatewayConfigReloader({
+      initialConfig,
+      readSnapshot: async () => createValidConfigSnapshot(nextConfig, "otel-disabled"),
+      subscribeToWrites: captureConfigWriteListener(listener),
+      reloadPluginServices,
+    });
+    try {
+      const application = createRuntimeConfigWriteApplication();
+      if (!listener.current) {
+        throw new Error("Expected managed config write listener");
+      }
+      listener.current(
+        attachRuntimeConfigWriteApplication(
+          createConfigWriteNotification(nextConfig, "otel-disabled", 1, "runtime", "source"),
+          application,
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(application.result).resolves.toBe("applied");
+      expect(reloadPluginServices).toHaveBeenCalledExactlyOnceWith(
+        nextConfig,
+        new Set(["exporter"]),
+      );
+    } finally {
+      await reloader.stop();
+    }
+  });
+
+  it.each(["targeted", "full plugin", "service failure", "publication failure"] as const)(
+    "keeps committed service replacement and recovery ordered: %s",
+    async (mode) => {
+      vi.useFakeTimers();
+      const events: string[] = [];
+      const nextConfig: OpenClawConfig = { diagnostics: { otel: { enabled: false } } };
+      const selected = new Set(["exporter"]);
+      const failure = new Error(mode);
+      const requestRecoveryRestart = vi.fn(() => ({ status: "emitted" as const }));
+      const reloadPluginServices = vi.fn(async () => {
+        events.push("service");
+        if (mode === "service failure") {
+          throw failure;
+        }
+      });
+      const handlers = createGatewayReloadHandlers({
+        reloadPluginServices,
+        requestRecoveryRestart,
+        reloadPlugins: async ({ commitRuntime }) => {
+          await commitRuntime();
+          events.push("plugins");
+          return makePluginReloadResult();
+        },
+      });
+      try {
+        const applying = handlers.applyHotReload(
+          createHotTailPlan({ restartServices: selected, reloadPlugins: mode === "full plugin" }),
+          nextConfig,
+          {
+            sourceConfig: nextConfig,
+            isCurrent: () => true,
+            publish: async (commit) => {
+              if (mode === "publication failure") {
+                throw failure;
+              }
+              await commit();
+              events.push("published");
+            },
+          },
+        );
+        if (mode === "publication failure") {
+          await expect(applying).rejects.toBe(failure);
+          expect(events).toEqual([]);
+        } else {
+          await expect(applying).resolves.toBe(
+            mode === "service failure" ? "applied-restart-required" : "applied",
+          );
+          expect(events).toEqual(["published", mode === "full plugin" ? "plugins" : "service"]);
+        }
+        if (mode === "targeted" || mode === "service failure") {
+          expect(reloadPluginServices).toHaveBeenCalledExactlyOnceWith(nextConfig, selected);
+        } else {
+          expect(reloadPluginServices).not.toHaveBeenCalled();
+        }
+        await vi.advanceTimersByTimeAsync(500);
+        expect(requestRecoveryRestart).toHaveBeenCalledTimes(mode === "service failure" ? 1 : 0);
+      } finally {
+        handlers.stopRestartRetries();
+      }
+    },
+  );
+});
+
 describe("gateway hot reload superseded tail recovery", () => {
   it("rearms detached stale-tail recovery against an already accepted config", async () => {
     vi.useFakeTimers();
@@ -2960,7 +3066,7 @@ describe("gateway hot reload superseded tail recovery", () => {
         throw new Error("gmail tail failed");
       });
       if (surface === "mcp") {
-        hoisted.disposeAllSessionMcpRuntimes.mockImplementationOnce(async () => {
+        hoisted.reloadSessionMcpRuntimes.mockImplementationOnce(async () => {
           entered.resolve();
           await release.promise;
         });
