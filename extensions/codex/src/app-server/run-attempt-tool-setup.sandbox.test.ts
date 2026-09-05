@@ -6,6 +6,7 @@ import { prepareCodexAttemptTools } from "./run-attempt-tool-setup.js";
 function createRuntime(sandboxEnabled: boolean, nativeToolSurfaceEnabled: boolean) {
   const acquisitionError = new Error("native catalog client acquired");
   const clientFactory = vi.fn().mockRejectedValue(acquisitionError);
+  const assertActive = vi.fn();
   const appServer = resolveCodexAppServerRuntimeOptions({ env: {}, requirementsToml: null });
   appServer.start.cwd = "/tmp/model-workspace";
   const runtime = {
@@ -15,7 +16,8 @@ function createRuntime(sandboxEnabled: boolean, nativeToolSurfaceEnabled: boolea
     connection: {
       appServer,
       attemptClientFactory: clientFactory,
-      params: { hostCapabilities: { assertActive: vi.fn() } },
+      assertCurrent: assertActive,
+      params: { hostCapabilities: { assertActive } },
       preDynamicStartupStages: { snapshot: () => ({ totalMs: 0, stages: [] }) },
       mutable: {
         startupBinding: { threadId: "native-thread", connectionScope: "supervision" },
