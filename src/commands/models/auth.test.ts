@@ -2159,6 +2159,119 @@ describe("modelsAuthLoginCommand", () => {
     },
   );
 
+  it.each([
+    ["defaults", "during sign-in"],
+    ["agent", "during sign-in"],
+    ["defaults", "inside config write"],
+    ["agent", "inside config write"],
+  ] as const)(
+    "preserves replacement %s restrictions and saved login when consent becomes stale %s",
+    async (owner, timing) => {
+      currentConfig = {
+        agents: {
+          defaults: {
+            modelPolicy: { allow: [owner === "defaults" ? "xai/approved" : "custom/shared"] },
+          },
+          entries: {
+            main: {},
+            coder: owner === "agent" ? { modelPolicy: { allow: ["xai/approved"] } } : {},
+          },
+        },
+      };
+      const replaceRestrictions = () => {
+        currentConfig = structuredClone(currentConfig);
+        if (owner === "defaults") {
+          currentConfig.agents!.defaults!.modelPolicy!.allow = ["xai/replacement"];
+        } else {
+          currentConfig.agents!.entries!.coder!.modelPolicy!.allow = ["xai/replacement"];
+        }
+      };
+      useXaiOAuthLogin("xai:coder");
+      if (timing === "during sign-in") {
+        runProviderAuth.mockReset();
+        runProviderAuth.mockImplementationOnce(async () => {
+          replaceRestrictions();
+          return {
+            profiles: [
+              {
+                profileId: "xai:coder",
+                credential: { type: "api_key", provider: "xai", key: "fixture-key" },
+              },
+            ],
+          };
+        });
+      } else {
+        mocks.updateConfig.mockImplementationOnce(
+          async (mutator: (config: OpenClawConfig) => OpenClawConfig) => {
+            replaceRestrictions();
+            currentConfig = mutator(currentConfig);
+            return currentConfig;
+          },
+        );
+      }
+      const runtime = createRuntime();
+      const prompter = mocks.createClackPrompter();
+      const refreshAuthState = vi.fn(async () => "refreshed" as const);
+
+      const result = await runModelsAuthLoginFlowCore({
+        provider: "xai",
+        method: "oauth",
+        agent: "coder",
+        credentialOnly: true,
+        config: currentConfig,
+        runtime,
+        prompter,
+        refreshAuthState,
+      });
+
+      expect(currentConfig.agents?.defaults?.modelPolicy?.allow).toEqual([
+        owner === "defaults" ? "xai/replacement" : "custom/shared",
+      ]);
+      if (owner === "agent") {
+        expect(currentConfig.agents?.entries?.coder?.modelPolicy?.allow).toEqual([
+          "xai/replacement",
+        ]);
+      } else {
+        expect(currentConfig.agents?.entries?.coder).not.toHaveProperty("modelPolicy");
+      }
+      expect(result).toMatchObject({
+        modelAccess: "failed",
+        authRefresh: "refreshed",
+        profiles: [expect.objectContaining({ profileId: "xai:coder", provider: "xai" })],
+      });
+      expect(mocks.upsertAuthProfileAfterLoginWithLock).toHaveBeenCalledOnce();
+      expect(refreshAuthState).toHaveBeenCalledWith("coder");
+      expect(prompter.select).toHaveBeenCalledOnce();
+      expect(runtime.error).toHaveBeenCalledWith(
+        expect.stringContaining("Choose model access again"),
+      );
+    },
+  );
+
+  it("honors consent when policy refs are only reordered, repeated, or normalized", async () => {
+    currentConfig = {
+      agents: { defaults: { modelPolicy: { allow: ["xai/approved", "custom/*"] } } },
+    };
+    useXaiOAuthLogin();
+    const equivalentAllow = ["custom / *", " xai/approved ", "custom/*"];
+    mocks.updateConfig.mockImplementationOnce(
+      async (mutator: (config: OpenClawConfig) => OpenClawConfig) => {
+        currentConfig = structuredClone(currentConfig);
+        currentConfig.agents!.defaults!.modelPolicy!.allow = equivalentAllow;
+        currentConfig = mutator(currentConfig);
+        return currentConfig;
+      },
+    );
+
+    const result = await loginWithXai();
+
+    expect(result.modelAccess).toBe("enabled");
+    expect(currentConfig.agents?.defaults?.modelPolicy?.allow).toEqual([
+      ...equivalentAllow,
+      "xai/*",
+    ]);
+  });
+
   it("revalidates the approved policy owner inside the config write", async () => {
     currentConfig = {
       agents: {

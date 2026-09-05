@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { resolveMutableAgentEntry } from "../../agents/agent-scope-config.js";
 import { normalizeProviderId } from "../../agents/model-ref-shared.js";
 import {
@@ -5,6 +6,7 @@ import {
   resolveConfiguredModelPolicyAllow,
 } from "../../agents/model-selection-shared.js";
 import { logConfigUpdated } from "../../config/logging.js";
+import { normalizeAgentModelRefForConfig } from "../../config/model-input.js";
 import { parseModelPolicyWildcardRef } from "../../config/model-policy-ref.js";
 import {
   attachRuntimeConfigWriteApplication,
@@ -20,8 +22,22 @@ export type ProviderModelAccessChoice = "all" | "keep";
 export type ProviderModelAccessResult = "enabled" | "already-visible" | "restricted" | "failed";
 export type ProviderModelAccessDecision = {
   choice: ProviderModelAccessChoice | undefined;
-  policyConfigPath: string;
+  policy: ReturnType<typeof snapshotProviderModelPolicy>;
 };
+
+function snapshotProviderModelPolicy(
+  policy: ReturnType<typeof resolveConfiguredModelPolicyAllow>,
+  agentId: string,
+) {
+  const refs = policy.refs.map(
+    (ref) => parseModelPolicyWildcardRef(ref)?.key ?? normalizeAgentModelRefForConfig(ref),
+  );
+  return {
+    configPath: policy.configPath,
+    agentId: policy.configPath === AGENT_MODEL_POLICY_ALLOW_CONFIG_PATH ? agentId : undefined,
+    refs: [...new Set(refs)].toSorted(),
+  };
+}
 
 function providerModelPolicyNeedsUpdate(
   policy: ReturnType<typeof resolveConfiguredModelPolicyAllow>,
@@ -60,11 +76,14 @@ export async function chooseProviderModelAccess(
     choice?: ProviderModelAccessChoice;
   },
 ): Promise<ProviderModelAccessDecision> {
-  const policy = resolveConfiguredModelPolicyAllow({ cfg: params.config, agentId: params.agentId });
+  const policy = snapshotProviderModelPolicy(
+    resolveConfiguredModelPolicyAllow({ cfg: params.config, agentId: params.agentId }),
+    params.agentId,
+  );
   const prompt = prepareProviderModelAccessChoice(params);
   return {
     choice: prompt ? (params.choice ?? (await params.prompter.select(prompt))) : undefined,
-    policyConfigPath: policy.repairConfigPath,
+    policy,
   };
 }
 
@@ -77,7 +96,8 @@ function appendProviderModelPolicy(params: {
   resolveModelsTargetAgent(params.config, params.agentId, { kind: "mutation" });
   const provider = normalizeProviderId(params.provider);
   const policy = resolveConfiguredModelPolicyAllow({ cfg: params.config, agentId: params.agentId });
-  if (policy.repairConfigPath !== params.decision.policyConfigPath) {
+  const currentPolicy = snapshotProviderModelPolicy(policy, params.agentId);
+  if (!isDeepStrictEqual(currentPolicy, params.decision.policy)) {
     throw new Error("The model restriction changed during sign-in. Choose model access again.");
   }
   if (!providerModelPolicyNeedsUpdate(policy, provider)) {
