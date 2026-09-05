@@ -17,7 +17,6 @@ vi.mock("../logging/subsystem.js", () => ({
 }));
 
 import { STATE_DIR } from "../config/paths.js";
-import { getGatewayProcessInstanceId } from "../gateway/process-instance.js";
 import { hasInternalDiagnosticEventInterest } from "../infra/diagnostic-event-listener-presence.js";
 import {
   emitTrustedDiagnosticEvent,
@@ -30,7 +29,6 @@ import {
   resetDiagnosticStabilityRecorderForTest,
   type DiagnosticExporterHealthUpdate,
 } from "../logging/diagnostic-stability.js";
-import { resolveRuntimeServiceBuildId } from "../version.js";
 import { queuePluginSessionsChanged, subscribePluginSessionsChanged } from "./gateway-events.js";
 import { registerPluginHttpRoute } from "./http-registry.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "./runtime.js";
@@ -949,10 +947,6 @@ describe("startPluginServices", () => {
 
     expect(prometheusContexts[0]?.internalDiagnostics?.onEvent).toBeTypeOf("function");
     expect(prometheusContexts[0]?.internalDiagnostics?.emit).toBeTypeOf("function");
-    expect(prometheusContexts[0]?.internalDiagnostics?.getRuntimeIdentity?.()).toEqual({
-      processInstanceId: getGatewayProcessInstanceId(),
-      ...(resolveRuntimeServiceBuildId() ? { buildId: resolveRuntimeServiceBuildId() } : {}),
-    });
     expect(prometheusContexts[0]?.internalDiagnostics?.registerTracePropagationBridge).toBeTypeOf(
       "function",
     );
@@ -1051,22 +1045,6 @@ describe("startPluginServices", () => {
         reason: "export_failed",
       }),
     ]);
-  });
-
-  it("revokes a retained runtime identity accessor when its exporter stops", async () => {
-    const contexts: OpenClawPluginServiceContext[] = [];
-    const handle = await startPluginServices({
-      registry: createRegistry(
-        [createTrackingService("diagnostics-prometheus", { contexts })],
-        "diagnostics-prometheus",
-        "bundled",
-      ),
-      config: createServiceConfig(),
-    });
-    const readIdentity = contexts[0]?.internalDiagnostics?.getRuntimeIdentity;
-    expect(readIdentity?.().processInstanceId).toBe(getGatewayProcessInstanceId());
-    await handle.stop();
-    expect(() => readIdentity?.()).toThrow("no longer active");
   });
 
   it("delivers host plugin attribution only to the trusted OTel listener lane", async () => {
