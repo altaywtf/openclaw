@@ -2313,25 +2313,6 @@ describe("models.authOrderSet", () => {
     });
   });
 
-  it("persists a complete provider profile order", async () => {
-    const opts = createOrderOptions({
-      provider: "openai",
-      profileIds: ["openai:two", "openai:one"],
-    });
-
-    await orderHandler(opts);
-
-    expect(mocks.setAuthProfileOrder).toHaveBeenCalledWith({
-      agentDir: "/tmp/agent",
-      provider: "openai",
-      order: ["openai:two", "openai:one"],
-    });
-    expect(firstRespondCall(opts)?.slice(0, 2)).toEqual([
-      true,
-      { provider: "openai", profileIds: ["openai:two", "openai:one"] },
-    ]);
-  });
-
   it("publishes the durable order before acknowledging it", async () => {
     let finishPublication: (() => void) | undefined;
     mocks.refreshPreparedModelRuntimeSnapshots.mockImplementationOnce(
@@ -2348,6 +2329,11 @@ describe("models.authOrderSet", () => {
     const pending = orderHandler(opts);
     await vi.waitFor(() => expect(mocks.refreshPreparedModelRuntimeSnapshots).toHaveBeenCalled());
 
+    expect(mocks.setAuthProfileOrder).toHaveBeenCalledWith({
+      agentDir: "/tmp/agent",
+      provider: "openai",
+      order: ["openai:two", "openai:one"],
+    });
     expect(opts.respond).not.toHaveBeenCalled();
     expect(mocks.refreshPreparedModelRuntimeSnapshots).toHaveBeenCalledWith(
       {},
@@ -2360,7 +2346,10 @@ describe("models.authOrderSet", () => {
 
     finishPublication?.();
     await pending;
-    expect(firstRespondCall(opts)?.[0]).toBe(true);
+    expect(firstRespondCall(opts)?.slice(0, 2)).toEqual([
+      true,
+      { provider: "openai", profileIds: ["openai:two", "openai:one"] },
+    ]);
   });
 
   it.each([

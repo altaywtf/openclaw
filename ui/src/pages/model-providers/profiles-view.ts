@@ -5,7 +5,7 @@ import { icons } from "../../components/icons.ts";
 import { renderSettingsStatus } from "../../components/settings-ui.ts";
 import { t } from "../../i18n/index.ts";
 import { registerSettingsEnglish } from "../../i18n/locales/en-settings.ts";
-import { moveArrayEntry, type ArrayDropPosition } from "../../lib/array-order.ts";
+import { moveArrayEntry } from "../../lib/array-order.ts";
 import { formatDurationHuman } from "../../lib/format.ts";
 import type {
   ModelProviderCard,
@@ -27,9 +27,6 @@ export type ProviderProfilesViewProps = {
   onRequestLogout: (pending: ModelProviderPendingLogout) => void;
 };
 
-const DRAGGING_CLASS = "model-providers__profile--dragging";
-const DROP_BEFORE_CLASS = "model-providers__profile--drop-before";
-const DROP_AFTER_CLASS = "model-providers__profile--drop-after";
 const logoutIcon = strokeIcon(svg` <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
   <polyline points="16 17 21 12 16 7" />
   <line x1="21" x2="9" y1="12" y2="12" />`);
@@ -144,14 +141,6 @@ function completeOrder(profiles: readonly ProviderProfile[], order: readonly str
   ];
 }
 
-function movableOrder(
-  card: ModelProviderCard,
-  provider: string,
-  drafts: Record<string, string[]>,
-): string[] {
-  return drafts[provider] ?? card.profileOrders[provider] ?? [];
-}
-
 function hasExactProfileOrder(profiles: readonly ProviderProfile[], order: readonly string[]) {
   if (profiles.length !== order.length) {
     return false;
@@ -162,182 +151,75 @@ function hasExactProfileOrder(profiles: readonly ProviderProfile[], order: reado
   );
 }
 
-function orderedProfiles(card: ModelProviderCard, drafts: Record<string, string[]>) {
-  const providers = [
-    ...new Set(
-      card.profiles.map((profile) => card.profileProviderIds[profile.profileId] ?? card.id),
-    ),
-  ];
-  const profileById = new Map(card.profiles.map((profile) => [profile.profileId, profile]));
-  return providers.flatMap((provider) =>
-    completeOrder(
-      profilesForProvider(card, provider),
-      drafts[provider] ?? card.profileOrders[provider] ?? [],
-    ).flatMap((profileId) => {
-      const profile = profileById.get(profileId);
-      return profile ? [profile] : [];
-    }),
+function profileGroups(card: ModelProviderCard, drafts: Record<string, string[]>) {
+  const providers = new Set(
+    card.profiles.map((profile) => card.profileProviderIds[profile.profileId] ?? card.id),
   );
-}
-
-function rowsIn(section: HTMLElement, selector: string): HTMLElement[] {
-  return [...section.querySelectorAll<HTMLElement>(selector)];
-}
-
-function clearDragState(section: HTMLElement): void {
-  for (const row of rowsIn(section, ".model-providers__profile")) {
-    row.classList.remove(DRAGGING_CLASS, DROP_BEFORE_CLASS, DROP_AFTER_CLASS);
-  }
-}
-
-function setDropTarget(section: HTMLElement, row: HTMLElement, position: ArrayDropPosition): void {
-  for (const candidate of rowsIn(section, `.${DROP_BEFORE_CLASS}, .${DROP_AFTER_CLASS}`)) {
-    if (candidate !== row) {
-      candidate.classList.remove(DROP_BEFORE_CLASS, DROP_AFTER_CLASS);
-    }
-  }
-  row.classList.toggle(DROP_BEFORE_CLASS, position === "before");
-  row.classList.toggle(DROP_AFTER_CLASS, position === "after");
-}
-
-function startPointerDrag(params: {
-  event: PointerEvent;
-  canMove: boolean;
-  sourceId: string;
-  provider: string;
-  move: (targetId: string, position: ArrayDropPosition) => void;
-}): void {
-  if (!params.canMove || params.event.button !== 0) {
-    return;
-  }
-  const grip = params.event.currentTarget;
-  if (!(grip instanceof HTMLElement)) {
-    return;
-  }
-  const row = grip.closest<HTMLElement>(".model-providers__profile");
-  const section = grip.closest<HTMLElement>(".model-providers__profiles");
-  if (!row || !section) {
-    return;
-  }
-  let target: HTMLElement | null = null;
-  params.event.preventDefault();
-  row.classList.add(DRAGGING_CLASS);
-  try {
-    grip.setPointerCapture?.(params.event.pointerId);
-  } catch {
-    // Synthetic pointers can lack the active pointer required for capture.
-  }
-
-  const update = (event: PointerEvent) => {
-    if (event.pointerId !== params.event.pointerId) {
-      return;
-    }
-    const candidate = document
-      .elementFromPoint(event.clientX, event.clientY)
-      ?.closest<HTMLElement>(".model-providers__profile");
-    if (
-      !candidate ||
-      !section.contains(candidate) ||
-      candidate.dataset.profileProvider !== params.provider ||
-      candidate.dataset.profileId === params.sourceId
-    ) {
-      target = null;
-      for (const dropRow of rowsIn(section, `.${DROP_BEFORE_CLASS}, .${DROP_AFTER_CLASS}`)) {
-        dropRow.classList.remove(DROP_BEFORE_CLASS, DROP_AFTER_CLASS);
-      }
-      return;
-    }
-    target = candidate;
-    const bounds = candidate.getBoundingClientRect();
-    setDropTarget(
-      section,
-      candidate,
-      event.clientY < bounds.top + bounds.height / 2 ? "before" : "after",
-    );
-  };
-  const finish = (event: PointerEvent, apply: boolean) => {
-    if (event.pointerId !== params.event.pointerId) {
-      return;
-    }
-    update(event);
-    const targetId = target?.dataset.profileId;
-    const position = target?.classList.contains(DROP_AFTER_CLASS) ? "after" : "before";
-    clearDragState(section);
-    grip.removeEventListener("pointermove", handleMove);
-    grip.removeEventListener("pointerup", handleUp);
-    grip.removeEventListener("pointercancel", handleCancel);
-    try {
-      grip.releasePointerCapture?.(params.event.pointerId);
-    } catch {
-      // Pointer cancellation may release capture before this cleanup runs.
-    }
-    if (apply && targetId) {
-      params.move(targetId, position);
-    }
-  };
-  const handleMove = (event: PointerEvent) => update(event);
-  const handleUp = (event: PointerEvent) => finish(event, true);
-  const handleCancel = (event: PointerEvent) => finish(event, false);
-  grip.addEventListener("pointermove", handleMove);
-  grip.addEventListener("pointerup", handleUp);
-  grip.addEventListener("pointercancel", handleCancel);
+  return [...providers].map((provider) => {
+    const profiles = profilesForProvider(card, provider);
+    const order = drafts[provider] ?? card.profileOrders[provider] ?? [];
+    const lock = card.profileOrderLocks[provider];
+    const complete = hasExactProfileOrder(profiles, order);
+    const stored = card.profileOrderStoredProviders.includes(provider);
+    const explanation = lock
+      ? profileOrderLockMessage(lock)
+      : !complete
+        ? t(
+            stored
+              ? "modelProviders.profiles.partialStoredOrder"
+              : "modelProviders.profiles.partialOrder",
+          )
+        : undefined;
+    const profileById = new Map(profiles.map((profile) => [profile.profileId, profile]));
+    return {
+      provider,
+      order,
+      lock,
+      complete,
+      stored,
+      explanation,
+      profiles: completeOrder(profiles, order).flatMap((profileId) => {
+        const profile = profileById.get(profileId);
+        return profile ? [profile] : [];
+      }),
+    };
+  });
 }
 
 export function renderProviderProfiles(card: ModelProviderCard, props: ProviderProfilesViewProps) {
   if (card.profiles.length === 0) {
     return nothing;
   }
-  const profiles = orderedProfiles(card, props.profileOrders);
-  const providers = [
-    ...new Set(profiles.map((profile) => card.profileProviderIds[profile.profileId] ?? card.id)),
+  const groups = profileGroups(card, props.profileOrders);
+  const rows = groups.flatMap((group) => group.profiles.map((profile) => ({ group, profile })));
+  const reorderOffered = groups.some(
+    (group) => !group.lock && group.complete && group.order.length > 1,
+  );
+  const explanations = [
+    ...new Set(groups.flatMap((group) => (group.explanation ? [group.explanation] : []))),
   ];
-  const storedOrderProviders = new Set(card.profileOrderStoredProviders);
-  const reorderOffered = providers.some((provider) => {
-    const order = movableOrder(card, provider, props.profileOrders);
-    return (
-      card.profileOrderLocks[provider] === undefined &&
-      order.length > 1 &&
-      hasExactProfileOrder(profilesForProvider(card, provider), order)
-    );
-  });
-  const priorityManaged = [
-    ...new Set(
-      providers.flatMap((provider) => {
-        const lock = card.profileOrderLocks[provider];
-        return lock ? [profileOrderLockMessage(lock)] : [];
-      }),
-    ),
-  ].join(" · ");
-  const priorityAutomatic = providers.some((provider) => {
-    const order = movableOrder(card, provider, props.profileOrders);
-    return (
-      card.profileOrderLocks[provider] === undefined &&
-      !storedOrderProviders.has(provider) &&
-      !hasExactProfileOrder(profilesForProvider(card, provider), order)
-    );
-  });
   const additionalCredentialSource = apiKeySource(card);
+  const saving = groups.some((group) => props.profileOrders[group.provider] !== undefined);
   return html`
     <section class="model-providers__profiles" aria-label=${t("modelProviders.profiles.title")}>
       <div class="model-providers__profiles-heading">
-        <span class="model-providers__profiles-heading-copy">
+        <div class="model-providers__profiles-heading-copy">
           <strong>${t("modelProviders.profiles.title")}</strong>
           <span
             >${t(
-              profiles.length === 1
+              rows.length === 1
                 ? "modelProviders.profiles.accountOne"
                 : "modelProviders.profiles.accounts",
-              { count: String(profiles.length) },
-            )}${reorderOffered ? ` · ${t("modelProviders.profiles.reorderHint")}` : ""}${
-              priorityManaged
-                ? ` · ${priorityManaged}`
-                : priorityAutomatic
-                  ? ` · ${t("modelProviders.profiles.partialOrder")}`
-                  : ""
-            }${additionalCredentialSource ? ` · ${additionalCredentialSource}` : ""}</span
+              { count: String(rows.length) },
+            )}${additionalCredentialSource ? ` · ${additionalCredentialSource}` : ""}</span
           >
-        </span>
-        <span class="model-providers__profiles-heading-actions">
+          ${reorderOffered
+            ? html`<span>${t("modelProviders.profiles.reorderHint")}</span>`
+            : nothing}
+          ${explanations.map((explanation) => html`<span>${explanation}</span>`)}
+          ${saving ? html`<span role="status">${t("modelProviders.saving")}</span>` : nothing}
+        </div>
+        <div class="model-providers__profiles-heading-actions">
           ${card.profileOrderStoredProviders.map(
             (provider) => html`<button
               type="button"
@@ -352,39 +234,52 @@ export function renderProviderProfiles(card: ModelProviderCard, props: ProviderP
           <button type="button" class="btn btn--sm" @click=${props.onOpenModelSetup}>
             ${t("modelProviders.profiles.addAccount")}
           </button>
-        </span>
+        </div>
       </div>
       <div class="model-providers__profile-list" role="list">
         ${repeat(
-          profiles,
-          (profile) => profile.profileId,
-          (profile) => {
-            const provider = card.profileProviderIds[profile.profileId] ?? card.id;
-            const logoutProvider = logoutProviderForProfile(card, profile.profileId);
-            const order = movableOrder(card, provider, props.profileOrders);
+          rows,
+          ({ profile }) => profile.profileId,
+          ({ profile, group }) => {
+            const { provider, order, complete, lock, stored } = group;
             const index = order.indexOf(profile.profileId);
-            const complete = hasExactProfileOrder(profilesForProvider(card, provider), order);
-            const lock = card.profileOrderLocks[provider];
-            const locked = lock !== undefined;
-            const automatic = !locked && !storedOrderProviders.has(provider) && !complete;
-            const canMove =
-              props.canMutate && !locked && complete && order.length > 1 && index >= 0;
+            const canMove = props.canMutate && !lock && complete && order.length > 1 && index >= 0;
+            const showMoves = !lock && (complete || stored) && order.length > 1;
             const identity = profileIdentity(profile);
+            const logoutProvider = logoutProviderForProfile(card, profile.profileId);
             const logoutLabel = t("modelProviders.logout.actionFor", { account: identity });
             const logoutBlocked = !props.canMutate
               ? (props.mutationBlockedReason ?? "")
               : logoutLabel;
             const reorderBlocked = !props.canMutate
               ? (props.mutationBlockedReason ?? "")
-              : lock
-                ? profileOrderLockMessage(lock)
-                : !complete
-                  ? t("modelProviders.profiles.partialStoredOrder")
-                  : "";
-            const move = (targetId: string, position: ArrayDropPosition) => {
-              const next = moveArrayEntry(order, profile.profileId, targetId, position);
-              if (next.some((profileId, candidate) => profileId !== order[candidate])) {
-                props.onProfileOrderChange(card.id, provider, next);
+              : (group.explanation ?? "");
+            const move = (event: Event, delta: -1 | 1) => {
+              const targetId = order[index + delta];
+              if (!canMove || !targetId) {
+                return;
+              }
+              const control = event.currentTarget;
+              const restoreFocus =
+                control instanceof HTMLButtonElement && document.activeElement === control;
+              props.onProfileOrderChange(
+                card.id,
+                provider,
+                moveArrayEntry(order, profile.profileId, targetId, delta < 0 ? "before" : "after"),
+              );
+              if (restoreFocus) {
+                // Lit reinserts keyed rows while reordering. Keep keyboard focus on
+                // this account; at an endpoint, move it to the remaining direction.
+                queueMicrotask(() => {
+                  if (control.isConnected && document.activeElement === document.body) {
+                    const next = control.disabled
+                      ? control.parentElement?.querySelector<HTMLButtonElement>(
+                          ".model-providers__profile-move:not(:disabled)",
+                        )
+                      : control;
+                    next?.focus({ preventScroll: true });
+                  }
+                });
               }
             };
             return html`
@@ -394,91 +289,79 @@ export function renderProviderProfiles(card: ModelProviderCard, props: ProviderP
                 data-profile-id=${profile.profileId}
                 data-profile-provider=${provider}
               >
-                ${
-                  locked || automatic
-                    ? html`<span
-                        class="model-providers__profile-grip-spacer"
-                        aria-hidden="true"
-                      ></span>`
-                    : html`<button
-                        type="button"
-                        class="model-providers__profile-grip"
-                        ?disabled=${!canMove}
-                        aria-label=${t("modelProviders.profiles.reorder", {
-                          account: identity,
-                          position: String(index + 1),
-                        })}
-                        aria-keyshortcuts=${canMove ? "ArrowUp ArrowDown" : nothing}
-                        title=${reorderBlocked}
-                        @pointerdown=${(event: PointerEvent) =>
-                          startPointerDrag({
-                            event,
-                            canMove,
-                            sourceId: profile.profileId,
-                            provider,
-                            move,
-                          })}
-                        @keydown=${(event: KeyboardEvent) => {
-                          if (!canMove) {
-                            return;
-                          }
-                          const delta =
-                            event.key === "ArrowUp" ? -1 : event.key === "ArrowDown" ? 1 : 0;
-                          const targetId = order[index + delta];
-                          if (!delta || !targetId) {
-                            return;
-                          }
-                          event.preventDefault();
-                          const grip = event.currentTarget;
-                          const restoreFocus =
-                            grip instanceof HTMLElement && document.activeElement === grip;
-                          move(targetId, delta < 0 ? "before" : "after");
-                          if (restoreFocus) {
-                            // Lit moves keyed rows through removal/reinsertion, dropping focus.
-                            // Restore this grip after rendering without taking focus from another control.
-                            queueMicrotask(() => {
-                              if (grip.isConnected && document.activeElement === document.body) {
-                                grip.focus({ preventScroll: true });
-                              }
-                            });
-                          }
-                        }}
-                      >
-                        ${icons.gripVertical}
-                      </button>`
-                }
                 <span class="model-providers__profile-avatar" aria-hidden="true"
                   >${profileInitials(profile)}</span
                 >
                 <span class="model-providers__profile-copy">
-                  <strong title=${identity}>${identity}</strong>
+                  <strong>${identity}</strong>
                   <span>${profileMeta(profile)}</span>
                 </span>
                 <span class="model-providers__profile-status">${profileStatus(profile)}</span>
-                <button
-                  type="button"
-                  class="model-providers__profile-logout"
-                  aria-label=${logoutLabel}
-                  title=${logoutBlocked}
-                  ?disabled=${
-                    !props.canMutate ||
+                <span class="model-providers__profile-actions">
+                  ${complete && index >= 0
+                    ? html`<span
+                        class="model-providers__profile-position"
+                        aria-label=${t("modelProviders.profiles.priority", {
+                          position: String(index + 1),
+                        })}
+                        title=${t("modelProviders.profiles.priority", {
+                          position: String(index + 1),
+                        })}
+                        >${index + 1}</span
+                      >`
+                    : nothing}
+                  ${showMoves
+                    ? ([-1, 1] as const).map(
+                        (delta) => html`
+                          <button
+                            type="button"
+                            class="btn btn--sm btn--ghost model-providers__profile-move"
+                            data-direction=${delta < 0 ? "up" : "down"}
+                            ?disabled=${!canMove ||
+                            index + delta < 0 ||
+                            index + delta >= order.length}
+                            aria-label=${t(
+                              delta < 0
+                                ? "modelProviders.profiles.moveUpFor"
+                                : "modelProviders.profiles.moveDownFor",
+                              { account: identity },
+                            )}
+                            title=${reorderBlocked ||
+                            t(
+                              delta < 0
+                                ? "modelProviders.profiles.moveUp"
+                                : "modelProviders.profiles.moveDown",
+                            )}
+                            @click=${(event: Event) => move(event, delta)}
+                          >
+                            ${delta < 0 ? icons.arrowUp : icons.arrowDown}
+                          </button>
+                        `,
+                      )
+                    : nothing}
+                  <button
+                    type="button"
+                    class="model-providers__profile-logout"
+                    aria-label=${logoutLabel}
+                    title=${logoutBlocked}
+                    ?disabled=${!props.canMutate ||
                     profile.logoutSupported !== true ||
                     !logoutProvider ||
-                    props.busy[`logout:${card.id}`]
-                  }
-                  @click=${() => {
-                    if (!logoutProvider) {
-                      return;
-                    }
-                    props.onRequestLogout({
-                      cardId: card.id,
-                      label: identity,
-                      targets: [{ provider: logoutProvider, profileIds: [profile.profileId] }],
-                    });
-                  }}
-                >
-                  ${logoutIcon}
-                </button>
+                    props.busy[`logout:${card.id}`]}
+                    @click=${() => {
+                      if (!logoutProvider) {
+                        return;
+                      }
+                      props.onRequestLogout({
+                        cardId: card.id,
+                        label: identity,
+                        targets: [{ provider: logoutProvider, profileIds: [profile.profileId] }],
+                      });
+                    }}
+                  >
+                    ${logoutIcon}
+                  </button>
+                </span>
               </div>
             `;
           },

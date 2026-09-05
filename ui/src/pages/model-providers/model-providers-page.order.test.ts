@@ -18,7 +18,7 @@ afterEach(() => {
 });
 
 describe("ModelProvidersPage profile order", () => {
-  it("keeps a queued profile order until configuration work completes", async () => {
+  it("keeps the latest queued order through paused and resumed configuration work", async () => {
     const { context, notifyRuntimeConfig, request, runtimeConfig } = createHarness("main");
     const page = appendPage(context);
     await waitForFast(() => expect(page.data?.config).toEqual({}));
@@ -35,6 +35,8 @@ describe("ModelProvidersPage profile order", () => {
     page.setProfileOrder("openai", "openai", ["openai:two", "openai:one"]);
     await vi.waitFor(() => expect(requestCount(request, "models.authOrderSet")).toBe(1));
     page.setProfileOrder("openai", "openai", ["openai:one", "openai:two"]);
+    expect(page.profileOrders.openai).toEqual(["openai:one", "openai:two"]);
+    expect(requestCount(request, "models.authOrderSet")).toBe(1);
     runtimeConfig.state.configSaving = true;
     notifyRuntimeConfig();
     firstSave.resolve({});
@@ -49,36 +51,12 @@ describe("ModelProvidersPage profile order", () => {
     notifyRuntimeConfig();
     await vi.waitFor(() => expect(requestCount(request, "models.authOrderSet")).toBe(2));
     await vi.waitFor(() => expect(page.profileOrders.openai).toBeUndefined());
-  });
-
-  it("keeps the latest profile order visible while saves are queued", async () => {
-    const { context, request } = createHarness("main");
-    const page = appendPage(context);
-    await waitForFast(() => expect(page.data?.config).toEqual({}));
-    const originalRequest = request.getMockImplementation()!;
-    const firstSave = deferred<unknown>();
-    let orderRequests = 0;
-    request.mockImplementation(async (method: string, params?: unknown) => {
-      if (method === "models.authOrderSet") {
-        orderRequests += 1;
-        if (orderRequests === 1) {
-          return firstSave.promise;
-        }
-        return {};
-      }
-      void params;
-      return originalRequest(method);
-    });
-
-    page.setProfileOrder("openai", "openai", ["openai:two", "openai:one"]);
-    await vi.waitFor(() => expect(orderRequests).toBe(1));
-    page.setProfileOrder("openai", "openai", ["openai:one", "openai:two"]);
-
-    expect(page.profileOrders.openai).toEqual(["openai:one", "openai:two"]);
-    expect(orderRequests).toBe(1);
-    firstSave.resolve({});
-    await vi.waitFor(() => expect(orderRequests).toBe(2));
-    await vi.waitFor(() => expect(page.profileOrders.openai).toBeUndefined());
+    expect(
+      request.mock.calls.filter(([method]) => method === "models.authOrderSet").at(-1),
+    ).toEqual([
+      "models.authOrderSet",
+      { provider: "openai", profileIds: ["openai:one", "openai:two"], agentId: "main" },
+    ]);
     expect(page.messages.openai).toBeUndefined();
   });
 
@@ -122,18 +100,18 @@ describe("ModelProvidersPage profile order", () => {
       [...page.querySelectorAll<HTMLElement>(".model-providers__profile")].map(
         (row) => row.dataset.profileId,
       );
-    const moveFirstAccount = (page: HTMLElement, key: string) => {
-      const grip = page.querySelector<HTMLButtonElement>(
-        '[data-profile-id="openai:one"] .model-providers__profile-grip',
+    const moveFirstAccount = (page: HTMLElement, direction: "up" | "down") => {
+      const move = page.querySelector<HTMLButtonElement>(
+        `[data-profile-id="openai:one"] [data-direction="${direction}"]`,
       )!;
-      expect(grip.disabled).toBe(false);
-      grip.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+      expect(move.disabled).toBe(false);
+      move.click();
     };
     const oldPage = appendPage(context);
     await waitForFast(() => expect(rows(oldPage)).toHaveLength(3));
-    moveFirstAccount(oldPage, "ArrowDown");
+    moveFirstAccount(oldPage, "down");
     await oldPage.updateComplete;
-    moveFirstAccount(oldPage, "ArrowDown");
+    moveFirstAccount(oldPage, "down");
     await oldPage.updateComplete;
     expect(rows(oldPage)).toEqual(["openai:two", "openai:three", "openai:one"]);
     expect(requestCount(request, "models.authOrderSet")).toBe(1);
@@ -143,7 +121,7 @@ describe("ModelProvidersPage profile order", () => {
     await waitForFast(() =>
       expect(rows(replacementPage)).toEqual(["openai:two", "openai:one", "openai:three"]),
     );
-    moveFirstAccount(replacementPage, "ArrowUp");
+    moveFirstAccount(replacementPage, "up");
     await waitForFast(() => expect(replacementPage.profileOrders.openai).toBeUndefined());
     expect(savedOrder).toEqual(["openai:one", "openai:two", "openai:three"]);
 

@@ -678,7 +678,10 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
       onSaveKey: (provider, configKey) => void this.saveKey(provider, configKey),
       onRemoveKey: (provider, configKey) => void this.removeKey(provider, configKey),
       onProbe: (cardId, providers) => void this.probe(cardId, providers),
-      onRequestLogout: (pending) => (this.pendingLogout = pending),
+      onRequestLogout: (pending) => {
+        this.setMessage(pending.cardId, null);
+        this.pendingLogout = pending;
+      },
       onCancelLogout: () => (this.pendingLogout = null),
       onLogout: (cardId, providers) => void this.logout(cardId, providers),
       onProfileOrderChange: (cardId, provider, profileIds) =>

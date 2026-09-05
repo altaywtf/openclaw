@@ -2,6 +2,7 @@
 import { html, nothing } from "lit";
 import type { FastMode, ModelsProbeResult } from "../../api/types.ts";
 import { icons } from "../../components/icons.ts";
+import "../../components/modal-dialog.ts";
 import { renderProviderBrandIcon } from "../../components/provider-icon.ts";
 import { renderProviderUsageDetails } from "../../components/provider-usage.ts";
 import {
@@ -282,7 +283,6 @@ function renderProviderActions(card: ModelProviderCard, props: ModelProvidersVie
     ? card.credentialProviderIds
     : [card.id];
   const isConfigured = card.hasConfigApiKey || Boolean(card.apiKey) || card.profiles.length > 0;
-  const canLogout = card.profiles.length === 0 && card.logoutTargets.length > 0;
   const probeBusy = Boolean(props.busy[`probe:${card.id}`]);
   const keyBusy = Boolean(props.busy[`key:${card.id}`]);
   const logoutBusy = Boolean(props.busy[`logout:${card.id}`]);
@@ -296,97 +296,95 @@ function renderProviderActions(card: ModelProviderCard, props: ModelProvidersVie
   const pendingLogout = props.pendingLogout?.cardId === card.id ? props.pendingLogout : null;
   return html`
     <div class="model-providers__card-actions">
-      ${
-        isConfigured
-          ? html`
-              <button
-                class="btn btn--sm"
-                ?disabled=${probeBusy || !props.canMutate || !props.probeAvailable}
-                title=${!props.probeAvailable ? t("modelProviders.probe.unavailable") : blocked}
-                @click=${() => props.onProbe(card.id, credentialProviders)}
-              >
-                ${probeBusy ? t("modelProviders.probe.testing") : t("modelProviders.probe.test")}
-              </button>
-            `
-          : nothing
-      }
-      ${
-        apiKeyUnsupported
-          ? nothing
-          : html`
-              <button
-                class="btn btn--sm"
-                ?disabled=${keyBusy || mutationDisabled || authModeBlocked}
-                title=${keyBlocked}
-                @click=${() => props.onOpenKeyEditor(card.id)}
-              >
-                ${
-                  card.hasConfigApiKey
-                    ? t("modelProviders.apiKey.replace")
-                    : t("modelProviders.apiKey.set")
-                }
-              </button>
-            `
-      }
-      ${
-        card.hasConfigApiKey
-          ? html`
-              <button
-                class="btn btn--sm danger"
-                ?disabled=${keyBusy || mutationDisabled || authModeBlocked}
-                title=${keyBlocked}
-                @click=${() => props.onRemoveKey(card.id, card.configKey ?? card.id)}
-              >
-                ${t("modelProviders.apiKey.remove")}
-              </button>
-            `
-          : nothing
-      }
-      ${
-        canLogout
-          ? html`
-              <button
-                class="btn btn--sm"
-                ?disabled=${logoutBusy || mutationDisabled}
-                title=${blocked}
-                @click=${() =>
-                  props.onRequestLogout({
-                    cardId: card.id,
-                    label: card.displayName,
-                    targets: card.logoutTargets,
-                  })}
-              >
-                ${t("modelProviders.logout.action")}
-              </button>
-            `
-          : nothing
-      }
-    </div>
-    ${
-      pendingLogout
+      ${isConfigured
         ? html`
-            <div class="model-providers__confirm" role="alert">
-              <span>${t("modelProviders.logout.confirm", { provider: pendingLogout.label })}</span>
-              <div class="model-providers__form-actions">
+            <button
+              class="btn btn--sm"
+              ?disabled=${probeBusy || !props.canMutate || !props.probeAvailable}
+              title=${!props.probeAvailable ? t("modelProviders.probe.unavailable") : blocked}
+              @click=${() => props.onProbe(card.id, credentialProviders)}
+            >
+              ${probeBusy ? t("modelProviders.probe.testing") : t("modelProviders.probe.test")}
+            </button>
+          `
+        : nothing}
+      ${apiKeyUnsupported
+        ? nothing
+        : html`
+            <button
+              class="btn btn--sm"
+              ?disabled=${keyBusy || mutationDisabled || authModeBlocked}
+              title=${keyBlocked}
+              @click=${() => props.onOpenKeyEditor(card.id)}
+            >
+              ${card.hasConfigApiKey
+                ? t("modelProviders.apiKey.replace")
+                : t("modelProviders.apiKey.set")}
+            </button>
+          `}
+      ${card.hasConfigApiKey
+        ? html`
+            <button
+              class="btn btn--sm danger"
+              ?disabled=${keyBusy || mutationDisabled || authModeBlocked}
+              title=${keyBlocked}
+              @click=${() => props.onRemoveKey(card.id, card.configKey ?? card.id)}
+            >
+              ${t("modelProviders.apiKey.remove")}
+            </button>
+          `
+        : nothing}
+    </div>
+    ${pendingLogout
+      ? html`
+          <openclaw-modal-dialog
+            label=${t("modelProviders.logout.actionFor", { account: pendingLogout.label })}
+            description=${t("modelProviders.logout.confirm", { provider: pendingLogout.label })}
+            @modal-cancel=${(event: Event) => {
+              if (logoutBusy) {
+                event.preventDefault();
+              } else {
+                props.onCancelLogout();
+              }
+            }}
+          >
+            <div class="exec-approval-card model-providers__logout-confirm">
+              <div class="exec-approval-header">
+                <div>
+                  <div class="exec-approval-title">
+                    ${t("modelProviders.logout.actionFor", { account: pendingLogout.label })}
+                  </div>
+                  <div class="exec-approval-sub">
+                    ${t("modelProviders.logout.confirm", { provider: pendingLogout.label })}
+                  </div>
+                </div>
+              </div>
+              ${renderMutationMessage(props.messages[card.id])}
+              <div class="exec-approval-actions">
                 <button
-                  class="btn danger btn--sm"
+                  type="button"
+                  class="btn danger"
                   ?disabled=${logoutBusy || mutationDisabled}
                   @click=${() => props.onLogout(card.id, pendingLogout.targets)}
                 >
-                  ${
-                    logoutBusy
-                      ? t("modelProviders.logout.loggingOut")
-                      : t("modelProviders.logout.action")
-                  }
+                  ${logoutBusy
+                    ? t("modelProviders.logout.loggingOut")
+                    : t("modelProviders.logout.action")}
                 </button>
-                <button class="btn btn--sm" ?disabled=${logoutBusy} @click=${props.onCancelLogout}>
+                <button
+                  type="button"
+                  class="btn"
+                  autofocus
+                  ?disabled=${logoutBusy}
+                  @click=${props.onCancelLogout}
+                >
                   ${t("common.cancel")}
                 </button>
               </div>
             </div>
-          `
-        : nothing
-    }
+          </openclaw-modal-dialog>
+        `
+      : nothing}
   `;
 }
 
@@ -441,7 +439,8 @@ function renderProviderRow(card: ModelProviderCard, props: ModelProvidersViewPro
         ${renderLocalCost(card, props.costDays)}
       </div>
       ${renderProviderActions(card, props)} ${renderKeyEditor(card, props)}
-      ${renderProbeResult(props.probeResults[card.id])} ${renderMutationMessage(message)}
+      ${renderProbeResult(props.probeResults[card.id])}
+      ${props.pendingLogout?.cardId === card.id ? nothing : renderMutationMessage(message)}
     </div>
   `;
 }

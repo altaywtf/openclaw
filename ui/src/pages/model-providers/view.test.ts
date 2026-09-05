@@ -302,7 +302,6 @@ describe("renderModelProviders", () => {
           card({
             hasConfigApiKey: true,
             apiKey: { source: "config" },
-            logoutTargets: [{ provider: "openai", profileIds: ["openai:oauth"] }],
           }),
         ],
         keyEditorProvider: "openai",
@@ -332,7 +331,6 @@ describe("renderModelProviders", () => {
     ).toBe(true);
     expect(button(provider!, "Replace key")?.disabled).toBe(true);
     expect(button(provider!, "Remove key")?.disabled).toBe(true);
-    expect(button(provider!, "Log out")?.disabled).toBe(true);
 
     const addForm = container.querySelector(".model-providers__add-form");
     expect(
@@ -859,40 +857,7 @@ describe("renderModelProviders", () => {
     expect(onProbe).toHaveBeenCalledWith("openai", ["anthropic", "claude-cli"]);
   });
 
-  it("confirms one profile logout from its quiet icon action", () => {
-    const profileCard = card({
-      credentialProviderIds: ["openai", "agent-openai-alias"],
-      logoutTargets: [{ provider: "agent-openai-alias", profileIds: ["openai:oauth"] }],
-      profileProviderIds: { "openai:oauth": "openai" },
-      profileOrders: { openai: ["openai:oauth"] },
-      profiles: [
-        {
-          profileId: "openai:oauth",
-          type: "oauth",
-          status: "ok",
-          logoutSupported: true,
-          email: "owner@example.com",
-        },
-      ],
-    });
-    const onRequestLogout = vi.fn();
-    const container = mount(props({ cards: [profileCard], onRequestLogout }));
-    expect(container.querySelector(".model-providers__confirm")).toBeNull();
-    container.querySelector<HTMLButtonElement>('[aria-label="Log out owner@example.com"]')?.click();
-    const pendingLogout = {
-      cardId: "openai",
-      label: "owner@example.com",
-      targets: [{ provider: "agent-openai-alias", profileIds: ["openai:oauth"] }],
-    };
-    expect(onRequestLogout).toHaveBeenCalledWith(pendingLogout);
-
-    const onLogout = vi.fn();
-    const confirmation = mount(props({ cards: [profileCard], pendingLogout, onLogout }));
-    button(confirmation, "Log out")?.click();
-    expect(onLogout).toHaveBeenCalledWith("openai", pendingLogout.targets);
-  });
-
-  it("retains keyboard focus across repeated profile moves while data refreshes", async () => {
+  it("retains focus across repeated moves and switches controls at the list boundary", async () => {
     let viewProps = props({
       refreshing: true,
       cards: [
@@ -919,26 +884,32 @@ describe("renderModelProviders", () => {
       },
     });
     const container = mount(viewProps);
-    const firstGrip = container.querySelector<HTMLButtonElement>(".model-providers__profile-grip")!;
-    firstGrip.focus();
-    expect(firstGrip.disabled).toBe(false);
+    const moveDown = container.querySelector<HTMLButtonElement>(
+      '[data-profile-id="openai:one"] [data-direction="down"]',
+    )!;
+    const moveUp = container.querySelector<HTMLButtonElement>(
+      '[data-profile-id="openai:one"] [data-direction="up"]',
+    )!;
+    expect(moveUp.disabled).toBe(true);
+    moveDown.focus();
 
-    for (const expected of [
-      ["openai:two", "openai:one", "openai:three"],
-      ["openai:two", "openai:three", "openai:one"],
+    for (const { order, focused } of [
+      { order: ["openai:two", "openai:one", "openai:three"], focused: moveDown },
+      { order: ["openai:two", "openai:three", "openai:one"], focused: moveUp },
     ]) {
-      document.activeElement?.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }),
-      );
+      expect(document.activeElement).toBe(moveDown);
+      moveDown.click();
       await vi.waitFor(() => {
         expect(
           [...container.querySelectorAll<HTMLElement>(".model-providers__profile")].map(
             (row) => row.dataset.profileId,
           ),
-        ).toEqual(expected);
-        expect(document.activeElement === firstGrip).toBe(true);
+        ).toEqual(order);
+        expect(document.activeElement).toBe(focused);
       });
     }
+    expect(moveDown.disabled).toBe(true);
+    expect(moveUp.disabled).toBe(false);
   });
 
   it("uses the original config key for credential mutations", () => {

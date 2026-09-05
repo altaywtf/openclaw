@@ -1,7 +1,9 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ModelsProbeResult } from "../../api/types.ts";
+import type { ModelsAuthLogoutParams } from "../../../../packages/gateway-protocol/src/schema/agents-models-skills.js";
+import type { ModelAuthStatusProfile, ModelsProbeResult } from "../../api/types.ts";
+import { getRenderedModalDialog, installDialogPolyfill } from "../../test-helpers/modal-dialog.ts";
 import { waitForFast } from "../../test-helpers/wait-for.ts";
 import type { DefaultModelSelection } from "./data.ts";
 import { EMPTY_MODEL_PROVIDERS_DATA, type ModelProvidersData } from "./load.ts";
@@ -722,7 +724,7 @@ describe("ModelProvidersPage agent scope", () => {
     ]);
   });
 
-  it("keeps ordering available when a same-version gateway rejects the core method", async () => {
+  it("restores committed priority and keeps controls available after a rejected save", async () => {
     const { context, request, snapshot } = createHarness("main");
     snapshot.hello = {
       auth: { role: "operator", scopes: ["operator.admin"] },
@@ -750,62 +752,141 @@ describe("ModelProvidersPage agent scope", () => {
     };
     page.requestUpdate();
     await page.updateComplete;
-    request.mockRejectedValueOnce(new Error("method not found"));
-    const secondGrip = page.querySelectorAll<HTMLButtonElement>(
-      ".model-providers__profile-grip",
-    )[1];
-
-    secondGrip?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
-    await vi.waitFor(() => expect(page.messages.openai?.text).toContain("method not found"));
+    request.mockRejectedValueOnce(new Error("Priority could not be saved"));
+    page
+      .querySelector<HTMLButtonElement>('[data-profile-id="openai:two"] [data-direction="up"]')!
+      .click();
+    await vi.waitFor(() =>
+      expect(page.messages.openai?.text).toContain("Priority could not be saved"),
+    );
     await page.updateComplete;
 
+    expect(page.querySelector('[role="alert"]')?.textContent).toContain(
+      "Priority could not be saved",
+    );
     expect(
-      page.querySelectorAll<HTMLButtonElement>(".model-providers__profile-grip")[1]?.disabled,
+      [...page.querySelectorAll<HTMLElement>(".model-providers__profile")].map(
+        (row) => row.dataset.profileId,
+      ),
+    ).toEqual(["openai:one", "openai:two"]);
+    expect(
+      page.querySelector<HTMLButtonElement>('[data-profile-id="openai:two"] [data-direction="up"]')
+        ?.disabled,
     ).toBe(false);
   });
 
-  it("confirms an account logout before removing its saved credential", async () => {
-    const { context, request, snapshot } = createHarness("main");
+  it("cancels safely and logs out only the confirmed account's credential owner", async () => {
+    const restoreDialogPolyfill = installDialogPolyfill();
+    const { context, request, snapshot } = createHarness("writer");
     snapshot.hello = {
+      type: "hello-ok",
+      protocol: 3,
       auth: { role: "operator", scopes: ["operator.admin"] },
-    } as typeof snapshot.hello;
-    const page = appendPage(context);
-    await waitForFast(() => expect(page.data?.config).toEqual({}));
-    page.data = {
-      ...EMPTY_MODEL_PROVIDERS_DATA,
-      config: {},
-      authStatus: {
-        ts: 1,
-        providers: [
-          {
-            provider: "openai",
-            displayName: "OpenAI",
-            status: "ok",
-            profiles: [
-              {
-                profileId: "openai:one",
-                type: "oauth",
-                status: "ok",
-                email: "owner@example.com",
-                logoutSupported: true,
-              },
-            ],
-          },
-        ],
-      },
-      updatedAt: 1,
     };
-    page.requestUpdate();
-    await page.updateComplete;
-    request.mockClear();
+    const originalRequest = request.getMockImplementation()!;
+    const logout = deferred<void>();
+    let failLogout = true;
+    let profiles: ModelAuthStatusProfile[] = [
+      {
+        profileId: "work",
+        type: "oauth",
+        status: "ok",
+        email: "work@example.com",
+        logoutSupported: true,
+      },
+      {
+        profileId: "personal",
+        type: "oauth",
+        status: "ok",
+        email: "personal@example.com",
+        logoutSupported: true,
+      },
+    ];
+    request.mockImplementation(async (method: string, params?: unknown) => {
+      if (method === "models.authStatus") {
+        return {
+          ts: 1,
+          providers: [
+            {
+              provider: "claude-cli",
+              authProvider: "anthropic",
+              displayName: "Claude",
+              status: "ok",
+              profiles,
+            },
+          ],
+        };
+      }
+      if (method === "models.authLogout") {
+        if (failLogout) {
+          failLogout = false;
+          throw new Error("The account could not be logged out");
+        }
+        await logout.promise;
+        const { profileIds } = params as ModelsAuthLogoutParams;
+        profiles = profiles.filter((profile) => !profileIds?.includes(profile.profileId));
+        return {};
+      }
+      return originalRequest(method);
+    });
+    const page = appendPage(context);
+    try {
+      await waitForFast(() =>
+        expect(page.querySelectorAll(".model-providers__profile")).toHaveLength(2),
+      );
+      const openConfirmation = async () => {
+        page.querySelector<HTMLButtonElement>('[aria-label="Log out work@example.com"]')!.click();
+        await page.updateComplete;
+        return getRenderedModalDialog(page);
+      };
+      let { modal, dialog } = await openConfirmation();
+      expect(dialog.getAttribute("aria-label")).toBe("Log out work@example.com");
+      expect(modal.textContent).toContain("work@example.com");
+      expect(requestCount(request, "models.authLogout")).toBe(0);
+      modal.querySelector<HTMLButtonElement>("button[autofocus]")!.click();
+      await page.updateComplete;
+      expect(page.querySelector("openclaw-modal-dialog")).toBeNull();
+      expect(requestCount(request, "models.authLogout")).toBe(0);
 
-    page.querySelector<HTMLButtonElement>('[aria-label="Log out owner@example.com"]')?.click();
-    await page.updateComplete;
+      ({ modal } = await openConfirmation());
+      modal.dispatchEvent(new CustomEvent("modal-cancel", { cancelable: true }));
+      await page.updateComplete;
+      expect(page.querySelector("openclaw-modal-dialog")).toBeNull();
+      expect(requestCount(request, "models.authLogout")).toBe(0);
 
-    expect(requestCount(request, "models.authLogout")).toBe(0);
-    expect(page.querySelector(".model-providers__confirm")?.textContent).toContain(
-      "owner@example.com",
-    );
+      ({ modal } = await openConfirmation());
+      modal.querySelector<HTMLButtonElement>("button.danger")!.click();
+      await waitForFast(() =>
+        expect(modal.querySelector('[role="alert"]')?.textContent).toContain(
+          "The account could not be logged out",
+        ),
+      );
+      expect(page.querySelectorAll(".model-providers__profile")).toHaveLength(2);
+      expect(modal.querySelector<HTMLButtonElement>("button.danger")!.disabled).toBe(false);
+      modal.querySelector<HTMLButtonElement>("button.danger")!.click();
+      await page.updateComplete;
+      expect(request).toHaveBeenCalledWith("models.authLogout", {
+        provider: "claude-cli",
+        profileIds: ["work"],
+        agentId: "writer",
+      });
+      expect([...modal.querySelectorAll("button")].every((button) => button.disabled)).toBe(true);
+      const dismissal = new CustomEvent("modal-cancel", { cancelable: true });
+      modal.dispatchEvent(dismissal);
+      expect(dismissal.defaultPrevented).toBe(true);
+      logout.resolve();
+      await waitForFast(() => expect(page.querySelector("openclaw-modal-dialog")).toBeNull());
+      expect(requestCount(request, "models.authLogout")).toBe(2);
+      expect(
+        [...page.querySelectorAll<HTMLElement>(".model-providers__profile")].map(
+          (row) => row.dataset.profileId,
+        ),
+      ).toEqual(["personal"]);
+    } finally {
+      logout.resolve();
+      page.remove();
+      restoreDialogPolyfill();
+    }
   });
 
   it("stops queued agent-scoped logouts when route data changes the selected agent", async () => {

@@ -53,7 +53,7 @@ describe("renderProviderProfiles", () => {
     document.body.replaceChildren();
   });
 
-  it("shows account provenance and removes drag controls for config-locked priority", () => {
+  it("shows account provenance and removes move controls for config-locked priority", () => {
     const onProfileOrderChange = vi.fn();
     const providerCard = card({
       profiles: [
@@ -102,14 +102,21 @@ describe("renderProviderProfiles", () => {
 
     mount(renderProviderProfiles(providerCard, props({ onProfileOrderChange })));
 
-    expect(document.querySelectorAll(".model-providers__profile-grip-spacer")).toHaveLength(2);
-    expect(document.querySelectorAll(".model-providers__profile-grip")).toHaveLength(2);
+    expect(document.querySelectorAll(".model-providers__profile-move")).toHaveLength(4);
+    expect(
+      document.querySelector(
+        '[data-profile-id="openai:configured"] .model-providers__profile-move',
+      ),
+    ).toBeNull();
+    expect(
+      document.querySelector('[data-profile-id="openai:codex"] .model-providers__profile-move'),
+    ).toBeNull();
     expect(document.body.textContent).toContain("Provider config");
     expect(document.body.textContent).toContain("Codex import");
     expect(document.body.textContent).toContain("Saved in OpenClaw");
     expect(document.body.textContent).toContain("Shared credential");
     expect(document.body.textContent).toContain("Priority is managed by provider configuration");
-    expect(document.body.textContent).toContain("drag to set priority");
+    expect(document.body.textContent).toContain("Use the arrows to change priority.");
     expect(
       [...document.querySelectorAll("button")].map((button) => button.textContent),
     ).not.toContain("Reset");
@@ -137,7 +144,7 @@ describe("renderProviderProfiles", () => {
 
     expect(container.textContent).toContain("Priority is managed by auth.order");
     expect(container.textContent).not.toContain("provider configuration");
-    expect(container.querySelectorAll(".model-providers__profile-grip")).toHaveLength(0);
+    expect(container.querySelectorAll(".model-providers__profile-move")).toHaveLength(0);
   });
 
   it("keeps an environment API-key source visible beside account profiles", () => {
@@ -178,11 +185,12 @@ describe("renderProviderProfiles", () => {
     });
 
     const container = mount(renderProviderProfiles(providerCard, props({ onProfileOrderChange })));
-    const grips = container.querySelectorAll<HTMLButtonElement>(".model-providers__profile-grip");
+    const moves = container.querySelectorAll<HTMLButtonElement>(".model-providers__profile-move");
 
-    expect([...grips].every((grip) => grip.disabled)).toBe(true);
-    expect(grips[0]?.title).toContain("Reset");
-    grips[0]?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
+    expect(moves).toHaveLength(4);
+    expect([...moves].every((move) => move.disabled)).toBe(true);
+    expect(container.textContent).toContain("Reset");
+    moves[0]!.click();
     expect(onProfileOrderChange).not.toHaveBeenCalled();
   });
 
@@ -208,8 +216,7 @@ describe("renderProviderProfiles", () => {
       ),
     );
 
-    expect(container.querySelectorAll(".model-providers__profile-grip")).toHaveLength(0);
-    expect(container.querySelectorAll(".model-providers__profile-grip-spacer")).toHaveLength(2);
+    expect(container.querySelectorAll(".model-providers__profile-move")).toHaveLength(0);
     expect(container.textContent).toContain(
       "Priority is inherited or managed across provider routes",
     );
