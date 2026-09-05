@@ -179,6 +179,7 @@ export function acceptsCliLiveSession(context: PreparedCliRunContext): boolean {
 export function createCliLiveSessionCapability(params: {
   context: PreparedCliRunContext;
   argv: readonly string[];
+  argv0?: string;
   env: Record<string, string>;
   captureKey?: string;
   beginCapture: (captureKey: string | undefined) => void;
@@ -190,6 +191,7 @@ export function createCliLiveSessionCapability(params: {
   const fingerprint = buildCliLiveSessionFingerprint({
     context: params.context,
     argv: params.argv,
+    argv0: params.argv0,
     env: params.env,
   });
   const grant = params.context.preparedBackend.mcpClientGrantCapture;

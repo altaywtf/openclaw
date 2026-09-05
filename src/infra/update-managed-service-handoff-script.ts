@@ -436,6 +436,13 @@ let automaticRequested = false;
     wake?.();
   }, params.parentExitTimeoutMs);
   try {
+    if (params.action === "update" && params.runId) {
+      // Load the ledger writer before READY and package replacement can remove its chunks.
+      runLedger = await import(pathToFileURL(params.recoveryModulePath).href);
+      for (const name of ["finishUpdateRun", "recordUpdateRunPhase", "recordUpdateRunVerification"]) {
+        if (typeof runLedger[name] !== "function") throw new Error("managed update ledger writer is unavailable");
+      }
+    }
     if (params.action === "triage") await admitTriageScope();
     if (!params.triageTransition) fs.writeSync(1, ${JSON.stringify(HANDOFF_READY_MARKER)});
     const commands = [];
@@ -542,6 +549,9 @@ let automaticRequested = false;
     }
     clearTimeout(parentExitDeadline);
     const stopped = pendingServiceStop ? await pendingServiceStop : null;
+    if (stopped) runLedger?.recordUpdateRunPhase(params.runId, "activating", {
+      step: { step: "service-stop", status: stopped.code === 0 || (params.serviceRecovery?.kind === "launchd" && isLaunchdNotLoaded(stopped)) ? "completed" : "failed", endedAtMs: Date.now() },
+    });
     if (
       stopped &&
       stopped.code !== 0 &&
@@ -633,6 +643,11 @@ let automaticRequested = false;
     let resultRoot;
     try { resultRoot = fs.realpathSync(result?.root); } catch {}
     const reportedFailure = isFailedUpdateOutcome(result?.status, result?.reason);
+    if (!exit.signal && exit.code === 0 && resultRoot && result?.status === "ok") {
+      runOutcome = { status: "succeeded", after: result.after };
+    } else if (resultRoot && ["error", "skipped"].includes(result?.status)) {
+      runOutcome = { status: result.status === "error" ? "failed" : "skipped", reason: result.reason, after: result.after };
+    }
     if (reportedFailure) triageFailure ??= { reason: result?.reason || "managed-service-handoff-failed" };
     if (exit.code === ${MANAGED_SERVICE_UPDATE_UNSAFE_EXIT_CODE}) {
       appendLog("managed update reported unsafe recovery; keep the gateway stopped until the installation is repaired and update succeeds");
@@ -666,15 +681,21 @@ let automaticRequested = false;
     if (exit.continuation && !exit.signal) await enterTriageAfterUpdate(exit.continuation);
   } catch (err) {
     appendLog("handoff failed: " + (err && err.stack ? err.stack : String(err)));
+    const reason = err?.code === "owner_required" ? "owner_required" : "managed-service-handoff-helper-failed";
+    if (params.action === "update") runOutcome = { status: "failed", reason };
     if (hasManagedUpdateLease()) {
       if (params.action !== "triage") bindManagedUpdateLeaseToProcess(process.pid);
-      const reason = err?.code === "owner_required" ? "owner_required" : "managed-service-handoff-helper-failed";
       if (restorationArmed && !updaterStarted) await restoreGatewayService(reason);
       else if (params.action === "update") recordUpdateHandoffOutcome(reason);
     }
     process.exitCode = 1;
   } finally {
     clearTimeout(parentExitDeadline);
+    try { finishManagedUpdateRun(); }
+    catch (error) {
+      appendLog("failed to finalize update run: " + String(error));
+      process.exitCode = 1;
+    }
     if (params.action === "update" && !automaticRequested) await collectUpdateFailureTriage();
     releaseManagedUpdateLease();
     process.stdin.destroy();

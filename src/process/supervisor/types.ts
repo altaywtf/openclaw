@@ -45,6 +45,7 @@ export type ManagedRun = {
   stdin?: ManagedRunStdin;
   wait: () => Promise<RunExit>;
   /** The root result may settle before its independently owned descendants exit. */
+  /** Join the adapter's native ownership boundary; deliberately detached outsiders are excluded. */
   waitForExtinction?: () => Promise<void>;
   cancel: (reason?: TerminationReason) => void;
   /** Stop every decoded, raw, captured, and output-clock update for this run. */

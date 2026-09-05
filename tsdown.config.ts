@@ -9,7 +9,6 @@ import {
   collectPluginDeclarationSourceEntries,
   collectSourceCheckoutPluginBuildEntries,
 } from "./scripts/lib/bundled-plugin-build-entries.mjs";
-import { createClaudeAgentSdkAssetPlugin } from "./scripts/lib/claude-agent-sdk-assets.mts";
 import { createManagedHandoffBuildConfig } from "./scripts/lib/managed-handoff-build-config.mts";
 import {
   buildPluginSdkEntrySources,
@@ -346,9 +345,7 @@ function shouldNeverBundleDeclarationDependency(id: string): boolean {
   // Arrow's relative module augmentations must stay beside their package modules.
   return (
     shouldNeverBundleDependency(id) ||
-    ["@anthropic-ai/claude-agent-sdk", "zod", "apache-arrow"].some(
-      (name) => id === name || id.startsWith(`${name}/`),
-    )
+    ["zod", "apache-arrow"].some((name) => id === name || id.startsWith(`${name}/`))
   );
 }
 
@@ -815,7 +812,7 @@ const configs = [
       // and bundled hooks in one graph so runtime singletons are emitted once.
       entry: unifiedDistEntries,
       deps: unifiedDeps,
-      plugins: [createClaudeAgentSdkAssetPlugin(), createStateSchemaInlinePlugin()],
+      plugins: [createStateSchemaInlinePlugin()],
     },
     false,
   ),

@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { UPDATE_RUN_ID_ENV } from "../infra/update-control-plane-sentinel.js";
 
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 it("retains original JSON and closes the shared lease after preloaded owner files and old lazy chunks are removed", async () => {
@@ -62,7 +63,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 const admission=await acceptTriageContinuation();
 if (!admission) throw new Error('candidate was not admitted');
-const descendant=JSON.parse(execFileSync(process.execPath,['-e','console.log(JSON.stringify({handoff:process.env.OPENCLAW_UPDATE_RUN_HANDOFF ?? null,sentinel:process.env.OPENCLAW_CONTROL_PLANE_UPDATE_SENTINEL_META ?? null,inProgress:process.env.OPENCLAW_UPDATE_IN_PROGRESS ?? null,shell:process.env.OPENCLAW_SHELL,compileCache:process.env.NODE_DISABLE_COMPILE_CACHE}))'],{encoding:'utf8'}));
+const descendant=JSON.parse(execFileSync(process.execPath,['-e','console.log(JSON.stringify({updateRunId:process.env[${JSON.stringify(UPDATE_RUN_ID_ENV)}] ?? null,handoff:process.env.OPENCLAW_UPDATE_RUN_HANDOFF ?? null,sentinel:process.env.OPENCLAW_CONTROL_PLANE_UPDATE_SENTINEL_META ?? null,inProgress:process.env.OPENCLAW_UPDATE_IN_PROGRESS ?? null,shell:process.env.OPENCLAW_SHELL,compileCache:process.env.NODE_DISABLE_COMPILE_CACHE}))'],{encoding:'utf8'}));
 fs.writeFileSync(${JSON.stringify(receipt)},JSON.stringify({message:admission,descendant,args:process.argv.slice(2)}));
 await admission.finish("closed");
 `,
@@ -97,6 +98,7 @@ process.exitCode=7;
         OPENCLAW_SUPERVISOR_MODE: "",
         OPENCLAW_UPDATE_RUN_HANDOFF: "",
         OPENCLAW_UPDATE_IN_PROGRESS: "1",
+        [UPDATE_RUN_ID_ENV]: "completed-update-run",
         TSX_TSCONFIG_PATH: path.resolve("tsconfig.json"),
         NODE_OPTIONS: `--import ${path.resolve("scripts/tsx.mjs")}`,
       },
@@ -121,6 +123,7 @@ process.exitCode=7;
     args: ["triage"],
     message: { failure: { error: "original failure", gateway: "preserve" } },
     descendant: {
+      updateRunId: null,
       handoff: null,
       sentinel: null,
       inProgress: null,

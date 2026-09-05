@@ -7,7 +7,6 @@ import fs from "node:fs/promises";
 import { Socket } from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { formatCliCommand } from "../cli/command-format.js";
 import { formatInstallationTargetCommand } from "../cli/installation-target-format.js";
 import { resolveUpdatedInstallCommandEnv } from "../cli/update-cli/update-command-service-env.js";
 import type { TriageFailureContext } from "../commands/triage-prompt.js";
@@ -31,12 +30,18 @@ import { SUPERVISOR_HINT_ENV_VARS, type RespawnSupervisor } from "./supervisor-m
 import type { UpdateChannel } from "./update-channels.js";
 import {
   CONTROL_PLANE_UPDATE_SENTINEL_META_ENV,
+  UPDATE_RUN_ID_ENV,
   type ControlPlaneUpdateSentinelMetaFile,
 } from "./update-control-plane-sentinel.js";
 import { applyDevUpdateTargetEnv, type DevUpdateTarget } from "./update-dev-target.js";
 import { verifyPackageUpdateRecovery } from "./update-global.js";
 import { resolveUpdateInstallRoot } from "./update-install-root.js";
 import { MANAGED_SERVICE_UPDATE_HANDOFF_TEMP_PREFIX } from "./update-managed-service-handoff-cleanup.js";
+import {
+  formatManagedServiceUpdateCommand,
+  resolveManagedServiceCliArgv,
+  resolveUpdateCliArgv,
+} from "./update-managed-service-handoff-command.js";
 import {
   createManagedHandoffLeaseStore,
   readManagedServiceUpdateHandoffLease,
@@ -66,6 +71,7 @@ type HandoffChild = ChildProcess & {
   stdout: NonNullable<ChildProcess["stdout"]>;
 };
 type ManagedServiceUpdateHandoffParams = {
+  runId?: string;
   root: string;
   timeoutMs?: number;
   restartDrainTimeoutMs: number;
@@ -111,63 +117,6 @@ type ActiveManagedServiceUpdateHandoff = {
   exited?: boolean;
 };
 const activeManagedServiceUpdateHandoffs = new Map<string, ActiveManagedServiceUpdateHandoff>();
-
-function resolveUpdateCliArgv(params: {
-  timeoutMs?: number;
-  channel?: UpdateChannel;
-  tag?: string;
-  acceptCapabilities?: boolean;
-  execPath?: string;
-  argv1?: string;
-}): string[] {
-  const updateArgs = ["update", "--yes", "--json"];
-  if (params.acceptCapabilities) {
-    updateArgs.push("--accept-capabilities");
-  }
-  if (params.channel) {
-    updateArgs.push("--channel", params.channel);
-  }
-  if (params.tag) {
-    updateArgs.push("--tag", params.tag);
-  }
-  if (typeof params.timeoutMs === "number" && Number.isFinite(params.timeoutMs)) {
-    updateArgs.push("--timeout", String(Math.max(1, Math.ceil(params.timeoutMs / 1000))));
-  }
-
-  return resolveManagedServiceCliArgv(params, updateArgs);
-}
-
-function resolveManagedServiceCliArgv(
-  params: { execPath?: string; argv1?: string },
-  args: string[],
-): string[] {
-  const execPath = params.execPath?.trim();
-  const argv1 = params.argv1?.trim();
-  if (execPath && argv1) {
-    return [execPath, argv1, ...args];
-  }
-  if (execPath && !/^(?:node|bun)(?:\.exe)?$/iu.test(path.basename(execPath))) {
-    return [execPath, ...args];
-  }
-  return ["openclaw", ...args];
-}
-
-export function formatManagedServiceUpdateCommand(
-  params?: {
-    timeoutMs?: number;
-    channel?: UpdateChannel;
-    tag?: string;
-    acceptCapabilities?: boolean;
-  },
-  env: NodeJS.ProcessEnv = process.env,
-): string {
-  return formatCliCommand(
-    resolveUpdateCliArgv(params ?? {})
-      .toSpliced(3, 1)
-      .join(" "),
-    env,
-  );
-}
 
 type GatewayServiceRecovery =
   | { kind: "systemd"; unit: string }
@@ -306,7 +255,12 @@ async function spawnManagedServiceUpdateHandoff(
       );
   const metaFile: ControlPlaneUpdateSentinelMetaFile = {
     version: 1,
-    meta: { ...params.meta, root: rootIdentity, triageContextPath },
+    meta: {
+      ...params.meta,
+      ...(params.runId ? { runId: params.runId } : {}),
+      root: rootIdentity,
+      triageContextPath,
+    },
   };
   let spawnCommand = params.execPath ?? process.execPath;
   const spawnArgs = [scriptPath, paramsPath];
@@ -351,6 +305,7 @@ async function spawnManagedServiceUpdateHandoff(
     ...installationTargetEnv(resolveInstallationTarget(serviceEnv)),
     [CONTROL_PLANE_UPDATE_SENTINEL_META_ENV]: metaPath,
     OPENCLAW_UPDATE_RUN_HANDOFF: "1",
+    ...(metaFile.meta.runId ? { [UPDATE_RUN_ID_ENV]: metaFile.meta.runId } : {}),
   };
   for (const key of SUPERVISOR_HINT_ENV_VARS) {
     if (!SERVICE_IDENTITY_ENV_VARS.has(key)) {
@@ -382,6 +337,7 @@ async function spawnManagedServiceUpdateHandoff(
   const env = params.devTarget ? applyDevUpdateTargetEnv(readyEnv, params.devTarget) : readyEnv;
 
   const helperParams = {
+    runId: metaFile.meta.runId,
     serviceManagerEnv: resolveServiceManagerEnv(serviceEnv),
     nodeExecArgv,
     action: params.action?.kind ?? "update",
@@ -504,8 +460,6 @@ async function spawnManagedServiceUpdateHandoff(
     await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
     throw err;
   }
-  child.unref();
-
   const result = { command: commandLabel, logPath };
   const handoffId = readiness.slice(HANDOFF_BUSY_MARKER.length).trim();
   return `${readiness}\n` === HANDOFF_READY_MARKER
@@ -667,8 +621,9 @@ export async function transferManagedServiceUpdateHandoff(
   ) {
     return false;
   }
-  // Node's spawn pipe streams are net.Socket instances. Unref keeps the control
-  // channel open until CLI exit, so its result is printed before service stop.
+  // Readiness still owns cancellation; only acknowledged transfer may detach
+  // the child and its Socket pipes so the CLI can print its result before exit.
+  child.unref();
   child.stdin.unref();
   child.stdout.unref();
   return true;
@@ -727,11 +682,4 @@ export async function cancelManagedServiceUpdateHandoff(
   } finally {
     active.cancelling = false;
   }
-}
-
-export function buildManagedServiceHandoffUnavailableMessage(command: string): string {
-  return [
-    "OpenClaw updates cannot safely run inside the live gateway process without a managed-service handoff.",
-    `Stop the foreground Gateway, run \`${command}\` from a shell, then launch the Gateway again. For a managed deployment, use its host's stop, update, and restart workflow.`,
-  ].join("\n");
 }

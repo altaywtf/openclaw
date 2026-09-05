@@ -19,7 +19,10 @@ import {
 } from "../../src/infra/triage-runtime.test-support.ts";
 import { nodeHostConfigRuntimeEntrypoint } from "../../src/node-host/config-runtime.test-support.ts";
 import { persistenceRuntimeEntrypoint } from "../../src/skills/library/persistence-runtime.test-support.ts";
-import { stateLeaseProcessExitRuntimeEntrypoint } from "../../src/state/openclaw-state-lease-runtime.test-support.ts";
+import {
+  agentDatabaseHeldRuntimeEntrypoint,
+  stateLeaseProcessExitRuntimeEntrypoint,
+} from "../../src/state/openclaw-state-lease-runtime.test-support.ts";
 import { tuiPtyRuntimeEntrypoints } from "../../src/tui/tui-pty-runtime-test-support.ts";
 import { channelIngressGatewayRestartEntrypoint } from "../../test/fixtures/channel-ingress-gateway-restart-entrypoint.ts";
 import { runtimeProcessBuildEntries } from "./runtime-process-build-entries.mts";
@@ -51,6 +54,7 @@ export const vitestWorkerBuildEntries = {
       persistenceRuntimeEntrypoint,
       qaGatewayCleanupRuntimeEntrypoint,
       stateLeaseProcessExitRuntimeEntrypoint,
+      agentDatabaseHeldRuntimeEntrypoint,
       ...Object.values(triageTestRuntimeEntrypoints),
     ].map((entry) => [
       entry.distWorkerPath.replace(/\.js$/u, ""),

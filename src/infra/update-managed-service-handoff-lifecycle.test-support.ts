@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import type { TriageUpdateFailure } from "../commands/triage-update.js";
 import { buildUpdateRestartSentinelPayload } from "./update-restart-sentinel-payload.js";
+import type { UpdateRunRecord } from "./update-run-record.js";
 import type { UpdateRunResult } from "./update-runner-types.js";
 
 type ManagedSystemdPostExitState = {
@@ -15,6 +16,7 @@ type ManagedSystemdPostExitState = {
 };
 
 export type ManagedServiceManagerBoundaryOptions = {
+  ledger?: boolean;
   cancelAfterPark?: boolean;
   parentExitTimeoutMs?: number;
   launchdFault?: "wrong-parent" | "missing-restored-pid" | "dead-restored-pid";
@@ -58,6 +60,7 @@ export type ManagedServiceCommandTiming = {
 };
 
 export type ManagedServiceManagerBoundaryResult = {
+  run?: UpdateRunRecord;
   commands: string[];
   parentSignal: NodeJS.Signals | null;
   state: Record<string, unknown>;
@@ -474,6 +477,17 @@ export async function prepareManagedHandoffRecoveryFixture(params: {
     }
   `,
   );
+  if (options?.ledger) {
+    await fs.appendFile(
+      recoveryModulePath,
+      `
+      const { register } = await import(${JSON.stringify(pathToFileURL(createRequire(import.meta.url).resolve("tsx/esm/api")).href)});
+      register();
+      const ledger = await import(${JSON.stringify(new URL("./update-run-ledger.ts", import.meta.url).href)});
+      export const { finishUpdateRun, recordUpdateRunPhase, recordUpdateRunVerification } = ledger;
+    `,
+    );
+  }
   if (options?.requester) {
     await fs.writeFile(
       configPath,

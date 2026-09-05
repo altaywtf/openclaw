@@ -271,6 +271,16 @@ function writeRestartSentinelPayload(db, payload, currentRevision) {
 }
 
 let triageFailure;
+let runLedger;
+let runOutcome;
+let serviceStoppedAtMs;
+let serviceDowntimeMs;
+
+function finishManagedUpdateRun() {
+  if (!runLedger || !runOutcome) return;
+  runLedger.finishUpdateRun(params.runId, { ...runOutcome, ...(serviceDowntimeMs !== undefined ? { downtimeMs: serviceDowntimeMs } : {}) });
+  runOutcome = undefined;
+}
 
 function isFailedUpdateOutcome(status, reason) {
   return status === "error" || (status === "skipped" &&
@@ -306,6 +316,7 @@ function recordUpdateHandoffOutcome(reason, restored, completedStatus, expectedR
   const meta = metaFile && metaFile.version === 1 && metaFile.meta ? metaFile.meta : {};
   const status = (reason === "managed-service-handoff-cancelled" || completedStatus === "skipped") && restored !== false
     ? "skipped" : "error";
+  runOutcome = { status: status === "error" ? "failed" : "skipped", reason };
   const fallbackPayload = {
     kind: "update",
     status,
@@ -313,6 +324,7 @@ function recordUpdateHandoffOutcome(reason, restored, completedStatus, expectedR
     message: typeof meta.note === "string" ? meta.note : null,
     stats: {
       mode: "unknown",
+      ...(typeof meta.runId === "string" && meta.runId.trim() ? { runId: meta.runId } : {}),
       ...(typeof meta.root === "string" && meta.root.trim() ? { root: meta.root } : {}),
       ...(typeof meta.handoffId === "string" && meta.handoffId.trim()
         ? { handoffId: meta.handoffId }
@@ -373,6 +385,7 @@ function recordUpdateHandoffOutcome(reason, restored, completedStatus, expectedR
         triageFailure ??= { reason };
         triageFailure.payload = payload;
       }
+      runOutcome = { status: payload.status === "error" ? "failed" : "skipped", reason: payload.stats?.reason ?? reason };
       if (typeof restored === "boolean") {
         payload.stats.steps = [
           ...(payload.stats.steps || []),

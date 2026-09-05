@@ -129,6 +129,7 @@ function expectFailureReport(reason: string, json?: boolean): void {
   expect(mocks.printResult).toHaveBeenCalledWith(
     expect.objectContaining({ status: "error", reason }),
     json === undefined ? expect.any(Object) : expect.objectContaining({ json }),
+    expect.objectContaining({ nextAction: expect.any(String) }),
   );
   expect(defaultRuntime.exit).not.toHaveBeenCalled();
 }
@@ -336,7 +337,6 @@ describe("successful update finalization ordering", () => {
         restartEnvironment: process.env,
         json: true,
         windowsTaskAutoStartRecovery: {
-          suspended: Promise.resolve(true),
           beginMutation: () => {},
           restore,
           complete: () => {},
@@ -358,6 +358,7 @@ describe("successful update finalization ordering", () => {
     expect(mocks.printResult).toHaveBeenCalledWith(
       expect.objectContaining({ status: "error", reason: "windows-task-autostart-restore-failed" }),
       expect.objectContaining({ json: true }),
+      expect.any(Object),
     );
     expect(mocks.writeSentinel.mock.lastCall?.[0].result).toEqual(
       mocks.printResult.mock.lastCall?.[0],
@@ -453,7 +454,6 @@ describe("successful update finalization ordering", () => {
       downgradeRisk: false,
       shouldRestart: false,
       opts: {},
-      showProgress: false,
       ownedManagedUpdateEnv,
       controlPlaneUpdateSentinelMeta: {},
       preUpdatePluginInstallRecords: {},

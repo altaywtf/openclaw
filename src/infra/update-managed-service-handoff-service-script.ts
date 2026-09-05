@@ -1,4 +1,6 @@
 // Staged managed handoff service owner; cannot import replaced package chunks.
+import { UPDATE_RUN_ID_ENV } from "./update-control-plane-sentinel.js";
+
 export const HANDOFF_SERVICE_SCRIPT = String.raw`
 function runServiceCommand(command, args, onSpawn, deadline, timeoutCap) {
   if (!hasManagedUpdateLease()) return Promise.resolve({ code: 1, stdout: "", stderr: "" });
@@ -163,6 +165,9 @@ async function enterTriageAfterUpdate(continuation) {
     kind: "triage", phase: "reserved",
     lifetime: { kind: "native", unit: params.serviceRecovery.unit, scope: scopeUnit, placement: { kind: "pending" } },
   };
+  // execve replaces this process without running its finally; finish the
+  // original update before transferring installation ownership to triage.
+  finishManagedUpdateRun();
   let retargeted;
   try {
     retargeted = leaseStore.retarget(managedUpdateLease, continuation.failure.installationRoot, action);
@@ -186,6 +191,7 @@ async function enterTriageAfterUpdate(continuation) {
   restorationArmed = false;
   Object.assign(params, {
     action: "triage",
+    runId: undefined,
     triageTransition: true,
     failure: continuation.failure,
     commandArgv: continuation.commandArgv,
@@ -206,7 +212,9 @@ async function enterTriageAfterUpdate(continuation) {
     process.argv[1],
     process.argv[2],
   ];
-  process.execve(command, argv, process.env);
+  const triageEnv = { ...process.env };
+  delete triageEnv[${JSON.stringify(UPDATE_RUN_ID_ENV)}];
+  process.execve(command, argv, triageEnv);
 }
 
 function isLaunchdNotLoaded(result) {
@@ -219,6 +227,20 @@ let parkedServiceFragment = null;
 let restorationArmed = false;
 let updaterStarted = false;
 let pendingServiceStop;
+
+function recordServiceStop() {
+  serviceStoppedAtMs ??= Date.now();
+  try {
+    const metaFile = JSON.parse(fs.readFileSync(params.metaPath, "utf-8"));
+    metaFile.meta.serviceStoppedAtMs ??= serviceStoppedAtMs;
+    fs.writeFileSync(params.metaPath, JSON.stringify(metaFile), { mode: 0o600 });
+    runLedger?.recordUpdateRunPhase(params.runId, "activating", {
+      step: { step: "service-stop", status: "in_progress", startedAtMs: metaFile.meta.serviceStoppedAtMs },
+    });
+  } catch (error) {
+    appendLog("could not record service stop time: " + String(error));
+  }
+}
 
 async function parkGatewayService() {
   const recovery = params.serviceRecovery;
@@ -252,6 +274,7 @@ async function parkGatewayService() {
         ["--user", "stop", recovery.unit],
         () => {
           restorationArmed = true;
+          recordServiceStop();
           resolve();
         },
         params.parentExitDeadlineAt,
@@ -286,7 +309,7 @@ async function parkGatewayService() {
   }
   // bootout gets launchd's full teardown budget; its accepted spawn acknowledges parking.
   await new Promise((resolve, reject) => {
-    pendingServiceStop = runServiceCommand("launchctl", ["bootout", target], resolve);
+    pendingServiceStop = runServiceCommand("launchctl", ["bootout", target], () => { recordServiceStop(); resolve(); });
     pendingServiceStop.then((result) => {
       if (result.code !== 0 && !isLaunchdNotLoaded(result)) {
         reject(new Error("launchctl bootout failed: " + result.stderr));
@@ -414,6 +437,13 @@ async function restoreGatewayService(reason, decision = params.recovery, childSt
       restored = ownsRecovery() && health.healthy === true &&
         health.runtime?.status === "running" && health.gatewayVersion === expectedVersion &&
         (!expectedBuildId || health.gatewayBuildId === expectedBuildId);
+      if (restored && serviceStoppedAtMs !== undefined) serviceDowntimeMs = Math.max(0, Date.now() - serviceStoppedAtMs);
+      runLedger?.recordUpdateRunVerification(params.runId, {
+        serviceRunning: health.runtime?.status === "running",
+        runningVersion: health.gatewayVersion ?? undefined,
+        runningBuildId: health.gatewayBuildId ?? undefined,
+        versionMatch: health.gatewayVersion === expectedVersion && (!expectedBuildId || health.gatewayBuildId === expectedBuildId),
+      });
     } catch (error) {
       appendLog("Gateway recovery readiness failed: " + String(error));
       restored = false;

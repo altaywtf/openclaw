@@ -21,6 +21,7 @@ import { installationTargetEnv, resolveInstallationTarget } from "./installation
 import {
   CONTROL_PLANE_UPDATE_SENTINEL_META_ENV,
   readControlPlaneUpdateSentinelMeta,
+  UPDATE_RUN_ID_ENV,
 } from "./update-control-plane-sentinel.js";
 import {
   createManagedHandoffLeaseStore,
@@ -541,6 +542,7 @@ export async function acceptTriageContinuation(): Promise<
     delete process.env.OPENCLAW_UPDATE_RUN_HANDOFF;
     delete process.env[CONTROL_PLANE_UPDATE_SENTINEL_META_ENV];
     delete process.env.OPENCLAW_UPDATE_IN_PROGRESS;
+    delete process.env[UPDATE_RUN_ID_ENV];
     return { failure, signal: controller.signal, assertCurrent, finish };
   } catch (error) {
     cancel();

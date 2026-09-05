@@ -49,6 +49,7 @@ import {
 import { stageManagedHandoffRuntime } from "./update-managed-service-handoff-runtime.js";
 import { registerManagedUpdateHandoffTriageTests } from "./update-managed-service-handoff-triage.test-support.js";
 import { signalMockManagedUpdateHandoffReady } from "./update-managed-service-handoff.test-support.js";
+import { createUpdateRun, getUpdateRun } from "./update-run-ledger.js";
 
 const { forceKillChildProcessTreeMock, spawnMock } = vi.hoisted(() => ({
   forceKillChildProcessTreeMock: vi.fn(),
@@ -210,9 +211,11 @@ async function runManagedServiceManagerBoundary(
     OPENCLAW_CONFIG_PATH: configPath,
     PATH: `${root}${path.delimiter}${process.env.PATH ?? ""}`,
   };
+  const run = options?.ledger ? createUpdateRun({ trigger: "api" }, { env }) : undefined;
   let helper: import("node:child_process").ChildProcess | undefined;
   try {
     await startManagedServiceUpdateHandoff({
+      runId: run?.runId,
       root,
       restartDrainTimeoutMs: 300_000,
       parentPid,
@@ -466,6 +469,7 @@ async function runManagedServiceManagerBoundary(
         }
       : null;
     return {
+      ...(run ? { run: getUpdateRun(run.runId, { env }) } : {}),
       commands: (await fs.readFile(commandsPath, "utf8").catch(() => ""))
         .trim()
         .split("\n")

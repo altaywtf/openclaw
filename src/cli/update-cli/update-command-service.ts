@@ -11,6 +11,10 @@ import { resolveGatewayRestartLogPath } from "../../daemon/restart-logs.js";
 import { readGatewayServiceState, resolveGatewayService } from "../../daemon/service.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import type { UpdateChannel } from "../../infra/update-channels.js";
+import {
+  recordUpdateRunPhase,
+  recordUpdateRunVerification,
+} from "../../infra/update-run-ledger.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
 import { defaultRuntime } from "../../runtime.js";
 import { replaceCliName, resolveCliName } from "../cli-name.js";
@@ -20,6 +24,7 @@ import {
   renderRestartDiagnostics,
   terminateStaleGatewayPids,
   waitForGatewayHealthyRestart,
+  type GatewayRestartSnapshot,
 } from "../daemon-cli/restart-health.js";
 import { runRestartScript } from "./restart-helper.js";
 import type { UpdateCommandOptions } from "./shared.js";
@@ -32,13 +37,13 @@ import {
 import { resolveServiceRefreshEnv } from "./update-command-service-env.js";
 import {
   revalidateManagedGatewayServiceAfterUpdate,
-  resolveUpdatedGatewayRestartPort,
   type ManagedGatewayUpdateVerdict,
 } from "./update-command-service-maintenance.js";
 import {
   assertGatewayServiceManagementAllowedForUpdate,
   gatewayServiceCommandUsesRoot,
   resolveGatewayServiceManagementBlockMessageForUpdate,
+  resolveUpdatedGatewayRestartPort,
 } from "./update-command-service-plan.js";
 import {
   formatPostUpdateGatewayRecoveryInstructions,
@@ -53,10 +58,10 @@ export {
   maybeStopManagedServiceBeforeMutableUpdate,
   revalidateManagedGatewayServiceAfterUpdate,
   resolvePreparedGatewayUpdatePolicy,
-  resolveUpdatedGatewayRestartPort,
   type PreManagedServiceStop,
   type UpdateCommandRecoveryState,
 } from "./update-command-service-maintenance.js";
+export { resolveUpdatedGatewayRestartPort } from "./update-command-service-plan.js";
 
 const CLI_NAME = resolveCliName();
 
@@ -209,11 +214,40 @@ export async function maybeRestartService(params: {
   }
   let activationAccepted = false;
   let updatedInstallRestartNeedsServiceRootProof = false;
+  const recordPhase = (phase: "restarting" | "verifying") => {
+    if (params.opts.run) {
+      recordUpdateRunPhase(params.opts.run.runId, phase, undefined, { env: params.opts.run.env });
+    }
+  };
+  const recordHealth = (health: GatewayRestartSnapshot) => {
+    if (!params.opts.run) {
+      return;
+    }
+    recordUpdateRunVerification(
+      params.opts.run.runId,
+      {
+        serviceRunning: health.runtime.status === "running",
+        ...(typeof health.runtime.pid === "number" ? { pid: health.runtime.pid } : {}),
+        port: activation.gatewayPort,
+        ...(health.gatewayVersion ? { runningVersion: health.gatewayVersion } : {}),
+        ...(health.gatewayBuildId ? { runningBuildId: health.gatewayBuildId } : {}),
+        ...(health.expectedVersion
+          ? {
+              versionMatch:
+                health.gatewayVersion === health.expectedVersion && !health.buildIdMismatch,
+            }
+          : {}),
+        pluginErrors: health.activatedPluginErrors?.map((error) => JSON.stringify(error)) ?? [],
+      },
+      { env: params.opts.run.env },
+    );
+  };
   const verifyRestartedGateway = async (
     expectedGatewayVersion: string | undefined,
     expectedGatewayBuildId: string | undefined,
     opts: { requireRunningService?: boolean } = {},
   ) => {
+    recordPhase("verifying");
     const service = resolveGatewayService();
     const waitForHealthy = async () =>
       await waitForGatewayHealthyRestart({
@@ -248,6 +282,7 @@ export async function maybeRestartService(params: {
     }
 
     const recoveryVerification = await recoverLaunchAgentAndRecheckGatewayHealth({
+      updateRun: params.opts.run,
       preserveDefinition,
       health,
       service,
@@ -257,6 +292,7 @@ export async function maybeRestartService(params: {
       env: activation.serviceEnv,
     });
     health = recoveryVerification.health;
+    recordHealth(health);
     const launchAgentRecovery = recoveryVerification.launchAgentRecovery;
     if (launchAgentRecovery?.attempted) {
       activationAccepted = launchAgentRecovery.recovered;
@@ -343,8 +379,10 @@ export async function maybeRestartService(params: {
       let restartScriptPath = preserveDefinition ? null : activation.restartScriptPath;
       if (activation.refreshServiceEnv && activation.serviceInstallEnv !== null) {
         try {
+          recordPhase("restarting");
           await runUpdatedInstallGatewayCommand(activation, "install");
           if (expectedGatewayVersion && (isPackageUpdate || expectedGatewayBuildId)) {
+            recordPhase("verifying");
             const service = resolveGatewayService();
             const health = await waitForGatewayHealthyRestart({
               service,
@@ -360,6 +398,7 @@ export async function maybeRestartService(params: {
               }),
             });
             refreshedGatewayAlreadyHealthy = health.healthy;
+            recordHealth(health);
           }
         } catch (err) {
           defaultRuntime.error(
@@ -427,6 +466,7 @@ export async function maybeRestartService(params: {
         if (!preserveDefinition) {
           await createUpdateConfigSnapshot();
         }
+        recordPhase("restarting");
         activationAccepted = await runRestartScript(restartScriptPath, activation.timeoutMs);
         restartInitiated = true;
       } else if (
@@ -436,6 +476,7 @@ export async function maybeRestartService(params: {
         if (!preserveDefinition) {
           await createUpdateConfigSnapshot();
         }
+        recordPhase("restarting");
         const restart = await runUpdatedInstallGatewayCommand(
           activation,
           "restart",

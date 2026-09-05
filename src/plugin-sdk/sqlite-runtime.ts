@@ -10,10 +10,12 @@ export { withOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-re
 export { assertOpenClawAgentDatabaseForMaintenance } from "../state/openclaw-agent-db-maintenance.js";
 export { ensureOpenClawAgentStandingIntentsSchema } from "../state/openclaw-agent-standing-intents-schema.js";
 export {
+  compileSqliteQueryBindings,
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
   iterateSqliteQuerySync,
+  sqliteStringSet,
 } from "../infra/kysely-sync.js";
 export { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 export { prepareSqliteReadOnlyLocationSync } from "../infra/sqlite-readonly-location.js";

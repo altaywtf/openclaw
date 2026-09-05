@@ -125,7 +125,6 @@ export async function createScriptActivationFixture({
     downgradeRisk: false,
     shouldRestart: true,
     opts: { json: true, yes: true },
-    showProgress: false,
     preManagedServiceStop: {
       stopped: !intentional,
       running: false,
@@ -190,7 +189,6 @@ export async function finishSuccessfulPackageSwitch(
     downgradeRisk: true,
     shouldRestart: Boolean(params.restartEnvironment),
     opts: { json: params.json },
-    showProgress: false,
     controlPlaneUpdateSentinelMeta: {},
     preUpdatePluginInstallRecords: {},
     startedAt: Date.now(),

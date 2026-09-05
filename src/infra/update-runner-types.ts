@@ -24,6 +24,7 @@ export type UpdateStepResult = {
 };
 
 export type UpdateRunResult = {
+  runId?: string;
   status: "ok" | "error" | "skipped";
   mode: "git" | "pnpm" | "bun" | "npm" | "unknown";
   root?: string;
@@ -102,6 +103,7 @@ export type UpdateStepProgress = {
 };
 
 export type UpdateRunnerOptions = {
+  runId?: string;
   cwd?: string;
   argv1?: string;
   tag?: string;
