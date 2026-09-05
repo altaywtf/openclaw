@@ -109,7 +109,6 @@ class PluginsPage extends OpenClawLightDomElement {
       this.error = null;
       this.messages = preservedKey && preservedMessage ? { [preservedKey]: preservedMessage } : {};
       this.pageNotice = null;
-      this.mcpController.resetMessage();
     },
     invalidateRequests: (change) =>
       this.invalidateRequests(change.snapshot.phase !== "connected" || !change.snapshot.client),
@@ -232,7 +231,7 @@ class PluginsPage extends OpenClawLightDomElement {
     ) {
       this.resetPluginIcons();
       this.busy = {};
-      this.mcpController.resetBusy();
+      this.mcpController.resetFeedback();
     }
     if (shouldRefreshAfterChange) {
       void this.mcpController.refreshPage(() => this.refreshCatalog());
@@ -244,11 +243,10 @@ class PluginsPage extends OpenClawLightDomElement {
 
   private applyRouteData() {
     const data = this.routeData;
-    this.routeDataConsumed = true;
     if (!data) {
-      this.ensureInitialData();
       return;
     }
+    this.routeDataConsumed = true;
     if (!this.gateway.isRouteDataCurrent(data)) {
       this.ensureInitialData();
       return;
@@ -413,20 +411,22 @@ class PluginsPage extends OpenClawLightDomElement {
   }
 
   private get loading(): boolean {
-    return this.gateway.connected && this.catalogTask.status === TaskStatus.PENDING;
+    return (
+      this.gateway.connected &&
+      (!this.routeDataConsumed || this.catalogTask.status === TaskStatus.PENDING)
+    );
   }
 
   private ensureInitialData() {
+    // The route owns initial loading; a warm page module can render before its data arrives.
     if (
+      !this.routeDataConsumed ||
       !this.gateway.connected ||
       !this.gateway.client ||
       this.loading ||
       this.result ||
       this.error
     ) {
-      return;
-    }
-    if (this.routeData && !this.routeDataConsumed) {
       return;
     }
     void this.refreshCatalog();
