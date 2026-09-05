@@ -247,8 +247,9 @@ describe("ensureSandboxContainer config-hash recreation", () => {
     [".openclaw/sandbox-skills/skills", "symlink"],
     [".openclaw/sandbox-skills/skills", "in-root symlink"],
     [".openclaw/sandbox-skills/skills", "file"],
+    [".openclaw/sandbox-skills/skills", "dangling symlink"],
   ] as const)(
-    "rejects managed mountpoint %s occupied by a %s before container creation",
+    "preserves managed mountpoint %s occupied by a %s and starts after recovery",
     async (relative, kind) => {
       const workspaceDir = fs.realpathSync(tempDirs.make("openclaw-docker-mounts-"));
       const skillsWorkspaceDir = fs.realpathSync(tempDirs.make("openclaw-docker-skills-"));
@@ -258,8 +259,15 @@ describe("ensureSandboxContainer config-hash recreation", () => {
       const target = path.join(workspaceDir, relative);
       fs.mkdirSync(path.dirname(target), { recursive: true });
       if (kind !== "file") {
-        const linkDir = kind === "in-root symlink" ? path.join(workspaceDir, "other") : outsideDir;
-        fs.mkdirSync(linkDir, { recursive: true });
+        const linkDir =
+          kind === "in-root symlink"
+            ? path.join(workspaceDir, "other")
+            : kind === "dangling symlink"
+              ? path.join(outsideDir, "missing")
+              : outsideDir;
+        if (kind !== "dangling symlink") {
+          fs.mkdirSync(linkDir, { recursive: true });
+        }
         fs.symlinkSync(linkDir, target, process.platform === "win32" ? "junction" : "dir");
       } else {
         fs.writeFileSync(target, "preserve");
@@ -267,20 +275,36 @@ describe("ensureSandboxContainer config-hash recreation", () => {
       spawnState.containerExists = false;
       registryMocks.readRegistryEntry.mockResolvedValue(null);
 
-      await expect(
-        ensureSandboxContainer({
-          scopeKey: "shared",
-          workspaceDir,
-          agentWorkspaceDir: workspaceDir,
-          skillsWorkspaceDir,
-          cfg: createSandboxConfig([], []),
-        }),
-      ).rejects.toThrow();
+      const params = {
+        scopeKey: "shared",
+        workspaceDir,
+        agentWorkspaceDir: workspaceDir,
+        skillsWorkspaceDir,
+        cfg: createSandboxConfig([], []),
+      };
+      const originalLink = kind === "file" ? undefined : fs.readlinkSync(target);
+      await expect(ensureSandboxContainer(params)).rejects.toThrow();
       expect(
         spawnState.calls.some((call) => call.args[0] === "create" || call.args[0] === "start"),
       ).toBe(false);
       expect(fs.readdirSync(outsideDir)).toEqual(["witness"]);
       expect(fs.readFileSync(path.join(outsideDir, "witness"), "utf8")).toBe("unchanged");
+      const backup = path.join(tempDirs.make("openclaw-mount-backup-"), "collision");
+      fs.renameSync(target, backup);
+      await ensureSandboxContainer(params);
+      expect(spawnState.calls.filter((call) => call.args[0] === "create")).toHaveLength(1);
+      expect(spawnState.calls.filter((call) => call.args[0] === "start")).toHaveLength(1);
+      fs.rmSync(workspaceDir, { recursive: true });
+      expect(fs.existsSync(workspaceDir)).toBe(false);
+      if (kind === "file") {
+        expect(fs.readFileSync(backup, "utf8")).toBe("preserve");
+      } else {
+        expect(fs.lstatSync(backup).isSymbolicLink()).toBe(true);
+        expect(fs.readlinkSync(backup)).toBe(originalLink);
+      }
+      expect(fs.readdirSync(outsideDir)).toEqual(["witness"]);
+      expect(fs.readFileSync(path.join(outsideDir, "witness"), "utf8")).toBe("unchanged");
+      expect(fs.statSync(path.join(skillsWorkspaceDir, "skills")).isDirectory()).toBe(true);
     },
   );
 

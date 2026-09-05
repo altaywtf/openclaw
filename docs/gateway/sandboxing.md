@@ -331,6 +331,40 @@ for filesystem restrictions; `workspaceAccess` alone does not make remote shell
 paths read-only.
 </Note>
 
+### Recover from a skill mountpoint collision
+
+Before creating or restarting a local container, OpenClaw prepares real
+host-owned directories for its read-only skill mounts. If a required path or
+one of its parents is a file or symlink, startup fails before the container
+starts. This includes dangling symlinks and links to directories inside the
+workspace. OpenClaw preserves the existing entry and does not follow or remove
+its target.
+
+If the error names `sandbox workspace skill mountpoints`:
+
+1. Pause work using the affected sandbox. List tool and browser containers with
+   `openclaw sandbox list` and `openclaw sandbox list --browser`. Stop any affected
+   running containers before changing workspace paths; a shared sandbox may serve
+   more than one session.
+2. Run `openclaw sandbox explain --session <session-key>` and locate
+   `effectiveHostWorkspaceRoot`. Inspect the required skill mount paths under
+   that host workspace: `skills`, `.agents/skills`, and
+   `.openclaw/sandbox-skills/skills`. Check their parents too; the collision may
+   be `.openclaw`, rather than the final `skills` directory. The error identifies
+   the mountpoint scope but does not include the colliding path.
+3. Move the colliding entry itself to an unused backup name outside the managed
+   mount paths. Keep the backup in a directory you control and do not overwrite
+   an existing backup. For a symlink, move the link without following it or moving
+   its target. Preserve any files needed by other workspace tools.
+4. Retry the failed sandbox action. OpenClaw recreates the missing directories
+   as the Gateway user and mounts the skill sources read-only. Check that the
+   action completes and the affected container is running.
+
+Keep the backup until you have checked its contents and any tools that used the
+old path. Moving the entry resolves the mount collision; it does not migrate
+another tool's data into OpenClaw's generated skill directories. Deleting or
+recreating only the container does not remove a collision in the host workspace.
+
 ## Multiple folders for one agent
 
 Use Docker bind mounts when one sandboxed agent needs more than its primary workspace. Each entry maps a host folder to a container path with an explicit access mode:
