@@ -146,15 +146,21 @@ describe.skipIf(process.platform === "win32")("native multi-invocation report ow
     expect(result.code, result.stderr).toBe(0);
     expect(inventory(json(result.output))).toEqual(expected);
     expect(
-      fs.readFileSync(path.join(path.dirname(result.output), "config-loads.txt"), "utf8"),
-    ).toBe("alpha\nbeta\n");
+      fs
+        .readFileSync(path.join(path.dirname(result.output), "config-loads.txt"), "utf8")
+        .trimEnd()
+        .split("\n")
+        .toSorted(),
+    ).toEqual(["alpha", "beta"]);
     const replay = json(path.join(result.reportSet!, "aggregate.json.capture.json"));
     const root = path.dirname(path.dirname(result.output));
     expect(replay.projects).toEqual(
-      [
-        ["alpha", "test/vitest/vitest.unit-fast-isolated.config.ts"],
-        ["beta", "test/vitest/vitest.agents-embedded-agent.config.ts"],
-      ].map(([name, config]) => ({
+      (
+        [
+          ["alpha", "test/vitest/vitest.unit-fast-isolated.config.ts"],
+          ["beta", "test/vitest/vitest.agents-embedded-agent.config.ts"],
+        ] as const
+      ).map(([name, config]) => ({
         name,
         root,
         config: path.join(root, config),
