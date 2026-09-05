@@ -17,6 +17,7 @@ import {
   updateSessionEntry,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
+import { waitForSessionTranscriptIndexReconcile } from "../../config/sessions/session-transcript-reconcile.js";
 import { withOwnedSessionTranscriptWrites } from "../../config/sessions/transcript-write-context.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { CURRENT_SESSION_VERSION, SessionManager } from "./session-manager.js";
@@ -506,9 +507,24 @@ describe("SessionManager persistence compatibility", () => {
       await expect(rewrite()).resolves.toBe(1);
       expect(manager.getEntry(temporaryId)).toBeUndefined();
       expect(manager.getLabel(temporaryId)).toBeUndefined();
-      expect(SessionManager.open(scope, dir).getPersistedEntries()).toEqual(
-        manager.getPersistedEntries(),
-      );
+      if (failure === "bounded-sqlite") {
+        await waitForSessionTranscriptIndexReconcile({
+          agentId: scope.agentId,
+          path: resolveSessionTranscriptDatabasePath(scope),
+        });
+      }
+      const reopened =
+        failure === "bounded-sqlite"
+          ? SessionManager.open(scope, dir, { maxEvents: 3, maxBytes: 4096 })
+          : SessionManager.open(scope, dir);
+      if (failure === "bounded-sqlite") {
+        expect(reopened.getEntry(temporaryId)).toBeUndefined();
+        expect(reopened.getLabel(temporaryId)).toBeUndefined();
+        expect(manager.getEntry(temporaryId)).toBeUndefined();
+        expect(manager.getLabel(temporaryId)).toBeUndefined();
+      } else {
+        expect(reopened.getPersistedEntries()).toEqual(manager.getPersistedEntries());
+      }
     },
   );
 

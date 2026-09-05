@@ -28,6 +28,7 @@ export type SessionTranscriptBoundedActiveContext = {
   activeLeafEntryId: string | null;
   opaqueParents: Map<string, string | null>;
   firstKeptRanges: Map<string, { startIndex: number; endIndex: number }>;
+  persistedSuffixStartSeq: number;
   boundaryCount: number;
   events: TranscriptEvent[];
   serializedBytes: number;
@@ -289,6 +290,7 @@ export function readSessionTranscriptBoundedActiveContextCore(
       activeLeafEntryId,
       opaqueParents,
       firstKeptRanges,
+      persistedSuffixStartSeq: contextSequences[0] ?? (header ? header.seq + 1 : 0),
       boundaryCount: boundary?.boundary_count ?? 0,
       events,
       serializedBytes,

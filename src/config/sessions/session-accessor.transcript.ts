@@ -12,9 +12,11 @@ import {
   loadTranscriptEventsSync,
   loadTranscriptHeaderSync,
   loadTranscriptTailEventsSync,
+  loadTranscriptSuffixEventsBoundedSync,
   readTranscriptStatsBatchReadOnlySync,
   readTranscriptStatsSync,
   readTranscriptEventAtSeqSync,
+  readTranscriptIdentityByEventId,
 } from "./session-accessor.sqlite-read.js";
 import { rewriteTranscriptMessageAtAnchor } from "./session-accessor.sqlite-transcript-message-rewrite.js";
 import {
@@ -55,9 +57,11 @@ export {
   loadTranscriptEventsSync,
   loadTranscriptHeaderSync,
   loadTranscriptTailEventsSync,
+  loadTranscriptSuffixEventsBoundedSync,
   publishTranscriptUpdate,
   readLatestTranscriptAssistantText,
   readTranscriptEventAtSeqSync,
+  readTranscriptIdentityByEventId,
   readTranscriptRawDelta,
   readTranscriptStatsBatchReadOnlySync,
   readTranscriptStatsSync,

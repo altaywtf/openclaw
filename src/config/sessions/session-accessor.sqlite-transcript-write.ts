@@ -140,7 +140,10 @@ export async function replaceTranscriptEvents(
 export async function replaceSessionWithBranchedTranscript(
   scope: SessionTranscriptRuntimeTarget,
   branch: { sessionId: string; events: TranscriptEvent[] },
-  onCommitted: (target: SessionTranscriptRuntimeTarget) => void,
+  onCommitted: (
+    target: SessionTranscriptRuntimeTarget,
+    transcriptMutationAt: number | null,
+  ) => void,
 ): Promise<void> {
   // The admitted writer belongs to the source identity; capture it before rebinding.
   const fencedScope = withOwnedSessionTranscriptWriterFence(scope);
@@ -179,12 +182,19 @@ export async function replaceSessionWithBranchedTranscript(
       });
       assertLockedTranscriptWriteAllowed(database, nextResolved, nextScope);
       replaceSqliteTranscriptEventsInTransaction(database, nextResolved, branch.events);
-      return { previous, current: readSessionIdentitySnapshot(database, identityKeys) };
+      return {
+        previous,
+        current: readSessionIdentitySnapshot(database, identityKeys),
+        transcriptMutationAt: readTranscriptMutationStateInTransaction(
+          database,
+          nextResolved.sessionId,
+        ).updatedAt,
+      };
     }, databaseOptions);
     // Adopt the runtime tree after commit and before observers can use the new identity.
     // A failed transcript insert must neither adopt nor announce the rolled-back branch.
     try {
-      onCommitted(nextScope);
+      onCommitted(nextScope, identities.transcriptMutationAt);
     } finally {
       emitCommittedSessionIdentityDiff(identities.previous, identities.current);
     }
@@ -256,6 +266,7 @@ export function replaceTranscriptSuffixEventsSync(
   prefixLength = 0,
   expectedMutationAt?: number | null,
   captureMutationAtInTransaction?: (mutationAt: number | null) => void,
+  eventsStartAtPersistedPrefix = false,
 ): boolean {
   const fencedScope = withOwnedSessionTranscriptWriterFence(scope);
   const resolved = resolveSqliteTranscriptScope(fencedScope);
@@ -268,6 +279,7 @@ export function replaceTranscriptSuffixEventsSync(
     nextEvents,
     prefixLength,
     expectedMutationAt,
+    eventsStartAtPersistedPrefix,
   );
   let replaced = false;
   runOpenClawAgentWriteTransaction((database) => {

@@ -10,12 +10,14 @@ import {
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
 import { readSessionTranscriptBoundedActiveContextCore } from "../../config/sessions/session-accessor.sqlite-active-context.js";
+import { resolveSessionTranscriptDatabasePath } from "../../config/sessions/session-accessor.transcript-target.js";
 import {
   SYNC_REBUILD_MAX_BYTES,
   SYNC_REBUILD_MAX_ROWS,
 } from "../../config/sessions/session-transcript-index.js";
 import { runWithSessionTranscriptReadFence } from "../../config/sessions/session-transcript-read-fence.js";
 import { waitForSessionTranscriptIndexReconcile } from "../../config/sessions/session-transcript-reconcile.js";
+import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { SessionManager } from "./session-manager.js";
 
 const { uuidQueue } = vi.hoisted(() => ({ uuidQueue: [] as string[] }));
@@ -31,6 +33,26 @@ vi.mock("node:crypto", async (importOriginal) => {
 });
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+
+function buildAssistantMessage(text: string) {
+  return {
+    role: "assistant" as const,
+    content: [{ type: "text" as const, text }],
+    api: "messages" as const,
+    provider: "anthropic" as const,
+    model: "sonnet-4.6" as const,
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "stop" as const,
+    timestamp: Date.now(),
+  };
+}
 
 afterEach(() => {
   uuidQueue.length = 0;
@@ -223,6 +245,46 @@ it("bounds runtime hydration while preserving older durable transcript rows on r
     { message: { content: "oldest" } },
     { message: { content: "middle" } },
   ]);
+});
+
+it.each([
+  { corruptSeq: 1, name: "older raw prefix" },
+  { corruptSeq: 2, name: "newly exposed bounded row" },
+])("removes a bounded tail without parsing a $name", async ({ corruptSeq }) => {
+  const dir = tempDirs.make("openclaw-session-manager-unparsed-prefix-");
+  const scope = {
+    agentId: "main",
+    sessionId: `unparsed-prefix-session-${corruptSeq}`,
+    sessionKey: `agent:main:unparsed-prefix-session-${corruptSeq}`,
+    storePath: path.join(dir, "sessions.json"),
+  };
+  await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 1 });
+  const seed = SessionManager.open(scope, dir);
+  seed.appendMessage({ role: "user", content: "older", timestamp: 1 });
+  seed.appendMessage({ role: "user", content: "middle", timestamp: 2 });
+  seed.appendMessage({ role: "user", content: "retained", timestamp: 3 });
+  const removableId = seed.appendMessage(buildAssistantMessage("temporary"));
+  await waitForSessionTranscriptIndexReconcile({
+    agentId: scope.agentId,
+    path: path.join(dir, "openclaw-agent.sqlite"),
+  });
+  const manager = SessionManager.openBounded(scope, { cwd: dir, maxBytes: 4096, maxEvents: 2 });
+
+  const database = openOpenClawAgentDatabase({
+    agentId: scope.agentId,
+    path: resolveSessionTranscriptDatabasePath(scope),
+  });
+  database.db
+    .prepare("UPDATE transcript_events SET event_json = ? WHERE session_id = ? AND seq = ?")
+    .run("{excluded-row-is-not-json", scope.sessionId, corruptSeq);
+
+  expect(manager.removeTrailingEntries((entry) => entry.id === removableId)).toBe(1);
+  expect(manager.buildSessionContext().messages).toMatchObject([{ content: "retained" }]);
+  expect(
+    database.db
+      .prepare("SELECT event_json FROM transcript_events WHERE session_id = ? AND seq = ?")
+      .get(scope.sessionId, corruptSeq),
+  ).toEqual({ event_json: "{excluded-row-is-not-json" });
 });
 
 it("keeps a long transcript projection available when removing a trailing entry", async () => {

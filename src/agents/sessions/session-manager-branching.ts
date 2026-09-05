@@ -1,8 +1,5 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import {
-  inspectTranscriptEventsSync,
-  replaceSessionWithBranchedTranscript,
-} from "../../config/sessions/session-accessor.js";
+import { replaceSessionWithBranchedTranscript } from "../../config/sessions/session-accessor.js";
 import { CURRENT_SESSION_VERSION } from "../../config/sessions/version.js";
 import { parseOpaqueLeafEntry, parseParentLinkedOpaqueEntry } from "./session-manager-codec.js";
 import type { SessionManagerPersistenceTarget } from "./session-manager-core.js";
@@ -151,15 +148,16 @@ export class SessionManagerBranching extends SessionManagerEntries {
     ]);
     branch.opaqueFileEntries = branchPath.opaqueEntries;
     branch.buildIndex();
-    const adoptBranch = (target?: SessionManagerPersistenceTarget) => {
+    const adoptBranch = (
+      target?: SessionManagerPersistenceTarget,
+      transcriptMutationAt?: number | null,
+    ) => {
       this.fileEntries = branch.fileEntries;
       this.opaqueFileEntries = branch.opaqueFileEntries;
       this.sessionId = newSessionId;
       this.buildIndex();
       this.persistenceTarget = target;
-      this.transcriptMutationAt = target
-        ? inspectTranscriptEventsSync(target).snapshot.transcriptUpdatedAt
-        : undefined;
+      this.transcriptMutationAt = target ? transcriptMutationAt : undefined;
       this.persistenceHeaderPending = false;
     };
     if (persistenceTarget) {

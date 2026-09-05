@@ -230,11 +230,14 @@ function prepareIncrementalTranscriptSuffixMutation(
   nextEvents: readonly TranscriptEvent[],
   persistedPrefixLength: number,
   expectedMutationAt?: number | null,
+  eventsStartAtPersistedPrefix = false,
 ): SqliteTranscriptSuffixMutationPlan {
-  const expectedTail = expectedEvents
-    .slice(persistedPrefixLength)
-    .map(canonicalizeTranscriptEventMedia);
-  const nextTail = nextEvents.slice(persistedPrefixLength).map(canonicalizeTranscriptEventMedia);
+  const expectedTail = (
+    eventsStartAtPersistedPrefix ? expectedEvents : expectedEvents.slice(persistedPrefixLength)
+  ).map(canonicalizeTranscriptEventMedia);
+  const nextTail = (
+    eventsStartAtPersistedPrefix ? nextEvents : nextEvents.slice(persistedPrefixLength)
+  ).map(canonicalizeTranscriptEventMedia);
   if (expectedTail.length > SYNC_REBUILD_MAX_ROWS || nextTail.length > SYNC_REBUILD_MAX_ROWS) {
     throw new Error(
       `Transcript suffix exceeds synchronous planning row limit for ${resolved.sessionId}`,
@@ -473,6 +476,7 @@ export function prepareSqliteTranscriptSuffixMutation(
   nextEvents: readonly TranscriptEvent[],
   persistedPrefixLength = 0,
   expectedMutationAt?: number | null,
+  eventsStartAtPersistedPrefix = false,
 ): SqliteTranscriptSuffixMutationPlan {
   if (persistedPrefixLength > 0) {
     return prepareIncrementalTranscriptSuffixMutation(
@@ -482,6 +486,7 @@ export function prepareSqliteTranscriptSuffixMutation(
       nextEvents,
       persistedPrefixLength,
       expectedMutationAt,
+      eventsStartAtPersistedPrefix,
     );
   }
   return prepareFullTranscriptSuffixMutation(database, resolved, expectedEvents, nextEvents);

@@ -33,6 +33,7 @@ export type SessionManagerBoundedContext = Pick<
   | "activeLeafEntryId"
   | "opaqueParents"
   | "firstKeptRanges"
+  | "persistedSuffixStartSeq"
   | "boundaryCount"
   | "transcriptMutationAt"
 > & { limits: SessionManagerBoundedContextLimits };
@@ -50,6 +51,7 @@ export class SessionManagerCore extends SessionEntryNavigation<SessionEntry> {
   protected boundedContextLimits: SessionManagerBoundedContextLimits | undefined;
   protected boundedContextIncomplete = false;
   protected persistedBoundaryCount: number | undefined;
+  protected persistedSuffixStartSeq: number | undefined;
   protected transcriptMutationAt: number | null | undefined;
 
   constructor(
@@ -65,6 +67,7 @@ export class SessionManagerCore extends SessionEntryNavigation<SessionEntry> {
     this.boundedContextLimits = boundedContext?.limits;
     this.boundedContextIncomplete = boundedContext !== undefined;
     this.persistedBoundaryCount = boundedContext?.boundaryCount;
+    this.persistedSuffixStartSeq = boundedContext?.persistedSuffixStartSeq;
     this.transcriptMutationAt =
       boundedContext !== undefined ? boundedContext.transcriptMutationAt : transcriptMutationAt;
     if (persistenceTarget || loadedEntries) {
@@ -82,6 +85,7 @@ export class SessionManagerCore extends SessionEntryNavigation<SessionEntry> {
     const entries = (bounded?.events ?? inspected?.events ?? []) as FileEntry[];
     this.boundedContextIncomplete = bounded !== undefined;
     this.persistedBoundaryCount = bounded?.boundaryCount;
+    this.persistedSuffixStartSeq = bounded?.persistedSuffixStartSeq;
     this.transcriptMutationAt =
       bounded !== undefined
         ? bounded.transcriptMutationAt
