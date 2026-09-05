@@ -1,5 +1,5 @@
-import { isCloudModelRef } from "@openclaw/model-catalog-core/model-catalog-refs";
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
+import { isSelfHostedOllamaModel } from "../../extensions/ollama/local-model-api.js";
 import {
   isLocalProviderBaseUrl,
   LOCAL_PROVIDER_HOST_ALIASES,
@@ -22,14 +22,10 @@ function shouldAutoEnableLocalModelLean(
   const modelId = modelRef.slice(modelRef.indexOf("/") + 1);
   const baseUrl =
     provider?.models?.find((model) => model.id === modelId)?.baseUrl ?? provider?.baseUrl;
-  if (baseUrl && !isLocalProviderBaseUrl(baseUrl, LOCAL_PROVIDER_HOST_ALIASES)) {
-    return false;
+  if (normalizedProviderId === "ollama") {
+    return isSelfHostedOllamaModel(modelId, baseUrl);
   }
-  if (normalizedProviderId !== "ollama") {
-    return true;
-  }
-  // Hosted source-tagged models can be routed through the same local daemon.
-  return !isCloudModelRef(modelRef);
+  return !baseUrl || isLocalProviderBaseUrl(baseUrl, LOCAL_PROVIDER_HOST_ALIASES);
 }
 
 function resolveDefaultModelRef(config: OpenClawConfig): string | undefined {

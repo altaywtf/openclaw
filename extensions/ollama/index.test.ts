@@ -647,7 +647,8 @@ describe("ollama plugin", () => {
     expect(queryOllamaModelShowInfoMock).not.toHaveBeenCalled();
   });
 
-  it("prepares the exact configured model even when it is installed but idle", async () => {
+  it("preserves the configured context cap when preparing an installed but idle model", async () => {
+    const contextTokens = 65_536;
     const provider = registerProvider();
     const config = {
       models: {
@@ -662,7 +663,8 @@ describe("ollama plugin", () => {
                 reasoning: false,
                 input: ["text"] as const,
                 cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-                contextWindow: 32_768,
+                contextWindow: 131_072,
+                contextTokens,
                 maxTokens: 8_192,
                 compat: { supportsTools: true },
               },
@@ -688,7 +690,7 @@ describe("ollama plugin", () => {
         models: {
           providers: {
             ollama: {
-              models: [expect.objectContaining({ id: "qwen-tool" })],
+              models: [expect.objectContaining({ id: "qwen-tool", contextTokens })],
             },
           },
         },
@@ -696,6 +698,37 @@ describe("ollama plugin", () => {
     });
     expect(fetchLoadedOllamaModelNamesMock).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["http://127.0.0.1:11434", 32_768],
+    ["https://ollama.com", undefined],
+  ])(
+    "prepares the context default from endpoint ownership at %s",
+    async (baseUrl, contextTokens) => {
+      const provider = registerProvider();
+      const model = buildOllamaModelDefinitionMock("test-model", 1_048_576, [
+        "completion",
+        "tools",
+      ]);
+      mockDiscoveredOllamaProvider([model], { baseUrl });
+      mockOllamaShowInfo(["completion", "tools"]);
+
+      const prepared = await provider.auth[0].appGuidedSetup?.prepare({
+        config: {
+          models: {
+            providers: { ollama: { baseUrl, api: "ollama", models: [model] } },
+          },
+        },
+        env: {},
+        modelRef: "ollama/test-model",
+      });
+
+      expect(prepared?.defaultModel).toBe("ollama/test-model");
+      const configured = prepared?.configPatch?.models?.providers?.ollama?.models?.[0];
+      expect(configured?.contextWindow).toBe(1_048_576);
+      expect(configured?.contextTokens).toBe(contextTokens);
+    },
+  );
 
   it("rejects an explicit installed model that setup did not configure", async () => {
     const provider = registerProvider();
@@ -1120,6 +1153,7 @@ describe("ollama plugin", () => {
       expect(resolved?.id).toBe("llama3.2:latest");
       expect(resolved?.api).toBe("ollama");
       expect(resolved?.baseUrl).toBe("http://127.0.0.1:11434");
+      expect(resolved?.contextTokens).toBe(8192);
       expect(buildOllamaProviderMock).toHaveBeenCalledWith(undefined, { quiet: true });
     } finally {
       if (previous === undefined) {
@@ -1476,6 +1510,28 @@ describe("ollama plugin", () => {
         process.env.OLLAMA_API_KEY = previous;
       }
     }
+  });
+
+  it("keeps a bare hosted model uncapped when only show reports it", async () => {
+    const provider = registerProvider();
+    const baseUrl = "https://ollama.com";
+    mockDiscoveredOllamaProvider([], { baseUrl });
+    mockOllamaShowInfo(["completion", "tools"]);
+
+    const resolved = await provider.prepareDynamicModel?.(
+      createDynamicModelContext("hosted-model", {
+        models: {
+          providers: {
+            ollama: { baseUrl, apiKey: "test-hosted-access", api: "ollama", models: [] },
+          },
+        },
+      }),
+    );
+
+    expect(resolved?.id).toBe("hosted-model");
+    expect(resolved?.baseUrl).toBe(baseUrl);
+    expect(resolved?.contextWindow).toBe(1_048_576);
+    expect(resolved?.contextTokens).toBeUndefined();
   });
 
   it("augments exact configured Ollama refs with live show capabilities", async () => {

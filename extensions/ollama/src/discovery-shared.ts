@@ -8,6 +8,7 @@ import type {
 import { coerceSecretRef } from "openclaw/plugin-sdk/secret-input-runtime";
 import { isLoopbackHost } from "openclaw/plugin-sdk/ssrf-runtime";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { isHostedOllamaCloud, isLocalOllamaBaseUrl } from "../local-model-api.js";
 import { OLLAMA_DEFAULT_API_KEY, OLLAMA_DEFAULT_BASE_URL } from "./defaults.js";
 import { readProviderBaseUrl } from "./provider-base-url.js";
 import { resolveOllamaApiBase } from "./provider-models.js";
@@ -19,6 +20,7 @@ type OllamaProviderConfigInput = Omit<Partial<ModelProviderConfig>, "models"> & 
 
 export const OLLAMA_PROVIDER_ID = "ollama";
 export { OLLAMA_DEFAULT_API_KEY } from "./defaults.js";
+export { isLocalOllamaBaseUrl } from "../local-model-api.js";
 
 export type OllamaPluginConfig = {
   discovery?: {
@@ -125,76 +127,7 @@ function resolveOllamaDiscoveryAuth(params: {
   return { apiKey: OLLAMA_DEFAULT_API_KEY };
 }
 
-const LOCAL_OLLAMA_HOSTNAMES = new Set([
-  "localhost",
-  "0.0.0.0",
-  "::1",
-  "::",
-  "docker.orb.internal",
-  "host.docker.internal",
-  "host.orb.internal",
-]);
 const LOOPBACK_OLLAMA_HOSTNAMES = new Set(["localhost", "127.0.0.1", "0.0.0.0", "::1", "::"]);
-
-function isIpv4PrivateRange(host: string): boolean {
-  if (!/^\d+\.\d+\.\d+\.\d+$/.test(host)) {
-    return false;
-  }
-  const octets = host.split(".").map((part) => Number.parseInt(part, 10));
-  if (octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
-    return false;
-  }
-  const [a, b] = octets;
-  if (a === undefined || b === undefined) {
-    return false;
-  }
-  return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
-}
-
-function isIpv6LocalRange(host: string): boolean {
-  const lower = host.toLowerCase();
-  return /^fe[89ab][0-9a-f]:/.test(lower) || /^f[cd][0-9a-f]{2}:/.test(lower);
-}
-
-export function isLocalOllamaBaseUrl(baseUrl: string | undefined | null): boolean {
-  if (!baseUrl) {
-    return true;
-  }
-  let parsed: URL;
-  try {
-    parsed = new URL(baseUrl);
-  } catch {
-    return false;
-  }
-  let host = parsed.hostname.toLowerCase();
-  if (host.startsWith("[") && host.endsWith("]")) {
-    host = host.slice(1, -1);
-  }
-  return (
-    LOCAL_OLLAMA_HOSTNAMES.has(host) ||
-    isLoopbackHost(host) ||
-    host.endsWith(".local") ||
-    isIpv4PrivateRange(host) ||
-    isIpv6LocalRange(host) ||
-    (!host.includes(".") && !host.includes(":"))
-  );
-}
-
-const HOSTED_OLLAMA_CLOUD_HOSTNAMES = new Set(["ollama.com", "api.ollama.com"]);
-
-function isHostedOllamaCloud(baseUrl: string | undefined | null): boolean {
-  if (!baseUrl) {
-    return false;
-  }
-  let parsed: URL;
-  try {
-    parsed = new URL(baseUrl);
-  } catch {
-    return false;
-  }
-  const host = parsed.hostname.toLowerCase();
-  return HOSTED_OLLAMA_CLOUD_HOSTNAMES.has(host) || host.endsWith(".ollama.com");
-}
 
 function isLoopbackOllamaBaseUrl(baseUrl: string | undefined | null): boolean {
   if (!baseUrl) {

@@ -150,6 +150,64 @@ describe("ollama provider models", () => {
     expect(provider.models?.[3]).not.toHaveProperty("contextTokens");
   });
 
+  it.each(["https://ollama.com", "https://api.ollama.com/v1"])(
+    "does not cap bare model names served by %s",
+    (baseUrl) => {
+      const model = buildOllamaModelDefinition("hosted-model", 1_048_576);
+      const provider = capLocalOllamaProviderContext({ api: "ollama", baseUrl, models: [model] });
+
+      expect(provider.models).toEqual([model]);
+      expect(provider.models[0]).not.toHaveProperty("contextTokens");
+    },
+  );
+
+  it.each([
+    ["http://127.0.0.1:11434", "https://ollama.com", undefined],
+    ["https://ollama.com", "http://127.0.0.1:11434", 32_768],
+    ["https://ollama.com", "https://ollama.example.com", 32_768],
+  ])(
+    "uses the model endpoint %s -> %s for the local context default",
+    (providerBaseUrl, modelBaseUrl, contextTokens) => {
+      const provider = capLocalOllamaProviderContext({
+        api: "ollama",
+        baseUrl: providerBaseUrl,
+        models: [
+          {
+            ...buildOllamaModelDefinition("custom-model", 1_048_576),
+            baseUrl: modelBaseUrl,
+          },
+        ],
+      });
+
+      expect(provider.models[0]?.contextWindow).toBe(1_048_576);
+      expect(provider.models[0]?.contextTokens).toBe(contextTokens);
+    },
+  );
+
+  it.each([16_384, 32_768, 65_536])(
+    "preserves an explicit %s-token limit on local and hosted models",
+    (contextTokens) => {
+      const models = [
+        {
+          ...buildOllamaModelDefinition("local-model", 1_048_576),
+          contextTokens,
+        },
+        {
+          ...buildOllamaModelDefinition("hosted-model", 1_048_576),
+          baseUrl: "https://ollama.com",
+          contextTokens,
+        },
+      ];
+      const provider = capLocalOllamaProviderContext({
+        api: "ollama",
+        baseUrl: "http://127.0.0.1:11434",
+        models,
+      });
+
+      expect(provider.models).toEqual(models);
+    },
+  );
+
   it.each([
     ["glm-5.2:cloud", true],
     ["gpt-oss:120b-cloud", true],

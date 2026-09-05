@@ -9,6 +9,7 @@ import {
 } from "openclaw/plugin-sdk/provider-model-shared";
 import type { ModelDefinitionConfig } from "openclaw/plugin-sdk/provider-onboard";
 import { fetchWithSsrFGuard, type LookupFn } from "openclaw/plugin-sdk/ssrf-runtime";
+import { isSelfHostedOllamaModel } from "../local-model-api.js";
 import {
   OLLAMA_CLOUD_DEFAULT_MODELS,
   OLLAMA_DEFAULT_BASE_URL,
@@ -452,8 +453,15 @@ export function buildDefaultOllamaCloudModelDefinition(
   };
 }
 
-export function capLocalOllamaModelContext(model: ModelDefinitionConfig): ModelDefinitionConfig {
-  if (isOllamaCloudModel(model.id) || typeof model.contextWindow !== "number") {
+export function capLocalOllamaModelContext(
+  model: ModelDefinitionConfig,
+  providerBaseUrl: string,
+): ModelDefinitionConfig {
+  if (
+    !isSelfHostedOllamaModel(model.id, model.baseUrl ?? providerBaseUrl) ||
+    model.contextTokens !== undefined ||
+    typeof model.contextWindow !== "number"
+  ) {
     return model;
   }
   return {
@@ -467,7 +475,7 @@ export function capLocalOllamaModelContext(model: ModelDefinitionConfig): ModelD
 export function capLocalOllamaProviderContext(provider: ModelProviderConfig): ModelProviderConfig {
   return {
     ...provider,
-    models: provider.models?.map(capLocalOllamaModelContext),
+    models: provider.models?.map((model) => capLocalOllamaModelContext(model, provider.baseUrl)),
   };
 }
 

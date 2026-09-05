@@ -44,6 +44,43 @@ describe("local model lean onboarding defaults", () => {
     expect(result.config.wizard?.localModelLeanAutoModel).toBe(expected ? modelRef : undefined);
   });
 
+  it.each([
+    ["https://ollama.com", undefined, false],
+    ["https://ollama.example.com", undefined, true],
+    ["http://127.0.0.1:11434", "https://ollama.com", false],
+    ["https://ollama.com", "http://127.0.0.1:11434", true],
+  ])("uses the effective endpoint %s -> %s for lean defaults", (baseUrl, modelBaseUrl, enabled) => {
+    const result = applyAutoLocalModelLean({
+      config: {
+        models: {
+          providers: {
+            ollama: {
+              baseUrl,
+              models: [
+                {
+                  id: "test-model",
+                  name: "Test model",
+                  baseUrl: modelBaseUrl,
+                  reasoning: false,
+                  input: ["text"],
+                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                  maxTokens: 8192,
+                },
+              ],
+            },
+          },
+        },
+      },
+      providerId: "ollama",
+      modelRef: "ollama/test-model",
+    });
+
+    expect(result.enabled).toBe(enabled);
+    expect(result.config.agents?.defaults?.experimental?.localModelLean).toBe(
+      enabled ? true : undefined,
+    );
+  });
+
   it.each([false, true])("preserves an explicit localModelLean=%s", (localModelLean) => {
     const config = { agents: { defaults: { experimental: { localModelLean } } } };
 
