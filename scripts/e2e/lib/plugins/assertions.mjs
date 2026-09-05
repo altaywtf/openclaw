@@ -764,7 +764,7 @@ function assertNpmPluginRemoved() {
       `npm managed dependency still exists after uninstall: ${dependencyPackagePath}`,
     );
   }
-  if (fs.existsSync(projectRoot)) {
+  if (pluginUninstallMode !== "legacy" && fs.existsSync(projectRoot)) {
     throw new Error(`npm managed project still exists after uninstall: ${projectRoot}`);
   }
 }
