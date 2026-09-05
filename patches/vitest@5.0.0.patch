@@ -17,10 +17,107 @@ index 3b3446e1720bf0f2a6f78e11f091260fffc57c84..9b076b8fea2d246c5a1e3cc48f36a4c2
  	if (arrayArgs[2] === "run" && !options.watch) options.run = true;
  	if (arrayArgs[2] === "related") {
 diff --git a/dist/chunks/index.B89dZ0-N.js b/dist/chunks/index.B89dZ0-N.js
-index 50abf4fbed1dc8670b7941ee466a7c8443840c5f..16822759355c39c26af9e8ff22356c0ac2f4bdf0 100644
+index 50abf4fbed1dc8670b7941ee466a7c8443840c5f..28158c7bfbb321a7dd7401ea6f9913b3599fd961 100644
 --- a/dist/chunks/index.B89dZ0-N.js
 +++ b/dist/chunks/index.B89dZ0-N.js
-@@ -10875,7 +10875,8 @@ class PoolRunner {
+@@ -6599,6 +6599,7 @@ class FileSystemModuleCache {
+ 	rootCache;
+ 	metadataFilePath;
+ 	version = "1.0.0-beta.7";
++	lockfileHash;
+ 	fsCacheRoots = /* @__PURE__ */ new WeakMap();
+ 	fsEnvironmentHashMap = /* @__PURE__ */ new WeakMap();
+ 	fsCacheKeyGenerators = /* @__PURE__ */ new Set();
+@@ -6628,6 +6629,9 @@ class FileSystemModuleCache {
+ 		return false;
+ 	}
+ 	async clearCache(log = true) {
++		// Disk deletion also retires paths retained by live module graphs.
++		this.fsCacheRoots = /* @__PURE__ */ new WeakMap();
++		this.invalidateAllCachePaths();
+ 		const fsCachePaths = [this.rootCache, ...this.vitest.projects.map((r) => r.config.fsModuleCachePath || this.rootCache)];
+ 		const uniquePaths = Array.from(new Set(fsCachePaths));
+ 		await Promise.all(uniquePaths.map((directory) => rm(directory, {
+@@ -6703,9 +6707,18 @@ class FileSystemModuleCache {
+ 		debugFs$1?.(`cache for ${id} in ${environment.name} environment is invalidated`);
+ 		this.fsCacheKeys.get(environment)?.delete(id);
+ 	}
+-	invalidateAllCachePaths(environment) {
+-		debugFs$1?.(`the ${environment.name} environment cache is invalidated`);
+-		this.fsCacheKeys.get(environment)?.clear();
++	invalidateAllCachePaths() {
++		for (const project of new Set([this.vitest.getRootProject(), ...this.vitest.projects])) {
++			for (const environment of Object.values(project.vite.environments)) {
++				debugFs$1?.(`the ${environment.name} environment cache is invalidated`);
++				this.fsCacheKeys.get(environment)?.clear();
++				for (const module of environment.moduleGraph.idToModuleMap.values()) {
++					for (const transform of [module.transformResult, module.invalidationState]) {
++						if (transform && typeof transform !== "string") delete transform.__vitestTmp;
++					}
++				}
++			}
++		}
+ 	}
+ 	getMemoryCachePath(environment, id) {
+ 		const result = this.fsCacheKeys.get(environment)?.get(id);
+@@ -6766,7 +6779,7 @@ class FileSystemModuleCache {
+ 			environmentHash = hash("sha1", (process.env.NODE_ENV ?? "") + this.version + cacheConfig, "hex");
+ 			this.fsEnvironmentHashMap.set(environment, environmentHash);
+ 		}
+-		hashString += id + fileContent + environmentHash + coverageAffectsCache;
++		hashString += id + fileContent + environmentHash + this.lockfileHash + coverageAffectsCache;
+ 		const cacheKey = hash("sha1", hashString, "hex");
+ 		let cacheRoot = this.fsCacheRoots.get(vitestConfig);
+ 		if (cacheRoot == null) {
+@@ -6803,8 +6816,16 @@ class FileSystemModuleCache {
+ 		if (![this.vitest.getRootProject(), ...this.vitest.projects].some((p) => p.config.fsModuleCache)) return;
+ 		const metadata = await this.readMetadata();
+ 		const currentLockfileHash = getLockfileHash(this.vitest.vite.config.root);
+-		// no metadata found, just store a new one, don't reset the cache
+-		if (!metadata) {
++		// Keys carry the generation even when an excluded project kept older files.
++		if (metadata?.lockfileHash !== currentLockfileHash) {
++			if (metadata) {
++				await this.clearCache(false);
++				this.vitest.vite.config.logger.info(`fs cache was cleared because lockfile has changed`, {
++					timestamp: true,
++					environment: y.yellow("[vitest]")
++				});
++				debugFs$1?.(`fs cache was cleared because lockfile has changed`);
++			}
+ 			debugFs$1?.(`fs metadata file was created with hash ${currentLockfileHash}`);
+ 			try {
+ 				if (!existsSync(this.rootCache)) mkdirSync(this.rootCache, { recursive: true });
+@@ -6814,17 +6835,8 @@ class FileSystemModuleCache {
+ 				// abort the entire execution
+ 				debugFs$1?.(`failed to write fs cache metadata: ${error}`);
+ 			}
+-			return;
+ 		}
+-		// if lockfile didn't change, don't do anything
+-		if (metadata.lockfileHash === currentLockfileHash) return;
+-		// lockfile changed, let's clear all caches
+-		await this.clearCache(false);
+-		this.vitest.vite.config.logger.info(`fs cache was cleared because lockfile has changed`, {
+-			timestamp: true,
+-			environment: y.yellow("[vitest]")
+-		});
+-		debugFs$1?.(`fs cache was cleared because lockfile has changed`);
++		this.lockfileHash = currentLockfileHash;
+ 	}
+ }
+ /**
+@@ -9723,7 +9735,8 @@ class ModuleFetcher {
+ 		if ("code" in result) trace.setAttribute("vitest.fetched_module.code_length", result.code.length);
+ 	}
+ 	async getCachePath(environment, moduleGraphModule) {
+-		if (!this.fsCacheEnabled) return null;
++		// Setup imports precede cache-key registration and integrity initialization.
++		if (!this.fsCacheEnabled || this.fsCache.lockfileHash === void 0) return null;
+ 		const moduleId = moduleGraphModule.id;
+ 		const memoryCacheKey = this.fsCache.getMemoryCachePath(environment, moduleId);
+ 		// undefined means there is no key in memory
+@@ -10875,7 +10888,8 @@ class PoolRunner {
  							stopSpan.recordException(response.error);
  							this.project.vitest.state.catchError(response.error, "Teardown Error");
  						}
@@ -30,7 +127,7 @@ index 50abf4fbed1dc8670b7941ee466a7c8443840c5f..16822759355c39c26af9e8ff22356c0a
  						this.off("message", onStop);
  					}
  				};
-@@ -10890,21 +10891,21 @@ class PoolRunner {
+@@ -10890,21 +10904,21 @@ class PoolRunner {
  					__vitest_worker_request__: true,
  					otelCarrier: this.getOTELCarrier()
  				});
@@ -60,7 +157,7 @@ index 50abf4fbed1dc8670b7941ee466a7c8443840c5f..16822759355c39c26af9e8ff22356c0a
  			this._lastTestFiles = [];
  			this._operationLock.resolve();
  			this._operationLock = null;
-@@ -11044,10 +11045,22 @@ class ForksPoolWorker {
+@@ -11044,10 +11058,22 @@ class ForksPoolWorker {
  			this._fork.stderr.pipe(this.stderr, { end: false });
  		}
  	}
@@ -85,7 +182,7 @@ index 50abf4fbed1dc8670b7941ee466a7c8443840c5f..16822759355c39c26af9e8ff22356c0a
  			else fork.once("exit", resolve);
  		});
  		/*
-@@ -11056,10 +11069,12 @@ class ForksPoolWorker {
+@@ -11056,10 +11082,12 @@ class ForksPoolWorker {
  		* - https://github.com/jestjs/jest/blob/25a8785584c9d54a05887001ee7f498d489a5441/packages/jest-worker/src/workers/ChildProcessWorker.ts#L463-L477
  		* - https://github.com/tinylibs/tinypool/blob/40b4b3eb926dabfbfd3d0a7e3d1222d4dd1c0d2d/src/runtime/process-worker.ts#L56
  		*/
@@ -102,7 +199,7 @@ index 50abf4fbed1dc8670b7941ee466a7c8443840c5f..16822759355c39c26af9e8ff22356c0a
  		if (fork.stdout) {
  			await streamFlushed(fork.stdout);
  			fork.stdout.unpipe(this.stdout);
-@@ -11485,7 +11500,7 @@ class Pool {
+@@ -11485,7 +11513,7 @@ class Pool {
  			// Runner termination can also already start from task cancellation.
  			if (!runner.isTerminated) {
  				const id = setTimeout(() => this.logger.error(`[vitest-pool]: Timeout terminating ${task.worker} worker for test files ${formatFiles(task)}.`), this.options.teardownTimeout);
@@ -111,7 +208,7 @@ index 50abf4fbed1dc8670b7941ee466a7c8443840c5f..16822759355c39c26af9e8ff22356c0a
  			}
  			this.freeWorkerId(poolId);
  		} 
-@@ -11727,6 +11742,8 @@ function createPool(ctx) {
+@@ -11727,6 +11755,8 @@ function createPool(ctx) {
  			const groupResults = await Promise.allSettled(promises);
  			results.push(...groupResults);
  		}
@@ -120,7 +217,42 @@ index 50abf4fbed1dc8670b7941ee466a7c8443840c5f..16822759355c39c26af9e8ff22356c0a
  		const errors = results.filter((result) => result.status === "rejected").map((result) => result.reason);
  		if (errors.length > 0) throw new AggregateError(errors, "Errors occurred while running tests. For more information, see serialized error.");
  	}
-@@ -12487,7 +12504,7 @@ async function resolveProjectEntries(harness, globalViteConfig, globalConfig, de
+@@ -11993,6 +12023,7 @@ class TestProject {
+ 	* Resolved global configuration. If there are no workspace projects, this will be the same as `config`.
+ 	*/
+ 	globalConfig;
++	namePrefix;
+ 	/**
+ 	* Browser instance if the browser is enabled. This is initialized when the tests run for the first time.
+ 	*/
+@@ -12018,13 +12049,14 @@ class TestProject {
+ 	typecheckFilesList = null;
+ 	_globalSetups;
+ 	_provided = {};
+-	constructor(vitest, server, viteConfig, projectConfig) {
++	constructor(vitest, server, viteConfig, projectConfig, namePrefix) {
+ 		this.vitest = vitest;
+ 		this.globalConfig = vitest.config;
+ 		this.tmpDir = join(tmpdir(), nanoid());
+ 		this.vite = server;
+ 		this.viteConfig = viteConfig;
+ 		this.config = projectConfig;
++		this.namePrefix = namePrefix;
+ 		this.hash = generateHash(this.config.root + this.config.name);
+ 		this._provideObject(projectConfig.provide);
+ 	}
+@@ -12325,8 +12357,8 @@ class TestProject {
+ 	*
+ 	* @internal
+ 	*/
+-	static _spawnSibling(parent, config) {
+-		const sibling = new TestProject(parent.vitest, parent.vite, parent.viteConfig, config);
++	static _spawnSibling(parent, config, namePrefix) {
++		const sibling = new TestProject(parent.vitest, parent.vite, parent.viteConfig, config, namePrefix);
+ 		sibling.runner = parent.runner;
+ 		sibling._resolver = parent._resolver;
+ 		sibling._fetcher = parent._fetcher;
+@@ -12487,7 +12519,7 @@ async function resolveProjectEntries(harness, globalViteConfig, globalConfig, de
  	if (throwIfEmpty && definitions && !filterMatched) throw new Error([
  		"No projects were found. Make sure your configuration is correct. ",
  		globalConfig.project.length ? `The filter matched no projects: ${globalConfig.project.join(", ")}. ` : "",
@@ -129,7 +261,7 @@ index 50abf4fbed1dc8670b7941ee466a7c8443840c5f..16822759355c39c26af9e8ff22356c0a
  	].join(""));
  	debug?.(`resolved projects: ${filtered.filter((e) => !e.hidden).map((e) => projectLabel(e.projectConfig.name)).join(", ")}`);
  	await applyBrowserOptimizeDeps(harness, filtered);
-@@ -12540,9 +12557,9 @@ async function applyBrowserOptimizeDeps(harness, entries) {
+@@ -12540,9 +12572,9 @@ async function applyBrowserOptimizeDeps(harness, entries) {
  }
  async function resolveDeclaredProjectEntries(context, definitions) {
  	const { parentViteConfig, parentConfig } = context;
@@ -141,16 +273,16 @@ index 50abf4fbed1dc8670b7941ee466a7c8443840c5f..16822759355c39c26af9e8ff22356c0a
  	const promises = [];
  	projectConfigs.forEach((options, index) => {
  		const ownServerReason = getOwnServerReason(context, options);
-@@ -12569,25 +12586,26 @@ async function resolveDeclaredProjectEntries(context, definitions) {
+@@ -12569,25 +12601,26 @@ async function resolveDeclaredProjectEntries(context, definitions) {
  			configFile
  		}, index)));
  	});
 -	for (const path of fileProjects) {
-+	for (const { path, root, standalone } of fileProjects) {
++	for (const { path, root, standalone, namePrefix } of fileProjects) {
  		// if the file leads to the declaring config itself, reuse the already
  		// resolved pair: the root (or the container) also runs as a regular project
 -		if (parentViteConfig.configFile === path) {
-+		if (parentViteConfig.configFile === path && (root === void 0 || root === parentConfig.root)) {
++		if (namePrefix === void 0 && parentViteConfig.configFile === path && (root === void 0 || root === parentConfig.root)) {
  			debug?.(`project at ${path} is the declaring config itself, reusing its resolved config`);
  			promises.push(Promise.resolve({
  				viteConfig: parentViteConfig,
@@ -168,11 +300,11 @@ index 50abf4fbed1dc8670b7941ee466a7c8443840c5f..16822759355c39c26af9e8ff22356c0a
  			root: projectRoot,
  			configFile
 -		}, path)));
-+		}, path, standalone)));
++		}, path, standalone, namePrefix)));
  	}
  	const settled = await Promise.allSettled(promises);
  	const errors = [];
-@@ -12607,10 +12625,11 @@ async function flattenContainerEntries(context, entries) {
+@@ -12607,10 +12640,11 @@ async function flattenContainerEntries(context, entries) {
  	const result = [];
  	for (const entry of entries) {
  		const definitions = entry.projectConfig.projects;
@@ -186,24 +318,38 @@ index 50abf4fbed1dc8670b7941ee466a7c8443840c5f..16822759355c39c26af9e8ff22356c0a
  			result.push(entry);
  			continue;
  		}
-@@ -12829,7 +12848,7 @@ function resolveSharedServerEntry(context, options, index) {
+@@ -12829,7 +12863,7 @@ function resolveSharedServerEntry(context, options, index) {
  		ancestors: context.ancestors.length ? [...context.ancestors] : void 0
  	};
  }
 -async function resolveSingleProjectEntry(context, options, workspacePath) {
-+async function resolveSingleProjectEntry(context, options, workspacePath, standalone = false) {
++async function resolveSingleProjectEntry(context, options, workspacePath, standalone = false, namePrefix) {
  	const { harness, rootViteConfig, rootConfig, parentViteConfig, parentConfig, cliOverrides } = context;
  	const { configFile, ...restOptions } = options;
  	const captures = {};
-@@ -12883,6 +12902,7 @@ async function resolveSingleProjectEntry(context, options, workspacePath) {
+@@ -12864,8 +12898,10 @@ async function resolveSingleProjectEntry(context, options, workspacePath) {
+ 	// env wins, like every other option a project can override
+ 	for (const key in parentViteConfig.env) projectViteConfig.env[key] ??= parentViteConfig.env[key];
+ 	const mergedOptions = projectViteConfig.test ?? {};
++	// Preserve the captured container context without feeding a resolved name into hooks.
++	const ancestors = namePrefix === void 0 ? context.ancestors : [...context.ancestors, namePrefix];
+ 	// resolved after `viteResolveConfig` so a plugin can still set `test.name`
+-	mergedOptions.name = resolveProjectName(mergedOptions.name, workspacePath, context.ancestors.at(-1));
++	mergedOptions.name = resolveProjectName(mergedOptions.name, workspacePath, ancestors.at(-1));
+ 	const projectConfig = resolveTestConfig(harness.logger, mergedOptions, projectViteConfig, parentConfig);
+ 	projectViteConfig.test = projectConfig;
+ 	if (inheritsParentConfig && options.extends === void 0 && configFile) warnDuplicateInheritedPlugins(harness.logger, projectConfig, projectViteConfig, parentViteConfig, configFile, rootConfig.root);
+@@ -12883,7 +12919,8 @@ async function resolveSingleProjectEntry(context, options, workspacePath) {
  		viteConfig: projectViteConfig,
  		projectConfig,
  		inline: isInlineEntry,
+-		ancestors: context.ancestors.length ? [...context.ancestors] : void 0
 +		standalone,
- 		ancestors: context.ancestors.length ? [...context.ancestors] : void 0
++		ancestors: ancestors.length ? [...ancestors] : void 0
  	};
  }
-@@ -13104,6 +13124,7 @@ async function resolveTestProjectConfigs(parentViteConfig, parentConfig, project
+ function expandBrowserInstancesInEntries(globalConfig, entries, names) {
+@@ -13104,6 +13141,7 @@ async function resolveTestProjectConfigs(parentViteConfig, parentConfig, project
  	const projectsOptions = [];
  	// custom config files that were specified directly or resolved from a directory
  	const projectsConfigFiles = [];
@@ -211,7 +357,7 @@ index 50abf4fbed1dc8670b7941ee466a7c8443840c5f..16822759355c39c26af9e8ff22356c0a
  	// custom glob matches that should be resolved as directories or config files
  	const projectsGlobMatches = [];
  	// directories that don't have a config file inside, but should be treated as projects
-@@ -13132,13 +13153,27 @@ async function resolveTestProjectConfigs(parentViteConfig, parentConfig, project
+@@ -13132,13 +13170,29 @@ async function resolveTestProjectConfigs(parentViteConfig, parentConfig, project
   // should never happen
  			throw new TypeError(`Unexpected file type: ${file}`);
  		} else projectsGlobMatches.push(stringOption);
@@ -225,13 +371,15 @@ index 50abf4fbed1dc8670b7941ee466a7c8443840c5f..16822759355c39c26af9e8ff22356c0a
 +	} else if (typeof definition === "object" && "configFile" in definition) {
 +		const { configFile } = definition;
 +		const root = "root" in definition ? definition.root : void 0;
-+		if (typeof configFile !== "string" || root !== void 0 && typeof root !== "string" || Object.keys(definition).some((key) => key !== "configFile" && key !== "root")) throw new TypeError("A file project accepts only a string configFile and an optional string root. Use extends for inline project options.");
++		const namePrefix = "namePrefix" in definition ? definition.namePrefix : void 0;
++		if (typeof configFile !== "string" || root !== void 0 && typeof root !== "string" || namePrefix !== void 0 && typeof namePrefix !== "string" || Object.keys(definition).some((key) => key !== "configFile" && key !== "root" && key !== "namePrefix")) throw new TypeError("A file project accepts only a string configFile and optional string root and namePrefix. Use extends for inline project options.");
 +		const path = resolve(parentConfig.root, configFile.replace("<rootDir>", parentConfig.root));
 +		if (!existsSync(path) || !statSync(path).isFile()) throw new Error(`Projects definition references a non-existing config file: ${path}`);
 +		explicitFileProjects.push({
 +			path,
 +			root: root === void 0 ? void 0 : resolve(parentConfig.root, root),
-+			standalone: true
++			standalone: true,
++			namePrefix
 +		});
 +	} else {
 +		const options = typeof definition === "function" ? await definition({
@@ -246,7 +394,7 @@ index 50abf4fbed1dc8670b7941ee466a7c8443840c5f..16822759355c39c26af9e8ff22356c0a
  	if (projectsGlobMatches.length) {
  		const globOptions = {
  			absolute: true,
-@@ -13171,7 +13206,8 @@ async function resolveTestProjectConfigs(parentViteConfig, parentConfig, project
+@@ -13171,7 +13225,8 @@ async function resolveTestProjectConfigs(parentViteConfig, parentConfig, project
  	return {
  		projectConfigs: projectsOptions,
  		nonConfigDirectories: nonConfigProjectDirectories,
@@ -256,6 +404,69 @@ index 50abf4fbed1dc8670b7941ee466a7c8443840c5f..16822759355c39c26af9e8ff22356c0a
  	};
  }
  function resolveDirectoryConfig(directory) {
+@@ -13239,14 +13294,14 @@ async function attachProjectsFromEntries(vitest, entries) {
+ 			// a shared-server project reuses only the Vite server
+ 			if (entry.sharedServer) {
+ 				debug?.(`project ${projectLabel(projectConfig.name)} reuses the Vite server of ${projectLabel(primary.name)} with its own module runner`);
+-				const project = new TestProject(vitest, primary.vite, viteConfig, projectConfig);
++				const project = new TestProject(vitest, primary.vite, viteConfig, projectConfig, entry.ancestors?.at(-1));
+ 				project._sharedViteServer = true;
+ 				project._initializeRunners(primary.vite);
+ 				projects.push(project);
+ 				continue;
+ 			}
+ 			debug?.(`project ${projectLabel(projectConfig.name)} shares the Vite server and module runner of ${projectLabel(primary.name)}`);
+-			const sibling = TestProject._spawnSibling(primary, projectConfig);
++			const sibling = TestProject._spawnSibling(primary, projectConfig, entry.ancestors?.at(-1));
+ 			// Browser-instance siblings share the primary's single (browser) Vite
+ 			// server; each gets its own `ProjectBrowser` view onto it.
+ 			if (primary._parentBrowser) sibling.browser = primary._parentBrowser.spawn(sibling);
+@@ -13259,7 +13314,7 @@ async function attachProjectsFromEntries(vitest, entries) {
+ 		debug?.(`creating a Vite server for project ${projectLabel(projectConfig.name)}`);
+ 		const children = childrenByViteConfig.get(viteConfig) ?? [];
+ 		const { server, parent } = await createClusterServer(vitest, viteConfig, projectConfig, children);
+-		const project = new TestProject(vitest, server, viteConfig, projectConfig);
++		const project = new TestProject(vitest, server, viteConfig, projectConfig, entry.ancestors?.at(-1));
+ 		// a shared entry can create the container's server on first use,
+ 		// but the server still belongs to the declaring config
+ 		project._sharedViteServer = !!entry.sharedServer;
+@@ -20618,6 +20673,7 @@ class Vitest {
+ 		// populate will merge all configs into every project,
+ 		// we don't want that when just listing tags
+ 		if (!resolved.listTags) populateProjectsTags(this.coreWorkspaceProject, this.projects);
++		await this._fsCache.ensureCacheIntegrity();
+ 		this.reporters = await createReporters(resolved.reporters, this);
+ 		// API setup (watch mode only). Must run after the reporters array is built
+ 		// above, since `setup()` appends the UI/API WebSocket reporter to it. For a
+@@ -20634,7 +20690,6 @@ class Vitest {
+ 				setup(this, browserServer);
+ 			}
+ 		}
+-		await this._fsCache.ensureCacheIntegrity();
+ 		await Promise.all([...this._onSetServer.map((fn) => fn()), this._traces.waitInit()]);
+ 	}
+ 	/** @internal */
+@@ -20666,18 +20721,13 @@ class Vitest {
+ 		await this.createCoverageProvider();
+ 		await this.coverageProvider?.onEnabled?.();
+ 		// onFileTransform is the only thing that affects hash
+-		if (this.coverageProvider?.onFileTransform) this.clearAllCachePaths();
++		if (this.coverageProvider?.onFileTransform) this._fsCache.invalidateAllCachePaths();
+ 	}
+ 	disableCoverage() {
+ 		this.configOverride.coverage ??= {};
+ 		this.configOverride.coverage.enabled = false;
+ 		// onFileTransform is the only thing that affects hash
+-		if (this.coverageProvider?.onFileTransform) this.clearAllCachePaths();
+-	}
+-	clearAllCachePaths() {
+-		this.projects.forEach(({ vite }) => {
+-			Object.values(vite.environments).forEach((environment) => this._fsCache.invalidateAllCachePaths(environment));
+-		});
++		if (this.coverageProvider?.onFileTransform) this._fsCache.invalidateAllCachePaths();
+ 	}
+ 	_coverageOverrideCache = /* @__PURE__ */ new WeakMap();
+ 	/** @internal */
 diff --git a/dist/chunks/index.OVGXnVRj.js b/dist/chunks/index.OVGXnVRj.js
 index a7b39bf9e1dd97c44fb78888d02f9e7cc4b0ceef..8dcd740f54fe7e190aa39935808a30d80e6e1b40 100644
 --- a/dist/chunks/index.OVGXnVRj.js
@@ -293,10 +504,36 @@ index dbb1a04882b2ff60ab0968d6dabd10dfad696eb2..818981f891f170e197a16e41dfe98b34
  		off: (cb) => processOff("message", cb),
  		teardown: () => {
 diff --git a/dist/chunks/plugin.d.BbcoZhuj.d.ts b/dist/chunks/plugin.d.BbcoZhuj.d.ts
-index f399a7658b43c34df38c976e6f41744d9af7a5fd..ed390c53f69d97cab6155d75e62498eb92f46fc9 100644
+index f399a7658b43c34df38c976e6f41744d9af7a5fd..c7250cd139952bd0f32e20f17eb2cf3ec794bee8 100644
 --- a/dist/chunks/plugin.d.BbcoZhuj.d.ts
 +++ b/dist/chunks/plugin.d.BbcoZhuj.d.ts
-@@ -2694,6 +2694,8 @@ interface PoolWorker {
+@@ -1020,6 +1020,8 @@ declare class TestProject {
+ 	* Resolved global configuration. If there are no workspace projects, this will be the same as `config`.
+ 	*/
+ 	readonly globalConfig: ResolvedConfig;
++	/** Container context applied after the project's own configuration hooks. */
++	readonly namePrefix?: string;
+ 	/**
+ 	* Browser instance if the browser is enabled. This is initialized when the tests run for the first time.
+ 	*/
+@@ -1038,7 +1040,7 @@ declare class TestProject {
+ 	private typecheckFilesList;
+ 	private _globalSetups?;
+ 	private _provided;
+-	constructor(vitest: Vitest, server: ViteDevServer, viteConfig: ResolvedConfig$1, projectConfig: ResolvedConfig);
++	constructor(vitest: Vitest, server: ViteDevServer, viteConfig: ResolvedConfig$1, projectConfig: ResolvedConfig, namePrefix?: string);
+ 	/**
+ 	* Provide a value to the test context. This value will be available to all tests with `inject`.
+ 	*/
+@@ -2392,7 +2394,6 @@ declare class Vitest {
+ 	listTags(): Promise<void>;
+ 	enableCoverage(): Promise<void>;
+ 	disableCoverage(): void;
+-	private clearAllCachePaths;
+ 	private _coverageOverrideCache;
+ 	/**
+ 	* Inject new test projects into the workspace.
+@@ -2694,6 +2695,8 @@ interface PoolWorker {
  	send: (message: WorkerRequest) => void;
  	deserialize: (data: unknown) => unknown;
  	start: () => Promise<void>;
@@ -305,7 +542,7 @@ index f399a7658b43c34df38c976e6f41744d9af7a5fd..ed390c53f69d97cab6155d75e62498eb
  	stop: () => Promise<void>;
  	/**
  	* This is called on workers that already satisfy certain constraints:
-@@ -2759,6 +2761,8 @@ type WorkerResponse = {
+@@ -2759,6 +2762,8 @@ type WorkerResponse = {
  	error?: unknown;
  } | {
  	type: "stopped";
@@ -314,7 +551,7 @@ index f399a7658b43c34df38c976e6f41744d9af7a5fd..ed390c53f69d97cab6155d75e62498eb
  	error?: unknown;
  } | {
  	type: "testfileFinished";
-@@ -4445,6 +4449,8 @@ interface ResolvedProjectEntry {
+@@ -4445,6 +4450,8 @@ interface ResolvedProjectEntry {
  	* by default), not a file of its own.
  	*/
  	inline?: boolean;
@@ -323,7 +560,7 @@ index f399a7658b43c34df38c976e6f41744d9af7a5fd..ed390c53f69d97cab6155d75e62498eb
  }
  type NonProjectOptions = "shard" | "watch" | "run" | "cache" | "update" | "reporters" | "outputFile" | "teardownTimeout" | "silent" | "forceRerunTriggers" | "testNamePattern" | "ui" | "open" | "uiBase" | "snapshotFormat" | "resolveSnapshotPath" | "passWithNoTests" | "onConsoleLog" | "onStackTrace" | "dangerouslyIgnoreUnhandledErrors" | "slowTestThreshold" | "inspect" | "inspectBrk" | "coverage" | "watchTriggerPatterns" | "tagsFilter" | "sharedViteServer";
  interface ServerDepsOptions {
-@@ -4482,6 +4488,7 @@ type ProjectConfig = Omit<InlineConfig, NonProjectOptions | "projects" | "sequen
+@@ -4482,6 +4489,7 @@ type ProjectConfig = Omit<InlineConfig, NonProjectOptions | "projects" | "sequen
  };
  type ResolvedProjectConfig = Omit<ResolvedConfig, Exclude<NonProjectOptions, "coverage" | "watch">>;
  interface UserWorkspaceConfig extends UserConfig$1 {
@@ -331,7 +568,7 @@ index f399a7658b43c34df38c976e6f41744d9af7a5fd..ed390c53f69d97cab6155d75e62498eb
  	test?: ProjectConfig & {
  		projects?: TestProjectConfiguration[];
  	};
-@@ -4498,7 +4505,12 @@ type TestProjectInlineConfiguration = (UserWorkspaceConfig & {
+@@ -4498,7 +4506,14 @@ type TestProjectInlineConfiguration = (UserWorkspaceConfig & {
  	*/
  	extends?: string | boolean;
  });
@@ -341,6 +578,8 @@ index f399a7658b43c34df38c976e6f41744d9af7a5fd..ed390c53f69d97cab6155d75e62498eb
 +	configFile: string;
 +	/** Override the file project's root; defaults to the config file's directory. */
 +	root?: string;
++	/** Apply the captured container name after resolving the file's own name and hooks. */
++	namePrefix?: string;
 +} | TestProjectInlineConfiguration | Promise<UserWorkspaceConfig> | UserProjectConfigFn;
  
  /**

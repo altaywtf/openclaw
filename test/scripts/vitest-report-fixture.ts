@@ -14,6 +14,7 @@ export type ReportFixtureMode =
   | "serial"
   | "parallel"
   | "grouped"
+  | "grouped-nested"
   | "grouped-conflict"
   | "batch"
   | "batch-real-home"
@@ -224,8 +225,9 @@ ${index === 0 ? "test('alpha/two',()=>expect(2).toBe(2));" : "test.skip('beta/sk
       "export function classify(n:number){return n===0?'zero':'one'}",
     );
     let targets = mode === "single" ? [configs[0]!] : [...configs];
-    if (mode === "grouped" || mode === "grouped-conflict") {
+    if (["grouped", "grouped-nested", "grouped-conflict"].includes(mode)) {
       const leaf = "test/vitest/vitest.alpha.config.ts";
+      const alphaSource = fs.readFileSync(path.join(root, configs[0]!), "utf8");
       write(
         path.join(root, leaf),
         `export default {test:{name:'alpha',include:[${JSON.stringify(path.join(root, "alpha.test.ts"))}],pool:'threads',maxWorkers:1,cache:false,fsModuleCache:false}};`,
@@ -238,6 +240,36 @@ ${index === 0 ? "test('alpha/two',()=>expect(2).toBe(2));" : "test.skip('beta/sk
         path.join(root, configs[0]!),
         `export default {root:${JSON.stringify(root)},test:{projects:${JSON.stringify([leaf, configs[1]])}}};`,
       );
+      if (mode === "grouped-nested") {
+        if (options.configBehavior) {
+          write(
+            path.join(root, leaf),
+            alphaSource.replace(
+              "export default config;",
+              `config.test.include=${JSON.stringify([path.join(root, "alpha.test.ts")])};export default config;`,
+            ),
+          );
+        }
+        const container = "test/vitest/vitest.container.config.ts";
+        const inner = "test/vitest/vitest.inner.config.ts";
+        const other = "test/vitest/vitest.other.config.ts";
+        write(
+          path.join(root, inner),
+          `export default {test:{name:'inner',projects:${JSON.stringify([path.join(root, leaf)])}}};`,
+        );
+        write(
+          path.join(root, container),
+          `export default {test:{name:'outer',projects:${JSON.stringify([path.join(root, inner)])}}};`,
+        );
+        write(
+          path.join(root, other),
+          `export default {test:{name:'other',projects:${JSON.stringify([path.join(root, leaf)])}}};`,
+        );
+        write(
+          path.join(root, configs[0]!),
+          `export default {root:${JSON.stringify(root)},test:{projects:${JSON.stringify([container, other, configs[1]])}}};`,
+        );
+      }
     }
     if (mode === "chunks") {
       const files = [

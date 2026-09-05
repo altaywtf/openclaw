@@ -68,6 +68,7 @@ describe.skipIf(process.platform === "win32")("native multi-invocation report ow
     "serial",
     "parallel",
     "grouped",
+    "grouped-nested",
     "batch",
     "batch-parallel",
     "retry",
@@ -81,7 +82,11 @@ describe.skipIf(process.platform === "win32")("native multi-invocation report ow
     async (mode) => {
       const result = await run(mode);
       expect(result.code, result.stderr).toBe(0);
-      expect(inventory(json(result.output))).toEqual(expected);
+      expect(inventory(json(result.output))).toEqual(
+        mode === "grouped-nested"
+          ? expected.flatMap((entry) => (entry[0]!.startsWith("alpha/") ? [entry, entry] : [entry]))
+          : expected,
+      );
       const index = json(path.join(result.reportSet!, "index.json"));
       expect(index.complete).toBe(true);
       const parts = index.entries.map((entry: { attempts: { json: string; blob: string }[] }) =>
@@ -206,6 +211,69 @@ describe.skipIf(process.platform === "win32")("native multi-invocation report ow
       expect(json(path.join(result.reportSet!, "aggregate.json.capture.json")).modules).toEqual(
         captures.flatMap((capture: { modules: unknown[] }) => capture.modules),
       );
+    },
+  );
+
+  it.each(["early-pool", "changed-hook", "changed-root"] as const)(
+    "replays distinct container contexts without masking leaf changes: %s",
+    { timeout: 60000 },
+    async (configBehavior) => {
+      const root = dirs.make("oc-report-nested-");
+      const result = await createVitestReportFixture(root)("grouped-nested", { configBehavior });
+      const index = json(path.join(result.reportSet!, "index.json"));
+      if (configBehavior !== "early-pool") {
+        expect(result.code, result.stderr).toBe(1);
+        expect(result.stderr).toContain("Native merge project identity changed");
+        expect(index.complete).toBe(false);
+        expect(fs.readFileSync(result.output, "utf8")).toBe("old report");
+        return;
+      }
+      expect(result.code, result.stderr).toBe(0);
+      expect(index.complete).toBe(true);
+      const originals = index.entries.flatMap(
+        (entry: { attempts: { json: string }[] }) =>
+          json(`${entry.attempts.at(-1)!.json}.capture.json`).modules,
+      );
+      const replay = json(path.join(result.reportSet!, "aggregate.json.capture.json"));
+      expect(replay.modules.map((module: unknown) => JSON.stringify(module)).toSorted()).toEqual(
+        originals.map((module: unknown) => JSON.stringify(module)).toSorted(),
+      );
+      expect(
+        replay.projects.filter((project: { namePrefix?: string }) => project.namePrefix),
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: "outer (inner) (alpha-early-normal-post)",
+            namePrefix: "outer (inner)",
+            pool: "threads",
+          }),
+          expect.objectContaining({
+            name: "other (alpha-early-normal-post)",
+            namePrefix: "other",
+            pool: "threads",
+          }),
+        ]),
+      );
+      const events = fs
+        .readFileSync(path.join(root, "reports/config-events.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      for (const merging of [false, true]) {
+        const alphaEvents = events.filter(
+          (event) => event.name === "alpha" && event.merging === merging,
+        );
+        expect(alphaEvents.filter((event) => event.event === "load")).toHaveLength(2);
+        expect(
+          alphaEvents.filter((event) => event.hook === "early").map((event) => event.input),
+        ).toEqual(["alpha", "alpha"]);
+        expect(
+          alphaEvents.filter((event) => event.hook === "normal").map((event) => event.input),
+        ).toEqual(["alpha-early", "alpha-early"]);
+        expect(
+          alphaEvents.filter((event) => event.hook === "post").map((event) => event.input),
+        ).toEqual(["alpha-early-normal", "alpha-early-normal"]);
+      }
     },
   );
 

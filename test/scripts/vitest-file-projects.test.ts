@@ -66,6 +66,7 @@ describe("native standalone file projects", () => {
               ? path.normalize(entry.vite.config.configFile)
               : undefined,
             pool: entry.config.pool,
+            namePrefix: entry.namePrefix,
             projects: entry.config.projects,
             env: entry.config.env,
           }));
@@ -76,6 +77,43 @@ describe("native standalone file projects", () => {
       },
     };
   };
+
+  it.each([
+    ["file", "configs/arbitrary.mjs", "leaf"],
+    ["self", "vitest.config.mjs", "parent"],
+  ] as const)("retains captured container context for a %s project", async (_, file, name) => {
+    const { resolve } = fixture();
+    const prefix = "outer (inner)";
+    const projects = await resolve(
+      JSON.stringify([{ configFile: file, root: ".", namePrefix: prefix }]),
+    );
+    expect(projects).toHaveLength(1);
+    expect(projects[0]).toMatchObject({ name: `${prefix} (${name})`, namePrefix: prefix });
+  });
+
+  it("records container context for projects injected after initial resolution", async () => {
+    const { root } = fixture();
+    const ctx = await createVitest(
+      { root, config: false, watch: false, reporters: [] },
+      {
+        plugins: [
+          {
+            name: "fixture-inject",
+            async configureVitest({ injectTestProjects }) {
+              await injectTestProjects(["./vitest.container.config.mjs"]);
+            },
+          },
+        ],
+      },
+    );
+    try {
+      const injected = ctx.projects.filter((project) => project.namePrefix === "container");
+      expect(injected).toHaveLength(1);
+      expect(injected[0]).toMatchObject({ name: "container (directory)", namePrefix: "container" });
+    } finally {
+      await ctx.close();
+    }
+  });
 
   it.each([
     ["explicit root", "[{configFile:'configs/arbitrary.mjs',root:'override'}]", "override"],
@@ -163,6 +201,11 @@ describe("native standalone file projects", () => {
     ["directory", "[{configFile:'legacy'}]", /non-existing config file/],
     ["non-string file", "[{configFile:false}]", /accepts only a string configFile/],
     [
+      "non-string prefix",
+      "[{configFile:'configs/arbitrary.mjs',namePrefix:1}]",
+      /accepts only a string configFile/,
+    ],
+    [
       "non-string root",
       "[{configFile:'configs/arbitrary.mjs',root:1}]",
       /accepts only a string configFile/,
@@ -201,7 +244,11 @@ describe("native standalone file projects", () => {
   });
 
   it("types file descriptors as direct entries rather than inline exports", () => {
-    expectTypeOf<{ configFile: string; root: string }>().toMatchTypeOf<TestProjectConfiguration>();
+    expectTypeOf<{
+      configFile: string;
+      root: string;
+      namePrefix: string;
+    }>().toMatchTypeOf<TestProjectConfiguration>();
     expectTypeOf<
       () => { configFile: string; root: string }
     >().not.toMatchTypeOf<UserProjectConfigFn>();

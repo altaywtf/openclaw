@@ -9,6 +9,7 @@ function projectIdentity(project: TestProject) {
     root: project.config.root,
     config: project.vite.config.configFile,
     pool: project.config.pool,
+    namePrefix: project.namePrefix,
   };
 }
 
