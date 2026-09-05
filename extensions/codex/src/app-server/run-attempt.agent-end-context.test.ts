@@ -1,12 +1,12 @@
 import path from "node:path";
-import { performance } from "node:perf_hooks";
 import * as agentHarnessRuntime from "openclaw/plugin-sdk/agent-harness-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { formatSqliteSessionFileMarker } from "openclaw/plugin-sdk/sqlite-runtime-testing";
-import { beforeEach, describe, expect, it, onTestFailed, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { dynamicToolBuildState } from "./dynamic-tool-build-state.js";
 import {
+  createCodexRuntimePlanFixture,
   createParams,
   createRuntimeDynamicTool,
   createStartedThreadHarness,
@@ -28,26 +28,6 @@ describe("runCodexAppServerAttempt agent-end context", () => {
   it.each(["completed", "aborted", "provider refusal"] as const)(
     "hands deep-turn context to agent-end without reviewing a refusal: %s",
     async (outcome) => {
-      const startedAt = performance.now();
-      let phase = "seed session";
-      const phaseTimingsMs: Record<string, number> = { [phase]: 0 };
-      const markPhase = (nextPhase: string) => {
-        phase = nextPhase;
-        phaseTimingsMs[phase] = performance.now() - startedAt;
-      };
-      let lastRequest: string | undefined;
-      let promptPersisted = false;
-      let agentEndObserved = false;
-      onTestFailed(() => {
-        console.error("agent-end context fixture", {
-          outcome,
-          phase,
-          phaseTimingsMs,
-          lastRequest,
-          promptPersisted,
-          agentEndObserved,
-        });
-      });
       const source = {
         agentId: "main",
         sessionId: "session-1",
@@ -59,35 +39,29 @@ describe("runCodexAppServerAttempt agent-end context", () => {
         ...source,
         entry: { sessionFile, sessionId: source.sessionId, updatedAt: Date.now() },
       });
-      markPhase("fixture setup");
       const workspaceDir = path.join(tempDir, "agent-end-context-workspace");
       const turnStarted = createDeferred<void>();
       const harness = createStartedThreadHarness(async (method) => {
-        lastRequest = method;
         if (method === "turn/start") {
           turnStarted.resolve();
         }
       });
       const runAgentEndSideEffects = vi
         .spyOn(agentHarnessRuntime, "runAgentEndSideEffects")
-        .mockImplementation(() => {
-          agentEndObserved = true;
-        });
+        .mockImplementation(() => {});
       const params = createParams(sessionFile, workspaceDir);
+      // Use the host-prepared tool policy; provider discovery is outside this context test.
+      params.runtimePlan = createCodexRuntimePlanFixture();
       const abortController = new AbortController();
       params.abortSignal = abortController.signal;
       params.sessionTarget = source;
       params.messageChannel = "discord";
       params.memberRoleIds = ["maintainer-role"];
-      params.onUserMessagePersisted = () => {
-        promptPersisted = true;
-      };
       setCodexTestModelSupportsTools(params, true);
       dynamicToolBuildState.openClawCodingToolsFactory = () => [
         createRuntimeDynamicTool("skill_workshop"),
       ];
 
-      markPhase("turn/start");
       const run = runCodexAppServerAttempt(params);
       // Preserve an early attempt error instead of waiting on a readiness
       // signal that a failed attempt can never produce.
@@ -98,7 +72,6 @@ describe("runCodexAppServerAttempt agent-end context", () => {
         }),
       ]);
       for (let index = 0; index < 10; index++) {
-        markPhase(`raw response ${index}`);
         await harness.notify({
           method: "rawResponse/completed",
           params: {
@@ -108,7 +81,6 @@ describe("runCodexAppServerAttempt agent-end context", () => {
           },
         });
       }
-      markPhase("terminal outcome");
       if (outcome === "aborted") {
         abortController.abort("user cancelled");
       } else {
@@ -141,14 +113,8 @@ describe("runCodexAppServerAttempt agent-end context", () => {
           },
         });
       }
-      markPhase("attempt settlement");
       const result = await run;
 
-      markPhase("context assertions");
-      // A slow passing first case still needs evidence about its cold owner.
-      if (performance.now() - startedAt > 10_000) {
-        console.info("agent-end context fixture timing", { outcome, phaseTimingsMs });
-      }
       const ctx = runAgentEndSideEffects.mock.calls.at(-1)?.[0]?.ctx;
       expect(ctx?.foregroundPromptContext?.memberRoleIds).toEqual(["maintainer-role"]);
       expect(typeof ctx?.foregroundPromptContext?.agentDir).toBe("string");
