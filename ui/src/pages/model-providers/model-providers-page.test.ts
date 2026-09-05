@@ -25,6 +25,37 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+function createKeyHarness() {
+  const harness = createHarness("main");
+  const request = harness.request.getMockImplementation()!;
+  harness.request.mockImplementation((method, params, options) =>
+    method === "config.get"
+      ? Promise.resolve({
+          config: { models: { providers: { openai: { apiKey: "configured-key" } } } },
+          hash: "hash",
+        })
+      : request(method, params, options),
+  );
+  return harness;
+}
+
+async function submitProviderKey(page: ModelProvidersPageTestElement, key: string) {
+  await waitForFast(() => expect(page.querySelector('[data-provider-id="openai"]')).not.toBeNull());
+  page
+    .querySelector<HTMLButtonElement>('[data-provider-id="openai"] [data-model-key-action="edit"]')!
+    .click();
+  await page.updateComplete;
+  const input = page.querySelector<HTMLInputElement>(
+    '[data-provider-id="openai"] input[type="password"]',
+  )!;
+  input.value = key;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  await page.updateComplete;
+  page
+    .querySelector<HTMLButtonElement>('[data-provider-id="openai"] [data-model-key-action="save"]')!
+    .click();
+}
+
 describe("ModelProvidersPage agent scope", () => {
   it.each(["direct", "preload"] as const)(
     "recovers a failed %s provider usage result on the next page activation",
@@ -263,7 +294,7 @@ describe("ModelProvidersPage agent scope", () => {
     expect(page.data?.providerUsage).toBe(previousUsage);
     expect(request.mock.calls.findLast(([method]) => method === "models.list")).toEqual([
       "models.list",
-      { agentId: "main", preparedOnly: true, view: "configured" },
+      { agentId: "main", view: "configured" },
       { signal: expect.any(AbortSignal) },
     ]);
     expect(
@@ -294,7 +325,7 @@ describe("ModelProvidersPage agent scope", () => {
           discoverySignal = options?.signal;
           return discovery.promise;
         }
-        if (method === "models.list" && params?.preparedOnly === true) {
+        if (method === "models.list") {
           return {
             models: published
               ? [{ id: "grok-4.6", name: "Grok 4.6", provider: "xai", available: true }]
@@ -336,11 +367,7 @@ describe("ModelProvidersPage agent scope", () => {
         { agentId: "main", refresh: true, view: "configured" },
         { signal: expect.any(AbortSignal) },
       ],
-      [
-        "models.list",
-        { agentId: "main", preparedOnly: true, view: "configured" },
-        { signal: expect.any(AbortSignal) },
-      ],
+      ["models.list", { agentId: "main", view: "configured" }, { signal: expect.any(AbortSignal) }],
     ]);
   });
 
@@ -455,18 +482,21 @@ describe("ModelProvidersPage agent scope", () => {
   });
 
   it("reads published auth after saving a provider key without starting discovery", async () => {
-    const { context, request } = createHarness("main");
+    const { context, request, runtimeConfig } = createKeyHarness();
     const page = appendPage(context);
-    await waitForFast(() => expect(page.data?.config).toEqual({}));
-    request.mockClear();
-    page.keyEditor = { provider: "openai", draft: "replacement" };
-
-    await page.saveKey("openai", "openai");
-
-    expect(page.messages.openai).toEqual({ kind: "success", text: "Secret saved." });
+    await submitProviderKey(page, "replacement");
+    await waitForFast(() =>
+      expect(page.messages.openai).toEqual({ kind: "success", text: "Secret saved." }),
+    );
+    expect(request).toHaveBeenCalledWith("models.authSetApiKey", {
+      provider: "openai",
+      agentId: "main",
+      apiKey: "replacement",
+    });
+    expect(runtimeConfig.patch).not.toHaveBeenCalled();
     expect(request).toHaveBeenCalledWith(
       "models.list",
-      { agentId: "main", preparedOnly: true, view: "configured" },
+      { agentId: "main", view: "configured" },
       expect.anything(),
     );
     expect(
@@ -475,6 +505,28 @@ describe("ModelProvidersPage agent scope", () => {
           (method === "models.list" || method === "models.authStatus") && params?.refresh === true,
       ),
     ).toEqual([]);
+  });
+
+  it("removes saved API keys through the credential owner instead of a config patch", async () => {
+    const { context, request, runtimeConfig } = createKeyHarness();
+    const page = appendPage(context);
+    await waitForFast(() =>
+      expect(
+        page.querySelector('[data-provider-id="openai"] [data-model-key-action="remove"]'),
+      ).not.toBeNull(),
+    );
+    page
+      .querySelector<HTMLButtonElement>(
+        '[data-provider-id="openai"] [data-model-key-action="remove"]',
+      )!
+      .click();
+    await waitForFast(() => expect(page.messages.openai?.kind).toBe("success"));
+    expect(request).toHaveBeenCalledWith("models.authLogout", {
+      provider: "openai",
+      agentId: "main",
+      credentialType: "api_key",
+    });
+    expect(runtimeConfig.patch).not.toHaveBeenCalled();
   });
 
   it("preserves trailing fallbacks when replacing the visible fallback", async () => {
@@ -593,17 +645,16 @@ describe("ModelProvidersPage agent scope", () => {
     expect(page.textContent).not.toContain("operator.admin access");
   });
   it("keeps a committed provider-key save successful when config refresh fails", async () => {
-    const { context, runtimeConfig } = createHarness("main");
-    runtimeConfig.refresh.mockImplementationOnce(async () => {
-      runtimeConfig.state.lastError = "config.get failed after provider-key commit";
-    });
+    const { context, runtimeConfig, snapshot } = createKeyHarness();
+    runtimeConfig.runExternalMutation.mockImplementationOnce(async (task) => ({
+      ok: true,
+      value: await task(snapshot.client!),
+      refresh: { ok: false, error: "config.get failed after provider-key commit" },
+    }));
     const page = appendPage(context);
-    await waitForFast(() => expect(page.data?.config).toEqual({}));
-    page.keyEditor = { provider: "openai", draft: "replacement" };
-
-    await page.saveKey("openai", "openai");
-
-    expect(runtimeConfig.patch).toHaveBeenCalledOnce();
+    await submitProviderKey(page, "replacement");
+    await waitForFast(() => expect(page.messages.openai?.kind).toBe("success"));
+    expect(runtimeConfig.patch).not.toHaveBeenCalled();
     expect(page.keyEditor).toBeNull();
     expect(page.messages.openai).toEqual({
       kind: "success",
@@ -664,30 +715,32 @@ describe("ModelProvidersPage agent scope", () => {
     expect(page.messages.defaults).toBeUndefined();
   });
 
-  it("keeps global provider writes without clearing a replacement agent's credential draft", async () => {
-    const { agentSelection, context, notifySelection, runtimeConfig } = createHarness("main");
-    const gate = deferred<void>();
-    runtimeConfig.ensureLoaded.mockImplementationOnce(async () => gate.promise);
+  it("keeps dispatched credential writes without clearing a replacement agent's draft", async () => {
+    const { agentSelection, context, notifySelection, request, runtimeConfig } = createKeyHarness();
+    const gate = deferred<unknown>();
+    const original = request.getMockImplementation()!;
+    request.mockImplementation((method, params, options) =>
+      method === "models.authSetApiKey" ? gate.promise : original(method, params, options),
+    );
     const page = appendPage(context);
-    await waitForFast(() => expect(page.data?.config).toEqual({}));
-    page.keyEditor = { provider: "openai", draft: "main-agent-key" };
-
-    const saving = page.saveKey("openai", "openai");
-    await vi.waitFor(() => expect(runtimeConfig.ensureLoaded).toHaveBeenCalledOnce());
+    await submitProviderKey(page, "main-agent-key");
+    await waitForFast(() =>
+      expect(request).toHaveBeenCalledWith("models.authSetApiKey", {
+        provider: "openai",
+        agentId: "main",
+        apiKey: "main-agent-key",
+      }),
+    );
     agentSelection.state.selectedId = "writer";
     agentSelection.state.scopeId = "writer";
     notifySelection();
     await vi.waitFor(() => expect(page.selectedAgentId).toBe("writer"));
     page.keyEditor = { provider: "anthropic", draft: "writer-agent-unsaved-key" };
-    gate.resolve();
-    await saving;
-
-    expect(runtimeConfig.patch).toHaveBeenCalledOnce();
-    expect(runtimeConfig.patch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        raw: { models: { providers: { openai: { apiKey: "main-agent-key" } } } },
-      }),
+    gate.resolve({});
+    await waitForFast(() =>
+      expect(runtimeConfig.runExternalMutation.mock.settledResults[0]?.type).toBe("fulfilled"),
     );
+    expect(runtimeConfig.patch).not.toHaveBeenCalled();
     expect(page.keyEditor).toEqual({ provider: "anthropic", draft: "writer-agent-unsaved-key" });
     expect(page.messages.openai).toBeUndefined();
   });
@@ -1047,13 +1100,13 @@ describe("ModelProvidersPage agent scope", () => {
     expect(
       request.mock.calls.filter(
         ([method, params]) =>
-          method === "models.list" && params?.agentId === "main" && params?.preparedOnly === true,
+          method === "models.list" && params?.agentId === "main" && params?.refresh !== true,
       ),
     ).toHaveLength(1);
     expect(
       request.mock.calls.filter(
         ([method, params]) =>
-          method === "models.list" && params?.agentId === "writer" && params?.preparedOnly === true,
+          method === "models.list" && params?.agentId === "writer" && params?.refresh !== true,
       ),
     ).toHaveLength(1);
   });

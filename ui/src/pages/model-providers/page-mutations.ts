@@ -61,16 +61,6 @@ export function readModelBehaviorConfig(
   };
 }
 
-export function buildProviderApiKeyPatch(provider: string, apiKey: string | null) {
-  return {
-    models: {
-      providers: {
-        [provider]: { apiKey },
-      },
-    },
-  };
-}
-
 /**
  * Removing or reordering fallbacks shrinks a config array; the gateway's
  * destructive-array guard rejects such merge patches unless the exact path is

@@ -2,6 +2,10 @@ import { vi } from "vitest";
 import type { GatewayBrowserClient, GatewayEventFrame } from "../../api/gateway.ts";
 import type { ModelsProbeResult } from "../../api/types.ts";
 import type { ApplicationContext, ApplicationGatewaySnapshot } from "../../app/context.ts";
+import type {
+  RuntimeConfigExternalMutationOptions,
+  RuntimeConfigExternalMutationResult,
+} from "../../lib/config/config-gateway-operations.ts";
 import { createApplicationContextProvider } from "../../test-helpers/application-context.ts";
 import type { DefaultModelSelection, ModelProviderLogoutTarget } from "./data.ts";
 import { EMPTY_MODEL_PROVIDERS_DATA, type ModelProvidersData } from "./load.ts";
@@ -28,7 +32,6 @@ export type ModelProvidersPageTestElement = HTMLElement & {
   routeData: ModelProvidersRouteData | undefined;
   requestUpdate: () => void;
   saveDefaults: () => Promise<void>;
-  saveKey: (provider: string, configKey: string) => Promise<void>;
   selectedAgentId: string;
 };
 
@@ -144,11 +147,16 @@ export function createHarness(initialScopeId: string) {
     save: vi.fn(async () => true),
     apply: vi.fn(async () => true),
     discardDraft: vi.fn(async () => undefined),
-    runExternalMutation: vi.fn(async <T>(task: (client: GatewayBrowserClient) => Promise<T>) => ({
-      ok: true as const,
-      value: await task(client),
-      refresh: { ok: true as const },
-    })),
+    runExternalMutation: vi.fn(
+      async <T>(
+        task: (client: GatewayBrowserClient) => Promise<T>,
+        _options?: RuntimeConfigExternalMutationOptions<T>,
+      ): Promise<RuntimeConfigExternalMutationResult<T>> => ({
+        ok: true as const,
+        value: await task(client),
+        refresh: { ok: true as const },
+      }),
+    ),
     subscribe,
   };
   const context = {

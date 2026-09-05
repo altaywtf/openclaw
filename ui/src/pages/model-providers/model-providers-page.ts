@@ -36,7 +36,6 @@ import {
 import { ModelProviderLoginController } from "./login-controller.ts";
 import {
   buildDefaultsPatch,
-  buildProviderApiKeyPatch,
   DEFAULT_MODELS_REPLACE_PATHS,
   isMissingMethodError,
   mergeProbeResults,
@@ -446,53 +445,64 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
     this.keyEditor = null;
   }
 
-  private async saveKey(provider: string, configKey: string) {
-    const apiKey = this.keyEditor?.draft.trim() ?? "";
-    if (!apiKey) {
+  private async mutateApiKey(provider: string, configKey: string, apiKey: string | null) {
+    const client = this.gateway.client;
+    const key = `key:${provider}`;
+    if (!client || !this.canMutate() || this.busy[key] || apiKey === "") {
       return;
     }
+    const clientEpoch = this.gateway.epoch;
+    const agentEpoch = this.agentEpoch;
+    const agentId = this.selectedAgentId;
+    const isCurrent = () =>
+      this.isCurrentClient(client, clientEpoch) && this.agentEpoch === agentEpoch;
     this.clearProbe(provider);
     this.setMessage(provider, null);
-    this.setMessage(`key:${provider}`, null);
-    const result = await this.patchConfig({
-      key: `key:${provider}`,
-      raw: buildProviderApiKeyPatch(configKey, apiKey),
-      note: t("modelProviders.notes.saveKey", { provider }),
-      success: t("modelProviders.apiKey.saved"),
-    });
-    if (result.ok && this.agentEpoch === result.agentEpoch) {
-      this.setMessage(`key:${provider}`, null);
-      if (this.keyEditor?.provider === provider && this.keyEditor.draft.trim() === apiKey) {
+    this.setMessage(key, null);
+    this.setBusy(key, true);
+    try {
+      const result = await this.context.runtimeConfig.runExternalMutation(
+        (mutationClient) => {
+          if (mutationClient !== client) throw new Error(t("modelProviders.requestFailed"));
+          return apiKey === null
+            ? mutationClient.request("models.authLogout", {
+                provider: configKey,
+                agentId,
+                credentialType: "api_key",
+              })
+            : mutationClient.request("models.authSetApiKey", {
+                provider: configKey,
+                agentId,
+                apiKey,
+              });
+        },
+        {
+          canDispatch: () => isCurrent() && this.canMutate(),
+          dispatchError: t("modelProviders.requestFailed"),
+        },
+      );
+      if (!isCurrent()) return;
+      if (!result.ok) {
+        this.setMessage(provider, { kind: "error", text: result.error });
+        return;
+      }
+      if (
+        this.keyEditor?.provider === provider &&
+        (apiKey === null || this.keyEditor.draft.trim() === apiKey)
+      ) {
         this.closeKeyEditor();
       }
       this.setMessage(provider, {
         kind: "success",
-        text: t("modelProviders.apiKey.saved"),
-        ...(result.warning ? { warning: result.warning } : {}),
+        text: t(apiKey === null ? "modelProviders.apiKey.removed" : "modelProviders.apiKey.saved"),
+        ...(!result.refresh.ok ? { warning: result.refresh.error } : {}),
       });
-    }
-  }
-
-  private async removeKey(provider: string, configKey: string) {
-    this.clearProbe(provider);
-    this.setMessage(provider, null);
-    this.setMessage(`key:${provider}`, null);
-    const result = await this.patchConfig({
-      key: `key:${provider}`,
-      raw: buildProviderApiKeyPatch(configKey, null),
-      note: t("modelProviders.notes.removeKey", { provider }),
-      success: t("modelProviders.apiKey.removed"),
-    });
-    if (result.ok && this.agentEpoch === result.agentEpoch) {
-      this.setMessage(`key:${provider}`, null);
-      if (this.keyEditor?.provider === provider) {
-        this.closeKeyEditor();
-      }
-      this.setMessage(provider, {
-        kind: "success",
-        text: t("modelProviders.apiKey.removed"),
-        ...(result.warning ? { warning: result.warning } : {}),
-      });
+      await this.refresh("prepared");
+    } catch (error) {
+      if (isCurrent())
+        this.setMessage(provider, { kind: "error", text: modelProviderErrorMessage(error) });
+    } finally {
+      if (isCurrent()) this.setBusy(key, false);
     }
   }
 
@@ -697,8 +707,9 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
           this.keyEditor = { ...this.keyEditor, draft: value };
         }
       },
-      onSaveKey: (provider, configKey) => void this.saveKey(provider, configKey),
-      onRemoveKey: (provider, configKey) => void this.removeKey(provider, configKey),
+      onSaveKey: (provider, configKey) =>
+        void this.mutateApiKey(provider, configKey, this.keyEditor?.draft.trim() ?? ""),
+      onRemoveKey: (provider, configKey) => void this.mutateApiKey(provider, configKey, null),
       onProbe: (cardId, providers) => void this.probe(cardId, providers),
       onRequestLogout: (provider) => (this.pendingLogoutProvider = provider),
       onCancelLogout: () => (this.pendingLogoutProvider = null),

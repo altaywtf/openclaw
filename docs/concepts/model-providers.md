@@ -57,7 +57,7 @@ Reference for **LLM/model providers** (not chat channels like WhatsApp/Telegram)
 
 ## Configure providers in the Control UI
 
-Open **Settings → Models** in the Control UI to add, replace, or remove provider API keys stored in `models.providers.<id>.apiKey`. The page identifies whether each API key comes from OpenClaw config or an environment variable without displaying the credential. Environment-provided keys remain managed by the gateway process environment.
+Open **Settings → Models** in the Control UI to add, replace, or remove provider API keys. Key edits use the same core credential writer as `models auth paste-api-key`; configured connections reference the saved profile instead of keeping another copy of the key. Removing API keys clears inline keys, saved API-key profiles, and their config bindings, including pending replacements. Other sign-in methods, environment-provided keys, and secret references remain unchanged. The page shows credential sources without displaying secrets.
 
 Provider controls appear as soon as credentials, the model catalog, and configuration are ready. Usage and local costs load independently afterward, so a slow usage response does not block provider settings.
 

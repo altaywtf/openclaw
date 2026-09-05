@@ -128,6 +128,7 @@ const CORE_GATEWAY_METHOD_SPECS = [
   ["commands.list", "commands", "operator.read", "<=2026.7"],
   ["models.list", "models", "operator.read", "<=2026.7", { startup: true }],
   ["models.authStatus", "models-auth-status", "operator.read", "<=2026.7"],
+  ["models.authSetApiKey", "models-auth-status", "operator.admin", "2026.9", CONTROL_PLANE_WRITE],
   [
     "models.authRefresh",
     "models-auth-status",

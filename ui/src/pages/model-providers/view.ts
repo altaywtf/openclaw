@@ -275,6 +275,7 @@ function renderKeyEditor(card: ModelProviderCard, props: ModelProvidersViewProps
       <div class="model-providers__form-actions">
         <button
           class="btn primary btn--sm"
+          data-model-key-action="save"
           ?disabled=${busy || mutationDisabled || authModeBlocked || !props.keyDraft.trim()}
           @click=${() => props.onSaveKey(card.id, card.configKey ?? card.id)}
         >
@@ -343,19 +344,22 @@ function renderProviderActions(card: ModelProviderCard, props: ModelProvidersVie
         : html`
             <button
               class="btn btn--sm"
+              data-model-key-action="edit"
               ?disabled=${keyBusy || mutationDisabled || authModeBlocked}
               title=${keyBlocked}
               @click=${() => props.onOpenKeyEditor(card.id)}
             >
-              ${card.hasConfigApiKey
+              ${card.hasConfigApiKey || card.profiles.some((profile) => profile.type === "api_key")
                 ? t("modelProviders.apiKey.replace")
                 : t("modelProviders.apiKey.set")}
             </button>
           `}
-      ${card.hasConfigApiKey
+      ${card.hasConfigApiKey ||
+      card.profiles.some((profile) => profile.type === "api_key" && profile.logoutSupported)
         ? html`
             <button
               class="btn btn--sm danger"
+              data-model-key-action="remove"
               ?disabled=${keyBusy || mutationDisabled || authModeBlocked}
               title=${keyBlocked}
               @click=${() => props.onRemoveKey(card.id, card.configKey ?? card.id)}

@@ -282,6 +282,7 @@ export async function removeAuthProfilesWithLock(params: {
 export async function removeAuthProfilesAcrossOwnerStores(params: {
   agentDir?: string;
   profileIds: readonly string[];
+  provider?: string;
 }): Promise<boolean> {
   const profilesByOwner = new Map<string | undefined, Set<string>>([
     [params.agentDir, new Set(params.profileIds)],
@@ -300,10 +301,12 @@ export async function removeAuthProfilesAcrossOwnerStores(params: {
     profilesByOwner.set(ownerAgentDir, ownerProfiles);
   }
   for (const [ownerAgentDir, profileIds] of profilesByOwner) {
-    const updatedStore = await removeAuthProfilesWithLock({
-      profileIds: [...profileIds],
-      agentDir: ownerAgentDir,
-    });
+    const updatedStore = params.provider
+      ? await removeProviderAuthProfilesWithLock({
+          provider: params.provider,
+          agentDir: ownerAgentDir,
+        })
+      : await removeAuthProfilesWithLock({ profileIds: [...profileIds], agentDir: ownerAgentDir });
     if (!updatedStore) {
       return false;
     }

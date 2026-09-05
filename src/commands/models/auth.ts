@@ -18,7 +18,10 @@ import {
 import { styleSelectParams } from "../../../packages/terminal-core/src/prompt-select-styled-params.js";
 import { stylePromptMessage } from "../../../packages/terminal-core/src/prompt-style.js";
 import { resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
-import { removeProviderAuthProfilesWithLock } from "../../agents/auth-profiles.js";
+import {
+  ensureAuthProfileStoreWithoutExternalProfiles,
+  removeProviderAuthProfilesWithLock,
+} from "../../agents/auth-profiles.js";
 import {
   promoteAuthProfileInOrder,
   upsertAuthProfileAfterLoginWithLockOrThrow,
@@ -35,6 +38,7 @@ import { logConfigUpdated } from "../../config/logging.js";
 import { applyMergePatch, createMergePatch } from "../../config/merge-patch.js";
 import { normalizeAgentModelRefForConfig } from "../../config/model-input.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { registerSecretValueForRedaction } from "../../logging/secret-redaction-registry.js";
 import {
   applyProviderAuthConfigPatch,
   applyDefaultModel,
@@ -818,6 +822,79 @@ export async function modelsAuthPasteTokenCommand(
   }
 }
 
+export async function saveModelProviderApiKey(params: {
+  config?: OpenClawConfig;
+  provider: string;
+  apiKey: string;
+  profileId?: string;
+  agentDir: string;
+  bindProviderConfig?: boolean;
+}): Promise<string> {
+  const provider = normalizeManualAuthProvider(params.provider);
+  const key = normalizeSecretInput(params.apiKey);
+  registerSecretValueForRedaction(key);
+  const error = !key
+    ? "API key is required"
+    : isOpenAIProvider(provider)
+      ? validateOpenAICodexApiKeyInput(key)
+      : undefined;
+  if (error) throw new Error(error);
+  const config = params.config ?? (await loadValidConfigOrThrow());
+  const configuredKey = Object.keys(config.models?.providers ?? {}).find(
+    (id) => normalizeProviderId(id) === provider,
+  );
+  const configured = configuredKey ? config.models?.providers?.[configuredKey] : undefined;
+  const profileId =
+    params.profileId ??
+    (params.bindProviderConfig
+      ? `${provider}:manual-api-key`
+      : resolveDefaultTokenProfileId(provider));
+  if (params.bindProviderConfig) {
+    if (configured?.auth && configured.auth !== "api-key") {
+      throw new Error(
+        "This connection uses another sign-in method. Use its sign-in option instead.",
+      );
+    }
+    const existing = ensureAuthProfileStoreWithoutExternalProfiles(params.agentDir).profiles[
+      profileId
+    ];
+    if (
+      existing &&
+      (existing.type !== "api_key" || normalizeProviderId(existing.provider) !== provider)
+    ) {
+      throw new Error(
+        "The API-key profile belongs to another sign-in. Manage that saved sign-in first.",
+      );
+    }
+  }
+  await upsertAuthProfileWithLockOrThrow({
+    profileId,
+    credential: { type: "api_key", provider, key },
+    agentDir: params.agentDir,
+  });
+  await updateConfig((current) => {
+    const next = applyAuthProfileConfig(current, { profileId, provider, mode: "api_key" });
+    if (!params.bindProviderConfig || !configuredKey || !next.models?.providers?.[configuredKey])
+      return next;
+    return {
+      ...next,
+      models: {
+        ...next.models,
+        providers: {
+          ...next.models.providers,
+          [configuredKey]: { ...next.models.providers[configuredKey], apiKey: profileId },
+        },
+      },
+    };
+  }).catch((error: unknown) => {
+    throw new Error(
+      `API key saved, but provider settings could not be applied: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
+  });
+  return profileId;
+}
+
 /** Reads a pasted API key and stores it as an auth profile. */
 export async function modelsAuthPasteApiKeyCommand(
   opts: {
@@ -827,7 +904,8 @@ export async function modelsAuthPasteApiKeyCommand(
   },
   runtime: RuntimeEnv,
 ) {
-  const { agentId, agentDir } = await resolveModelsAuthAgent(opts.agent);
+  const config = await loadValidConfigOrThrow();
+  const { agentId, agentDir } = await resolveModelsAuthAgent(opts.agent, config);
   const rawProvider = normalizeOptionalString(opts.provider);
   if (!rawProvider) {
     throw new Error(
@@ -853,19 +931,7 @@ export async function modelsAuthPasteApiKeyCommand(
     },
   });
 
-  await upsertAuthProfileWithLockOrThrow({
-    profileId,
-    credential: {
-      type: "api_key",
-      provider,
-      key,
-    },
-    agentDir,
-  });
-
-  await updateConfig((cfg) =>
-    applyAuthProfileConfig(cfg, { profileId, provider, mode: "api_key" }),
-  );
+  await saveModelProviderApiKey({ config, provider, profileId, apiKey: key, agentDir });
 
   await refreshRunningGatewayAuthState(agentId, "login");
 

@@ -4584,7 +4584,7 @@ export const en: TranslationMap & {
       replace: "Replace key",
       remove: "Remove key",
       saved: "Secret saved.",
-      removed: "API key removed.",
+      removed: "Saved API keys removed. Other sign-ins and server-managed keys are unchanged.",
       authModeBlocked: 'API key changes are unavailable while auth mode is "{mode}".',
     },
     probe: {
@@ -4659,8 +4659,6 @@ export const en: TranslationMap & {
       adminRequired: "Browsing only. Model changes require operator.admin access.",
     },
     notes: {
-      saveKey: "Save API key for {provider} from Control UI",
-      removeKey: "Remove API key for {provider} from Control UI",
       defaultModel: "Update defaults from Control UI",
     },
   },

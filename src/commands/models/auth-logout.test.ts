@@ -7,7 +7,9 @@ import type { RuntimeEnv } from "../../runtime.js";
 const mocks = vi.hoisted(() => ({
   ensureAuthProfileStoreWithoutExternalProfiles: vi.fn(),
   listProfilesForProvider: vi.fn(() => [] as string[]),
-  removeAuthProfilesAcrossOwnerStores: vi.fn(async () => true),
+  removeAuthProfilesAcrossOwnerStores:
+    vi.fn<typeof import("../../agents/auth-profiles.js").removeAuthProfilesAcrossOwnerStores>(),
+  resolvePendingAuthProfileSelection: vi.fn(() => undefined),
   loadModelsConfig: vi.fn(),
   updateConfig: vi.fn(),
   logConfigUpdated: vi.fn(),
@@ -24,6 +26,10 @@ vi.mock("../../agents/auth-profiles.js", () => ({
 
 vi.mock("./load-config.js", () => ({
   loadModelsConfig: mocks.loadModelsConfig,
+}));
+
+vi.mock("../../agents/auth-profiles/pending.js", () => ({
+  resolvePendingAuthProfileSelection: mocks.resolvePendingAuthProfileSelection,
 }));
 
 vi.mock("./shared.js", async (importOriginal) => {
@@ -50,17 +56,18 @@ vi.mock("../../wizard/clack-prompter.js", () => ({
   createClackPrompter: () => ({ confirm: mocks.confirm }),
 }));
 
-const { modelsAuthLogoutCommand } = await import("./auth-logout.js");
+const { modelsAuthLogoutCommand, removeModelAuthCredentials } = await import("./auth-logout.js");
 
 function createRuntime(): RuntimeEnv & { logs: string[] } {
   const logs: string[] = [];
   return {
     logs,
-    log: (message: string) => {
-      logs.push(message);
+    log: (...messages) => {
+      logs.push(messages.join(" "));
     },
     error: () => {},
-  } as unknown as RuntimeEnv & { logs: string[] };
+    exit: () => {},
+  };
 }
 
 function storeWith(profileIds: string[]): AuthProfileStore {
@@ -69,21 +76,16 @@ function storeWith(profileIds: string[]): AuthProfileStore {
     profiles: Object.fromEntries(
       profileIds.map((profileId) => [
         profileId,
-        { type: "oauth" as const, provider: profileId.split(":")[0] ?? "openai", access: "tok" },
+        {
+          type: "oauth" as const,
+          provider: profileId.split(":")[0]!,
+          access: "access",
+          refresh: "refresh",
+          expires: 1_000_000,
+        },
       ]),
     ),
-  } as unknown as AuthProfileStore;
-}
-
-/** Runs the config mutator captured by the mocked updateConfig. */
-function applyCapturedConfigUpdate(cfg: OpenClawConfig): OpenClawConfig {
-  const mutator = mocks.updateConfig.mock.calls[0]?.[0] as
-    | ((current: OpenClawConfig) => OpenClawConfig)
-    | undefined;
-  if (!mutator) {
-    throw new Error("expected updateConfig to be called");
-  }
-  return mutator(cfg);
+  };
 }
 
 async function withStdinIsTty<T>(isTTY: boolean, run: () => Promise<T>): Promise<T> {
@@ -106,26 +108,44 @@ async function withStdinIsTty<T>(isTTY: boolean, run: () => Promise<T>): Promise
 }
 
 describe("models auth logout", () => {
+  let currentConfig: OpenClawConfig;
+  let configAtRemoval: OpenClawConfig | undefined;
+  let authStore: AuthProfileStore;
+
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.removeAuthProfilesAcrossOwnerStores.mockResolvedValue(true);
+    currentConfig = {};
+    configAtRemoval = undefined;
+    authStore = storeWith(["openai:manual"]);
+    mocks.removeAuthProfilesAcrossOwnerStores.mockReset();
+    mocks.removeAuthProfilesAcrossOwnerStores.mockImplementation(async ({ profileIds }) => {
+      configAtRemoval = currentConfig;
+      for (const profileId of profileIds) {
+        delete authStore.profiles[profileId];
+      }
+      return true;
+    });
     mocks.confirm.mockResolvedValue(true);
     mocks.listProfilesForProvider.mockReturnValue([]);
-    mocks.updateConfig.mockResolvedValue({} as OpenClawConfig);
-    mocks.loadModelsConfig.mockResolvedValue({} as OpenClawConfig);
-    mocks.ensureAuthProfileStoreWithoutExternalProfiles.mockReturnValue(
-      storeWith(["openai:manual"]),
+    mocks.updateConfig.mockReset();
+    mocks.updateConfig.mockImplementation(
+      async (mutator: (config: OpenClawConfig) => OpenClawConfig) => {
+        currentConfig = mutator(currentConfig);
+        return currentConfig;
+      },
     );
+    mocks.loadModelsConfig.mockImplementation(async () => currentConfig);
+    mocks.ensureAuthProfileStoreWithoutExternalProfiles.mockImplementation(() => authStore);
   });
 
   it("removes the profile from the selected agent store", async () => {
     const runtime = createRuntime();
     await modelsAuthLogoutCommand({ profileId: "openai:manual", agent: "poe", yes: true }, runtime);
 
-    expect(mocks.removeAuthProfilesAcrossOwnerStores).toHaveBeenCalledWith({
-      agentDir: "/tmp/agent-poe",
-      profileIds: ["openai:manual"],
-    });
+    expect(mocks.removeAuthProfilesAcrossOwnerStores).toHaveBeenCalledWith(
+      expect.objectContaining({ agentDir: "/tmp/agent-poe", profileIds: ["openai:manual"] }),
+    );
+    expect(authStore.profiles).toEqual({});
     expect(mocks.refreshRunningGatewayAuthState).toHaveBeenCalledWith("poe", "logout");
     expect(runtime.logs).toContain("Removed auth profile: openai:manual (openai/oauth)");
     expect(runtime.logs.some((line) => line.includes("No auth profiles remain for openai"))).toBe(
@@ -135,8 +155,9 @@ describe("models auth logout", () => {
     expect(mocks.updateConfig).not.toHaveBeenCalled();
   });
 
-  it("drops config auth.profiles and auth.order references to the removed profile", async () => {
-    const cfg = {
+  it("clears config bindings before deleting only the selected profile", async () => {
+    authStore = storeWith(["openai:manual", "openai:backup", "anthropic:manual"]);
+    currentConfig = {
       auth: {
         profiles: {
           "openai:manual": { provider: "openai", mode: "oauth" },
@@ -148,13 +169,21 @@ describe("models auth logout", () => {
           anthropic: ["anthropic:manual"],
         },
       },
-    } as unknown as OpenClawConfig;
-    mocks.loadModelsConfig.mockResolvedValue(cfg);
+      models: {
+        providers: {
+          openai: { baseUrl: "https://provider.example/v1", models: [], apiKey: "openai:manual" },
+          anthropic: {
+            baseUrl: "https://other.example/v1",
+            models: [],
+            apiKey: "anthropic:manual",
+          },
+        },
+      },
+    };
 
     await modelsAuthLogoutCommand({ profileId: "openai:manual", yes: true }, createRuntime());
 
-    expect(mocks.updateConfig).toHaveBeenCalledTimes(1);
-    expect(applyCapturedConfigUpdate(cfg).auth).toEqual({
+    expect(currentConfig.auth).toEqual({
       profiles: {
         "openai:backup": { provider: "openai", mode: "api_key" },
         "anthropic:manual": { provider: "anthropic", mode: "oauth" },
@@ -164,47 +193,88 @@ describe("models auth logout", () => {
         anthropic: ["anthropic:manual"],
       },
     });
+    expect(configAtRemoval?.auth).toEqual(currentConfig.auth);
+    expect(configAtRemoval?.models?.providers?.openai).toEqual({
+      baseUrl: "https://provider.example/v1",
+      models: [],
+    });
+    expect(currentConfig.models?.providers?.openai).not.toHaveProperty("apiKey");
+    expect(currentConfig.models?.providers?.anthropic?.apiKey).toBe("anthropic:manual");
+    expect(Object.keys(authStore.profiles)).toEqual(["openai:backup", "anthropic:manual"]);
     expect(mocks.logConfigUpdated).toHaveBeenCalledTimes(1);
   });
 
   it("deletes an emptied provider order but keeps an authored empty one", async () => {
-    const cfg = {
+    currentConfig = {
       auth: {
         profiles: { "openai:manual": { provider: "openai", mode: "oauth" } },
         order: { openai: ["openai:manual"], anthropic: [] },
       },
-    } as unknown as OpenClawConfig;
-    mocks.loadModelsConfig.mockResolvedValue(cfg);
+    };
 
     await modelsAuthLogoutCommand({ profileId: "openai:manual", yes: true }, createRuntime());
 
     // `anthropic: []` is an authored "select no profiles" instruction for an
     // unrelated provider; only the order this removal emptied may go.
-    expect(applyCapturedConfigUpdate(cfg).auth).toEqual({
+    expect(currentConfig.auth).toEqual({
       profiles: {},
       order: { anthropic: [] },
     });
   });
 
-  it("removes the config reference before deleting the credential", async () => {
-    const cfg = {
+  it("keeps credentials when clearing the config reference fails", async () => {
+    currentConfig = {
       auth: { profiles: { "openai:manual": { provider: "openai", mode: "oauth" } } },
-    } as unknown as OpenClawConfig;
-    mocks.loadModelsConfig.mockResolvedValue(cfg);
-    const calls: string[] = [];
-    mocks.updateConfig.mockImplementation(async () => {
-      calls.push("config");
-      return cfg;
-    });
-    mocks.removeAuthProfilesAcrossOwnerStores.mockImplementation(async () => {
-      calls.push("store");
-      return true;
-    });
+    };
+    mocks.updateConfig.mockRejectedValueOnce(new Error("config write failed"));
 
-    await modelsAuthLogoutCommand({ profileId: "openai:manual", yes: true }, createRuntime());
+    await expect(
+      modelsAuthLogoutCommand({ profileId: "openai:manual", yes: true }, createRuntime()),
+    ).rejects.toThrow("config write failed");
 
-    expect(calls).toEqual(["config", "store"]);
+    expect(Object.keys(authStore.profiles)).toEqual(["openai:manual"]);
+    expect(mocks.removeAuthProfilesAcrossOwnerStores).not.toHaveBeenCalled();
+    expect(mocks.refreshRunningGatewayAuthState).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["configured-key", undefined],
+    [
+      { source: "env", provider: "default", id: "CUSTOM_OPENAI_KEY" },
+      { source: "env", provider: "default", id: "CUSTOM_OPENAI_KEY" },
+    ],
+    ["openai:token", "openai:token"],
+  ] as const)(
+    "removes saved API keys while preserving non-key binding %j",
+    async (apiKey, expectedKey) => {
+      authStore = storeWith(["openai:oauth"]);
+      authStore.profiles["openai:key"] = { type: "api_key", provider: "openai", key: "saved-key" };
+      authStore.profiles["openai:token"] = {
+        type: "token",
+        provider: "openai",
+        token: "saved-token",
+      };
+      currentConfig = {
+        models: {
+          providers: {
+            openai: { baseUrl: "https://provider.example/v1", models: [], apiKey },
+            other: { baseUrl: "https://other.example/v1", models: [], apiKey: "other-key" },
+          },
+        },
+      };
+
+      await removeModelAuthCredentials({
+        config: currentConfig,
+        agentDir: "/tmp/agent-main",
+        profileIds: ["openai:key"],
+        apiKeyProvider: "openai",
+      });
+
+      expect(configAtRemoval?.models?.providers?.openai?.apiKey).toEqual(expectedKey);
+      expect(currentConfig.models?.providers?.other?.apiKey).toBe("other-key");
+      expect(Object.keys(authStore.profiles)).toEqual(["openai:oauth", "openai:token"]);
+    },
+  );
 
   it.each([
     {
@@ -214,21 +284,13 @@ describe("models auth logout", () => {
       expected: 'Auth profile "openai:missing" not found for agent "main"',
     },
     {
-      label: "profile bound to a provider apiKey entry",
-      profileId: "openai:manual",
-      cfg: {
-        models: { providers: { openai: { apiKey: "openai:manual" } } },
-      } as unknown as OpenClawConfig,
-      expected: "referenced by models.providers.openai.apiKey",
-    },
-    {
       label: "blank profile id",
       profileId: "  ",
       cfg: {} as OpenClawConfig,
       expected: "Missing profile id",
     },
   ])("refuses removal for $label", async ({ profileId, cfg, expected }) => {
-    mocks.loadModelsConfig.mockResolvedValue(cfg);
+    currentConfig = cfg;
 
     await expect(
       modelsAuthLogoutCommand({ profileId, yes: true }, createRuntime()),
@@ -241,7 +303,9 @@ describe("models auth logout", () => {
 
     await expect(
       modelsAuthLogoutCommand({ profileId: "openai:manual", yes: true }, createRuntime()),
-    ).rejects.toThrow('Failed to remove auth profile "openai:manual"');
+    ).rejects.toThrow("Saved credentials could not be removed");
+    expect(Object.keys(authStore.profiles)).toEqual(["openai:manual"]);
+    expect(mocks.refreshRunningGatewayAuthState).not.toHaveBeenCalled();
   });
 
   it("keeps the profile when an interactive confirmation is declined", async () => {
