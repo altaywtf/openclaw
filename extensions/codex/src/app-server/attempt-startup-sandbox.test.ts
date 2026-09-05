@@ -213,7 +213,11 @@ describe("sandboxed Codex native context", () => {
         const executionCwd = path.join(root, "workspace");
         expect(factory.mock.calls[0]?.[0]).toMatchObject({
           authProfileId: null,
-          startOptions: { homeScope, env: { CODEX_HOME: nativeHome } },
+          startOptions: {
+            homeScope,
+            env: { CODEX_HOME: nativeHome },
+            protectedLaunchRoots: expect.arrayContaining([executionCwd]),
+          },
         });
         expect(result.executionCwd).toBe(executionCwd);
         expect(result.sandboxPolicy?.type).toBe(expectedType);

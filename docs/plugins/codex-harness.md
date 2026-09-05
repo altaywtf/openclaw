@@ -957,6 +957,22 @@ connections before changing a shared transport, home, or network profile.
 OpenClaw does not automatically rewrite these settings on upgrade or during
 `doctor --fix`.
 
+**Custom launcher or exposed runtime files.** Protected startup accepts a native
+executable or the official npm entrypoint, with direct `app-server` arguments.
+The executable, known launcher inputs, runtime package, and code-mode host must
+stay outside every model-writable workspace or bind. Script wrappers and extra
+positional arguments are rejected before process startup. Remove custom
+`appServer.command` and launch-environment overrides to select the managed binary,
+and use `args: ["app-server", "--listen", "stdio://"]`; the patch below shows
+these settings. Narrow any bind exposing the runtime installation, then recreate
+the affected sandbox. Protected native overrides still trust the operator to
+select an actual Codex executable; these checks do not attest third-party native
+program behavior. Supported extra arguments are configuration (`-c`/`--config`,
+`-p`/`--profile`), feature (`--enable`/`--disable`), `--listen`, and
+`--analytics-default-enabled`, `--stdio`, and `--strict-config` options. The runtime
+installation and package-manager cache remain trusted operator state, including
+package-manager hard links; keep their files and any aliases out of writable mounts.
+
 **Remote, Unix-socket, or stdio-proxy connection.** These connections cannot apply
 the required process configuration to the server they attach to. To run this
 gateway's agents locally, save this patch as `codex-local.patch.json5`:

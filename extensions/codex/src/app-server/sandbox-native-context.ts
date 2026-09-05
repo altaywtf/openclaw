@@ -62,8 +62,10 @@ export async function prepareCodexSandboxNativeContext(params: {
     ...(sandbox.workspaceAccess === "none" ? [] : [sandbox.agentWorkspaceDir]),
     ...(sandbox.docker.binds ?? []).flatMap((bind) => resolveWritableSandboxBindHostRoots([bind])),
   ];
-  for (const modelRoot of new Set(modelRoots)) {
-    const resolvedRoot = await canonicalPathFromExistingAncestor(path.resolve(modelRoot));
+  const protectedLaunchRoots = await Promise.all(
+    [...new Set(modelRoots)].map((root) => canonicalPathFromExistingAncestor(path.resolve(root))),
+  );
+  for (const resolvedRoot of protectedLaunchRoots) {
     if (
       [agentDir, codexHome].some(
         (protectedRoot) =>
@@ -198,6 +200,7 @@ export async function prepareCodexSandboxNativeContext(params: {
       // externally owned: native artifact provisioning uses that distinction.
       start: {
         ...appServer.start,
+        protectedLaunchRoots,
         cwd,
         args,
         ...(appServer.start.homeScope === "user" || appServer.start.env?.CODEX_HOME?.trim()

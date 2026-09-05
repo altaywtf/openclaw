@@ -58,12 +58,8 @@ import {
   buildCodexPluginThreadConfigInputFingerprint,
   mergeCodexThreadConfigs,
 } from "./plugin-thread-config.js";
-import type {
-  CodexDynamicToolSpec,
-  CodexSandboxPolicy,
-  CodexTurnEnvironmentParams,
-  JsonObject,
-} from "./protocol.js";
+import type { CodexDynamicToolSpec, JsonObject } from "./protocol.js";
+import type { StartCodexAttemptThreadResult } from "./run-attempt-types.js";
 import {
   ensureCodexSandboxExecServerEnvironment,
   releaseCodexSandboxExecServerEnvironment,
@@ -85,14 +81,9 @@ import {
 } from "./shared-client.js";
 import {
   startOrResumeThread,
-  type CodexAppServerThreadLifecycleBinding,
   type CodexContextEngineThreadBootstrapProjection,
 } from "./thread-lifecycle.js";
-import {
-  getCodexAppServerTurnRouter,
-  type CodexAppServerTurnRouter,
-  type CodexThreadRouteReservation,
-} from "./turn-router.js";
+import { getCodexAppServerTurnRouter, type CodexThreadRouteReservation } from "./turn-router.js";
 import type { CodexNativeWebSearchSupport } from "./web-search.js";
 
 const CODEX_APP_SERVER_STARTUP_MAX_ATTEMPTS = 3;
@@ -111,22 +102,6 @@ export function isCodexContextRestartSelectionChangedError(
 }
 
 type CodexSandboxContext = Awaited<ReturnType<typeof resolveSandboxContext>>;
-
-/** Resources and bindings returned after a Codex attempt thread starts. */
-type StartCodexAttemptThreadResult = {
-  client: CodexAppServerClient;
-  turnRouter: CodexAppServerTurnRouter;
-  turnRoute: CodexThreadRouteReservation;
-  thread: CodexAppServerThreadLifecycleBinding;
-  pluginAppServer: CodexAppServerRuntimeOptions;
-  sandboxEnvironment: CodexSandboxExecEnvironment | undefined;
-  environmentSelection: CodexTurnEnvironmentParams[] | undefined;
-  executionCwd: string;
-  sandboxPolicy: CodexSandboxPolicy | undefined;
-  runtimeArtifact?: AgentHarnessRuntimeArtifactBinding;
-  releaseSharedClientLease: () => void;
-  restartContextEngineCodexThread: () => Promise<CodexAppServerThreadLifecycleBinding>;
-};
 
 /** Starts or resumes a thread and returns resources the run loop must release. */
 export async function startCodexAttemptThread(params: {
