@@ -212,6 +212,7 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
     ? renderChatVoiceStatus({
         status: props.realtimeTalkCameraError ? "error" : props.realtimeTalkStatus,
         detail: props.realtimeTalkDetail,
+        onUseSystemDefaultMicrophone: props.onUseSystemDefaultMicrophone,
         onDismissError: props.realtimeTalkCameraError
           ? undefined
           : props.onDismissRealtimeTalkError,
@@ -280,7 +281,7 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
           activeSession?.status,
           activeSession?.startedAt,
           activeSession?.endedAt,
-          props.progressCardHasActiveRun,
+          props.runActive,
           props.collapseTaskProgress,
           {
             activeRunId: props.runId,
