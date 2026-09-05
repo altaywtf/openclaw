@@ -417,6 +417,115 @@ describe("SQLite exact transcript suffix replacement", () => {
     });
   });
 
+  it("updates the idempotency owner when a retained event changes its key", async () => {
+    const originalEvents = [
+      rewriteEvents[0],
+      {
+        type: "message",
+        id: "owner",
+        parentId: "root",
+        message: { role: "assistant", content: "original", idempotencyKey: "old-key" },
+      },
+    ] as const;
+    await withRewriteFixture(({ db, scope }) => {
+      const replacementEvents = [
+        originalEvents[0],
+        {
+          ...originalEvents[1],
+          message: { role: "assistant", content: "updated", idempotencyKey: "new-key" },
+        },
+      ] as const;
+
+      replaceTranscriptSuffixForTest(scope, originalEvents, replacementEvents);
+
+      expect(
+        db
+          .prepare(
+            "SELECT event_id, message_idempotency_key FROM transcript_event_identities WHERE session_id = ? AND event_id = ?",
+          )
+          .get(scope.sessionId, "owner"),
+      ).toEqual({ event_id: "owner", message_idempotency_key: "new-key" });
+    }, originalEvents);
+  });
+
+  it("promotes an unchanged-prefix duplicate when a retained event changes its key", async () => {
+    const originalEvents = [
+      rewriteEvents[0],
+      {
+        type: "message",
+        id: "duplicate",
+        parentId: "root",
+        message: { role: "assistant", content: "duplicate", idempotencyKey: "old-key" },
+      },
+      {
+        type: "message",
+        id: "owner",
+        parentId: "duplicate",
+        message: { role: "assistant", content: "owner", idempotencyKey: "old-key" },
+      },
+    ] as const;
+    await withRewriteFixture(({ db, scope }) => {
+      db.prepare(
+        "UPDATE transcript_event_identities SET message_idempotency_key = NULL WHERE session_id = ? AND event_id = ?",
+      ).run(scope.sessionId, "duplicate");
+      db.prepare(
+        "UPDATE transcript_event_identities SET message_idempotency_key = ? WHERE session_id = ? AND event_id = ?",
+      ).run("old-key", scope.sessionId, "owner");
+      const replacementEvents = [
+        originalEvents[0],
+        originalEvents[1],
+        {
+          ...originalEvents[2],
+          message: { role: "assistant", content: "updated", idempotencyKey: "new-key" },
+        },
+      ] as const;
+
+      replaceTranscriptSuffixForTest(scope, originalEvents, replacementEvents);
+
+      expect(
+        db
+          .prepare(
+            "SELECT event_id, message_idempotency_key FROM transcript_event_identities WHERE session_id = ? AND event_id IN ('duplicate', 'owner') ORDER BY event_id",
+          )
+          .all(scope.sessionId),
+      ).toEqual([
+        { event_id: "duplicate", message_idempotency_key: "old-key" },
+        { event_id: "owner", message_idempotency_key: "new-key" },
+      ]);
+    }, originalEvents);
+  });
+
+  it("removes the idempotency owner when a retained event removes its key", async () => {
+    const originalEvents = [
+      rewriteEvents[0],
+      {
+        type: "message",
+        id: "owner",
+        parentId: "root",
+        message: { role: "assistant", content: "original", idempotencyKey: "old-key" },
+      },
+    ] as const;
+    await withRewriteFixture(({ db, scope }) => {
+      const replacementEvents = [
+        originalEvents[0],
+        {
+          ...originalEvents[1],
+          message: { role: "assistant", content: "updated" },
+        },
+      ] as const;
+
+      replaceTranscriptSuffixForTest(scope, originalEvents, replacementEvents);
+
+      expect(
+        db
+          .prepare(
+            "SELECT event_id, message_idempotency_key FROM transcript_event_identities WHERE session_id = ? AND event_id = ?",
+          )
+          .get(scope.sessionId, "owner"),
+      ).toEqual({ event_id: "owner", message_idempotency_key: null });
+    }, originalEvents);
+  });
+
   it("preserves the established idempotency owner across retained suffix rows", async () => {
     const duplicateKeyEvents = [
       rewriteEvents[0],

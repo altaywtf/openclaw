@@ -1,3 +1,4 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
@@ -561,8 +562,9 @@ export function replaceSqliteTranscriptSuffixInTransaction(
   const retainedIdempotencyKeys = new Set(
     insertEvents.flatMap((event) => {
       const eventId = readTranscriptEventId(event);
-      const key = eventId ? suffixIdentityKeys.get(eventId) : undefined;
-      return key ? [key] : [];
+      const storedKey = eventId ? suffixIdentityKeys.get(eventId) : undefined;
+      const nextKey = isRecord(event) ? readMessageIdempotencyKey(event.message) : null;
+      return storedKey && storedKey === nextKey ? [storedKey] : [];
     }),
   );
 
@@ -587,9 +589,10 @@ export function replaceSqliteTranscriptSuffixInTransaction(
       const seq = plan.startSeq + index;
       const createdAt = insertCreatedAt[index] ?? Date.now();
       const eventId = readTranscriptEventId(event);
-      const retainedIdempotencyKey = eventId ? suffixIdentityKeys.get(eventId) : undefined;
-      return retainedIdempotencyKey
-        ? { event, seq, createdAt, messageIdempotencyKey: retainedIdempotencyKey }
+      const storedKey = eventId ? suffixIdentityKeys.get(eventId) : undefined;
+      const nextKey = isRecord(event) ? readMessageIdempotencyKey(event.message) : null;
+      return storedKey && storedKey === nextKey
+        ? { event, seq, createdAt, messageIdempotencyKey: storedKey }
         : { event, seq, createdAt };
     }),
     retainedIdempotencyKeys,

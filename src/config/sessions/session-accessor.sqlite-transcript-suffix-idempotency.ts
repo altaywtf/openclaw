@@ -1,3 +1,4 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { sql } from "kysely";
 import {
   executeSqliteQuerySync,
@@ -10,6 +11,7 @@ import {
   type SqliteTranscriptStorageRow,
 } from "./session-accessor.sqlite-read.js";
 import { getSessionKysely, type ResolvedTranscriptScope } from "./session-accessor.sqlite-scope.js";
+import { readMessageIdempotencyKey } from "./session-accessor.sqlite-transcript-store.js";
 
 export type IncrementalSuffixIdempotencyMutation = {
   suffixIdentityKeys: readonly (readonly [string, string | null])[];
@@ -44,8 +46,9 @@ export function prepareIncrementalSuffixIdempotencyMutation(params: {
   const retainedIdempotencyKeys = new Set(
     params.next.flatMap((event) => {
       const eventId = readTranscriptEventId(event);
-      const key = eventId ? suffixIdentityMap.get(eventId) : undefined;
-      return key ? [key] : [];
+      const storedKey = eventId ? suffixIdentityMap.get(eventId) : undefined;
+      const nextKey = isRecord(event) ? readMessageIdempotencyKey(event.message) : null;
+      return storedKey && storedKey === nextKey ? [storedKey] : [];
     }),
   );
   const removedIdempotencyKeys = new Set(
