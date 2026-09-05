@@ -949,6 +949,13 @@ OpenClaw pins the verified physical `CODEX_HOME` for the process. The real
 workspace remains the working directory for managed hooks, while project-local
 Codex configuration and ordinary hooks cannot bypass the restricted tool policy.
 
+Prefer keeping an existing native home at the same path and removing or narrowing
+the writable mount that exposes it. Selecting another home does not migrate the
+native account or thread history. Copying a home can leave stored threads referring
+to rollout files at the original location; keep the original state until you have
+verified the histories you need. Use a fresh native home and fresh threads when
+preserving the existing location is not possible.
+
 Startup reports the specific requirement that could not be met and links here.
 Choose the matching recovery below. These are operator-controlled configuration
 changes: the plugin's `appServer` settings apply to every agent using that plugin,
@@ -1009,15 +1016,18 @@ configuration nor the launch environment supplies a command. Preview and apply:
 ```bash
 openclaw config patch --file ./codex-local.patch.json5 --dry-run
 openclaw config patch --file ./codex-local.patch.json5
-openclaw models auth list --provider openai
+openclaw models auth list --provider openai --agent <agent-id>
 ```
 
 If the local agent has no suitable OpenAI profile, run
-`openclaw models auth login --provider openai` and choose the login method for
+`openclaw models auth login --provider openai --agent <agent-id>` and choose the login method for
 its existing model route. Native remote/user-home credentials and threads are
 not copied into the agent home. Keep the current connection if those shared
 agents must continue running remotely; use a separate gateway configuration for
 the local sandboxed agents instead.
+
+Use the affected agent's ID for both commands. In a multi-agent configuration,
+an omitted agent can select an ambient owner or require an explicit target.
 
 **Native network permission profile.** The generated `appServer.networkProxy`
 profile selects native filesystem and network permissions, which conflicts with
@@ -1073,9 +1083,11 @@ workspace alias cannot redirect it later. The default `codex-home` entry must be
 a directory, not a symbolic link; replace a linked entry with a reviewed
 independent directory, or configure an explicit protected `CODEX_HOME`, which
 is pinned to its canonical path.
-Move native state out of another account's replaceable directory tree, or repair
-ownership and permissions on the affected paths; do not recursively
-change the workspace. POSIX checks use the gateway process's effective UID; root
+Repair ownership and permissions on the existing native home and its ancestors
+where possible; do not recursively change the workspace. If the existing
+location cannot be protected, select a fresh protected native home and start
+fresh threads. Retain the original native state until any history you need has
+been recovered and verified. POSIX checks use the gateway process's effective UID; root
 remains a trusted administrator. Windows has no POSIX UID check here: protect
 these paths with Windows ownership and ACLs before use. Passing this check does
 not verify Windows ACLs. If the workspace is outside the
