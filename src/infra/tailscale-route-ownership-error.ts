@@ -1,5 +1,6 @@
 import { safeParseJsonRecord } from "@openclaw/normalization-core/json-coercion";
 import { asNullableObjectRecord as readRecord } from "@openclaw/normalization-core/record-coerce";
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 
 const TAILSCALE_ROUTE_OWNERSHIP_CONFLICT_CODE = "TAILSCALE_ROUTE_OWNERSHIP_CONFLICT";
 
@@ -21,7 +22,7 @@ export class TailscaleRouteOwnershipConflictError extends Error {
     const [mount, handler] =
       Object.entries(readRecord(readRecord(server)?.Handlers) ?? {})[0] ?? [];
     const route = host
-      ? `https://${host}${mount ?? ""} -> ${readRecord(handler)?.Proxy ?? "non-proxy handler"}`
+      ? `https://${host}${mount ?? ""} -> ${normalizeOptionalString(readRecord(handler)?.Proxy) ?? "non-proxy handler"}`
       : `HTTPS port ${port}`;
     super(
       `Tailscale HTTPS port ${port} is already owned by a route whose ownership OpenClaw cannot prove; it was not modified. ` +

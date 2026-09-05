@@ -95,7 +95,7 @@ describe("managed Tailscale upgrade", () => {
         },
       },
     ],
-  ])("does not modify a %s", async (_label, config, recovery = "--https=443 --set-path=/ off") => {
+  ])("does not modify a %s", async (_label, config, recovery = /--https=443 --set-path=\/ off/) => {
     const env = captureEnv([
       "OPENCLAW_TEST_TAILSCALE_BINARY",
       "OPENCLAW_TEST_TAILSCALE_FIXTURE_MARKER",
