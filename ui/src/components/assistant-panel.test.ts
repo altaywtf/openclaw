@@ -305,6 +305,16 @@ describe("assistant panel", () => {
       setGatewaySnapshot({ hello });
       await panel.updateComplete;
       expect(workContext()).toEqual(disconnectedContext);
+
+      provider.append(panel);
+      await panel.updateComplete;
+      request.mockResolvedValueOnce({
+        ...agents.state.agentsList,
+        agents: [{ id: "main" }, { id: "research", workspace: "/projects/reconnected" }],
+      });
+      await agents.refreshList();
+      await panel.updateComplete;
+      expect(workContext()?.workspace).toBe("/projects/reconnected");
     } finally {
       agents.dispose();
     }
