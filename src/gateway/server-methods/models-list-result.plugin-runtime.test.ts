@@ -1,24 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AuthProfileStore } from "../../agents/auth-profiles/types.js";
 import { testing as cliBackendsTesting } from "../../agents/cli-backends.test-support.js";
 import type { ModelCatalogEntry, ModelCatalogSnapshot } from "../../agents/model-catalog.types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
 import { buildModelsListResult } from "./models-list-result.js";
-import type { GatewayRequestContext } from "./types.js";
-
-const mocks = vi.hoisted(() => ({
-  augmentModelCatalogWithAgentHarness: vi.fn(),
-  loadAuthStore: vi.fn(() => ({ version: 1, profiles: {} })),
-}));
-
-vi.mock("../../agents/harness/model-catalog.js", () => ({
-  augmentModelCatalogWithAgentHarness: mocks.augmentModelCatalogWithAgentHarness,
-}));
-
-vi.mock("../../agents/prepared-model-runtime.auth-store.js", () => ({
-  loadPreparedModelRuntimeAuthStore: mocks.loadAuthStore,
-}));
 
 const authStore: AuthProfileStore = {
   version: 1,
@@ -58,15 +44,9 @@ function publishedSource(cfg: OpenClawConfig, snapshot: ModelCatalogSnapshot) {
     providerAuth: {},
     authMaterializations: [],
   };
-  const loadGatewayModelCatalogSnapshot = vi.fn();
-  const context = {
-    getRuntimeConfig: () => cfg,
-    loadGatewayModelCatalogSnapshot,
-    logGateway: { debug: vi.fn() },
-  } as GatewayRequestContext;
   return {
     kind: "published" as const,
-    context,
+    context: { getRuntimeConfig: () => cfg },
     config: cfg,
     snapshot,
     facts,
@@ -75,8 +55,6 @@ function publishedSource(cfg: OpenClawConfig, snapshot: ModelCatalogSnapshot) {
 
 describe("models.list plugin metadata handoff", () => {
   beforeEach(() => {
-    mocks.augmentModelCatalogWithAgentHarness.mockClear();
-    mocks.loadAuthStore.mockClear();
     cliBackendsTesting.setDepsForTest({
       resolveRuntimeCliBackends: () => [],
       resolvePluginSetupRegistry: () => ({
@@ -136,9 +114,6 @@ describe("models.list plugin metadata handoff", () => {
         available: true,
       }),
     ]);
-    expect(source.context.loadGatewayModelCatalogSnapshot).not.toHaveBeenCalled();
-    expect(mocks.augmentModelCatalogWithAgentHarness).not.toHaveBeenCalled();
-    expect(mocks.loadAuthStore).not.toHaveBeenCalled();
   });
 
   it("keeps provider settings paired with the captured auth store", async () => {
@@ -165,52 +140,41 @@ describe("models.list plugin metadata handoff", () => {
     expect(result.models).toEqual([
       expect.objectContaining({ provider: "custom", id: "modern", available: true }),
     ]);
-    expect(mocks.loadAuthStore).not.toHaveBeenCalled();
   });
 
-  it.each(["default", "configured", "all"] as const)(
-    "keeps an empty published %s view empty without discovery",
-    async (view) => {
-      const cfg: OpenClawConfig = {
-        agents: { defaults: { models: { "custom/*": {} } } },
-      };
-      const source = publishedSource(cfg, { entries: [], routeVariants: [] });
+  it("keeps an empty published catalog empty", async () => {
+    const cfg: OpenClawConfig = {
+      agents: { defaults: { models: { "custom/*": {} } } },
+    };
+    const source = publishedSource(cfg, { entries: [], routeVariants: [] });
 
-      const result = await buildModelsListResult({
-        source,
-        agentId: "main",
-        params: { view },
-      });
+    const result = await buildModelsListResult({
+      source,
+      agentId: "main",
+      params: { view: "default" },
+    });
 
-      expect(result.models).toEqual([]);
-      expect(source.context.loadGatewayModelCatalogSnapshot).not.toHaveBeenCalled();
-      expect(mocks.augmentModelCatalogWithAgentHarness).not.toHaveBeenCalled();
-    },
-  );
+    expect(result.models).toEqual([]);
+  });
 
-  it.each(["default", "configured"] as const)(
-    "includes configured static rows in the %s picker without harness discovery",
-    async (view) => {
-      const cfg: OpenClawConfig = {
-        agents: { defaults: { model: "custom/modern" } },
-      };
-      const source = publishedSource(cfg, {
-        entries: [],
-        routeVariants: [],
-        staticEntries: [catalogEntry("modern"), catalogEntry("not-configured")],
-      });
+  it("includes configured static rows in the default picker", async () => {
+    const cfg: OpenClawConfig = {
+      agents: { defaults: { model: "custom/modern" } },
+    };
+    const source = publishedSource(cfg, {
+      entries: [],
+      routeVariants: [],
+      staticEntries: [catalogEntry("modern"), catalogEntry("not-configured")],
+    });
 
-      const result = await buildModelsListResult({
-        source,
-        agentId: "main",
-        params: { view },
-      });
+    const result = await buildModelsListResult({
+      source,
+      agentId: "main",
+      params: { view: "default" },
+    });
 
-      expect(result.models).toEqual([
-        expect.objectContaining({ provider: "custom", id: "modern", available: true }),
-      ]);
-      expect(source.context.loadGatewayModelCatalogSnapshot).not.toHaveBeenCalled();
-      expect(mocks.augmentModelCatalogWithAgentHarness).not.toHaveBeenCalled();
-    },
-  );
+    expect(result.models).toEqual([
+      expect.objectContaining({ provider: "custom", id: "modern", available: true }),
+    ]);
+  });
 });

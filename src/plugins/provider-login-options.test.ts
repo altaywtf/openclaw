@@ -325,45 +325,62 @@ describe("provider channel login choices", () => {
     });
   });
 
-  it.each(["alpha", "beta"])(
-    "offers the whole %s connection family before a colliding setup choice",
-    (family) => {
-      const snapshot = metadataSnapshot([
-        choice({
-          provider: family,
-          method: "local",
-          choiceId: family,
-          groupId: family,
-          guided: "setup",
-          channelLogin: false,
-        }),
-        choice({
-          provider: `${family}-cloud`,
-          method: "api-key",
-          choiceId: `${family}-cloud`,
-          groupId: family,
-          guided: "secret",
-          channelLogin: false,
-        }),
-      ]);
-      const resolution = resolveProviderChannelLoginChoice(family, {
-        metadataSnapshot: snapshot,
-      });
+  it("offers the whole connection family before a colliding setup choice", () => {
+    const snapshot = metadataSnapshot([
+      choice({
+        provider: "alpha",
+        method: "local",
+        choiceId: "alpha",
+        groupId: "alpha",
+        guided: "setup",
+        channelLogin: false,
+      }),
+      choice({
+        provider: "alpha-cloud",
+        method: "api-key",
+        choiceId: "alpha-cloud",
+        groupId: "alpha",
+        guided: "secret",
+        channelLogin: false,
+      }),
+    ]);
 
-      expect(resolution.status).toBe("ambiguous");
-      if (resolution.status !== "ambiguous") {
-        throw new Error("Expected a connection choice");
-      }
-      expect(resolution.choices.map((entry) => entry.mode)).toEqual(["setup", "secret"]);
-      for (const offered of resolution.choices) {
-        expect(
-          resolveProviderChannelLoginChoice(`${offered.pluginId}/${offered.choiceId}`, {
-            metadataSnapshot: snapshot,
-          }),
-        ).toEqual({ status: "resolved", choice: offered });
-      }
-    },
-  );
+    expect(resolveProviderChannelLoginChoice("alpha", { metadataSnapshot: snapshot })).toEqual({
+      status: "ambiguous",
+      choices: [
+        expect.objectContaining({ choiceId: "alpha", mode: "setup" }),
+        expect.objectContaining({ choiceId: "alpha-cloud", mode: "secret" }),
+      ],
+    });
+    expect(
+      resolveProviderChannelLoginChoice("test-provider/alpha", {
+        metadataSnapshot: snapshot,
+      }),
+    ).toMatchObject({
+      status: "resolved",
+      choice: {
+        pluginId: "test-provider",
+        providerId: "alpha",
+        methodId: "local",
+        choiceId: "alpha",
+        mode: "setup",
+      },
+    });
+    expect(
+      resolveProviderChannelLoginChoice("test-provider/alpha-cloud", {
+        metadataSnapshot: snapshot,
+      }),
+    ).toMatchObject({
+      status: "resolved",
+      choice: {
+        pluginId: "test-provider",
+        providerId: "alpha-cloud",
+        methodId: "api-key",
+        choiceId: "alpha-cloud",
+        mode: "secret",
+      },
+    });
+  });
 
   it("excludes image-only manifest choices from Control UI and chat login surfaces", () => {
     const snapshot = metadataSnapshot([

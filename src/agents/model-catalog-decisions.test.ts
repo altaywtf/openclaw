@@ -640,6 +640,7 @@ describe("prepared catalog decision ownership", () => {
               },
             };
       const source = getPreparedModelCatalogDecisions(facts);
+      expect((await source.evaluate(row)).availability).not.toBe(true);
       expect(await source.runtime(row)).toEqual({ id: "openclaw", source: scope });
       expect(
         await source.runtime(row, { runtimeOverride: { id: "chosen", source: "session" } }),

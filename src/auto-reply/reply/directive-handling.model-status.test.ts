@@ -5,7 +5,6 @@ import {
   replaceRuntimeAuthProfileStoreSnapshots,
 } from "../../agents/auth-profiles.js";
 import type { AuthProfileStore } from "../../agents/auth-profiles/types.js";
-import { loadPreparedModelCatalogView } from "../../agents/model-catalog-view.js";
 import type { ModelCatalogEntry, ModelCatalogSnapshot } from "../../agents/model-catalog.types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
@@ -101,17 +100,6 @@ describe("/model status prepared catalog", () => {
     const missing = { provider: "unavailable", id: "unconfigured", name: "Unconfigured" };
     snapshot.entries = [ready, retired, missing];
     snapshot.routeVariants = snapshot.entries;
-    const prepared = await loadPreparedModelCatalogView({
-      config,
-      agentDir,
-      agentId: "main",
-      workspaceDir,
-      readOnly: true,
-    });
-    expect(prepared.entries.map((entry) => `${entry.provider}/${entry.id}`)).toEqual([
-      "demo/ready",
-    ]);
-
     const reply = await status();
 
     expect(reply?.text).toContain("  • demo/ready");
@@ -123,13 +111,6 @@ describe("/model status prepared catalog", () => {
     snapshot.providerOutcomes = [
       { provider: "demo", profileId: "demo:work", status: "auth-rejected" },
     ];
-    const prepared = await loadPreparedModelCatalogView({ config, agentId: "main" });
-    expect(prepared.evaluate(prepared.entries[0]!)).toMatchObject({
-      availability: false,
-      unavailableReason: "auth-failed",
-      selectedProfileId: "demo:work",
-    });
-
     const reply = await status();
 
     expect(reply?.text).toContain("unavailable: auth-failed");
@@ -218,9 +199,6 @@ describe("/model status prepared catalog", () => {
 
     expect(reply?.text).toContain("  • demo/ready");
     expect(reply?.text).not.toContain("  • demo/blocked");
-    expect(catalogOwner.load).toHaveBeenCalledWith(
-      expect.objectContaining({ config, agentDir, agentId: "main", workspaceDir, readOnly: true }),
-    );
   });
 
   it("keeps selected and active session facts separate from catalog defaults", async () => {

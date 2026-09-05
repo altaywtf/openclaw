@@ -124,22 +124,4 @@ describe("catalog decision lifetime", () => {
       expect(await source.runtime(entry, { lockedProfileId })).toBeUndefined();
     },
   );
-
-  it("applies explicit runtime policy to both authentication and runtime projection", async () => {
-    const facts = createFacts();
-    facts.cfg = {
-      agents: {
-        defaults: { models: { "custom/model": { agentRuntime: { id: "openclaw" } } } },
-      },
-    };
-    facts.auth.authStore.profiles = {};
-    facts.auth = {
-      ...facts.auth,
-      providerAuth: { custom: { mode: "oauth", runtime: "custom-cli" } },
-    };
-    const entry = facts.snapshot.entries[0]!;
-    const source = getPreparedModelCatalogDecisions(facts);
-    expect((await source.evaluate(entry)).availability).not.toBe(true);
-    expect(await source.runtime(entry)).toEqual({ id: "openclaw", source: "model" });
-  });
 });

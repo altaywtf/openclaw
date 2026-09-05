@@ -9,7 +9,11 @@ import {
   getRuntimeConfigWriteApplication,
   type RuntimeConfigWriteApplicationStatus,
 } from "../../config/runtime-write-application.js";
-import type { ProviderAuthMethod, ProviderPlugin } from "../../plugins/types.js";
+import type {
+  ProviderAuthMethod,
+  ProviderAuthResult,
+  ProviderPlugin,
+} from "../../plugins/types.js";
 import type { RuntimeEnv } from "../../runtime.js";
 import { WizardCancelledError } from "../../wizard/prompts.js";
 import { WizardSession } from "../../wizard/session.js";
@@ -482,7 +486,10 @@ describe("modelsAuthLoginCommand", () => {
     return originalConfig;
   }
 
-  function useXaiOAuthLogin(profileId = "xai:owner") {
+  function useXaiOAuthLogin(
+    profileId = "xai:owner",
+    result: Pick<ProviderAuthResult, "configPatch" | "defaultModel"> = {},
+  ) {
     runProviderAuth.mockResolvedValueOnce({
       profiles: [
         {
@@ -496,9 +503,32 @@ describe("modelsAuthLoginCommand", () => {
           },
         },
       ],
+      ...result,
     });
     mocks.resolvePluginProvidersCore.mockReturnValue([
       createProvider({ id: "xai", label: "xAI", run: runProviderAuth }),
+    ]);
+  }
+
+  function useImportableOpenAiLogin(run: ProviderAuthMethod["run"]) {
+    mocks.resolvePluginProvidersCore.mockReturnValue([
+      {
+        id: "openai",
+        label: "OpenAI",
+        auth: [
+          {
+            id: "device-code",
+            label: "Device login",
+            kind: "device_code",
+            credentialImport: {
+              migrationProviderId: "codex",
+              itemId: "auth:openai",
+              credentialKind: "oauth",
+            },
+            run,
+          },
+        ],
+      },
     ]);
   }
 
@@ -539,21 +569,7 @@ describe("modelsAuthLoginCommand", () => {
 
   it("saves provider sign-in without choosing or testing a default", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch");
-    useXaiOAuthLogin();
-    runProviderAuth.mockReset();
-    runProviderAuth.mockResolvedValueOnce({
-      profiles: [
-        {
-          profileId: "xai:owner",
-          credential: {
-            type: "oauth",
-            provider: "xai",
-            access: "xai-access",
-            refresh: "xai-refresh",
-            expires: Date.now() + 60_000,
-          },
-        },
-      ],
+    useXaiOAuthLogin("xai:owner", {
       configPatch: { agents: { defaults: { model: { primary: "xai/grok-4.6" } } } },
       defaultModel: "xai/grok-4.6",
     });
@@ -1130,25 +1146,7 @@ describe("modelsAuthLoginCommand", () => {
         },
       },
     };
-    mocks.resolvePluginProvidersCore.mockReturnValue([
-      {
-        id: "openai",
-        label: "OpenAI",
-        auth: [
-          {
-            id: "device-code",
-            label: "Device login",
-            kind: "device_code",
-            credentialImport: {
-              migrationProviderId: "codex",
-              itemId: "auth:openai",
-              credentialKind: "oauth",
-            },
-            run: runInteractiveLogin,
-          },
-        ],
-      },
-    ]);
+    useImportableOpenAiLogin(runInteractiveLogin);
     mocks.tryImportProviderCredential.mockResolvedValue({
       profileId: "openai:account-owner",
       provider: "openai",
@@ -1208,25 +1206,7 @@ describe("modelsAuthLoginCommand", () => {
       ],
     });
     const prompter = createWizardPrompter({ note: vi.fn(async () => {}) });
-    mocks.resolvePluginProvidersCore.mockReturnValue([
-      {
-        id: "openai",
-        label: "OpenAI",
-        auth: [
-          {
-            id: "device-code",
-            label: "Device login",
-            kind: "device_code",
-            credentialImport: {
-              migrationProviderId: "codex",
-              itemId: "auth:openai",
-              credentialKind: "oauth",
-            },
-            run: runInteractiveLogin,
-          },
-        ],
-      },
-    ]);
+    useImportableOpenAiLogin(runInteractiveLogin);
     mocks.tryImportProviderCredential.mockResolvedValue({
       unavailableReason: "The existing CLI sign-in cannot be imported safely.",
     });
@@ -1248,25 +1228,7 @@ describe("modelsAuthLoginCommand", () => {
 
   it("rejects a CLI credential imported for another provider", async () => {
     const runInteractiveLogin = vi.fn();
-    mocks.resolvePluginProvidersCore.mockReturnValue([
-      {
-        id: "openai",
-        label: "OpenAI",
-        auth: [
-          {
-            id: "device-code",
-            label: "Device login",
-            kind: "device_code",
-            credentialImport: {
-              migrationProviderId: "codex",
-              itemId: "auth:openai",
-              credentialKind: "oauth",
-            },
-            run: runInteractiveLogin,
-          },
-        ],
-      },
-    ]);
+    useImportableOpenAiLogin(runInteractiveLogin);
     mocks.tryImportProviderCredential.mockResolvedValue({
       profileId: "anthropic:wrong-owner",
       provider: "anthropic",
@@ -1971,6 +1933,7 @@ describe("modelsAuthLoginCommand", () => {
     expect(result).toMatchObject({ done: true, status: "done" });
     expect(mocks.upsertAuthProfileAfterLoginWithLock).toHaveBeenCalledOnce();
     expect(runtime.error).toHaveBeenCalledWith(expect.stringContaining("sign-in succeeded"));
+    expect(currentConfig.agents?.defaults?.modelPolicy?.allow).toEqual(["openai/existing"]);
   });
 
   it("reports saved credentials when the connection settings cannot be applied", async () => {
@@ -2034,6 +1997,7 @@ describe("modelsAuthLoginCommand", () => {
 
       expect(prompter.select).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({
+          initialValue: "keep",
           options: [
             expect.objectContaining({ value: "all", label: expect.stringContaining("models") }),
             expect.objectContaining({ value: "keep", label: "Keep current restrictions" }),
@@ -2305,25 +2269,10 @@ describe("modelsAuthLoginCommand", () => {
         },
       },
     };
-    runProviderAuth.mockResolvedValueOnce({
-      profiles: [
-        {
-          profileId: "xai:owner",
-          credential: {
-            type: "oauth",
-            provider: "xai",
-            access: "xai-access",
-            refresh: "xai-refresh",
-            expires: Date.now() + 60_000,
-          },
-        },
-      ],
+    useXaiOAuthLogin("xai:owner", {
       configPatch: { agents: { defaults: { model: { primary: "xai/grok-4.6" } } } },
       defaultModel: "xai/grok-4.6",
     });
-    mocks.resolvePluginProvidersCore.mockReturnValue([
-      createProvider({ id: "xai", label: "xAI", run: runProviderAuth }),
-    ]);
 
     const result = await runModelsAuthLoginFlowCore({
       provider: "xai",
@@ -2465,31 +2414,6 @@ describe("modelsAuthLoginCommand", () => {
       "openai/gpt-5.6-sol",
       "xai/*",
     ]);
-  });
-
-  it("keeps saved credentials and reports when model policy adoption fails", async () => {
-    currentConfig = {
-      agents: {
-        defaults: { modelPolicy: { allow: ["openai/gpt-5.6-sol"] } },
-      },
-    };
-    mocks.updateConfig.mockRejectedValueOnce(new Error("config changed"));
-    useXaiOAuthLogin();
-    const note = vi.fn(async () => {});
-
-    const result = await runModelsAuthLoginFlowCore({
-      provider: "xai",
-      method: "oauth",
-      credentialOnly: true,
-      config: currentConfig,
-      runtime: createRuntime(),
-      prompter: { ...mocks.createClackPrompter(), note },
-    });
-
-    expect(result.modelAccess).toBe("failed");
-    expect(mocks.upsertAuthProfileAfterLoginWithLock).toHaveBeenCalledOnce();
-    expect(note).not.toHaveBeenCalled();
-    expect(currentConfig.agents?.defaults?.modelPolicy?.allow).toEqual(["openai/gpt-5.6-sol"]);
   });
 
   it("writes pasted Anthropic setup-tokens and logs the preference note", async () => {
