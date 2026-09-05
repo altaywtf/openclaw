@@ -1587,6 +1587,42 @@ describe("managed channel credential publication", () => {
 });
 
 describe("managed reload transaction ownership", () => {
+  it("publishes provider profiles and rebuilds model access without restarting the Gateway", async () => {
+    vi.useFakeTimers();
+    const initialConfig: OpenClawConfig = {};
+    const nextConfig: OpenClawConfig = {
+      auth: { profiles: { "example:default": { provider: "example", mode: "api_key" } } },
+    };
+    activateSecretsRuntimeSnapshot(makePreparedSecretsSnapshot(initialConfig));
+    const writeListenerRef = createConfigWriteListenerRef();
+    const requestRecoveryRestart = vi.fn(() => ({ status: "emitted" as const }));
+    const reloader = startManagedGatewayConfigReloader({
+      initialConfig,
+      readSnapshot: vi.fn(async () => createValidConfigSnapshot(nextConfig, "provider-profile")),
+      subscribeToWrites: captureConfigWriteListener(writeListenerRef),
+      requestRecoveryRestart,
+    });
+    const application = createRuntimeConfigWriteApplication();
+    const settled = vi.fn();
+    void application.result.then(settled);
+    try {
+      writeListenerRef.current!(
+        attachRuntimeConfigWriteApplication(
+          createConfigWriteNotification(nextConfig, "provider-profile", 1, "runtime", "source"),
+          application,
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settled).toHaveBeenCalledExactlyOnceWith("applied");
+      expect(requestRecoveryRestart).not.toHaveBeenCalled();
+      expect(getActiveSecretsRuntimeSnapshot()?.config).toEqual(nextConfig);
+      expect(hoisted.refreshPreparedModelRuntimeSnapshots).toHaveBeenCalledOnce();
+      expect(hoisted.refreshPreparedModelRuntimeSnapshots.mock.calls[0]?.[0]).toEqual(nextConfig);
+    } finally {
+      await reloader.stop();
+    }
+  });
+
   it("rotates shared auth on a provider-only no-op without replacing services", async () => {
     const result = await runManagedOwnershipScenario({
       kind: "noop",
@@ -4551,6 +4587,57 @@ describe("gateway Gmail hot reload handlers", () => {
     expect(heartbeatRunner.updateConfig).not.toHaveBeenCalled();
     expect(commitTerminalConfig).toHaveBeenCalledWith(nextConfig);
     await reloader.stop();
+  });
+
+  it("settles repeated unchanged writes against the resolved runtime, not saved settings", async () => {
+    vi.useFakeTimers();
+    const sourceConfig: OpenClawConfig = {
+      gateway: {
+        auth: { token: { source: "env", provider: "default", id: "GATEWAY_TOKEN" } },
+      },
+    };
+    const runtimeConfig: OpenClawConfig = {
+      gateway: { auth: { token: "resolved-token" } },
+      messages: { visibleReplies: "automatic" },
+    };
+    activateSecretsRuntimeSnapshot(
+      makePreparedSecretsSnapshot(sourceConfig, { config: runtimeConfig }),
+    );
+    const writeListenerRef = createConfigWriteListenerRef();
+    const activateRuntimeSecrets = vi.fn(async () =>
+      makePreparedSecretsSnapshot(sourceConfig, { config: runtimeConfig }),
+    );
+    const reloader = startManagedGatewayConfigReloader({
+      initialConfig: runtimeConfig,
+      initialCompareConfig: sourceConfig,
+      readSnapshot: vi.fn(async () => createValidConfigSnapshot(sourceConfig, "unchanged")),
+      subscribeToWrites: captureConfigWriteListener(writeListenerRef),
+      prepareConfigCandidate: () => ({
+        runtimeConfig: sourceConfig,
+        compareConfig: sourceConfig,
+      }),
+      activateRuntimeSecrets,
+    });
+    const settled = vi.fn();
+    try {
+      for (const revision of [1, 2]) {
+        const application = createRuntimeConfigWriteApplication();
+        void application.result.then(settled);
+        writeListenerRef.current!(
+          attachRuntimeConfigWriteApplication(
+            createConfigWriteNotification(sourceConfig, "unchanged", revision, "runtime", "source"),
+            application,
+          ),
+        );
+        await vi.advanceTimersByTimeAsync(0);
+        expect(settled).toHaveBeenCalledTimes(revision);
+        expect(settled).toHaveBeenLastCalledWith("applied");
+        expect(getActiveSecretsRuntimeSnapshot()?.config).toEqual(runtimeConfig);
+      }
+      expect(activateRuntimeSecrets).not.toHaveBeenCalled();
+    } finally {
+      await reloader.stop();
+    }
   });
 
   it("refreshes owner refs when only the resolved source snapshot changes", async () => {

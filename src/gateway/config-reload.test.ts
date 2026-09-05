@@ -2162,6 +2162,38 @@ describe("startGatewayConfigReloader", () => {
     await harness.reloader.stop();
   });
 
+  it.each([false, true])(
+    "settles superseded receipts when no successor is scheduled (watcher replay: %s)",
+    async (watcherReplay) => {
+      const application = createRuntimeConfigWriteApplication();
+      const settled = vi.fn();
+      void application.result.then(settled);
+      const harness = createReloaderHarness(
+        vi.fn(async () => makeZeroDebounceHookSnapshot("superseded-without-successor")),
+        {
+          onHotReload: async () => {
+            throw new GatewayConfigReloadSupersededError();
+          },
+        },
+      );
+      try {
+        harness.emitWrite(
+          attachRuntimeConfigWriteApplication(
+            makeZeroDebounceHookWrite("superseded-without-successor"),
+            application,
+          ),
+        );
+        if (watcherReplay) {
+          harness.watcher.emit("change");
+        }
+        await vi.runAllTimersAsync();
+        expect(settled).toHaveBeenCalledExactlyOnceWith("superseded");
+      } finally {
+        await harness.reloader.stop();
+      }
+    },
+  );
+
   it("settles a coalesced in-process write as superseded", async () => {
     const supersededApplication = createRuntimeConfigWriteApplication();
     const appliedApplication = createRuntimeConfigWriteApplication();

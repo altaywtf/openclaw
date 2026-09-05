@@ -241,7 +241,7 @@ export function startGatewayConfigReloader(opts: {
     sourceConfig: initialSourceConfig,
     previousSourceConfig: initialSourceConfig,
   });
-  let currentConfig = initialCandidate?.runtimeConfig ?? opts.initialConfig;
+  let currentConfig = opts.initialConfig;
   let currentCompareConfig = initialCandidate?.compareConfig ?? initialSourceConfig;
   let currentSourceConfig = initialSourceConfig;
   let currentRawHash = opts.initialSnapshotRawHash;
@@ -678,13 +678,17 @@ export function startGatewayConfigReloader(opts: {
       pluginMetadataRefreshApplied = pluginMetadataRefreshToken;
     };
     if (changedPaths.length === 0 && !forcePluginMetadataReload) {
+      // Candidate preparation restores SecretRefs; only the committed runtime
+      // owns resolved values and defaults when no runtime change is applied.
+      const unchangedRuntimeConfig = currentConfig;
+      committedRuntimeConfig = unchangedRuntimeConfig;
       let publishedSource: { rollback: () => Promise<void>; commit?: () => void } | undefined;
       let publishedSourceRollback: (() => Promise<void>) | undefined;
       let publishedSourceRolledBack = false;
       const publishSource = opts.onEffectiveConfigUnchanged
         ? async () => {
             publishedSource ??= await opts.onEffectiveConfigUnchanged!(
-              nextConfig,
+              unchangedRuntimeConfig,
               ownership,
               nextSourceConfig,
             );
@@ -1114,7 +1118,10 @@ export function startGatewayConfigReloader(opts: {
     } catch (err) {
       const superseded = err instanceof GatewayConfigReloadSupersededError;
       const transferredToWatcher =
-        superseded && attemptedCandidate !== null && watcherIntentCandidate === attemptedCandidate;
+        superseded &&
+        attemptedCandidate !== null &&
+        watcherIntentCandidate === attemptedCandidate &&
+        (pending || debounceTimer !== null);
       if (!transferredToWatcher) {
         settleApplication(attemptedCandidate, superseded ? "superseded" : "failed");
       }

@@ -116,6 +116,8 @@ const BASE_RELOAD_RULES: ReloadRule[] = [
   // New PTYs use the committed shell; existing detached PTYs retain their disconnect time.
   { prefix: "gateway.terminal.shell", kind: "hot" },
   { prefix: "gateway.terminal.detachedSessionTimeoutSeconds", kind: "hot" },
+  { prefix: "auth.profiles", kind: "hot" },
+  { prefix: "auth.order", kind: "hot" },
   { prefix: "hooks.gmail", kind: "hot", actions: ["restart-gmail-watcher"] },
   { prefix: "hooks", kind: "hot", actions: ["reload-hooks"] },
   {
