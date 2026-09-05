@@ -288,6 +288,8 @@ export async function verifyCliBackendAnnounceOrdering({
         `Call sessions_spawn exactly once with taskName=cli_announce_${announceNonce.toLowerCase()} and task=${JSON.stringify(`Reply exactly ${announceChildToken} and nothing else.`)}.`,
         `After sessions_spawn returns status=accepted, call ${CLI_ANNOUNCE_BARRIER_TOOL_NAME} exactly once with no arguments.`,
         `After that tool returns, reply exactly ${announceParentToken}.`,
+        "That first reply is only an acknowledgment. My request remains open until I receive the child result.",
+        `When the completion event arrives afterward, reply exactly ${announceChildToken}; I have not received that result yet.`,
       ].join("\n"),
     },
     { expectFinal: true, timeoutMs: requestTimeoutMs },
