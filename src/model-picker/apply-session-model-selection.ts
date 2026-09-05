@@ -1,4 +1,8 @@
-import { resolveAgentDir, type AgentModelPrimaryWriteTarget } from "../agents/agent-scope.js";
+import {
+  resolveAgentDir,
+  resolveAgentModelPrimaryWriteTarget,
+  type AgentModelPrimaryWriteTarget,
+} from "../agents/agent-scope.js";
 import type { ModelCatalogEntry } from "../agents/model-catalog.js";
 import { modelKey } from "../agents/model-selection.js";
 import {
@@ -322,9 +326,11 @@ export async function applySessionModelSelection(
       ? persistStickyModelSelectionBestEffort({
           agentId: params.agentId,
           model: effectiveModelRef,
-          ...(params.stickyModelSelectionTarget
-            ? { target: params.stickyModelSelectionTarget }
-            : {}),
+          // Stable v2026.9.1 SDK callers can explicitly request effective-layer persistence.
+          // Ordinary chat callers supply an authorized target or leave persistence disabled.
+          target:
+            params.stickyModelSelectionTarget ??
+            resolveAgentModelPrimaryWriteTarget(params.cfg, params.agentId),
         })
       : undefined;
   if (changed) {

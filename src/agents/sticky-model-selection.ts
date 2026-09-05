@@ -6,11 +6,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { normalizeAgentId } from "../routing/session-key.js";
-import {
-  resolveAgentModelPrimaryWriteTarget,
-  setAgentEffectiveModelPrimary,
-  type AgentModelPrimaryWriteTarget,
-} from "./agent-scope.js";
+import { setAgentEffectiveModelPrimary, type AgentModelPrimaryWriteTarget } from "./agent-scope.js";
 
 const log = createSubsystemLogger("agents/sticky-model-selection");
 let warnedImmutableConfig = false;
@@ -18,7 +14,7 @@ let warnedImmutableConfig = false;
 export type StickyModelSelectionDispatchOutcome = "requested" | "skipped-immutable";
 export type StickyModelSelectionTarget = ModelSelectionScope;
 export type StickyModelSelectionPolicy = {
-  scope: ModelSelectionScope | "effective";
+  scope: ModelSelectionScope;
   target: StickyModelSelectionTarget;
 };
 
@@ -26,34 +22,25 @@ export type StickyModelSelectionPolicy = {
 export function resolveStickyModelSelectionScope(params: {
   cfg: OpenClawConfig;
   scope?: ModelSelectionScope;
-}): ModelSelectionScope | "effective" {
-  // Omission preserves the existing effective-config write target, not a new default.
-  return params.scope ?? params.cfg.agents?.defaults?.modelSelectionScope ?? "effective";
+}): ModelSelectionScope {
+  return params.scope ?? params.cfg.agents?.defaults?.modelSelectionScope ?? "session";
 }
 
 /** Resolve the exact layer a selection may update before presenting or applying it. */
 export function resolveStickyModelSelectionPolicy(params: {
-  agentId: string;
   canPersistConfig: boolean;
   cfg: OpenClawConfig;
   scope?: ModelSelectionScope;
 }): StickyModelSelectionPolicy {
   const scope = resolveStickyModelSelectionScope(params);
-  if (!params.canPersistConfig || scope === "session") {
-    return { scope, target: "session" };
-  }
-  if (scope !== "effective") {
-    return { scope, target: scope };
-  }
-  const writeTarget = resolveAgentModelPrimaryWriteTarget(params.cfg, params.agentId);
-  return { scope, target: writeTarget === "agent" ? "agent" : "global" };
+  return { scope, target: params.canPersistConfig ? scope : "session" };
 }
 
-/** Persists a validated session model selection at the agent's effective config layer. */
+/** Persists a validated model selection at its explicitly requested config layer. */
 async function persistStickyModelSelection(params: {
   agentId: string;
   model: string;
-  target?: AgentModelPrimaryWriteTarget;
+  target: AgentModelPrimaryWriteTarget;
 }): Promise<AgentModelPrimaryWriteTarget> {
   const model = normalizeOptionalString(params.model);
   if (!model) {
@@ -63,12 +50,7 @@ async function persistStickyModelSelection(params: {
   const committed = await mutateConfigFileWithRetry<AgentModelPrimaryWriteTarget>({
     afterWrite: { mode: "auto" },
     mutate: (draft) =>
-      setAgentEffectiveModelPrimary(
-        draft,
-        agentId,
-        model,
-        params.target ? { target: params.target } : {},
-      ),
+      setAgentEffectiveModelPrimary(draft, agentId, model, { target: params.target }),
   });
   if (!committed.result) {
     throw new Error("Sticky model config mutation did not return its write target.");
@@ -83,7 +65,7 @@ async function persistStickyModelSelection(params: {
 export function persistStickyModelSelectionBestEffort(params: {
   agentId: string;
   model: string;
-  target?: AgentModelPrimaryWriteTarget;
+  target: AgentModelPrimaryWriteTarget;
 }): StickyModelSelectionDispatchOutcome {
   if (resolveIsNixMode()) {
     // A Nix-managed gateway can switch models but can never persist this preference.

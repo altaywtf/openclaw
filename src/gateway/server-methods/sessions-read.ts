@@ -215,7 +215,6 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
     const identityId = gatewayClientSessionCreator(client)?.id;
     const defaultsAgentId = resolveSessionsListDefaultsAgentId(cfg, p.agentId);
     const modelSelectionTarget = resolveGatewayModelSelectionPolicy({
-      agentId: defaultsAgentId,
       callerScopes: client?.connect?.scopes ?? [],
       cfg,
     }).target;
