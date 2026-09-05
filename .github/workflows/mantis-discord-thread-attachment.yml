@@ -276,7 +276,7 @@ jobs:
           run_lane baseline
           run_lane candidate
 
-          smoke_audit_args=()
+          smoke_results=()
           capture_candidate_discord_web() {
             if [[ -z "${MANTIS_DISCORD_VIEWER_CHROME_PROFILE_TGZ_B64:-}" && -z "${MANTIS_DISCORD_VIEWER_CHROME_PROFILE_DIR:-}" ]]; then
               echo "::notice::No Mantis Discord viewer browser profile is configured; skipping logged-in Discord Web video."
@@ -320,7 +320,7 @@ jobs:
               --class standard \
               --idle-timeout 30m \
               --ttl 90m || smoke_exit=$?
-            smoke_audit_args+=(--smoke candidate "$desktop_dir/mantis-desktop-browser-smoke-summary.json" "$smoke_exit")
+            smoke_results+=("$(jq -cn --arg summaryPath "$desktop_dir/mantis-desktop-browser-smoke-summary.json" --argjson exitCode "$smoke_exit" '{lane: "candidate", summaryPath: $summaryPath, exitCode: $exitCode}')")
 
             if [[ -f "$desktop_dir/desktop-browser-smoke.png" ]]; then
               cp "$desktop_dir/desktop-browser-smoke.png" "$root/candidate/discord-thread-reply-filepath-attachment-discord-web.png"
@@ -435,14 +435,21 @@ jobs:
               ]
             }' > "$root/mantis-evidence.json"
 
-          comparison_status="$(node scripts/mantis/attach-smoke-video-audits.mjs "$root/mantis-evidence.json" "${smoke_audit_args[@]}")"
+          audit_exit=0
+          audit_result="$(node openclaw.mjs qa mantis audit-evidence --json \
+            --manifest "$root/mantis-evidence.json" \
+            --smoke-results "$(printf '%s\n' "${smoke_results[@]}" | jq -s .)")" || audit_exit=$?
+          audited_manifest="$(jq -er '.manifestPath' <<<"$audit_result")"
+          comparison_status="$(jq -er '.status' <<<"$audit_result")"
+          echo "audited_manifest=${audited_manifest}" >> "$GITHUB_OUTPUT"
           echo "comparison_status=${comparison_status}" >> "$GITHUB_OUTPUT"
-          jq --slurpfile manifest "$root/mantis-evidence.json" \
+          jq --slurpfile manifest "$audited_manifest" \
             '.pass = $manifest[0].comparison.pass | .outcome = $manifest[0].comparison.outcome | .videoAudit = $manifest[0].videoAudit' \
             "$root/comparison.json" > "$root/comparison-final.json"
           mv "$root/comparison-final.json" "$root/comparison.json"
           cat "$root/mantis-report.md" >> "$GITHUB_STEP_SUMMARY"
-          cat "$root/mantis-smoke-video-audits.md" >> "$GITHUB_STEP_SUMMARY"
+          cat "$(jq -er '.reportPath' <<<"$audit_result")" >> "$GITHUB_STEP_SUMMARY"
+          if ((audit_exit > 1)); then exit "$audit_exit"; fi
 
       - name: Upload Mantis thread attachment artifacts
         id: upload_artifact
@@ -479,12 +486,12 @@ jobs:
           MANTIS_ARTIFACT_R2_SECRET_ACCESS_KEY: ${{ secrets.MANTIS_ARTIFACT_R2_SECRET_ACCESS_KEY }}
           REQUEST_SOURCE: ${{ needs.resolve_request.outputs.request_source }}
           TARGET_PR: ${{ needs.resolve_request.outputs.pr_number }}
+          AUDITED_MANIFEST: ${{ steps.run_mantis.outputs.audited_manifest }}
         shell: bash
         run: |
           set -euo pipefail
 
-          root=".artifacts/qa-e2e/mantis/discord-thread-attachment"
-          if [[ ! -f "$root/mantis-evidence.json" ]]; then
+          if [[ -z "$AUDITED_MANIFEST" || ! -f "$AUDITED_MANIFEST" ]]; then
             echo "No Mantis evidence manifest found; skipping PR evidence comment."
             exit 0
           fi
@@ -493,7 +500,7 @@ jobs:
             artifact_url_args=(--artifact-url "$ARTIFACT_URL")
           fi
           node scripts/mantis/publish-pr-evidence.mjs \
-            --manifest "$root/mantis-evidence.json" \
+            --manifest "$AUDITED_MANIFEST" \
             --target-pr "$TARGET_PR" \
             --artifact-root "mantis/discord-thread-attachment/pr-${TARGET_PR}/run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --marker "<!-- mantis-discord-thread-attachment -->" \

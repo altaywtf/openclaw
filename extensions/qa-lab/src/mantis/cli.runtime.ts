@@ -3,8 +3,10 @@ import {
   type MantisDesktopBrowserSmokeOptions,
 } from "./desktop-browser-smoke.runtime.js";
 import { runMantisDiscordSmoke, type MantisDiscordSmokeOptions } from "./discord-smoke.runtime.js";
-// Qa Lab plugin module implements cli behavior.
-import { auditMantisEvidence } from "./evidence-video-audit.runtime.js";
+import {
+  auditMantisEvidence,
+  type MantisEvidenceAuditOptions,
+} from "./evidence-video-audit.runtime.js";
 import { runMantisBeforeAfter, type MantisBeforeAfterOptions } from "./run.runtime.js";
 import {
   runMantisSlackDesktopSmoke,
@@ -18,10 +20,7 @@ import {
   type MantisVisualTaskOptions,
 } from "./visual-task.runtime.js";
 
-export async function runMantisEvidenceAuditCommand(opts: {
-  repoRoot: string;
-  manifestPath: string;
-}) {
+export async function runMantisEvidenceAuditCommand(opts: MantisEvidenceAuditOptions) {
   const result = await auditMantisEvidence(opts);
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   if (result.status !== "pass") {

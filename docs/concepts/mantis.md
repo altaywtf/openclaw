@@ -55,9 +55,9 @@ usually override both.
 
 ### `audit-video`
 
-Configure Google API-key auth on the machine running Mantis, using the
-existing [model provider setup](/concepts/model-providers#google-gemini-api-key)
-such as `GEMINI_API_KEY`, then audit a completed recording:
+Configure Google API-key auth, such as `GEMINI_API_KEY`, through the existing
+[provider setup](/concepts/model-providers#google-gemini-api-key), then audit a
+completed recording:
 
 ```bash
 pnpm openclaw qa mantis audit-video --json \
@@ -66,49 +66,24 @@ pnpm openclaw qa mantis audit-video --json \
   --prompt "Check whether streamed text disappears or repeats before the response completes."
 ```
 
-The audit uses the existing [media-understanding](/nodes/media-understanding)
-auth path and pins `google/gemini-3.8-flash`. It sends the video to Google's
-`generateContent` endpoint with `mediaProcessing: "AGENTIC"` on the video
-part, and verifies that the response includes both a `MEDIA_PROCESSING` tool
-call and result. Google documents this explicit enablement and navigation
-evidence in its [agentic video guide](https://ai.google.dev/gemini-api/docs/generate-content/video-understanding#agentic-video-understanding).
-The [model reference](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash)
-lists Gemini 3.8 Flash's supported inputs and capabilities.
+Mantis pins `google/gemini-3.8-flash` through the existing
+[media-understanding](/nodes/media-understanding) auth path. The
+`generateContent` request sets `mediaProcessing: "AGENTIC"` on the video part;
+the response must include a `MEDIA_PROCESSING` tool call and result. See
+Google's [agentic video guide](https://ai.google.dev/gemini-api/docs/generate-content/video-understanding#agentic-video-understanding).
 
-The recording must be nonempty, finalized, and at most **50 MiB**. This leaves
-room for base64 encoding and the prompt under Google's current
+The finalized recording must be nonempty and at most **50 MiB**, leaving
+base64 and prompt headroom under Google's
 [100 MB inline payload limit](https://ai.google.dev/gemini-api/docs/file-input-methods#input-method-comparison).
-The model request has a **180-second** timeout. `--prompt` accepts up to 512 characters.
+Requests time out after **180 seconds**; `--prompt` accepts up to 512 characters.
 `--repo-root` defaults to the current directory; relative input paths resolve
-from that root. `--output-dir` must stay inside the repository and defaults
-to `.artifacts/qa-e2e/mantis`.
+from that root. Recordings and output directories must stay inside the repository
+without traversing symlinks. `--output-dir` defaults to `.artifacts/qa-e2e/mantis`.
 
-To correlate findings with captured events, add `--events-file <path>`. Supply
-a JSON array of at most eight events in a file no larger than 4,096 bytes:
-
-```json
-[
-  { "id": "submit", "timestampMs": 850, "description": "User submitted the message." },
-  { "id": "first-delta", "timestampMs": 1240, "description": "First response delta arrived." }
-]
-```
-
-Use offsets in milliseconds from the start of the recording. Event IDs must
-be unique, nonempty, and at most 48 characters; descriptions must be nonempty
-and at most 120 characters. Reports may cite only supplied event IDs. Event
-correlation supports investigation; it does not establish causation. Without
-events, findings have no supporting event references.
-
-Do not derive recording offsets from an application's timer or a virtual
-browser clock. The Control UI proof advances a virtual clock and does not
-automatically emit recording-relative event timestamps. Supply events only
-when their timing is measured against the capture; otherwise omit them.
-
-Each invocation creates a new `video-audit-*` directory under the output
-parent, preserving earlier reports. It contains `video-audit.json` and
-`video-audit.md` with the outcome and video identity. Completed audits include
-coverage, the recording's SHA-256, and up to eight timestamped findings;
-unavailable audits record an error.
+Each invocation preserves earlier evidence in a new `video-audit-*` directory
+containing `video-audit.json` and `video-audit.md`. Completed reports include
+coverage, the recording's SHA-256, and up to eight findings with millisecond
+offsets from the recording start. Causes remain explicitly unverified hypotheses.
 
 | Outcome | Meaning                                                                                                                                    |
 | ------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -116,9 +91,8 @@ unavailable audits record an error.
 | `fail`  | The audit reported one or more visible defects.                                                                                            |
 | `error` | The audit could not establish a result, including API/auth failure, missing navigation evidence, malformed output, or incomplete coverage. |
 
-Only `pass` exits successfully. For an error, inspect the report, resolve
-provider access or input problems, and rerun; use a shorter recording when
-the request times out or exceeds the size limit.
+Only `pass` exits successfully. Inspect errors in the report, correct provider
+access or input problems, and rerun. Shorten recordings that exceed limits.
 
 ### `audit-evidence`
 
@@ -131,21 +105,25 @@ pnpm openclaw qa mantis audit-evidence --json \
   --manifest .artifacts/qa-e2e/mantis/streaming/mantis-evidence.json
 ```
 
-The command audits at most eight recordings. It reads an optional
-`web-ui-chat-events.json` beside each recording using the event limits above.
-The manifest, recordings, and event files must stay inside the repository's
-evidence bundle. It adds audit reports and metadata to a new
-`mantis-evidence-audited-<id>.json` beside the original manifest, preserving
-the original files and earlier audit attempts. Standard output is JSON with
-`outputDir`, `manifestPath`, and `status`; publish the returned manifest.
+The command audits at most eight recordings within the repository's evidence
+bundle. It writes a new `mantis-evidence-audited-<id>.json` beside the original,
+with audit reports and metadata, preserving earlier evidence. Standard output
+is JSON with `outputDir`, `manifestPath`, `reportPath`, and `status`; publish the
+returned manifest.
 
 A passing result requires the original functional expectations and clean
 candidate video audits. Baseline defects remain reproduction evidence.
-Candidate defects produce `fail`; an unavailable audit or missing required
-recording produces `blocked`. Candidate video is always required, and a
-comparison with a baseline also requires baseline video. Only `pass` exits
-successfully. Inspect the new audit report for failure details, then rerun
-after correcting provider access or missing evidence.
+Candidate defects produce `fail`; unavailable audits or missing required
+recordings produce `blocked`. Candidate video is required, plus baseline video
+when the manifest includes a baseline. Only `pass` exits successfully.
+
+Trusted desktop workflows reuse completed audits with `--smoke-results '<json>'`
+instead of another model call. Supply an array of at most eight objects with
+`lane` (`baseline` or `candidate`), repository-relative `summaryPath`, and the
+capture command's `exitCode`. All referenced reports must remain in the evidence
+bundle. An explicit `[]` records an optional capture skip and claims functional
+evidence only. Nonempty batches require a candidate review. Candidate-provided
+bundles use the default fresh audit path.
 
 ### `visual-task` / `visual-driver`
 

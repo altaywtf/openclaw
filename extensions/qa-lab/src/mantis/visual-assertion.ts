@@ -60,10 +60,9 @@ function parseVisionAssertion(text: string, expectText: string): VisionAssertion
       reason: "Image describe did not return a structured visual assertion.",
     };
   }
-  const record = parsed;
-  const visible = record.visible;
-  const evidence = typeof record.evidence === "string" ? record.evidence.trim() : undefined;
-  const reason = typeof record.reason === "string" ? record.reason.trim() : undefined;
+  const visible = parsed.visible;
+  const evidence = typeof parsed.evidence === "string" ? parsed.evidence.trim() : undefined;
+  const reason = typeof parsed.reason === "string" ? parsed.reason.trim() : undefined;
   if (typeof visible !== "boolean") {
     return {
       evidence,

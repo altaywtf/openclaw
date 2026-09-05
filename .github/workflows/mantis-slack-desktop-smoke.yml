@@ -440,12 +440,17 @@ jobs:
               ] + $checkpoint_artifacts)
             }' > "$root/mantis-evidence.json"
 
-          audit_status="$(node scripts/mantis/attach-smoke-video-audits.mjs "$root/mantis-evidence.json" \
-            --smoke candidate "$root/mantis-slack-desktop-smoke-summary.json" "$mantis_exit")"
+          smoke_results="$(jq -cn --arg summaryPath "$root/mantis-slack-desktop-smoke-summary.json" --argjson exitCode "$mantis_exit" '[{lane: "candidate", summaryPath: $summaryPath, exitCode: $exitCode}]')"
+          audit_exit=0
+          audit_result="$(node openclaw.mjs qa mantis audit-evidence --json \
+            --manifest "$root/mantis-evidence.json" --smoke-results "$smoke_results")" || audit_exit=$?
+          echo "audited_manifest=$(jq -er '.manifestPath' <<<"$audit_result")" >> "$GITHUB_OUTPUT"
+          audit_status="$(jq -er '.status' <<<"$audit_result")"
           if [[ -f "$root/mantis-slack-desktop-smoke-report.md" ]]; then
             cat "$root/mantis-slack-desktop-smoke-report.md" >> "$GITHUB_STEP_SUMMARY"
           fi
-          cat "$root/mantis-smoke-video-audits.md" >> "$GITHUB_STEP_SUMMARY"
+          cat "$(jq -er '.reportPath' <<<"$audit_result")" >> "$GITHUB_STEP_SUMMARY"
+          if ((audit_exit > 1)); then exit "$audit_exit"; fi
 
           if [[ "$audit_status" != "pass" ]]; then
             echo "Slack desktop smoke or video audit did not pass." >&2
@@ -491,12 +496,12 @@ jobs:
           MANTIS_ARTIFACT_R2_SECRET_ACCESS_KEY: ${{ secrets.MANTIS_ARTIFACT_R2_SECRET_ACCESS_KEY }}
           REQUEST_SOURCE: workflow_dispatch
           TARGET_PR: ${{ inputs.pr_number }}
+          AUDITED_MANIFEST: ${{ steps.run_mantis.outputs.audited_manifest }}
         shell: bash
         run: |
           set -euo pipefail
-          root="${{ steps.run_mantis.outputs.output_dir }}"
           node scripts/mantis/publish-pr-evidence.mjs \
-            --manifest "$root/mantis-evidence.json" \
+            --manifest "$AUDITED_MANIFEST" \
             --target-pr "$TARGET_PR" \
             --artifact-root "mantis/slack-desktop-smoke/pr-${TARGET_PR}/run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --marker "<!-- mantis-slack-desktop-smoke -->" \

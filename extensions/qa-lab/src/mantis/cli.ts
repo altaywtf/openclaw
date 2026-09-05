@@ -1,6 +1,4 @@
-import fs from "node:fs/promises";
 import path from "node:path";
-// Qa Lab plugin module implements cli behavior.
 import type { Command } from "commander";
 import { resolveRepoRelativeOutputDir } from "../cli-paths.js";
 import { createLazyCliRuntimeLoader } from "../live-transports/shared/live-transport-cli.js";
@@ -187,12 +185,14 @@ export function registerMantisCli(qa: Command) {
     .requiredOption("--manifest <path>", "Mantis evidence manifest")
     .option("--json", "Emit JSON without startup logs")
     .option("--repo-root <path>", "Repository root")
-    .action(async (opts: { manifest: string; repoRoot?: string }) => {
+    .option("--smoke-results <json>", "Reuse trusted local desktop smoke audits (JSON array)")
+    .action(async (opts: { manifest: string; repoRoot?: string; smokeResults?: string }) => {
       const repoRoot = path.resolve(opts.repoRoot ?? process.cwd());
       const runtime = await loadMantisCliRuntime();
       await runtime.runMantisEvidenceAuditCommand({
         repoRoot,
         manifestPath: path.resolve(repoRoot, opts.manifest),
+        smokeResults: opts.smokeResults === undefined ? undefined : JSON.parse(opts.smokeResults),
       });
     });
 
@@ -204,24 +204,9 @@ export function registerMantisCli(qa: Command) {
     .option("--repo-root <path>", "Repository root")
     .option("--output-dir <path>", "Repository-relative audit artifact parent")
     .option("--prompt <text>", "Expected behavior to inspect (up to 512 characters)")
-    .option("--events-file <path>", "JSON recording-relative events: id, timestampMs, description")
     .action(
-      async (opts: {
-        file: string;
-        repoRoot?: string;
-        outputDir?: string;
-        prompt?: string;
-        eventsFile?: string;
-      }) => {
+      async (opts: { file: string; repoRoot?: string; outputDir?: string; prompt?: string }) => {
         const repoRoot = path.resolve(opts.repoRoot ?? process.cwd());
-        let events: unknown;
-        if (opts.eventsFile) {
-          const file = path.resolve(repoRoot, opts.eventsFile);
-          if ((await fs.stat(file)).size > 4096) {
-            throw new Error("Video event evidence must not exceed 4096 bytes.");
-          }
-          events = JSON.parse(await fs.readFile(file, "utf8"));
-        }
         const runtime = await loadMantisCliRuntime();
         await runtime.runMantisVideoAuditCommand({
           repoRoot,
@@ -230,7 +215,6 @@ export function registerMantisCli(qa: Command) {
             path.join(repoRoot, ".artifacts/qa-e2e/mantis"),
           videoPath: path.resolve(repoRoot, opts.file),
           prompt: opts.prompt,
-          events,
         });
       },
     );

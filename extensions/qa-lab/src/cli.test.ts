@@ -475,9 +475,17 @@ describe("qa cli registration", () => {
     });
   });
 
-  it.each(["audit-video", "audit-evidence"])(
-    "routes %s with machine-readable output and repository-relative inputs",
-    async (command) => {
+  it.each([
+    { command: "audit-video", smokeResults: undefined },
+    { command: "audit-evidence", smokeResults: undefined },
+    { command: "audit-evidence", smokeResults: [] },
+    {
+      command: "audit-evidence",
+      smokeResults: [{ lane: "candidate", summaryPath: "capture/smoke.json", exitCode: 1 }],
+    },
+  ])(
+    "routes $command with repository-relative inputs (smoke results: $smokeResults)",
+    async ({ command, smokeResults }) => {
       await program.parseAsync([
         "node",
         "openclaw",
@@ -490,6 +498,7 @@ describe("qa cli registration", () => {
         ...(command === "audit-video"
           ? ["--file", "recording.webm", "--output-dir", "qa-audits"]
           : ["--manifest", "capture/mantis-evidence.json"]),
+        ...(smokeResults === undefined ? [] : ["--smoke-results", JSON.stringify(smokeResults)]),
       ]);
       if (command === "audit-video") {
         expect(runMantisVideoAuditCommand).toHaveBeenCalledWith({
@@ -497,12 +506,12 @@ describe("qa cli registration", () => {
           outputDir: "/tmp/openclaw-repo/qa-audits",
           videoPath: "/tmp/openclaw-repo/recording.webm",
           prompt: undefined,
-          events: undefined,
         });
       } else {
         expect(runMantisEvidenceAuditCommand).toHaveBeenCalledWith({
           repoRoot: "/tmp/openclaw-repo",
           manifestPath: "/tmp/openclaw-repo/capture/mantis-evidence.json",
+          smokeResults,
         });
       }
     },

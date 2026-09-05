@@ -79,7 +79,6 @@ describe("mantis visual task runtime", () => {
               coverage: "Full recording",
               complete: true,
               findings: [],
-              events: [],
               sha256: "fixture",
             };
       });
