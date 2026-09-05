@@ -24,11 +24,7 @@ import {
 } from "../../config/sessions/transcript-write-context.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { copyCodeModeSourceAppendOptions } from "../transcript-code-mode-source.js";
-import {
-  isIndexedSessionEntry,
-  isSessionContextMetadataEntry,
-  parseOpaqueLeafEntry,
-} from "./session-manager-codec.js";
+import { isIndexedSessionEntry, parseOpaqueLeafEntry } from "./session-manager-codec.js";
 import { SessionManagerCore } from "./session-manager-core.js";
 import type { AppendPersistenceOptions, FileEntry, SessionEntry } from "./session-manager-types.js";
 
@@ -59,19 +55,6 @@ export class SessionManagerPersistence extends SessionManagerCore {
     predicate: (entry: SessionEntry) => boolean,
     options?: { preserveTrailing?: (entry: SessionEntry) => boolean },
   ): number {
-    // Prepare on a detached tree so failed persistence leaves live readers and retries unchanged.
-    if (this.persistenceTarget && this.transcriptMutationAt !== undefined) {
-      const resolved = resolveSqliteTranscriptReadScope(this.persistenceTarget);
-      const database = openOpenClawAgentDatabase(toDatabaseOptions(resolved));
-      if (
-        readTranscriptMutationStateInTransaction(database, resolved.sessionId).updatedAt !==
-        this.transcriptMutationAt
-      ) {
-        throw new Error(
-          `SQLite transcript changed while preparing suffix removal for ${resolved.sessionId}`,
-        );
-      }
-    }
     let candidatePreservedStart = this.fileEntries.length;
     while (candidatePreservedStart > 1) {
       const entry = this.fileEntries[candidatePreservedStart - 1];
@@ -84,18 +67,28 @@ export class SessionManagerPersistence extends SessionManagerCore {
     let candidateRemoveStart = candidatePreservedStart;
     while (candidateRemoveStart > 1) {
       const entry = this.fileEntries[candidateRemoveStart - 1];
-      if (isIndexedSessionEntry(entry) && predicate(entry)) {
-        removableEntryIds.add(entry.id);
-        candidateRemoveStart -= 1;
-        continue;
-      }
-      if (!isIndexedSessionEntry(entry) || !isSessionContextMetadataEntry(entry)) {
+      if (!isIndexedSessionEntry(entry) || !predicate(entry)) {
         break;
       }
+      removableEntryIds.add(entry.id);
       candidateRemoveStart -= 1;
     }
     if (candidateRemoveStart === candidatePreservedStart) {
       return 0;
+    }
+    // Fence only an actual mutation. Defensive cleanup remains a no-op when its target is absent,
+    // even if another writer advanced the durable transcript after this manager was opened.
+    if (this.persistenceTarget && this.transcriptMutationAt !== undefined) {
+      const resolved = resolveSqliteTranscriptReadScope(this.persistenceTarget);
+      const database = openOpenClawAgentDatabase(toDatabaseOptions(resolved));
+      if (
+        readTranscriptMutationStateInTransaction(database, resolved.sessionId).updatedAt !==
+        this.transcriptMutationAt
+      ) {
+        throw new Error(
+          `SQLite transcript changed while preparing suffix removal for ${resolved.sessionId}`,
+        );
+      }
     }
     const candidate = this.fileEntries[candidateRemoveStart];
     const candidateSeq =

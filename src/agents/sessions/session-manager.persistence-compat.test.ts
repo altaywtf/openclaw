@@ -283,6 +283,38 @@ describe("SessionManager persistence compatibility", () => {
     ]);
   });
 
+  it("allows stale suffix cleanup to remain a no-op when its target is absent", async () => {
+    const dir = tempDirs.make("openclaw-session-manager-concurrent-noop-");
+    const scope = {
+      agentId: "main",
+      sessionId: "sqlite-remove-concurrent-noop-session",
+      sessionKey: "agent:main:dashboard:sqlite-remove-concurrent-noop",
+      storePath: path.join(dir, "sessions.json"),
+    };
+    await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 1 });
+    await appendTranscriptMessage(scope, {
+      cwd: dir,
+      eventId: "base",
+      message: { role: "user", content: "question" },
+    });
+    const manager = SessionManager.open(scope, dir);
+    await appendTranscriptMessage(scope, {
+      cwd: dir,
+      eventId: "concurrent",
+      message: { role: "user", content: "concurrent" },
+    });
+
+    expect(manager.removeTrailingEntries((entry) => entry.id === "absent")).toBe(0);
+    expect(manager.buildSessionContext().messages).toMatchObject([
+      { role: "user", content: "question" },
+    ]);
+    expect(
+      (await loadTranscriptEvents(scope)).map((event) =>
+        event && typeof event === "object" && "id" in event ? event.id : undefined,
+      ),
+    ).toEqual([scope.sessionId, "base", "concurrent"]);
+  });
+
   it("rejects stale suffix removal without deleting concurrent history", async () => {
     const dir = tempDirs.make("openclaw-session-manager-concurrent-");
     const scope = {
