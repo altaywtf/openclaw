@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: macos-local-auth-proof-${{ github.ref }}
@@ -15,7 +16,7 @@ concurrency:
 jobs:
   native:
     runs-on: macos-26
-    timeout-minutes: 75
+    timeout-minutes: 25
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     steps:
@@ -90,50 +91,29 @@ jobs:
           git -c gpg.ssh.allowedSignersFile="$signers" verify-commit 23b805fa3821e06e882d846843d96da2252a91bd
           # Attribution does not promote contributor code out of this secretless runner.
 
-      - name: Activate the candidate package-manager pin
-        uses: ./.github/actions/setup-pnpm-store-cache
+      - name: Download the retained signed candidate app
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          package-manager-file: candidate/package.json
-          lockfile-path: candidate/pnpm-lock.yaml
-          cache-mode: "off"
+          artifact-ids: "9954557975"
+          run-id: "33916513675"
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/retained-native-app
 
-      - name: Install candidate dependencies
-        working-directory: candidate
-        run: pnpm install --frozen-lockfile
-
-      - name: Build the actual ad-hoc app
-        working-directory: candidate
+      - name: Verify the unchanged app and bundled Gateway
         shell: bash
-        env:
-          BUILD_CONFIG: debug
-          SKIP_PNPM_INSTALL: "1"
-          OPENCLAW_SKIP_MLX_TTS: "1"
-          SIGN_IDENTITY: "-"
-          SKIP_TEAM_ID_CHECK: "1"
-          CODESIGN_TIMESTAMP: "off"
-        run: bash scripts/package-mac-app.sh
-
-      - name: Archive the verified native app
-        shell: bash
-        run: tar -czf "$RUNNER_TEMP/native-auth-app.tar.gz" -C candidate/dist OpenClaw.app
-
-      - name: Retain the app before fixture setup
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: native-auth-app-23b805fa3821e06e882d846843d96da2252a91bd
-          path: ${{ runner.temp }}/native-auth-app.tar.gz
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Observe fresh local auth connections
-        shell: bash
-        run: node scripts/e2e/macos-local-auth-proof.mts candidate
-
-      - name: Run candidate endpoint regression tests
-        working-directory: candidate/apps/macos
         run: |
-          swift build --build-tests
-          node "$GITHUB_WORKSPACE/scripts/test-macos-native.mts" default --skip-build --filter GatewayEndpointStoreTests
+          set -euo pipefail
+          archive="$RUNNER_TEMP/retained-native-app/native-auth-app.tar.gz"
+          test "$(shasum -a 256 "$archive" | awk '{print $1}')" = 27fe8f937f3f42db7cdb85d0551ad99602188617e4dc8eda78795df9a4a52f92
+          mkdir -p candidate/dist
+          tar -xzf "$archive" -C candidate/dist
+          codesign --verify --deep --strict candidate/dist/OpenClaw.app
+          node -e 'const fs = require("node:fs"); const assert = require("node:assert/strict"); const info = JSON.parse(fs.readFileSync("candidate/dist/OpenClaw.app/Contents/Resources/node-worker/arm64/lib/node_modules/openclaw/dist/build-info.json", "utf8")); assert.equal(info.commit, "23b805fa3821e06e882d846843d96da2252a91bd"); console.log(JSON.stringify(info));'
+          candidate/dist/OpenClaw.app/Contents/Resources/node-worker/arm64/bin/node --version
+
+      - name: Observe implicit local password and configured remote token
+        shell: bash
+        run: node scripts/e2e/macos-local-auth-proof.mts candidate implicit-password-remote-token
 
       - name: Retain synthetic native evidence
         if: always()

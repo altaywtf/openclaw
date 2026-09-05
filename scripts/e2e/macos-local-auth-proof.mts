@@ -20,6 +20,17 @@ fs.mkdirSync(evidence, { recursive: true });
 const root = fs.realpathSync(fs.mkdtempSync(path.join(process.env.RUNNER_TEMP, "local-auth-")));
 const binary = path.join(repository, "dist/OpenClaw.app/Contents/MacOS/OpenClaw");
 assert.ok(fs.existsSync(binary));
+const runtimeRoot = path.join(
+  repository,
+  "dist/OpenClaw.app/Contents/Resources/node-worker/arm64/lib/node_modules/openclaw",
+);
+const runtimeNode = path.join(
+  repository,
+  "dist/OpenClaw.app/Contents/Resources/node-worker/arm64/bin/node",
+);
+const runtimeCLI = path.join(runtimeRoot, "openclaw.mjs");
+assert.ok(fs.existsSync(runtimeNode));
+assert.ok(fs.existsSync(runtimeCLI));
 const baseline = "606d9ab82afdb28ebaad33896e41811b96ad87c7";
 const revision = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
 const productDelta = execFileSync("git", ["diff", "--name-only", baseline, "HEAD"], {
@@ -46,11 +57,20 @@ assert.equal(
   }).trim(),
   "",
 );
-process.chdir(repository);
+assert.equal(
+  JSON.parse(fs.readFileSync(path.join(runtimeRoot, "dist/build-info.json"), "utf8")).commit,
+  candidate,
+);
+process.chdir(runtimeRoot);
 
 const results: Record<string, unknown>[] = [];
 const syntheticValues: string[] = [];
-const runnerNames = [process.env.HOME, os.hostname(), os.userInfo().username];
+const runnerNames = [
+  process.env.HOME,
+  process.env.RUNNER_TRACKING_ID,
+  os.hostname(),
+  os.userInfo().username,
+];
 for (const property of ["ComputerName", "LocalHostName"]) {
   runnerNames.push(execFileSync("scutil", ["--get", property], { encoding: "utf8" }).trim());
 }
@@ -60,8 +80,8 @@ function sanitized(value: string): string {
     .replaceAll(root, "<fixture>")
     .replaceAll(repository, "<candidate>")
     .replaceAll(harnessRepository, "<harness>");
-  for (const secret of syntheticValues)
-    result = result.replaceAll(secret, "<synthetic-credential>");
+  for (const [index, secret] of syntheticValues.entries())
+    result = result.replaceAll(secret, `<synthetic-credential-${index + 1}>`);
   for (const privateValue of runnerNames) {
     if (privateValue) result = result.replaceAll(privateValue, "<runner>");
   }
@@ -101,6 +121,7 @@ type Scenario = {
   wrapperValue?: boolean;
   inactiveOpposite?: boolean;
   mixedImplicit?: boolean;
+  remoteToken?: boolean;
   rejected?: "denied" | "unresolved";
 };
 
@@ -137,7 +158,9 @@ async function observe(scenario: Scenario, port: number): Promise<void> {
   ]) {
     if (process.env[key] !== undefined) env[key] = process.env[key];
   }
+  assert.ok(env.PATH);
   Object.assign(env, {
+    PATH: `${path.dirname(runtimeNode)}:${env.PATH}`,
     HOME: home,
     TMPDIR: `${temporary}/`,
     OPENCLAW_PROFILE: profile,
@@ -146,22 +169,26 @@ async function observe(scenario: Scenario, port: number): Promise<void> {
   });
   const credential = `synthetic-${randomUUID()}`;
   const otherCredential = `synthetic-${randomUUID()}`;
+  assert.notEqual(credential, otherCredential);
   syntheticValues.push(credential, otherCredential);
   const ref = { source: "env", provider: "proof", id: "GW_PROOF_CREDENTIAL" };
   const opposite = surface === "token" ? "password" : "token";
-  const auth = scenario.mixedImplicit
-    ? { [opposite]: ref }
-    : {
-        mode: surface,
-        [surface]: ref,
-        ...(scenario.inactiveOpposite ? { [opposite]: { ...ref, id: "GW_PROOF_INACTIVE" } } : {}),
-      };
+  const auth = scenario.remoteToken
+    ? { password: ref }
+    : scenario.mixedImplicit
+      ? { [opposite]: ref }
+      : {
+          mode: surface,
+          [surface]: ref,
+          ...(scenario.inactiveOpposite ? { [opposite]: { ...ref, id: "GW_PROOF_INACTIVE" } } : {}),
+        };
   const config = {
     gateway: {
       mode: "local",
       bind: "loopback",
       port,
       auth,
+      ...(scenario.remoteToken ? { remote: { token: otherCredential } } : {}),
       // Keep the healthy server's credentials fixed while the app reads a rejected ref.
       // This is an existing operator reload policy, not an auth or pairing bypass.
       ...(scenario.rejected ? { reload: { mode: "off" } } : {}),
@@ -193,19 +220,21 @@ async function observe(scenario: Scenario, port: number): Promise<void> {
     appEnv.GW_PROOF_CREDENTIAL = scenario.appValue === "same" ? credential : otherCredential;
   }
   if (scenario.rejected) appEnv[ambientKey] = credential;
+  if (scenario.remoteToken) {
+    assert.equal(appEnv.OPENCLAW_GATEWAY_TOKEN, undefined);
+    assert.equal(appEnv.OPENCLAW_GATEWAY_PASSWORD, undefined);
+  }
   const wrapper = path.join(root, name, "gateway-wrapper");
   fs.writeFileSync(
     wrapper,
-    `#!/bin/sh\n${scenario.wrapperValue ? `export GW_PROOF_CREDENTIAL=${shellQuote(credential)}\n` : ""}exec ${shellQuote(process.execPath)} ${shellQuote(path.join(repository, "openclaw.mjs"))} "$@" --verbose --ws-log full\n`,
+    `#!/bin/sh\n${scenario.wrapperValue ? `export GW_PROOF_CREDENTIAL=${shellQuote(credential)}\n` : ""}exec ${shellQuote(runtimeNode)} ${shellQuote(runtimeCLI)} "$@" --verbose --ws-log full\n`,
     { mode: 0o700 },
   );
   const cli = (suffix: string, args: string[], extraEnv: NodeJS.ProcessEnv = {}) =>
-    command(
-      `${name}-${suffix}`,
-      process.execPath,
-      [path.join(repository, "openclaw.mjs"), "--profile", profile, ...args],
-      { ...env, ...extraEnv },
-    );
+    command(`${name}-${suffix}`, runtimeNode, [runtimeCLI, "--profile", profile, ...args], {
+      ...env,
+      ...extraEnv,
+    });
   let keychainCreated = false;
   const failures: unknown[] = [];
   const result: Record<string, unknown> = {
@@ -214,6 +243,10 @@ async function observe(scenario: Scenario, port: number): Promise<void> {
     port,
     profile,
     productionRevision: candidate,
+    freshProfile: true,
+    configuredCredentialsDiffer: credential !== otherCredential,
+    appStandardCredentialsAbsent:
+      appEnv.OPENCLAW_GATEWAY_TOKEN === undefined && appEnv.OPENCLAW_GATEWAY_PASSWORD === undefined,
   };
   results.push(result);
   try {
@@ -236,7 +269,7 @@ async function observe(scenario: Scenario, port: number): Promise<void> {
       ["openclaw.onboardingVersion", "-int", "8"],
       ["openclaw.computerControlEnabled", "-bool", "false"],
       ["openclaw.swabbleEnabled", "-bool", "false"],
-      ["openclaw.gatewayProjectRootPath", "-string", repository],
+      ["openclaw.gatewayProjectRootPath", "-string", runtimeRoot],
     ]) {
       assert.equal(
         await command(`${name}-${key}`, "defaults", ["write", suite, key, type, value], env),
@@ -269,9 +302,15 @@ async function observe(scenario: Scenario, port: number): Promise<void> {
     );
     const installedConfig = JSON.parse(installedConfigText);
     assert.deepEqual(installedConfig.gateway.auth, auth);
+    if (scenario.remoteToken) assert.equal(installedConfig.gateway.remote?.token, otherCredential);
     result.installedAuthInputPreserved = true;
     const serviceEnvironment = path.join(state, "service-env", `ai.openclaw.${profile}.env`);
     const snapshot = fs.readFileSync(serviceEnvironment, "utf8");
+    fs.writeFileSync(path.join(evidence, `${name}-service-environment.txt`), sanitized(snapshot));
+    result.serviceStandardCredentialsAbsent =
+      !snapshot.includes("OPENCLAW_GATEWAY_TOKEN=") &&
+      !snapshot.includes("OPENCLAW_GATEWAY_PASSWORD=");
+    if (scenario.remoteToken) assert.equal(result.serviceStandardCredentialsAbsent, true);
     result.serviceSnapshotHasCredential = snapshot.includes(credential);
     result.serviceSnapshotHasRefKey = snapshot.includes("GW_PROOF_CREDENTIAL=");
     result.appHasCredential = Object.values(appEnv).includes(credential);
@@ -294,6 +333,10 @@ async function observe(scenario: Scenario, port: number): Promise<void> {
     }
     result.serviceReady = ready;
     assert.ok(ready, "The actual installed Gateway did not become ready");
+    const readyConfigText = fs.readFileSync(configPath, "utf8");
+    fs.writeFileSync(path.join(evidence, `${name}-ready-config.json`), sanitized(readyConfigText));
+    result.authInputUnchangedAtAppStart =
+      JSON.stringify(JSON.parse(readyConfigText).gateway.auth) === JSON.stringify(auth);
     if (scenario.rejected) {
       const rejectedConfig = structuredClone(config);
       if (scenario.rejected === "denied") {
@@ -349,6 +392,30 @@ async function observe(scenario: Scenario, port: number): Promise<void> {
         phaseResult.finishedAt = new Date().toISOString();
       }
     }
+    // Run explicit controls only after the fresh native phase. CLI shared auth
+    // omits device identity, so a cached device token cannot satisfy these probes.
+    if (scenario.remoteToken) {
+      result.remoteTokenProtectedRequestExit = await cli("remote-token-control", [
+        "gateway",
+        "call",
+        "config.get",
+        "--url",
+        `ws://127.0.0.1:${port}`,
+        "--token",
+        otherCredential,
+        "--json",
+      ]);
+      result.localPasswordProtectedRequestExit = await cli("local-password-control", [
+        "gateway",
+        "call",
+        "config.get",
+        "--url",
+        `ws://127.0.0.1:${port}`,
+        "--password",
+        credential,
+        "--json",
+      ]);
+    }
     result.serviceStatusExit = await cli("status", ["gateway", "status", "--json", "--no-probe"]);
   } catch (error) {
     result.failure = sanitized(String(error));
@@ -403,8 +470,11 @@ try {
     { name: "denied-password", surface: "password", rejected: "denied" },
     { name: "unresolved-token", surface: "token", rejected: "unresolved" },
     { name: "unresolved-password", surface: "password", rejected: "unresolved" },
+    { name: "implicit-password-remote-token", surface: "password", remoteToken: true },
   ];
-  for (const [index, scenario] of scenarios.entries()) {
+  const selected = scenarios.filter((scenario) => scenario.name === process.argv[3]);
+  assert.equal(selected.length, 1, "Select exactly one named native scenario");
+  for (const [index, scenario] of selected.entries()) {
     await observe(scenario, 19891 + index);
   }
 } finally {
