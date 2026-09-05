@@ -2,7 +2,6 @@ import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import type { TranscriptDisplayPosition } from "../chat/transcript-display-position.js";
 import {
   createCurrentUserProfileMessageProjector,
-  projectChatDisplayMessage,
   projectChatDisplayMessagesWithState,
 } from "./chat-display-projection.js";
 import { resolveCurrentUserProfileDisplay } from "./current-user-profile-display.js";
@@ -50,8 +49,8 @@ function readTranscriptMessageSenderIsOwner(message: unknown): boolean | undefin
   return typeof value === "boolean" ? value : undefined;
 }
 
-/** Project one transcript message into the exact payload emitted as session.message. */
-export function projectSessionMessagePayload(params: {
+/** Project every display part of a transcript row into ordered session.message payloads. */
+export function projectSessionMessagePayloads(params: {
   agentId?: string;
   message: unknown;
   messageId?: string;
@@ -62,7 +61,7 @@ export function projectSessionMessagePayload(params: {
   runId?: string;
   sessionKey: string;
   sessionSnapshot?: Record<string, unknown>;
-}): { payload?: Record<string, unknown>; projectionState: SessionMessageProjectionState } {
+}): { payloads: Record<string, unknown>[]; projectionState: SessionMessageProjectionState } {
   const idempotencyKey = readTranscriptMessageIdempotencyKey(params.message);
   const senderIsOwner = readTranscriptMessageSenderIsOwner(params.message);
   const rawMessage = attachOpenClawTranscriptMeta(params.message, {
@@ -72,29 +71,15 @@ export function projectSessionMessagePayload(params: {
     ...(idempotencyKey ? { idempotencyKey } : {}),
     ...(params.messageSeq !== undefined ? { seq: params.messageSeq } : {}),
   });
-  const projected = params.projectionState
-    ? projectChatDisplayMessagesWithState([rawMessage], {
-        streamErrorFallbackPending: params.projectionState.streamErrorFallbackPending,
-        turnBoundaryPending: params.projectionState.turnBoundaryPending,
-      })
-    : {
-        messages: [projectChatDisplayMessage(rawMessage)],
-        streamErrorFallbackPending: false,
-        turnBoundaryPending: false,
-      };
-  const projectionState = {
-    streamErrorFallbackPending: projected.streamErrorFallbackPending,
-    turnBoundaryPending: projected.turnBoundaryPending,
-  };
-  const message = projected.messages[0];
-  if (!message) {
-    return { projectionState };
-  }
+  const projected = projectChatDisplayMessagesWithState([rawMessage], {
+    ...params.projectionState,
+    includeCommentaryFallbacks: true,
+  });
   const projectCurrentUserProfile =
     params.projectCurrentUserProfile ??
     createCurrentUserProfileMessageProjector(resolveCurrentUserProfileDisplay);
   return {
-    payload: {
+    payloads: projected.messages.map((message) => ({
       sessionKey: params.sessionKey,
       ...(senderIsOwner === undefined ? {} : { senderIsOwner }),
       ...(params.agentId ? { agentId: params.agentId } : {}),
@@ -103,8 +88,11 @@ export function projectSessionMessagePayload(params: {
       ...(params.messageSeq !== undefined ? { messageSeq: params.messageSeq } : {}),
       ...params.sessionSnapshot,
       ...(params.runId ? { runId: params.runId } : {}),
+    })),
+    projectionState: {
+      streamErrorFallbackPending: projected.streamErrorFallbackPending,
+      turnBoundaryPending: projected.turnBoundaryPending,
     },
-    projectionState,
   };
 }
 
