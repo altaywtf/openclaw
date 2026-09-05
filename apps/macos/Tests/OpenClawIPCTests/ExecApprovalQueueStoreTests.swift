@@ -39,7 +39,7 @@ private struct ApprovalFixtureRequest: Encodable, Sendable {
     }
 }
 
-private struct ApprovalGatewayRequest: Encodable, Sendable {
+private struct ApprovalGatewayRequest: Sendable {
     let gatewayURL: URL
     let id: String
     let method: String
@@ -52,7 +52,6 @@ private actor ApprovalGatewayRequestLog {
     private var makeListedRequests: @Sendable () -> [ApprovalFixtureRequest]
     private var makeListedSystemRequests: @Sendable () -> [ApprovalFixtureRequest]
     private var requests: [ApprovalGatewayRequest] = []
-    private var observedRequestCount = 0
     private var nextSequence = 0
     private var resolveRejection: String?
     private var unavailableMethods: Set<String> = []
@@ -71,14 +70,6 @@ private actor ApprovalGatewayRequestLog {
 
     func requests(method: String) -> [ApprovalGatewayRequest] {
         self.requests.filter { $0.method == method }
-    }
-
-    func observe(phase: String, supportsSystemList: Bool) throws {
-        let pending = Array(self.requests.dropFirst(self.observedRequestCount))
-        self.observedRequestCount = self.requests.count
-        let json = try #require(String(data: JSONEncoder().encode(pending), encoding: .utf8))
-        let systemCount = self.requests(method: "openclaw.approval.list").count
-        print("QUEUE_PROBE phase=\(phase) supported=\(supportsSystemList) systemTotal=\(systemCount) requests=\(json)")
     }
 
     func listResponse(method: String) throws -> String {
@@ -464,15 +455,13 @@ struct ExecApprovalQueueStoreTests {
         try await fixture.withStore { store in
             store.start()
             let initialLease = try await fixture.gateway.acquireServerLease()
+            // Startup may finish before the menu opens; its refresh need not coalesce.
             try #require(await self.waitUntil {
                 Set(store.requests.map(\.id)) ==
                     (supportsSystemList ? ["exec-pending", "system-pending"] : ["exec-pending"])
             })
-            try await fixture.requestLog.observe(phase: "automatic-startup", supportsSystemList: supportsSystemList)
-            print("QUEUE_PROBE startupRows=\(store.requests.map(\.id))")
             await store.refresh()
             var captured: ExecApprovalQueueItem?
-            try await fixture.requestLog.observe(phase: "manual-refresh", supportsSystemList: supportsSystemList)
             if supportsSystemList {
                 let event = ApprovalFixtureRequest(id: "system-pending", command: "echo before-reconnect")
                 try await fixture.sendEvent(name: "openclaw.approval.requested", payload: event.json)
@@ -482,41 +471,43 @@ struct ExecApprovalQueueStoreTests {
                 await store.refresh()
                 captured = try #require(store.requests.first { $0.kind == .systemAgent })
             }
-            try await fixture.requestLog.observe(phase: "event-refresh", supportsSystemList: supportsSystemList)
-
             await fixture.gateway.shutdown()
             #expect(!fixture.gateway.serverLeaseMatchesCurrentState(initialLease))
+            let listsBeforeReconnect = await fixture.requestLog.requests(method: "openclaw.approval.list")
             await store.refresh()
             let recoveredLease = try #require(await fixture.gateway.captureServerLease())
             #expect(recoveredLease != initialLease)
             #expect(fixture.gateway.serverLeaseMatchesCurrentState(recoveredLease))
-            print("QUEUE_PROBE leaseReplaced=\(recoveredLease != initialLease) sockets=\(fixture.session.snapshotMakeCount())")
-            print("QUEUE_PROBE recoveredRows=\(store.requests.map { "\($0.id):\($0.request.command)" })")
-            try await fixture.requestLog.observe(phase: "reconnect", supportsSystemList: supportsSystemList)
             #expect(fixture.session.snapshotMakeCount() == 2)
             if let captured {
                 await store.resolve(request: captured, decision: .deny)
             }
             #expect(await fixture.requestLog.requests(method: "approval.resolve").isEmpty)
-            try await fixture.requestLog.observe(phase: "stale-resolution", supportsSystemList: supportsSystemList)
-            #expect(await fixture.requestLog.requests(method: "openclaw.approval.list").count ==
-                (supportsSystemList ? 3 : 0))
+            let systemLists = await fixture.requestLog.requests(method: "openclaw.approval.list")
 
             if supportsSystemList {
+                #expect(systemLists.count > listsBeforeReconnect.count)
                 let recovered = try #require(store.requests.first { $0.kind == .systemAgent })
                 #expect(recovered.request.command == "echo recovered")
                 await store.resolve(request: recovered, decision: .allowOnce)
-                #expect(await fixture.requestLog.requests(method: "approval.resolve").count == 1)
+                let resolutions = await fixture.requestLog.requests(method: "approval.resolve")
+                #expect(resolutions.count == 1)
+                #expect(resolutions.first?.approvalId == recovered.id)
+                #expect(resolutions.first?.kind == "system-agent")
+                #expect(resolutions.first?.decision == "allow-once")
             } else {
+                #expect(systemLists.isEmpty)
                 #expect(store.requests.allSatisfy { $0.kind == .exec })
             }
             let exec = try #require(store.requests.first { $0.kind == .exec })
             await store.resolve(request: exec, decision: .allowOnce)
+            let execResolutions = await fixture.requestLog.requests(method: "exec.approval.resolve")
+            #expect(execResolutions.count == 1)
+            #expect(execResolutions.first?.approvalId == exec.id)
+            #expect(execResolutions.first?.decision == "allow-once")
             #expect(store.requests.isEmpty)
-            try await fixture.requestLog.observe(phase: "current-resolution", supportsSystemList: supportsSystemList)
-            print("QUEUE_PROBE emptyQueue=\(store.requests.isEmpty)")
         }
-        print("QUEUE_PROBE cleanup sockets=\(fixture.session.snapshotMakeCount()) cancelled=\(fixture.session.snapshotCancelCount())")
+        #expect(fixture.session.snapshotCancelCount() == 2)
     }
 
     @Test func `a replacement hello reloads both approval kinds without reopening the menu`() async throws {
