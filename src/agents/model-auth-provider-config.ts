@@ -38,14 +38,8 @@ import {
   SECRETREF_ENV_HEADER_MARKER_PREFIX,
 } from "./model-auth-markers.js";
 import type { ResolvedProviderAuth } from "./model-auth-runtime-shared.js";
-import { isLocalProviderBaseUrl } from "./model-provider-local.js";
+import { isLocalProviderBaseUrl, LOCAL_PROVIDER_HOST_ALIASES } from "./model-provider-local.js";
 import type { ProviderAuthAliasLookupParams } from "./provider-auth-aliases.js";
-
-const MODEL_AUTH_LOCAL_HOST_ALIASES = new Set([
-  "docker.orb.internal",
-  "host.docker.internal",
-  "host.orb.internal",
-]);
 
 export function sentinelizeSecretRefProfileApiKey(params: {
   apiKey: string;
@@ -542,7 +536,7 @@ export function resolveConfiguredAwsSdkProfileAuth(params: {
 }
 
 function isLocalAuthProviderBaseUrl(baseUrl: string): boolean {
-  return isLocalProviderBaseUrl(baseUrl, MODEL_AUTH_LOCAL_HOST_ALIASES);
+  return isLocalProviderBaseUrl(baseUrl, LOCAL_PROVIDER_HOST_ALIASES);
 }
 
 function hasExplicitProviderApiKeyConfig(providerConfig: ModelProviderConfig): boolean {

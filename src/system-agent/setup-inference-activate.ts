@@ -3,7 +3,7 @@
 // commit happens only after the turn succeeds, so a failing candidate leaves no broken default.
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import { resolveAmbientOwnerAgentId } from "../agents/agent-scope-config.js";
-import { resolveAgentDir } from "../agents/agent-scope.js";
+import { resolveAgentDir, resolveAgentEffectiveModelPrimary } from "../agents/agent-scope.js";
 import {
   preparePendingAuthProfileProbe,
   promotePendingAuthProfile,
@@ -370,6 +370,7 @@ async function activateSetupInferenceUnredacted(
       config: patched,
       providerId: provider,
       modelRef: staged.modelRef,
+      previousModelRef: resolveAgentEffectiveModelPrimary(base, ctx.routeAgentId),
     });
     return {
       config: params.kind === "existing-model" ? lean.config : await selectModel(lean.config),
@@ -394,7 +395,7 @@ async function activateSetupInferenceUnredacted(
     });
   }
   throwIfSetupInferenceCancelled(params);
-  const { pendingProof, verifiedRoute, turn, progress } = await withPendingAuthProfileProbe(
+  const { pendingProof, verifiedRoute, turn } = await withPendingAuthProfileProbe(
     { profileId: staged.authProfileId, agentDir: ctx.agentDir, signal: params.signal },
     async () => {
       const probe = staged.authProfileId
@@ -443,6 +444,9 @@ async function activateSetupInferenceUnredacted(
               )
             : await runTurn();
         throwIfSetupInferenceCancelled(params);
+        if (result.ok && candidate.changed) {
+          testProgress?.update("Finishing AI setup…");
+        }
       } finally {
         testProgress?.stop();
       }
@@ -450,7 +454,6 @@ async function activateSetupInferenceUnredacted(
         pendingProof: probe,
         verifiedRoute: testedRoute,
         turn: result,
-        progress: testProgress,
       };
     },
   );
@@ -467,7 +470,6 @@ async function activateSetupInferenceUnredacted(
   let gatewayRestartRequired = false;
   let leanAnnounced = false;
   if (candidate.changed) {
-    progress?.update("Finishing AI setup…");
     const application = params.onRuntimeApplication
       ? createRuntimeConfigWriteApplication(captureGatewayRootWorkAdmissionContinuationScope()?.run)
       : undefined;

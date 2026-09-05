@@ -55,6 +55,7 @@ import { authenticatedProfileUnavailableError } from "./server-methods/gateway-c
 import { createLazyCoreHandlers, lazyHandlerModule } from "./server-methods/lazy-core-handlers.js";
 import { isTargetedNonSafeGatewayRestartRequest } from "./server-methods/restart-request.js";
 import { withSessionMutationCommitGuard } from "./server-methods/session-mutation-guards.js";
+import { runAdmittedWizardSessionContinuation } from "./server-methods/setup-admission.js";
 import type {
   GatewayRequestContext,
   GatewayRequestHandler,
@@ -330,6 +331,22 @@ function runGatewayPendingWorkContinuation<T>(params: {
     return null;
   }
   const request = params.requestParams;
+  if (
+    params.method === "wizard.next" ||
+    params.method === "wizard.status" ||
+    params.method === "wizard.cancel"
+  ) {
+    const phase = getGatewaySuspendAdmissionPhase();
+    if (
+      (phase !== "accepting" && phase !== "draining") ||
+      (params.client?.connect.role ?? "operator") !== "operator" ||
+      typeof request.sessionId !== "string"
+    ) {
+      return null;
+    }
+    const session = params.context.findOwnedWizardSession(request.sessionId, params.client?.connId);
+    return session ? runAdmittedWizardSessionContinuation(session, params.run) : null;
+  }
   if (params.client?.connect.role === "node") {
     if (getGatewaySuspendAdmissionPhase() !== "draining" && !isGatewayRestartDraining()) {
       return null;
@@ -579,26 +596,24 @@ export async function runWithGatewayRequestEnvelope<T>(
     // Preparation must stay protected even before it owns the root admission that it closes.
     return await options.reject(preAdmissionRateLimitError);
   }
+  // Wizard polls share the runner's root so a poll cannot block the reload it awaits.
+  // Completion owners still enforce their exact session and lifecycle boundaries.
+  const continuation = runGatewayPendingWorkContinuation({
+    method,
+    client,
+    requestParams: options.requestParams,
+    context: options.context,
+    run: invokeWithRequestScope,
+  });
+  if (continuation) {
+    return await continuation;
+  }
   const rootWorkAdmission =
     tryBeginGatewayRootWorkAdmission(`ws:${method}`) ??
     (method === "gateway.restart.request" &&
     isTargetedNonSafeGatewayRestartRequest(options.requestParams)
       ? tryBeginGatewayPreparedRestartRootWorkAdmission()
       : null);
-  if (!rootWorkAdmission) {
-    // Completion frames arrive on separate socket chains. Their exact pending owner
-    // may settle them without admitting a new root, including rootless shutdown cleanup.
-    const continuation = runGatewayPendingWorkContinuation({
-      method,
-      client,
-      requestParams: options.requestParams,
-      context: options.context,
-      run: invokeWithRequestScope,
-    });
-    if (continuation) {
-      return await continuation;
-    }
-  }
   if (isSuspendPrepare && rootWorkAdmission && !rootWorkAdmission.ownsRoot) {
     return await options.reject(
       errorShape(ErrorCodes.UNAVAILABLE, "gateway suspension cannot begin from a nested request", {

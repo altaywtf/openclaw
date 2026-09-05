@@ -2,6 +2,12 @@
 import { isLoopbackIpAddress, isRfc1918Ipv4Address } from "@openclaw/net-policy/ip";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 
+export const LOCAL_PROVIDER_HOST_ALIASES = new Set([
+  "docker.orb.internal",
+  "host.docker.internal",
+  "host.orb.internal",
+]);
+
 export function isLocalProviderBaseUrl(
   baseUrl: string,
   additionalHostnames?: ReadonlySet<string>,

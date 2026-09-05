@@ -4,7 +4,10 @@ import {
   GatewayErrorDetailCodes,
 } from "../../../packages/gateway-protocol/src/schema/error-codes.js";
 import { resolveStateDir } from "../../config/paths.js";
-import { retainGatewayRootWorkAdmissionContinuation } from "../../process/gateway-work-admission.js";
+import {
+  retainGatewayRootWorkAdmissionContinuationScope,
+  type GatewayRootWorkAdmissionContinuationScope,
+} from "../../process/gateway-work-admission.js";
 import {
   SetupTargetLockedError,
   withSetupMigrationTargetLock,
@@ -15,7 +18,10 @@ const SETUP_ADMISSION_BUSY_MESSAGE =
   "OpenClaw setup is already in progress; try again when it finishes.";
 
 let wizardSessionInProgress = false;
-const wizardSessionAdmissionSettlements = new WeakMap<object, Promise<unknown>>();
+const wizardSessionAdmissions = new WeakMap<
+  object,
+  { settled: Promise<unknown>; scope: GatewayRootWorkAdmissionContinuationScope | null }
+>();
 
 export class SetupAdmissionBusyError extends Error {}
 
@@ -53,7 +59,14 @@ export async function runExclusiveSystemAgentSetupActivation<T>(
 export function whenAdmittedWizardSessionSettled(session: {
   whenSettled(): Promise<unknown>;
 }): Promise<unknown> {
-  return wizardSessionAdmissionSettlements.get(session) ?? session.whenSettled();
+  return wizardSessionAdmissions.get(session)?.settled ?? session.whenSettled();
+}
+
+export function runAdmittedWizardSessionContinuation<T>(
+  session: object,
+  run: () => Promise<T>,
+): Promise<T> | null {
+  return wizardSessionAdmissions.get(session)?.scope?.run(run) ?? null;
 }
 
 export async function createAdmittedWizardSession<T extends { whenSettled(): Promise<unknown> }>(
@@ -80,14 +93,14 @@ export async function createAdmittedWizardSession<T extends { whenSettled(): Pro
         })
       : createSession();
     const settled = admissionSettled ?? session.whenSettled();
-    wizardSessionAdmissionSettlements.set(session, settled);
-    // The runner outlives its start RPC and inherits that request's admission.
-    // Keep the root live so later prompts and post-auth probes remain subordinate work.
-    const releaseGatewayWork = retainGatewayRootWorkAdmissionContinuation();
-    if (releaseGatewayWork) {
-      void settled.then(releaseGatewayWork, releaseGatewayWork);
-    }
-    void settled.then(releaseSession, releaseSession);
+    const scope = retainGatewayRootWorkAdmissionContinuationScope();
+    wizardSessionAdmissions.set(session, { settled, scope });
+    const releaseAdmission = () => {
+      wizardSessionAdmissions.delete(session);
+      scope?.release();
+      releaseSession();
+    };
+    void settled.then(releaseAdmission, releaseAdmission);
     return session;
   } catch (error) {
     releaseSession();
