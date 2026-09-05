@@ -1,12 +1,12 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { resolveModelFallbackAvailability } from "../../agents/agent-scope.js";
+import type { EmbeddedAgentRunResult } from "../../agents/embedded-agent-runner/types.js";
 import { resolveModelAuthMode } from "../../agents/model-auth.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { normalizeVerboseLevel, type VerboseLevel } from "../thinking.js";
 import type { ReplyPayload } from "../types.js";
 import { buildInlinePluginStatusPayload } from "./agent-runner-core.js";
-import type { AccountedAgentTurn } from "./agent-runner-result-accounting.js";
 import {
   accumulateSessionUsageFromTranscript,
   buildInlineRawTracePayload,
@@ -19,10 +19,13 @@ import type { FollowupRun } from "./queue.js";
 export async function buildReplyDiagnosticsPayload(params: {
   activeSessionEntry: SessionEntry | undefined;
   followupRun: Pick<FollowupRun, "run">;
-  accounting: Pick<
-    AccountedAgentTurn,
-    "runResult" | "providerUsed" | "modelUsed" | "contextTokensUsed" | "promptTokens"
-  >;
+  accounting: {
+    runResult: EmbeddedAgentRunResult;
+    providerUsed: string;
+    modelUsed: string;
+    contextTokensUsed: number;
+    promptTokens?: number;
+  };
   cfg?: OpenClawConfig;
   storePath?: string;
   userText?: string;
