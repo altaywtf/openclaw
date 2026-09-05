@@ -43,44 +43,45 @@ export async function expectRestartError(
   throw new Error("expected restart to fail");
 }
 
-export function registerDisabledSystemdStopTests({
+export function registerSystemdStopTests({
   service,
   findInstalledSystemdGatewayScope,
   findVerifiedGatewayListenerPidsOnPortSync,
+  signalVerifiedGatewayPidSync,
+  mockSystemdScope,
+  readActiveGatewayLockIdentity,
+  stopSystemdService,
   runUnmanagedStop,
 }: {
   service: { readRuntime: Mock; readCommand: Mock; stop: Mock };
   findInstalledSystemdGatewayScope: Mock;
   findVerifiedGatewayListenerPidsOnPortSync: Mock;
+  signalVerifiedGatewayPidSync: Mock;
+  mockSystemdScope: (unit: string) => void;
+  readActiveGatewayLockIdentity: Mock;
+  stopSystemdService: Mock;
   runUnmanagedStop: (options?: { force?: boolean }) => Promise<unknown>;
 }) {
-  it("stops a running disabled systemd unit through the service manager", async () => {
-    vi.spyOn(process, "platform", "get").mockReturnValue("linux");
-    service.readRuntime.mockResolvedValue({ status: "running" });
-
-    await runUnmanagedStop();
-
-    expect(service.stop).toHaveBeenCalledWith(
-      expect.objectContaining({ env: process.env, stdout: process.stdout }),
-    );
-    expect(findVerifiedGatewayListenerPidsOnPortSync).not.toHaveBeenCalled();
-  });
-
-  it.each(["inactive", "failed"])(
-    "stops an installed disabled %s systemd unit to cancel its recovery scope",
+  it.each(["running", "inactive", "failed"])(
+    "stops a disabled %s unit before signaling a remaining foreground Gateway",
     async (state) => {
       vi.spyOn(process, "platform", "get").mockReturnValue("linux");
-      service.readRuntime.mockResolvedValue({ status: "stopped", state });
+      service.readRuntime.mockResolvedValue({
+        status: state === "running" ? "running" : "stopped",
+        state,
+      });
       findInstalledSystemdGatewayScope.mockResolvedValue({
         scope: "user",
         unitName: "openclaw-gateway.service",
         unitPath: "/synthetic/.config/systemd/user/openclaw-gateway.service",
       });
+      findVerifiedGatewayListenerPidsOnPortSync.mockReturnValue([4300]);
 
       await runUnmanagedStop({ force: true });
 
       expect(service.stop).toHaveBeenCalledOnce();
-      expect(findVerifiedGatewayListenerPidsOnPortSync).not.toHaveBeenCalled();
+      expect(signalVerifiedGatewayPidSync).toHaveBeenCalledWith(4300, "SIGTERM");
+      expect(service.stop).toHaveBeenCalledBefore(findVerifiedGatewayListenerPidsOnPortSync);
     },
   );
 
@@ -108,4 +109,52 @@ export function registerDisabledSystemdStopTests({
       expect(service.stop).not.toHaveBeenCalled();
     },
   );
+
+  it.each(["stopped", "unknown", "unreadable"])(
+    "stops a system-scope unit before remaining listeners when runtime is %s",
+    async (runtime) => {
+      mockSystemdScope("openclaw-gateway.service");
+      if (runtime === "unreadable") {
+        service.readRuntime.mockRejectedValue(new Error("runtime inspection unavailable"));
+      } else {
+        service.readRuntime.mockResolvedValue({ status: runtime });
+      }
+      stopSystemdService.mockResolvedValue(undefined);
+      await expect(runUnmanagedStop()).resolves.toEqual(
+        expect.objectContaining({ result: "stopped" }),
+      );
+      expect(stopSystemdService).toHaveBeenCalledOnce();
+      expect(signalVerifiedGatewayPidSync).toHaveBeenCalledWith(4200, "SIGTERM");
+      expect(stopSystemdService).toHaveBeenCalledBefore(findVerifiedGatewayListenerPidsOnPortSync);
+    },
+  );
+
+  it("reports native stop after its process and lock disappear", async () => {
+    mockSystemdScope("openclaw-gateway.service");
+    stopSystemdService.mockImplementation(async () => {
+      readActiveGatewayLockIdentity.mockResolvedValue(undefined);
+      findVerifiedGatewayListenerPidsOnPortSync.mockReturnValue([]);
+    });
+    await expect(runUnmanagedStop()).resolves.toEqual(
+      expect.objectContaining({ result: "stopped" }),
+    );
+    expect(stopSystemdService).toHaveBeenCalledOnce();
+    expect(readActiveGatewayLockIdentity).toHaveBeenCalledOnce();
+    expect(stopSystemdService).toHaveBeenCalledBefore(readActiveGatewayLockIdentity);
+    expect(signalVerifiedGatewayPidSync).not.toHaveBeenCalled();
+  });
+
+  it("surfaces systemd sudo guidance and never signals when stopping a system-scope unit as non-root (openclaw#87577)", async () => {
+    mockSystemdScope("openclaw-gateway.service");
+    stopSystemdService.mockRejectedValue(
+      new Error(
+        "openclaw-gateway.service is a system-scope unit (/etc/systemd/system/openclaw-gateway.service); run `sudo systemctl stop openclaw-gateway.service` to stop it",
+      ),
+    );
+    await expect(runUnmanagedStop()).rejects.toThrow(
+      /sudo systemctl stop openclaw-gateway\.service/,
+    );
+    expect(stopSystemdService).toHaveBeenCalled();
+    expect(signalVerifiedGatewayPidSync).not.toHaveBeenCalled();
+  });
 }

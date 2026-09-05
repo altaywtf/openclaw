@@ -4,7 +4,7 @@ import { mockSystemAccountHome } from "../../daemon/service.test-helpers.js";
 import { captureEnv } from "../../test-utils/env.js";
 import {
   expectRestartError,
-  registerDisabledSystemdStopTests,
+  registerSystemdStopTests,
   requireMockCallArg,
   type RestartParams,
 } from "./lifecycle.test-helpers.js";
@@ -754,10 +754,14 @@ describe("runDaemonRestart health checks", () => {
     expect(stopParams.stopWhenNotLoaded).toBe(true);
   });
 
-  registerDisabledSystemdStopTests({
+  registerSystemdStopTests({
     service,
     findInstalledSystemdGatewayScope,
     findVerifiedGatewayListenerPidsOnPortSync,
+    signalVerifiedGatewayPidSync,
+    mockSystemdScope,
+    readActiveGatewayLockIdentity,
+    stopSystemdService,
     runUnmanagedStop,
   });
 
@@ -1062,30 +1066,6 @@ describe("runDaemonRestart health checks", () => {
 
     expect(signalVerifiedGatewayPidSync).not.toHaveBeenCalled();
     expect(probeGateway).not.toHaveBeenCalled();
-  });
-
-  it("delegates system-scope stop to systemctl without unmanaged signaling when root (openclaw#87577)", async () => {
-    mockSystemdScope("openclaw-gateway.service");
-    stopSystemdService.mockResolvedValue(undefined);
-    await expect(runUnmanagedStop()).resolves.toEqual(
-      expect.objectContaining({ result: "stopped" }),
-    );
-    expect(stopSystemdService).toHaveBeenCalled();
-    expect(signalVerifiedGatewayPidSync).not.toHaveBeenCalled();
-  });
-
-  it("surfaces systemd sudo guidance and never signals when stopping a system-scope unit as non-root (openclaw#87577)", async () => {
-    mockSystemdScope("openclaw-gateway.service");
-    stopSystemdService.mockRejectedValue(
-      new Error(
-        "openclaw-gateway.service is a system-scope unit (/etc/systemd/system/openclaw-gateway.service); run `sudo systemctl stop openclaw-gateway.service` to stop it",
-      ),
-    );
-    await expect(runUnmanagedStop()).rejects.toThrow(
-      /sudo systemctl stop openclaw-gateway\.service/,
-    );
-    expect(stopSystemdService).toHaveBeenCalled();
-    expect(signalVerifiedGatewayPidSync).not.toHaveBeenCalled();
   });
 
   it.each([

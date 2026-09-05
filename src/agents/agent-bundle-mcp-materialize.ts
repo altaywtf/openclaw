@@ -43,15 +43,9 @@ async function releaseRuntimeLease(params: {
   runtime: SessionMcpRuntime;
   releaseLease?: () => void;
 }): Promise<void> {
-  params.releaseLease?.();
-  // Lease retirement is a lifecycle-only edge. Keep the manager graph out of
-  // read-only CLI startup paths that load tool materialization metadata.
-  const { completeDeferredSessionMcpRuntimeRetirement } =
-    await import("./agent-bundle-mcp-manager-api.js");
-  await completeDeferredSessionMcpRuntimeRetirement(params.runtime).catch((error: unknown) => {
-    recordAgentCleanupFailure();
-    logWarn(`bundle-mcp: deferred runtime cleanup failed: ${String(error)}`);
-  });
+  // Keep lifecycle imports out of read-only tool metadata loading.
+  const { releaseSessionMcpRuntime } = await import("./agent-bundle-mcp-manager-api.js");
+  await releaseSessionMcpRuntime(params);
 }
 
 function buildAppToolPolicyProjections(params: {
@@ -450,6 +444,8 @@ export async function materializeBundleMcpToolsForRun(params: {
   runtime: SessionMcpRuntime;
   agentId?: string;
   reservedToolNames?: Iterable<string>;
+  /** Transfer the lease admitted by the manager before returning this runtime. */
+  releaseLease?: () => void;
   disposeRuntime?: () => Promise<void>;
 }): Promise<BundleMcpToolRuntime> {
   const runtime = params.runtime;
@@ -482,7 +478,7 @@ export async function materializeBundleMcpToolsForRun(params: {
     }
   };
   try {
-    releaseLease = runtime.acquireLease?.();
+    releaseLease = params.releaseLease ?? runtime.acquireLease?.();
     runtime.markUsed();
     const catalog = await runtime.getCatalog();
     const reservedToolNames = params.reservedToolNames

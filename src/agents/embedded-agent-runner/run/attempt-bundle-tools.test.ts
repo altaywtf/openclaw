@@ -9,7 +9,7 @@ import { attachToolAllowlistIntersection } from "../../tool-policy.js";
 
 const mocks = vi.hoisted(() => ({
   createBundleLspToolRuntime: vi.fn(),
-  getOrCreateSessionMcpRuntime: vi.fn(),
+  acquireSessionMcpRuntime: vi.fn(),
   materializeBundleMcpToolsForRun: vi.fn(),
   applyFinalEffectiveToolPolicy: vi.fn(),
   filterRuntimeCompatibleTools: vi.fn(),
@@ -20,7 +20,7 @@ vi.mock("../../agent-bundle-lsp-runtime.js", () => ({
 }));
 
 vi.mock("../../agent-bundle-mcp-tools.js", () => ({
-  getOrCreateSessionMcpRuntime: mocks.getOrCreateSessionMcpRuntime,
+  acquireSessionMcpRuntime: mocks.acquireSessionMcpRuntime,
   materializeBundleMcpToolsForRun: mocks.materializeBundleMcpToolsForRun,
 }));
 
@@ -46,7 +46,7 @@ describe("prepareEmbeddedAttemptBundleTools", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.createBundleLspToolRuntime.mockReset().mockResolvedValue(undefined);
-    mocks.getOrCreateSessionMcpRuntime.mockReset().mockResolvedValue(undefined);
+    mocks.acquireSessionMcpRuntime.mockReset().mockResolvedValue(undefined);
     mocks.materializeBundleMcpToolsForRun.mockReset().mockResolvedValue(undefined);
     mocks.applyFinalEffectiveToolPolicy
       .mockReset()
@@ -103,14 +103,14 @@ describe("prepareEmbeddedAttemptBundleTools", () => {
     };
     input.attempt.toolsAllow = testCase.allow;
     input.preparedToolBase.effectiveToolsAllow = testCase.allow;
-    mocks.getOrCreateSessionMcpRuntime.mockResolvedValue({});
+    mocks.acquireSessionMcpRuntime.mockResolvedValue({ runtime: {}, releaseLease: () => {} });
     mocks.materializeBundleMcpToolsForRun.mockResolvedValue({
       tools: [{ name: "chrome__click" }, { name: "other__click" }],
     });
 
     const result = await prepareEmbeddedAttemptBundleTools(input);
 
-    expect(mocks.getOrCreateSessionMcpRuntime).toHaveBeenCalledTimes(
+    expect(mocks.acquireSessionMcpRuntime).toHaveBeenCalledTimes(
       testCase.discover === false ? 0 : 1,
     );
     expect(result.uncompactedEffectiveTools.map((tool) => tool.name)).toEqual(testCase.expected);
@@ -134,7 +134,7 @@ describe("prepareEmbeddedAttemptBundleTools", () => {
 
     await prepareEmbeddedAttemptBundleTools(input);
 
-    expect(mocks.getOrCreateSessionMcpRuntime).toHaveBeenCalledTimes(testCase.expected ? 1 : 0);
+    expect(mocks.acquireSessionMcpRuntime).toHaveBeenCalledTimes(testCase.expected ? 1 : 0);
   });
 
   it.each([
@@ -153,7 +153,7 @@ describe("prepareEmbeddedAttemptBundleTools", () => {
 
     await prepareEmbeddedAttemptBundleTools(input);
 
-    expect(mocks.getOrCreateSessionMcpRuntime).toHaveBeenCalledOnce();
+    expect(mocks.acquireSessionMcpRuntime).toHaveBeenCalledOnce();
   });
 
   it.each(["disableTools", "raw", "restart", "model"])(
@@ -169,7 +169,7 @@ describe("prepareEmbeddedAttemptBundleTools", () => {
 
       await prepareEmbeddedAttemptBundleTools(input);
 
-      expect(mocks.getOrCreateSessionMcpRuntime).not.toHaveBeenCalled();
+      expect(mocks.acquireSessionMcpRuntime).not.toHaveBeenCalled();
     },
   );
 
@@ -193,7 +193,7 @@ describe("prepareEmbeddedAttemptBundleTools", () => {
       manifestRegistry: registry,
     });
     input.getCurrentAttemptPluginMetadataSnapshot = () => snapshot;
-    mocks.getOrCreateSessionMcpRuntime.mockResolvedValue({});
+    mocks.acquireSessionMcpRuntime.mockResolvedValue({ runtime: {}, releaseLease: () => {} });
     mocks.materializeBundleMcpToolsForRun.mockResolvedValue({
       tools: [{ name: "chrome-dev__click" }, { name: "chrome-dev-2__click" }],
     });
@@ -277,7 +277,7 @@ describe("prepareEmbeddedAttemptBundleTools", () => {
       type: "function" as const,
       function: { name, parameters: { type: "object" as const } },
     }));
-    mocks.getOrCreateSessionMcpRuntime.mockResolvedValue({});
+    mocks.acquireSessionMcpRuntime.mockResolvedValue({ runtime: {}, releaseLease: () => {} });
     mocks.materializeBundleMcpToolsForRun.mockResolvedValue({ tools: [] });
 
     const result = await prepareEmbeddedAttemptBundleTools(input);
@@ -304,14 +304,14 @@ describe("prepareEmbeddedAttemptBundleTools", () => {
     const result = await prepareEmbeddedAttemptBundleTools(input);
 
     expect(result.clientTools).toBeUndefined();
-    expect(mocks.getOrCreateSessionMcpRuntime).not.toHaveBeenCalled();
+    expect(mocks.acquireSessionMcpRuntime).not.toHaveBeenCalled();
     expect(mocks.materializeBundleMcpToolsForRun).not.toHaveBeenCalled();
     expect(mocks.createBundleLspToolRuntime).not.toHaveBeenCalled();
   });
 
   it("refreshes spawned-child inheritance after authorized MCP tools materialize", async () => {
     const inheritedToolAllowlist = ["sessions_spawn"];
-    mocks.getOrCreateSessionMcpRuntime.mockResolvedValue({});
+    mocks.acquireSessionMcpRuntime.mockResolvedValue({ runtime: {}, releaseLease: () => {} });
     mocks.materializeBundleMcpToolsForRun.mockResolvedValue({
       tools: [{ name: "server__read" }],
     });
@@ -325,7 +325,7 @@ describe("prepareEmbeddedAttemptBundleTools", () => {
 
   it("never adds policy-denied bundled tools to spawned-child inheritance", async () => {
     const inheritedToolAllowlist = ["sessions_spawn"];
-    mocks.getOrCreateSessionMcpRuntime.mockResolvedValue({});
+    mocks.acquireSessionMcpRuntime.mockResolvedValue({ runtime: {}, releaseLease: () => {} });
     mocks.materializeBundleMcpToolsForRun.mockResolvedValue({
       tools: [{ name: "server__read" }, { name: "server__delete" }],
     });
@@ -351,7 +351,7 @@ describe("prepareEmbeddedAttemptBundleTools", () => {
       pluginId: "bundle-mcp",
       optional: false,
     });
-    mocks.getOrCreateSessionMcpRuntime.mockResolvedValue({});
+    mocks.acquireSessionMcpRuntime.mockResolvedValue({ runtime: {}, releaseLease: () => {} });
     mocks.materializeBundleMcpToolsForRun.mockResolvedValue({
       tools: [allowedMcpTool, quarantinedMcpTool],
     });
@@ -388,7 +388,7 @@ describe("prepareEmbeddedAttemptBundleTools", () => {
           throw new Error("LSP disposal failed");
         }
       });
-      mocks.getOrCreateSessionMcpRuntime.mockResolvedValue({});
+      mocks.acquireSessionMcpRuntime.mockResolvedValue({ runtime: {}, releaseLease: () => {} });
       mocks.materializeBundleMcpToolsForRun.mockResolvedValue({
         tools: [],
         dispose: disposeMcp,

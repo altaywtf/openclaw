@@ -68,7 +68,7 @@ export function createGatewaySidecarStopOwner(params: {
             }
           }
         }
-        if (failedSidecars.size > 0) {
+        if (failure) {
           // Preserve ownership after the bounded shutdown retry. A later close can try again.
           params.setRegistered([...failedSidecars, ...params.getRegistered()]);
           throw failure;
@@ -83,9 +83,9 @@ export function createGatewaySidecarStopOwner(params: {
   };
 
   const sealAndJoin = async () => {
-    while (activeStop) {
+    for (let pending = activeStop; pending; pending = activeStop) {
       try {
-        await activeStop;
+        await pending;
       } catch (error) {
         failure ??= error instanceof Error ? error : new Error(String(error));
       }

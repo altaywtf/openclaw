@@ -158,6 +158,7 @@ describe("openclaw test state", () => {
         withOpenClawTestState({ label: "callback-cleanup-failure" }, async (state) => {
           fixture = state;
           if (callback.failed) {
+            // oxlint-disable-next-line typescript/only-throw-error -- JavaScript callbacks may reject with undefined; retain that exact failure.
             throw callback.error;
           }
           return "callback result";

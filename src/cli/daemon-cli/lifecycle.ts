@@ -161,10 +161,6 @@ async function stopGatewayWithoutServiceManager(
   lockOwnerPid: number | undefined,
   serviceContext?: Parameters<typeof resolveGatewayServiceProbeHosts>[0],
 ) {
-  const managed = await handleSystemScopeSystemdGateway("stop");
-  if (managed) {
-    return managed;
-  }
   const listenerPids = resolveVerifiedGatewayListenerPids(port);
   // Listener discovery needs lsof, which minimal containers omit. The gateway
   // lock already names the verified owner of this port, so signal it instead of
@@ -492,14 +488,17 @@ export async function runDaemonStop(opts: DaemonLifecycleOptions = {}) {
     opts,
     stopWhenNotLoaded: process.platform === "darwin" && Boolean(opts.disable),
     onNotLoaded: async ({ stdout }) => {
+      let managedStop: { result: "stopped"; message?: string } | null;
       if (process.platform === "linux" && (await shouldStopUnloadedSystemdService(service))) {
-        // Native STOP cancels disabled-unit respawn and stopped-unit recovery scopes.
+        // Cancel native respawn/recovery before discovering any remaining foreground Gateway.
         await service.stop({
           env: process.env,
           stdout,
           onMutation: createGatewayLifecycleMutationAudit({ action: "stop" }),
         });
-        return { result: "stopped" };
+        managedStop = { result: "stopped" };
+      } else {
+        managedStop = await handleSystemScopeSystemdGateway("stop");
       }
       // An unmanaged run loop keeps its lock port across config edits, so use it
       // for discovery the way restart already does; otherwise a valid port
@@ -507,7 +506,8 @@ export async function runDaemonStop(opts: DaemonLifecycleOptions = {}) {
       const lock = await readActiveGatewayLockIdentity().catch(() => undefined);
       const ctx = lock ? null : await resolveGatewayLifecycleContext(service).catch(() => null);
       const port = lock?.port ?? ctx?.port ?? (await resolveGatewayConfigPorts()).fallback;
-      return await stopGatewayWithoutServiceManager(port, lock?.pid, ctx ?? undefined);
+      const stopped = await stopGatewayWithoutServiceManager(port, lock?.pid, ctx ?? undefined);
+      return stopped ?? managedStop;
     },
   });
 }
