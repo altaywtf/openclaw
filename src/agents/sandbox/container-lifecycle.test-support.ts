@@ -22,19 +22,35 @@ type ContainerSpawnState = {
   beforeStart?: () => void;
 };
 
+type ContainerProcessResponse = { code?: number; stdout?: string; stderr?: string };
+
+type ContainerResponseRule = {
+  matches: boolean;
+  run: () => ContainerProcessResponse;
+};
+
+/** Podman accepts connection options before its subcommand, in flag/value pairs. */
+function podmanGlobalArgumentCount(args: readonly string[], offset = 0): number {
+  return args[offset] === "--url" || args[offset] === "--identity"
+    ? podmanGlobalArgumentCount(args, offset + 2)
+    : offset;
+}
+
+function readContainerInvocation(commandAndArgs: string[]) {
+  const [command = "", ...rawArgs] = commandAndArgs;
+  const globalArgumentCount = command === "podman" ? podmanGlobalArgumentCount(rawArgs) : 0;
+  return {
+    command,
+    args: rawArgs.slice(globalArgumentCount),
+    globalArgs: rawArgs.slice(0, globalArgumentCount),
+  };
+}
+
 export async function spawnContainerProcess(
   spawnState: ContainerSpawnState,
   commandAndArgs: string[],
 ) {
-  const [command = "", ...rawArgs] = commandAndArgs;
-  const globalArgs: string[] = [];
-  let args = rawArgs;
-  if (command === "podman") {
-    while (args[0] === "--url" || args[0] === "--identity") {
-      globalArgs.push(...args.slice(0, 2));
-      args = args.slice(2);
-    }
-  }
+  const { command, args, globalArgs } = readContainerInvocation(commandAndArgs);
   // The tests assert docker CLI arguments without requiring Docker; this mock
   // implements only the inspect/create/start/rm calls used by ensureSandboxContainer.
   const envFileIndex = args.indexOf("--env-file");
@@ -51,78 +67,88 @@ export async function spawnContainerProcess(
     args[0] === "inspect" &&
     args[1] === "-f" &&
     Boolean(args[2]?.includes('index .Config.Labels "openclaw.configHash"'));
-  const handlers: {
-    matches: boolean;
-    run: () => { code?: number; stdout?: string; stderr?: string };
-  }[] = [
-    {
-      matches: command !== "docker" && command !== "podman",
-      run: () => ({ code: 1, stderr: `unexpected command: ${command}` }),
+  const rejectUnsupportedEngine: ContainerResponseRule = {
+    matches: command !== "docker" && command !== "podman",
+    run: () => ({ code: 1, stderr: `unexpected command: ${command}` }),
+  };
+  const reportInspectionFailure: ContainerResponseRule = {
+    matches: inspectRunning && Boolean(spawnState.inspectError),
+    run: () => ({ code: 125, stderr: spawnState.inspectError }),
+  };
+  const reportMissingContainer: ContainerResponseRule = {
+    matches: (inspectRunning || inspectLabel) && !spawnState.containerExists,
+    run: () => ({ code: 1, stderr: "No such object" }),
+  };
+  const reportRunningState: ContainerResponseRule = {
+    matches: inspectRunning,
+    run: () => ({ stdout: spawnState.inspectRunning ? "true\n" : "false\n" }),
+  };
+  const reportConfigHash: ContainerResponseRule = {
+    matches: inspectLabel,
+    run: () => ({ stdout: `${spawnState.labelHash}\n` }),
+  };
+  const reportPodmanInfo: ContainerResponseRule = {
+    matches: command === "podman" && args[0] === "info",
+    run: () => ({ stdout: spawnState.podmanInfo }),
+  };
+  const reportPodmanConnections: ContainerResponseRule = {
+    matches: command === "podman" && args[0] === "system",
+    run: () => ({ stdout: spawnState.podmanConnections }),
+  };
+  const reportPodmanMachines: ContainerResponseRule = {
+    matches: command === "podman" && args[0] === "machine",
+    run: () => ({ stdout: spawnState.podmanMachines }),
+  };
+  const removeContainer: ContainerResponseRule = {
+    matches: args[0] === "rm" && args[1] === "-f",
+    run: () => {
+      spawnState.containerExists = false;
+      spawnState.inspectRunning = false;
+      return {};
     },
-    {
-      matches: inspectRunning && Boolean(spawnState.inspectError),
-      run: () => ({ code: 125, stderr: spawnState.inspectError }),
+  };
+  const acceptImageInspectionOrExec: ContainerResponseRule = {
+    matches: (args[0] === "image" && args[1] === "inspect") || args[0] === "exec",
+    run: () => ({}),
+  };
+  const rejectDuplicateContainer: ContainerResponseRule = {
+    matches: args[0] === "create" && spawnState.containerExists,
+    run: () => ({ code: 1, stderr: "container name is already in use" }),
+  };
+  const createContainer: ContainerResponseRule = {
+    matches: args[0] === "create",
+    run: () => {
+      spawnState.containerExists = true;
+      spawnState.inspectRunning = false;
+      spawnState.labelHash =
+        args
+          .find((arg) => arg.startsWith("openclaw.configHash="))
+          ?.slice("openclaw.configHash=".length) ?? "";
+      return {};
     },
-    {
-      matches: (inspectRunning || inspectLabel) && !spawnState.containerExists,
-      run: () => ({ code: 1, stderr: "No such object" }),
+  };
+  const startContainer: ContainerResponseRule = {
+    matches: args[0] === "start",
+    run: () => {
+      spawnState.beforeStart?.();
+      spawnState.inspectRunning = true;
+      return {};
     },
-    {
-      matches: inspectRunning,
-      run: () => ({ stdout: spawnState.inspectRunning ? "true\n" : "false\n" }),
-    },
-    {
-      matches: inspectLabel,
-      run: () => ({ stdout: `${spawnState.labelHash}\n` }),
-    },
-    {
-      matches: command === "podman" && args[0] === "info",
-      run: () => ({ stdout: spawnState.podmanInfo }),
-    },
-    {
-      matches: command === "podman" && args[0] === "system",
-      run: () => ({ stdout: spawnState.podmanConnections }),
-    },
-    {
-      matches: command === "podman" && args[0] === "machine",
-      run: () => ({ stdout: spawnState.podmanMachines }),
-    },
-    {
-      matches: args[0] === "rm" && args[1] === "-f",
-      run: () => {
-        spawnState.containerExists = false;
-        spawnState.inspectRunning = false;
-        return {};
-      },
-    },
-    {
-      matches: (args[0] === "image" && args[1] === "inspect") || args[0] === "exec",
-      run: () => ({}),
-    },
-    {
-      matches: args[0] === "create" && spawnState.containerExists,
-      run: () => ({ code: 1, stderr: "container name is already in use" }),
-    },
-    {
-      matches: args[0] === "create",
-      run: () => {
-        spawnState.containerExists = true;
-        spawnState.inspectRunning = false;
-        spawnState.labelHash =
-          args
-            .find((arg) => arg.startsWith("openclaw.configHash="))
-            ?.slice("openclaw.configHash=".length) ?? "";
-        return {};
-      },
-    },
-    {
-      matches: args[0] === "start",
-      run: () => {
-        spawnState.beforeStart?.();
-        spawnState.inspectRunning = true;
-        return {};
-      },
-    },
+  };
+  const handlers = [
+    rejectUnsupportedEngine,
+    reportInspectionFailure,
+    reportMissingContainer,
+    reportRunningState,
+    reportConfigHash,
+    reportPodmanInfo,
+    reportPodmanConnections,
+    reportPodmanMachines,
+    removeContainer,
+    acceptImageInspectionOrExec,
+    rejectDuplicateContainer,
+    createContainer,
+    startContainer,
   ];
   // First-match dispatch keeps errors ahead of state changes; only the selected handler runs.
   const {
