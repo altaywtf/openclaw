@@ -1,8 +1,8 @@
-diff --git a/dist/chunks/cac.uFydS1Z4.js b/dist/chunks/cac.uFydS1Z4.js
-index bf394fb6f662f2eed77d066b45be9898ede971c4..9f38659e3fa65d6dee938ba6188a41472a118a74 100644
---- a/dist/chunks/cac.uFydS1Z4.js
-+++ b/dist/chunks/cac.uFydS1Z4.js
-@@ -2290,7 +2290,12 @@ function parseCLI(argv, config = {}) {
+diff --git a/dist/chunks/cac.D805sv8h.js b/dist/chunks/cac.D805sv8h.js
+index 3b3446e1720bf0f2a6f78e11f091260fffc57c84..9b076b8fea2d246c5a1e3cc48f36a4c246a74510 100644
+--- a/dist/chunks/cac.D805sv8h.js
++++ b/dist/chunks/cac.D805sv8h.js
+@@ -2318,7 +2318,12 @@ function parseCLI(argv, config = {}) {
  	if (arrayArgs[0] !== "vitest") throw new Error(`Expected "vitest" as the first argument, received "${arrayArgs[0]}"`);
  	arrayArgs[0] = "/index.js";
  	arrayArgs.unshift("node");
@@ -16,36 +16,31 @@ index bf394fb6f662f2eed77d066b45be9898ede971c4..9f38659e3fa65d6dee938ba6188a4147
  	if (arrayArgs[2] === "watch" || arrayArgs[2] === "dev") options.watch = true;
  	if (arrayArgs[2] === "run" && !options.watch) options.run = true;
  	if (arrayArgs[2] === "related") {
-diff --git a/dist/chunks/cli-api.CnMVyzaz.js b/dist/chunks/cli-api.CnMVyzaz.js
-index 2b8bb8d9cb13dc89892f4983afd404c8594bdcc5..3b94359b39b4ffa7f466a7c9817d60997e536c68 100644
---- a/dist/chunks/cli-api.CnMVyzaz.js
-+++ b/dist/chunks/cli-api.CnMVyzaz.js
-@@ -628,6 +628,7 @@ class FileSystemModuleCache {
+diff --git a/dist/chunks/index.B89dZ0-N.js b/dist/chunks/index.B89dZ0-N.js
+index 50abf4fbed1dc8670b7941ee466a7c8443840c5f..4420ea94f7ef53526cd5426b54f4a5dead108ba1 100644
+--- a/dist/chunks/index.B89dZ0-N.js
++++ b/dist/chunks/index.B89dZ0-N.js
+@@ -6599,6 +6599,7 @@ class FileSystemModuleCache {
  	rootCache;
  	metadataFilePath;
- 	version = "1.0.0-beta.4";
+ 	version = "1.0.0-beta.7";
 +	lockfileHash;
  	fsCacheRoots = /* @__PURE__ */ new WeakMap();
  	fsEnvironmentHashMap = /* @__PURE__ */ new WeakMap();
  	fsCacheKeyGenerators = /* @__PURE__ */ new Set();
-@@ -644,9 +645,12 @@ class FileSystemModuleCache {
- 		this.fsCacheKeyGenerators.add(callback);
+@@ -6628,6 +6629,9 @@ class FileSystemModuleCache {
+ 		return false;
  	}
  	async clearCache(log = true) {
--		const fsCachePaths = this.vitest.projects.map((r) => {
 +		// Disk deletion also retires paths retained by live module graphs.
 +		this.fsCacheRoots = /* @__PURE__ */ new WeakMap();
 +		this.vitest.clearAllCachePaths();
-+		const fsCachePaths = [this.rootCache, ...this.vitest.projects.map((r) => {
- 			return r.config.experimental.fsModuleCachePath || this.rootCache;
--		});
-+		})];
+ 		const fsCachePaths = [this.rootCache, ...this.vitest.projects.map((r) => r.config.fsModuleCachePath || this.rootCache)];
  		const uniquePaths = Array.from(new Set(fsCachePaths));
  		await Promise.all(uniquePaths.map((directory) => rm(directory, {
- 			force: true,
-@@ -715,6 +719,11 @@ class FileSystemModuleCache {
+@@ -6706,6 +6710,11 @@ class FileSystemModuleCache {
  	invalidateAllCachePaths(environment) {
- 		debugFs?.(`the ${environment.name} environment cache is invalidated`);
+ 		debugFs$1?.(`the ${environment.name} environment cache is invalidated`);
  		this.fsCacheKeys.get(environment)?.clear();
 +		for (const module of environment.moduleGraph.idToModuleMap.values()) {
 +			for (const transform of [module.transformResult, module.invalidationState]) {
@@ -55,31 +50,33 @@ index 2b8bb8d9cb13dc89892f4983afd404c8594bdcc5..3b94359b39b4ffa7f466a7c9817d6099
  	}
  	getMemoryCachePath(environment, id) {
  		const result = this.fsCacheKeys.get(environment)?.get(id);
-@@ -766,7 +775,9 @@ class FileSystemModuleCache {
+@@ -6763,7 +6772,7 @@ class FileSystemModuleCache {
+ 				return value;
  			});
- 			this.fsEnvironmentHashMap.set(environment, cacheConfig);
+ 			// everything in the key that does not depend on the module, as one digest
+-			environmentHash = hash("sha1", (process.env.NODE_ENV ?? "") + this.version + cacheConfig, "hex");
++			environmentHash = hash("sha1", (process.env.NODE_ENV ?? "") + this.version + this.lockfileHash + cacheConfig, "hex");
+ 			this.fsEnvironmentHashMap.set(environment, environmentHash);
  		}
--		hashString += id + fileContent + (process.env.NODE_ENV ?? "") + this.version + cacheConfig + coverageAffectsCache;
-+		// Shared metadata cannot certify excluded or post-clear cache entries.
-+		// Their keys must carry the generation prepared during initialization.
-+		hashString += id + fileContent + (process.env.NODE_ENV ?? "") + this.version + this.lockfileHash + cacheConfig + coverageAffectsCache;
- 		const cacheKey = hash("sha1", hashString, "hex");
- 		let cacheRoot = this.fsCacheRoots.get(vitestConfig);
- 		if (cacheRoot == null) {
-@@ -800,25 +811,24 @@ class FileSystemModuleCache {
+ 		hashString += id + fileContent + environmentHash + coverageAffectsCache;
+@@ -6800,31 +6809,30 @@ class FileSystemModuleCache {
  	// or a new version of vite/vitest is installed
  	// for the same reason we also cache config file content, but that won't catch changes made in external plugins
  	async ensureCacheIntegrity() {
--		if (![this.vitest.getRootProject(), ...this.vitest.projects].some((p) => p.config.experimental.fsModuleCache)) return;
+-		if (![this.vitest.getRootProject(), ...this.vitest.projects].some((p) => p.config.fsModuleCache)) return;
 -		const metadata = await this.readMetadata();
 -		const currentLockfileHash = getLockfileHash(this.vitest.vite.config.root);
 -		// no metadata found, just store a new one, don't reset the cache
 -		if (!metadata) {
--			if (!existsSync(this.rootCache)) mkdirSync(this.rootCache, { recursive: true });
--			debugFs?.(`fs metadata file was created with hash ${currentLockfileHash}`);
--			await writeFile(this.metadataFilePath, JSON.stringify({ lockfileHash: currentLockfileHash }, null, 2), "utf-8");
--			return;
-+		if ([this.vitest.getRootProject(), ...this.vitest.projects].some((p) => p.config.experimental.fsModuleCache)) {
+-			debugFs$1?.(`fs metadata file was created with hash ${currentLockfileHash}`);
+-			try {
+-				if (!existsSync(this.rootCache)) mkdirSync(this.rootCache, { recursive: true });
+-				await writeFile(this.metadataFilePath, JSON.stringify({ lockfileHash: currentLockfileHash }, null, 2), "utf-8");
+-			} catch (error) {
+-				// Recording the metadata is best-effort and losing the file shouldn't
+-				// abort the entire execution
+-				debugFs$1?.(`failed to write fs cache metadata: ${error}`);
++		if ([this.vitest.getRootProject(), ...this.vitest.projects].some((p) => p.config.fsModuleCache)) {
 +			const metadata = await this.readMetadata();
 +			const currentLockfileHash = getLockfileHash(this.vitest.vite.config.root);
 +			if (metadata?.lockfileHash !== currentLockfileHash) {
@@ -87,14 +84,21 @@ index 2b8bb8d9cb13dc89892f4983afd404c8594bdcc5..3b94359b39b4ffa7f466a7c9817d6099
 +					await this.clearCache(false);
 +					this.vitest.vite.config.logger.info(`fs cache was cleared because lockfile has changed`, {
 +						timestamp: true,
-+						environment: c.yellow("[vitest]")
++						environment: y.yellow("[vitest]")
 +					});
-+					debugFs?.(`fs cache was cleared because lockfile has changed`);
++					debugFs$1?.(`fs cache was cleared because lockfile has changed`);
 +				}
-+				if (!existsSync(this.rootCache)) mkdirSync(this.rootCache, { recursive: true });
-+				debugFs?.(`fs metadata file was created with hash ${currentLockfileHash}`);
-+				await writeFile(this.metadataFilePath, JSON.stringify({ lockfileHash: currentLockfileHash }, null, 2), "utf-8");
-+			}
++				debugFs$1?.(`fs metadata file was created with hash ${currentLockfileHash}`);
++				try {
++					if (!existsSync(this.rootCache)) mkdirSync(this.rootCache, { recursive: true });
++					await writeFile(this.metadataFilePath, JSON.stringify({ lockfileHash: currentLockfileHash }, null, 2), "utf-8");
++				} catch (error) {
++					// Recording the metadata is best-effort and losing the file shouldn't
++					// abort the entire execution
++					debugFs$1?.(`failed to write fs cache metadata: ${error}`);
++				}
+ 			}
+-			return;
 +			this.lockfileHash = currentLockfileHash;
  		}
 -		// if lockfile didn't change, don't do anything
@@ -103,13 +107,13 @@ index 2b8bb8d9cb13dc89892f4983afd404c8594bdcc5..3b94359b39b4ffa7f466a7c9817d6099
 -		await this.clearCache(false);
 -		this.vitest.vite.config.logger.info(`fs cache was cleared because lockfile has changed`, {
 -			timestamp: true,
--			environment: c.yellow("[vitest]")
+-			environment: y.yellow("[vitest]")
 -		});
--		debugFs?.(`fs cache was cleared because lockfile has changed`);
+-		debugFs$1?.(`fs cache was cleared because lockfile has changed`);
  	}
  }
  /**
-@@ -1068,7 +1078,9 @@ class ModuleFetcher {
+@@ -9723,7 +9731,9 @@ class ModuleFetcher {
  		if ("code" in result) trace.setAttribute("vitest.fetched_module.code_length", result.code.length);
  	}
  	async getCachePath(environment, moduleGraphModule) {
@@ -120,7 +124,7 @@ index 2b8bb8d9cb13dc89892f4983afd404c8594bdcc5..3b94359b39b4ffa7f466a7c9817d6099
  		const moduleId = moduleGraphModule.id;
  		const memoryCacheKey = this.fsCache.getMemoryCachePath(environment, moduleId);
  		// undefined means there is no key in memory
-@@ -3031,7 +3043,8 @@ class PoolRunner {
+@@ -10875,7 +10885,8 @@ class PoolRunner {
  							stopSpan.recordException(response.error);
  							this.project.vitest.state.catchError(response.error, "Teardown Error");
  						}
@@ -130,7 +134,7 @@ index 2b8bb8d9cb13dc89892f4983afd404c8594bdcc5..3b94359b39b4ffa7f466a7c9817d6099
  						this.off("message", onStop);
  					}
  				};
-@@ -3046,21 +3059,21 @@ class PoolRunner {
+@@ -10890,21 +10901,21 @@ class PoolRunner {
  					__vitest_worker_request__: true,
  					otelCarrier: this.getOTELCarrier()
  				});
@@ -157,11 +161,11 @@ index 2b8bb8d9cb13dc89892f4983afd404c8594bdcc5..3b94359b39b4ffa7f466a7c9817d6099
 +			this._eventEmitter.removeAllListeners();
 +			this._offCancel();
 +			this._rpc.$close(/* @__PURE__ */ new Error("[vitest-pool-runner]: Pending methods while closing rpc"));
+ 			this._lastTestFiles = [];
  			this._operationLock.resolve();
  			this._operationLock = null;
- 			this._otel?.span.end();
-@@ -3163,10 +3176,22 @@ class ForksPoolWorker {
- 			this._fork.stderr.pipe(this.stderr);
+@@ -11044,10 +11055,22 @@ class ForksPoolWorker {
+ 			this._fork.stderr.pipe(this.stderr, { end: false });
  		}
  	}
 -	async stop() {
@@ -185,7 +189,7 @@ index 2b8bb8d9cb13dc89892f4983afd404c8594bdcc5..3b94359b39b4ffa7f466a7c9817d6099
  			else fork.once("exit", resolve);
  		});
  		/*
-@@ -3175,10 +3200,12 @@ class ForksPoolWorker {
+@@ -11056,10 +11079,12 @@ class ForksPoolWorker {
  		* - https://github.com/jestjs/jest/blob/25a8785584c9d54a05887001ee7f498d489a5441/packages/jest-worker/src/workers/ChildProcessWorker.ts#L463-L477
  		* - https://github.com/tinylibs/tinypool/blob/40b4b3eb926dabfbfd3d0a7e3d1222d4dd1c0d2d/src/runtime/process-worker.ts#L56
  		*/
@@ -200,9 +204,9 @@ index 2b8bb8d9cb13dc89892f4983afd404c8594bdcc5..3b94359b39b4ffa7f466a7c9817d6099
 +			clearTimeout(sigkillTimeout);
 +		}
  		if (fork.stdout) {
- 			fork.stdout?.unpipe(this.stdout);
- 			this.stdout.setMaxListeners(this.stdout.getMaxListeners() - 1);
-@@ -3548,7 +3575,7 @@ class Pool {
+ 			await streamFlushed(fork.stdout);
+ 			fork.stdout.unpipe(this.stdout);
+@@ -11485,7 +11510,7 @@ class Pool {
  			// Runner termination can also already start from task cancellation.
  			if (!runner.isTerminated) {
  				const id = setTimeout(() => this.logger.error(`[vitest-pool]: Timeout terminating ${task.worker} worker for test files ${formatFiles(task)}.`), this.options.teardownTimeout);
@@ -211,7 +215,7 @@ index 2b8bb8d9cb13dc89892f4983afd404c8594bdcc5..3b94359b39b4ffa7f466a7c9817d6099
  			}
  			this.freeWorkerId(poolId);
  		} 
-@@ -3779,6 +3806,8 @@ function createPool(ctx) {
+@@ -11727,6 +11752,8 @@ function createPool(ctx) {
  			const groupResults = await Promise.allSettled(promises);
  			results.push(...groupResults);
  		}
@@ -220,29 +224,76 @@ index 2b8bb8d9cb13dc89892f4983afd404c8594bdcc5..3b94359b39b4ffa7f466a7c9817d6099
  		const errors = results.filter((result) => result.status === "rejected").map((result) => result.reason);
  		if (errors.length > 0) throw new AggregateError(errors, "Errors occurred while running tests. For more information, see serialized error.");
  	}
-@@ -13241,8 +13270,8 @@ class Vitest {
+@@ -12545,6 +12572,22 @@ async function resolveDeclaredProjectEntries(context, definitions) {
+ 	const fileProjects = [...configFiles, ...nonConfigDirectories];
+ 	const promises = [];
+ 	projectConfigs.forEach((options, index) => {
++		if (typeof options.config === "string") {
++			const configRoot = parentConfig.root;
++			const configFile = resolve(configRoot, options.config);
++			const { config: _, root: optionRoot, test: testOptions, ...restOptions } = options;
++			const { root: testRoot, ...test } = testOptions ?? {};
++			const customRoot = testRoot ?? optionRoot;
++			const root = customRoot ? resolve(configRoot, customRoot) : dirname(configFile);
++			debug?.(`project at ${configFile} resolves its own Vite config with root ${root}`);
++			promises.push(concurrent(() => resolveSingleProjectEntry(context, {
++				...restOptions,
++				test,
++				root,
++				configFile
++			}, configFile)));
++			return;
++		}
+ 		const ownServerReason = getOwnServerReason(context, options);
+ 		if (ownServerReason === void 0) {
+ 			debug?.(`inline project ${inlineProjectLabel(options, index)} shares the Vite server of ${parentViteConfig.configFile ?? parentConfig.root}`);
+@@ -20618,6 +20661,7 @@ class Vitest {
  		// populate will merge all configs into every project,
  		// we don't want that when just listing tags
- 		if (!this.config.listTags) populateProjectsTags(this.coreWorkspaceProject, this.projects);
--		this.reporters = resolved.mode === "benchmark" ? await createBenchmarkReporters(toArray(resolved.benchmark?.reporters), this.runner) : await createReporters(resolved.reporters, this);
- 		await this._fsCache.ensureCacheIntegrity();
-+		this.reporters = resolved.mode === "benchmark" ? await createBenchmarkReporters(toArray(resolved.benchmark?.reporters), this.runner) : await createReporters(resolved.reporters, this);
+ 		if (!resolved.listTags) populateProjectsTags(this.coreWorkspaceProject, this.projects);
++		await this._fsCache.ensureCacheIntegrity();
+ 		this.reporters = await createReporters(resolved.reporters, this);
+ 		// API setup (watch mode only). Must run after the reporters array is built
+ 		// above, since `setup()` appends the UI/API WebSocket reporter to it. For a
+@@ -20634,7 +20678,6 @@ class Vitest {
+ 				setup(this, browserServer);
+ 			}
+ 		}
+-		await this._fsCache.ensureCacheIntegrity();
  		await Promise.all([...this._onSetServer.map((fn) => fn()), this._traces.waitInit()]);
  	}
  	/** @internal */
-@@ -13283,7 +13312,7 @@ class Vitest {
+@@ -20675,7 +20718,7 @@ class Vitest {
  		if (this.coverageProvider?.onFileTransform) this.clearAllCachePaths();
  	}
  	clearAllCachePaths() {
--		this.projects.forEach(({ vite, browser }) => {
-+		new Set([this.getRootProject(), ...this.projects]).forEach(({ vite, browser }) => {
- 			[...Object.values(vite.environments), ...Object.values(browser?.vite.environments || {})].forEach((environment) => this._fsCache.invalidateAllCachePaths(environment));
+-		this.projects.forEach(({ vite }) => {
++		new Set([this.getRootProject(), ...this.projects]).forEach(({ vite }) => {
+ 			Object.values(vite.environments).forEach((environment) => this._fsCache.invalidateAllCachePaths(environment));
  		});
  	}
-diff --git a/dist/chunks/init-forks.H5ZuobOQ.js b/dist/chunks/init-forks.H5ZuobOQ.js
-index 3a3a5f671e3d503eae1af13c6068e4d18bb8f60b..5754b53fc412909f0697c043c7b29f3846e1e134 100644
---- a/dist/chunks/init-forks.H5ZuobOQ.js
-+++ b/dist/chunks/init-forks.H5ZuobOQ.js
+diff --git a/dist/chunks/index.OVGXnVRj.js b/dist/chunks/index.OVGXnVRj.js
+index a7b39bf9e1dd97c44fb78888d02f9e7cc4b0ceef..8dcd740f54fe7e190aa39935808a30d80e6e1b40 100644
+--- a/dist/chunks/index.OVGXnVRj.js
++++ b/dist/chunks/index.OVGXnVRj.js
+@@ -4964,12 +4964,12 @@ function requireFakeTimersSrc () {
+ 	                    return this.refed;
+ 	                },
+ 	                refresh: function () {
++	                    clock.timerHeap.remove(timer);
+ 	                    timer.callAt =
+ 	                        clock.now +
+ 	                        (parseInt(String(timer.delay)) ||
+ 	                            (clock.duringTick ? 1 : 0));
+ 
+-	                    clock.timerHeap.remove(timer);
+ 	                    timer.order = uniqueTimerOrder++;
+ 	                    setTimer(clock, timer);
+ 	                    clock.timerHeap.push(timer);
+diff --git a/dist/chunks/init-forks.CiCtIMPj.js b/dist/chunks/init-forks.CiCtIMPj.js
+index dbb1a04882b2ff60ab0968d6dabd10dfad696eb2..818981f891f170e197a16e41dfe98b341b64fc3c 100644
+--- a/dist/chunks/init-forks.CiCtIMPj.js
++++ b/dist/chunks/init-forks.CiCtIMPj.js
 @@ -13,7 +13,12 @@ processOn("error", onError);
  function workerInit(options) {
  	const { runTests } = options;
@@ -257,11 +308,11 @@ index 3a3a5f671e3d503eae1af13c6068e4d18bb8f60b..5754b53fc412909f0697c043c7b29f38
  		on: (cb) => processOn("message", cb),
  		off: (cb) => processOff("message", cb),
  		teardown: () => {
-diff --git a/dist/chunks/reporters.d.DtoKVV2s.d.ts b/dist/chunks/reporters.d.DtoKVV2s.d.ts
-index fbe82be6ea7d5dd5e3fa6771c040f0a438f5717f..b60a1abbb785f588bdf04ec1e8ba29baa630d5b1 100644
---- a/dist/chunks/reporters.d.DtoKVV2s.d.ts
-+++ b/dist/chunks/reporters.d.DtoKVV2s.d.ts
-@@ -2073,6 +2073,8 @@ interface PoolWorker {
+diff --git a/dist/chunks/plugin.d.BbcoZhuj.d.ts b/dist/chunks/plugin.d.BbcoZhuj.d.ts
+index f399a7658b43c34df38c976e6f41744d9af7a5fd..a650874d5d482f0b2e3e0cc2eac480855daae8f9 100644
+--- a/dist/chunks/plugin.d.BbcoZhuj.d.ts
++++ b/dist/chunks/plugin.d.BbcoZhuj.d.ts
+@@ -2694,6 +2694,8 @@ interface PoolWorker {
  	send: (message: WorkerRequest) => void;
  	deserialize: (data: unknown) => unknown;
  	start: () => Promise<void>;
@@ -270,24 +321,60 @@ index fbe82be6ea7d5dd5e3fa6771c040f0a438f5717f..b60a1abbb785f588bdf04ec1e8ba29ba
  	stop: () => Promise<void>;
  	/**
  	* This is called on workers that already satisfy certain constraints:
-@@ -2139,6 +2141,8 @@ type WorkerResponse = {
+@@ -2759,6 +2761,8 @@ type WorkerResponse = {
+ 	error?: unknown;
  } | {
  	type: "stopped";
- 	error?: unknown;
 +	/** The transport will exit itself after sending this response. */
 +	willExit?: true;
+ 	error?: unknown;
  } | {
  	type: "testfileFinished";
- 	usedMemory?: number;
+@@ -4489,6 +4493,11 @@ interface UserWorkspaceConfig extends UserConfig$1 {
+ type UserProjectConfigFn = (env: ConfigEnv) => UserWorkspaceConfig | Promise<UserWorkspaceConfig>;
+ type UserProjectConfigExport = UserWorkspaceConfig | Promise<UserWorkspaceConfig> | UserProjectConfigFn;
+ type TestProjectInlineConfiguration = (UserWorkspaceConfig & {
++	/**
++	* Load a file-backed project while allowing explicit project options such as `root`.
++	* Unlike `extends`, the file owns its complete project config and is evaluated once.
++	*/
++	config?: string;
+ 	/**
+ 	* Relative path to the extendable config. All other options will be merged with this config.
+ 	* If `true`, the project will inherit all options from the root config.
+diff --git a/dist/chunks/run.CQOUYP-x.js b/dist/chunks/run.CQOUYP-x.js
+index 50374ec931f5343cc2e8ba05de075fe38d211a69..2c8f745748733f4a588b6ad58cf64901c5a3c4b7 100644
+--- a/dist/chunks/run.CQOUYP-x.js
++++ b/dist/chunks/run.CQOUYP-x.js
+@@ -3782,14 +3782,17 @@ function throttle(fn, ms) {
+ 	let pendingCall;
+ 	return function call(...args) {
+ 		const now = unixNow();
+-		if (now - last > ms) {
++		if (now - last >= ms) {
+ 			last = now;
+ 			clearTimeout(pendingCall);
+ 			pendingCall = void 0;
+ 			return fn.apply(this, args);
+ 		}
+ 		// Make sure fn is still called even if there are no further calls
+-		pendingCall ??= setTimeout(call.bind(this), ms, ...args);
++		pendingCall ??= setTimeout(() => {
++			pendingCall = undefined;
++			call.apply(this, args);
++		}, ms);
+ 	};
+ }
+ // throttle based on summary reporter's DURATION_UPDATE_INTERVAL_MS
 diff --git a/dist/node.d.ts b/dist/node.d.ts
-index 4af12597408d7f46a148003f4425e83272e3ccdd..529b9b837041ed73f3daa2cf810cbe60450611f6 100644
+index b16dc78accec849d1c888134fb67371cecbd8e5b..8ad079878960a999d1bce4699ba1819da4003b2b 100644
 --- a/dist/node.d.ts
 +++ b/dist/node.d.ts
-@@ -172,6 +172,7 @@ declare class ForksPoolWorker implements PoolWorker {
- 	off(event: string, callback: (arg: any) => void): void;
- 	send(message: WorkerRequest): void;
- 	start(): Promise<void>;
-+	waitForExit(): Promise<void>;
+@@ -425,6 +425,7 @@ declare class ForksPoolWorker implements PoolWorker {
  	stop(): Promise<void>;
  	deserialize(data: unknown): unknown;
+ 	private emitError;
++	waitForExit(): Promise<void>;
  	private get fork();
+ }
+ 

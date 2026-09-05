@@ -141,6 +141,28 @@ describe.skipIf(process.platform === "win32")("native multi-invocation report ow
     },
   );
 
+  it("loads each file-backed merge project once and preserves its final identity", async () => {
+    const result = await run("config-load-once");
+    expect(result.code, result.stderr).toBe(0);
+    expect(inventory(json(result.output))).toEqual(expected);
+    expect(
+      fs.readFileSync(path.join(path.dirname(result.output), "config-loads.txt"), "utf8"),
+    ).toBe("alpha\nbeta\n");
+    const replay = json(path.join(result.reportSet!, "aggregate.json.capture.json"));
+    const root = path.dirname(path.dirname(result.output));
+    expect(replay.projects).toEqual(
+      [
+        ["alpha", "test/vitest/vitest.unit-fast-isolated.config.ts"],
+        ["beta", "test/vitest/vitest.agents-embedded-agent.config.ts"],
+      ].map(([name, config]) => ({
+        name,
+        root,
+        config: path.join(root, config),
+        pool: "forks",
+      })),
+    );
+  }, 60_000);
+
   it(
     "publishes a wholly live-aware real-home batch without consuming the caller home",
     { timeout: 60000 },
