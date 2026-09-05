@@ -3,6 +3,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { ChatQueueItem } from "../../lib/chat/chat-types.ts";
+import { hydrateChatOutboxMetadata } from "../../lib/chat/outbox-metadata-store.runtime.ts";
 import * as payloadStore from "../../lib/chat/outbox-payload-store.runtime.ts";
 import {
   captureChatOutboxRecoveryDestination,
@@ -19,6 +20,7 @@ import {
 import { createStorageMock } from "../../test-helpers/storage.ts";
 import { getChatAttachmentDataUrl } from "./attachment-payload-store.ts";
 import { makeChatHost } from "./chat-host.test-support.ts";
+import { removeStoredChatComposerQueueItem } from "./composer-persistence.ts";
 import { installOutboxBrowserStorage } from "./outbox-browser.test-support.ts";
 import { prepareOutboxPayload } from "./outbox-payloads.ts";
 
@@ -153,8 +155,9 @@ describe("Blob-preserving metadata migration", () => {
           }),
           "empty target",
         );
-        expect(restoreChatOutboxRecovery(host, entry, destination)).toBe("restored");
+        expect(await restoreChatOutboxRecovery(host, entry, destination)).toBe("restored");
       }
+      await hydrateChatOutboxMetadata(host);
       const restored = expectDefined(listStoredChatOutboxes(host)[0]?.queue[0], "restored input");
       expect(restored).toMatchObject({
         id: item.id,
@@ -166,9 +169,15 @@ describe("Blob-preserving metadata migration", () => {
       });
       await expectBytes(host, restored);
       expect(cleanup).not.toHaveBeenCalled();
-      const reopened = readStoredOutboxStore(sessionStorage, target);
-      reopened.sessions = {};
-      writeStoredOutboxStore(sessionStorage, target, reopened);
+      expect(
+        await removeStoredChatComposerQueueItem(
+          host,
+          restored.sessionKey!,
+          restored.id,
+          restored,
+          restored.agentId,
+        ),
+      ).toBe(true);
       expect(cleanup).toHaveBeenCalledWith([item.attachmentPayload]);
       await Promise.all(
         cleanup.mock.results.flatMap((result) => (result.type === "return" ? [result.value] : [])),
@@ -207,12 +216,12 @@ describe("Blob-preserving metadata migration", () => {
         "empty destination",
       );
       write = vi.spyOn(sessionStorage, "setItem").mockImplementation(fail);
-      expect(restoreChatOutboxRecovery(host, entry, destination)).toBe("storage-failed");
+      expect(await restoreChatOutboxRecovery(host, entry, destination)).toBe("storage-failed");
       expect(sessionStorage.getItem(target.key)).toBe(before);
       await expectBytes(host, item);
       expect(cleanup).not.toHaveBeenCalled();
       write.mockRestore();
-      expect(restoreChatOutboxRecovery(host, entry, destination)).toBe("restored");
+      expect(await restoreChatOutboxRecovery(host, entry, destination)).toBe("restored");
       await expectBytes(host, item);
       expect(cleanup).not.toHaveBeenCalled();
     },
@@ -244,11 +253,18 @@ describe("Blob-preserving metadata migration", () => {
       captureChatOutboxRecoveryDestination(a, { sessionKey: a.sessionKey, agentId: "main" }),
       "A destination",
     );
-    expect(restoreChatOutboxRecovery(b, ownedA, destination)).toBe("conflict");
-    expect(restoreChatOutboxRecovery(a, ownedA, destination)).toBe("restored");
-    const raw = readStoredOutboxStore(sessionStorage, target);
-    raw.sessions = {};
-    writeStoredOutboxStore(sessionStorage, target, raw);
+    expect(await restoreChatOutboxRecovery(b, ownedA, destination)).toBe("conflict");
+    expect(await restoreChatOutboxRecovery(a, ownedA, destination)).toBe("restored");
+    const restored = expectDefined(listStoredChatOutboxes(a)[0]?.queue[0], "restored A input");
+    expect(
+      await removeStoredChatComposerQueueItem(
+        a,
+        restored.sessionKey!,
+        restored.id,
+        restored,
+        restored.agentId,
+      ),
+    ).toBe(true);
     expect(cleanup).toHaveBeenCalledWith([first.attachmentPayload]);
     expect(cleanup).toHaveBeenCalledTimes(1);
     await expectBytes(b, second);

@@ -6,7 +6,7 @@ import { parseSlashCommand } from "../../lib/chat/commands.ts";
 import type { ControlUiFollowUpMode } from "../../lib/chat/follow-up-mode.ts";
 import { trimHumanMentions } from "../../lib/chat/human-mentions.ts";
 import {
-  journalChatOutboxAdmission,
+  finishPendingChatOutboxAdmission,
   persistPendingChatOutboxAdmission,
   protectPendingChatOutboxAdmission,
   updatePendingChatOutboxAdmission,
@@ -22,7 +22,6 @@ import {
   keepVolatileQueuedMessage,
   readQueuedMessageById,
   syncVisibleChatQueueProjection,
-  updateQueuedMessage,
 } from "./chat-queue.ts";
 import { handleLocalChatCommand, shouldHandleLocalChatCommand } from "./chat-send-command.ts";
 import { cancelChatDelivery } from "./chat-send-composer.ts";
@@ -301,374 +300,376 @@ export async function handleSendChat(
       return;
     }
     let queued = submission.item;
-    if (submissionAction && !isInlineEditSubmission && typeof document !== "undefined") {
-      try {
-        await outboxPayloadTab();
-      } catch {
+    try {
+      if (!isInlineEditSubmission && !host.selectedChatSessionIncognito) {
+        try {
+          await outboxPayloadTab();
+        } catch {
+          setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
+          return;
+        }
+      }
+      if (!submittedCredentialOwnerIsCurrent()) {
+        return;
+      }
+      const pendingProtection = !isInlineEditSubmission
+        ? protectPendingChatOutboxAdmission(host, submission.admission.scope, queued)
+        : () => undefined;
+      if (!pendingProtection) {
         setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
         return;
       }
-    }
-    if (!submittedCredentialOwnerIsCurrent()) {
-      return;
-    }
-    const pendingProtection =
-      submissionAction && !isInlineEditSubmission
-        ? protectPendingChatOutboxAdmission(host, submission.admission.scope, queued)
-        : () => undefined;
-    if (!pendingProtection) {
-      setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
-      return;
-    }
-    const releasePendingProtection = pendingProtection;
-    // Page shutdown can journal inline attachment bytes synchronously. A native
-    // Blob without that snapshot must reach IndexedDB before composer ownership moves.
-    const needsNativeAttachmentAdmission = queued.attachments?.some(
-      (attachment) => !getChatAttachmentDataUrl(attachment),
-    );
-    if (needsNativeAttachmentAdmission) {
-      const payload = await prepareOutboxPayload(host, queued);
-      if (payload.status === "failed") {
+      const releasePendingProtection = pendingProtection;
+      // Page shutdown can journal inline attachment bytes synchronously. A native
+      // Blob without that snapshot must reach IndexedDB before composer ownership moves.
+      const needsNativeAttachmentAdmission = queued.attachments?.some(
+        (attachment) => !getChatAttachmentDataUrl(attachment),
+      );
+      if (needsNativeAttachmentAdmission) {
+        const payload = await prepareOutboxPayload(host, queued);
+        if (payload.status === "failed") {
+          releasePendingProtection();
+          setChatError(host, outboxPayloadError(payload.reason));
+          return;
+        }
+        queued = { ...queued, ...payload.update };
+        if (!submittedOwnerIsCurrent()) {
+          const retained = persistPendingChatOutboxAdmission(queued);
+          const composerStillOwned =
+            messageOverride == null &&
+            ownsSubmittedComposerState(host, previousDraft, attachmentsToSend, previousMentions);
+          const clearedPersistedDraft =
+            composerStillOwned &&
+            persistChatComposerState(
+              { ...host, chatAttachments: [], chatMentions: [], chatMessage: "" },
+              submittedSessionKey,
+            );
+          if (retained && clearedPersistedDraft) {
+            clearSubmittedComposerState(
+              host,
+              previousDraft,
+              attachmentsToSend,
+              previousMentions,
+              Boolean(rawParsedCommand),
+            );
+            recordNonTranscriptInputHistory(host, userMessage);
+          }
+          if (!retained) {
+            retireOutboxPayload(queued);
+          }
+          return;
+        }
+        if (!host.selectedChatSessionIncognito && !updatePendingChatOutboxAdmission(queued)) {
+          releasePendingProtection();
+          retireOutboxPayload(queued);
+          setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
+          return;
+        }
+      }
+      const optimisticHandoff = !host.selectedChatSessionIncognito;
+      const composerStillOwned =
+        messageOverride == null &&
+        ownsSubmittedComposerState(host, previousDraft, attachmentsToSend, previousMentions);
+      if (
+        composerStillOwned &&
+        optimisticHandoff &&
+        !persistChatComposerState(
+          { ...host, chatAttachments: [], chatMentions: [], chatMessage: "" },
+          submittedSessionKey,
+        )
+      ) {
         releasePendingProtection();
-        setChatError(host, outboxPayloadError(payload.reason));
+        setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
         return;
       }
-      queued = { ...queued, ...payload.update };
-      if (!submittedOwnerIsCurrent()) {
-        const retained = persistPendingChatOutboxAdmission(queued);
-        const composerStillOwned =
-          messageOverride == null &&
-          ownsSubmittedComposerState(host, previousDraft, attachmentsToSend, previousMentions);
-        const clearedPersistedDraft =
-          composerStillOwned &&
-          persistChatComposerState(
-            { ...host, chatAttachments: [], chatMentions: [], chatMessage: "" },
-            submittedSessionKey,
-          );
-        if (retained && clearedPersistedDraft) {
-          clearSubmittedComposerState(
-            host,
-            previousDraft,
-            attachmentsToSend,
-            previousMentions,
-            Boolean(rawParsedCommand),
-          );
-          recordNonTranscriptInputHistory(host, userMessage);
+      let cleared =
+        composerStillOwned && optimisticHandoff
+          ? clearSubmittedComposerState(
+              host,
+              previousDraft,
+              attachmentsToSend,
+              previousMentions,
+              Boolean(rawParsedCommand),
+            )
+          : {};
+      if (messageOverride == null && optimisticHandoff) {
+        recordNonTranscriptInputHistory(host, userMessage);
+      }
+      if (optimisticHandoff && submissionAction && typeof MessageChannel !== "undefined") {
+        // The immutable in-memory row owns the submitted composer immediately.
+        // Yield before persistence, history, or attachment work can delay new input.
+        await yieldChatSubmitToInput();
+      }
+      if (!submissionOwnerIsCurrent() || !submittedCredentialOwnerIsCurrent()) {
+        if (!persistPendingChatOutboxAdmission(queued)) {
+          if (optimisticHandoff && submittedCredentialOwnerIsCurrent()) {
+            queued = { ...queued, sendState: "failed", sendError: OFFLINE_QUEUE_STORAGE_ERROR };
+            keepVolatileQueuedMessage(host, submittedSessionKey, queued, queued.agentId, {
+              retryable: true,
+            });
+          }
+          setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
         }
+        return;
+      }
+      if (messageOverride == null && !optimisticHandoff) {
+        cleared = clearSubmittedComposerState(
+          host,
+          previousDraft,
+          attachmentsToSend,
+          previousMentions,
+          Boolean(rawParsedCommand),
+        );
+        recordNonTranscriptInputHistory(host, userMessage);
+      }
+      publishPendingSendMessage(host, queued);
+      const currentSubmission = () => {
+        const current = readQueuedMessageById(host, queued.id);
+        return current?.sendRunId === queued.sendRunId ? current : null;
+      };
+      if (!submissionOwnerIsCurrent() || !currentSubmission()) {
+        persistPendingChatOutboxAdmission(queued);
+        return;
+      }
+      if (host.chatLoading) {
+        // A terminal event can render before its authoritative leaf arrives.
+        // Reuse the in-flight history request before fencing delivery, after input handoff.
+        const historyLoaded = await loadChatHistory(host);
+        const retainedSubmission = currentSubmission();
+        if (!historyLoaded || !submissionOwnerIsCurrent() || !retainedSubmission) {
+          if (!retainedSubmission) {
+            releasePendingProtection();
+            return;
+          }
+          if (isInlineEditSubmission) {
+            await cancelChatDelivery(host, queued, {
+              previousDraft: cleared.previousDraft,
+              previousAttachments: cleared.previousAttachments,
+              previousMentions: cleared.previousMentions,
+            });
+            releasePendingProtection();
+            return;
+          }
+          const historyError =
+            "Chat history could not be refreshed. Review and retry this message.";
+          queued = { ...queued, sendError: historyError, sendState: "failed" };
+          keepVolatileQueuedMessage(host, submittedSessionKey, queued, queued.agentId, {
+            retryable: true,
+          });
+          await admitQueuedMessageForSession(host, submission.admission, queued);
+          setChatError(host, historyError);
+          return;
+        }
+        expectedLeafEntryId = resolveDisplayedLeafEntryId(host);
+        queued = { ...queued, expectedLeafEntryId };
+        keepVolatileQueuedMessage(host, submittedSessionKey, queued, queued.agentId);
+      }
+      const currentEdit = activeQueuedMessageEdit(host);
+      if (
+        isInlineEditSubmission &&
+        (currentEdit !== inlineEdit || currentEdit.revision !== submittedInlineEditRevision)
+      ) {
+        await cancelChatDelivery(host, queued, {});
+        return;
+      }
+      if (queued.attachments?.length) {
+        const payload = await prepareOutboxPayload(host, queued);
+        if (!currentSubmission()) {
+          const pendingItem =
+            payload.status === "ready" ? { ...queued, ...payload.update } : queued;
+          if (!persistPendingChatOutboxAdmission(pendingItem) && payload.status === "ready") {
+            retireOutboxPayload(payload.update);
+          }
+          return;
+        }
+        const payloadEdit = activeQueuedMessageEdit(host);
+        const editStillOwnsSubmission =
+          !isInlineEditSubmission ||
+          (payloadEdit === inlineEdit && payloadEdit.revision === submittedInlineEditRevision);
+        if (!editStillOwnsSubmission) {
+          if (payload.status === "ready") {
+            retireOutboxPayload(payload.update);
+          }
+          return;
+        }
+        if (payload.status === "failed" || !submittedOwnerIsCurrent()) {
+          const reason = payload.status === "failed" ? payload.reason : "unavailable";
+          if (payload.status === "ready") {
+            retireOutboxPayload(payload.update);
+          }
+          queued = failOutboxPayload(queued, reason);
+          keepVolatileQueuedMessage(host, submittedSessionKey, queued, queued.agentId, {
+            retryable: true,
+          });
+          const admitted = await admitQueuedMessageForSession(
+            host,
+            submission.admission,
+            queued,
+            replacement,
+          );
+          if (!admitted) {
+            persistPendingChatOutboxAdmission(queued);
+          }
+          if (resumedEdit) {
+            await retireEditedQueuedMessageSource(host, admitted, queued.attachments, resumedEdit);
+          }
+          setChatError(host, outboxPayloadError(reason));
+          return;
+        }
+        queued = { ...queued, ...payload.update };
+        const hold = chatSendHoldReason(host, submittedSessionKey);
+        if (intent && (hold || isChatBusy(host) || hasDirectSessionRun(host))) {
+          const error = hold ?? t("chat.goals.busy");
+          if (!host.chatMessage && !host.chatAttachments.length) {
+            retireOutboxPayload(queued);
+            await cancelChatDelivery(host, queued, {
+              previousAttachments: cleared.previousAttachments,
+              previousDraft: cleared.previousDraft,
+              previousMentions: cleared.previousMentions,
+            });
+            releasePendingProtection();
+          } else {
+            queued = { ...queued, sendState: "failed", sendError: error };
+            keepVolatileQueuedMessage(host, submittedSessionKey, queued, queued.agentId, {
+              retryable: true,
+            });
+            updatePendingChatOutboxAdmission(queued);
+          }
+          setChatError(host, error);
+          return;
+        }
+        // Retain a picker captured before storage, including its rejected result;
+        // delivery follows the latest picker tail before issuing the request.
+        pendingSettings ??= getPendingChatPickerPatch(host, submittedSessionKey);
+        waitingForSettings = Boolean(pendingSettings);
+        queued.sendState = waitingForSettings
+          ? "waiting-model"
+          : reconnectSafeQueuedSendState(host);
+        keepVolatileQueuedMessage(host, submittedSessionKey, queued, queued.agentId);
+      }
+      const admittedDurably = await admitQueuedMessageForSession(
+        host,
+        submission.admission,
+        queued,
+        replacement,
+      );
+      if (resumedEdit) {
+        await retireEditedQueuedMessageSource(
+          host,
+          admittedDurably,
+          queued.attachments,
+          resumedEdit,
+        );
+      }
+      if (!admittedDurably && !currentSubmission()) {
+        if (!persistPendingChatOutboxAdmission(queued)) {
+          retireOutboxPayload(queued);
+        }
+        return;
+      }
+      if (!admittedDurably && !submittedCredentialOwnerIsCurrent()) {
+        const retained = persistPendingChatOutboxAdmission(queued);
         if (!retained) {
           retireOutboxPayload(queued);
         }
         return;
       }
-      if (!host.selectedChatSessionIncognito && !updatePendingChatOutboxAdmission(queued)) {
-        releasePendingProtection();
-        retireOutboxPayload(queued);
-        setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
-        return;
-      }
-    }
-    const optimisticHandoff = !host.selectedChatSessionIncognito;
-    const composerStillOwned =
-      messageOverride == null &&
-      ownsSubmittedComposerState(host, previousDraft, attachmentsToSend, previousMentions);
-    if (
-      composerStillOwned &&
-      optimisticHandoff &&
-      !persistChatComposerState(
-        { ...host, chatAttachments: [], chatMentions: [], chatMessage: "" },
-        submittedSessionKey,
-      )
-    ) {
-      releasePendingProtection();
-      setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
-      return;
-    }
-    let cleared =
-      composerStillOwned && optimisticHandoff
-        ? clearSubmittedComposerState(
-            host,
-            previousDraft,
-            attachmentsToSend,
-            previousMentions,
-            Boolean(rawParsedCommand),
-          )
-        : {};
-    if (messageOverride == null && optimisticHandoff) {
-      recordNonTranscriptInputHistory(host, userMessage);
-    }
-    if (optimisticHandoff && submissionAction && typeof MessageChannel !== "undefined") {
-      // The immutable in-memory row owns the submitted composer immediately.
-      // Yield before persistence, history, or attachment work can delay new input.
-      await yieldChatSubmitToInput();
-    }
-    if (!submissionOwnerIsCurrent() || !submittedCredentialOwnerIsCurrent()) {
-      if (!persistPendingChatOutboxAdmission(queued)) {
-        if (optimisticHandoff && submittedCredentialOwnerIsCurrent()) {
-          queued = { ...queued, sendState: "failed", sendError: OFFLINE_QUEUE_STORAGE_ERROR };
-          keepVolatileQueuedMessage(host, submittedSessionKey, queued, queued.agentId, {
-            retryable: true,
-          });
-        }
-        setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
-      }
-      return;
-    }
-    if (messageOverride == null && !optimisticHandoff) {
-      cleared = clearSubmittedComposerState(
-        host,
-        previousDraft,
-        attachmentsToSend,
-        previousMentions,
-        Boolean(rawParsedCommand),
-      );
-      recordNonTranscriptInputHistory(host, userMessage);
-    }
-    publishPendingSendMessage(host, queued);
-    const currentSubmission = () => {
-      const current = readQueuedMessageById(host, queued.id);
-      return current?.sendRunId === queued.sendRunId ? current : null;
-    };
-    if (!submissionOwnerIsCurrent() || !currentSubmission()) {
-      persistPendingChatOutboxAdmission(queued);
-      return;
-    }
-    let admittedDurably = false;
-    if (host.chatLoading) {
-      // A terminal event can render before its authoritative leaf arrives.
-      // Reuse the in-flight history request before fencing delivery, after input handoff.
-      const historyLoaded = await loadChatHistory(host);
-      const retainedSubmission = currentSubmission();
-      if (!historyLoaded || !submissionOwnerIsCurrent() || !retainedSubmission) {
-        if (!retainedSubmission) {
-          releasePendingProtection();
-          return;
-        }
-        if (isInlineEditSubmission) {
-          await cancelChatDelivery(host, queued, {
-            previousDraft: cleared.previousDraft,
-            previousAttachments: cleared.previousAttachments,
-            previousMentions: cleared.previousMentions,
-          });
-          releasePendingProtection();
-          return;
-        }
-        const historyError = "Chat history could not be refreshed. Review and retry this message.";
-        queued = { ...queued, sendError: historyError, sendState: "failed" };
-        keepVolatileQueuedMessage(host, submittedSessionKey, queued, queued.agentId, {
-          retryable: true,
-        });
-        if (admittedDurably) {
-          await updateQueuedMessage(host, queued.id, () => queued);
-        } else {
-          await admitQueuedMessageForSession(host, submission.admission, queued);
-        }
-        setChatError(host, historyError);
-        return;
-      }
-      expectedLeafEntryId = resolveDisplayedLeafEntryId(host);
-      queued = { ...queued, expectedLeafEntryId };
-      keepVolatileQueuedMessage(host, submittedSessionKey, queued, queued.agentId);
-    }
-    const currentEdit = activeQueuedMessageEdit(host);
-    if (
-      isInlineEditSubmission &&
-      (currentEdit !== inlineEdit || currentEdit.revision !== submittedInlineEditRevision)
-    ) {
-      await cancelChatDelivery(host, queued, {});
-      return;
-    }
-    if (queued.attachments?.length) {
-      const payload = await prepareOutboxPayload(host, queued);
-      if (!currentSubmission()) {
-        const pendingItem = payload.status === "ready" ? { ...queued, ...payload.update } : queued;
-        if (!persistPendingChatOutboxAdmission(pendingItem) && payload.status === "ready") {
-          retireOutboxPayload(payload.update);
-        }
-        return;
-      }
-      const payloadEdit = activeQueuedMessageEdit(host);
-      const editStillOwnsSubmission =
-        !isInlineEditSubmission ||
-        (payloadEdit === inlineEdit && payloadEdit.revision === submittedInlineEditRevision);
-      if (!editStillOwnsSubmission) {
-        if (payload.status === "ready") {
-          retireOutboxPayload(payload.update);
-        }
-        return;
-      }
-      if (payload.status === "failed" || !submittedOwnerIsCurrent()) {
-        const reason = payload.status === "failed" ? payload.reason : "unavailable";
-        if (payload.status === "ready") {
-          retireOutboxPayload(payload.update);
-        }
-        queued = failOutboxPayload(queued, reason);
-        keepVolatileQueuedMessage(host, submittedSessionKey, queued, queued.agentId, {
-          retryable: true,
-        });
-        const admitted = admittedDurably
-          ? Boolean(await updateQueuedMessage(host, queued.id, () => queued))
-          : await admitQueuedMessageForSession(host, submission.admission, queued, replacement);
-        if (!admitted) {
-          persistPendingChatOutboxAdmission(queued);
-        }
-        if (resumedEdit) {
-          await retireEditedQueuedMessageSource(host, admitted, queued.attachments, resumedEdit);
-        }
-        setChatError(host, outboxPayloadError(reason));
-        return;
-      }
-      queued = { ...queued, ...payload.update };
-      const hold = chatSendHoldReason(host, submittedSessionKey);
-      if (intent && (hold || isChatBusy(host) || hasDirectSessionRun(host))) {
-        const error = hold ?? t("chat.goals.busy");
+      const canSendFromMemory =
+        !admittedDurably &&
+        !queued.attachments?.length &&
+        (!resumedEdit || !resumedEdit.sourceWasDurable) &&
+        // A still-open edit means its stored source outlived the rejected write;
+        // sending the replacement from memory would strand the original as a duplicate.
+        !activeQueuedMessageEdit(host) &&
+        !waitingForSettings &&
+        canSendVolatileQueueItem(host, queued, submittedSessionKey);
+      if (!admittedDurably && !canSendFromMemory) {
         if (!host.chatMessage && !host.chatAttachments.length) {
           retireOutboxPayload(queued);
           await cancelChatDelivery(host, queued, {
-            previousAttachments: cleared.previousAttachments,
             previousDraft: cleared.previousDraft,
+            previousAttachments: cleared.previousAttachments,
             previousMentions: cleared.previousMentions,
           });
           releasePendingProtection();
         } else {
-          queued = { ...queued, sendState: "failed", sendError: error };
+          queued = { ...queued, sendState: "failed", sendError: OFFLINE_QUEUE_STORAGE_ERROR };
           keepVolatileQueuedMessage(host, submittedSessionKey, queued, queued.agentId, {
             retryable: true,
           });
           updatePendingChatOutboxAdmission(queued);
         }
-        setChatError(host, error);
+        setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
         return;
       }
-      // Retain a picker captured before storage, including its rejected result;
-      // delivery follows the latest picker tail before issuing the request.
-      pendingSettings ??= getPendingChatPickerPatch(host, submittedSessionKey);
-      waitingForSettings = Boolean(pendingSettings);
-      queued.sendState = waitingForSettings ? "waiting-model" : reconnectSafeQueuedSendState(host);
-      keepVolatileQueuedMessage(host, submittedSessionKey, queued, queued.agentId);
-    }
-    admittedDurably = admittedDurably
-      ? Boolean(await updateQueuedMessage(host, queued.id, () => queued))
-      : await admitQueuedMessageForSession(host, submission.admission, queued, replacement);
-    if (resumedEdit) {
-      await retireEditedQueuedMessageSource(host, admittedDurably, queued.attachments, resumedEdit);
-    }
-    if (!admittedDurably && !currentSubmission()) {
-      if (!persistPendingChatOutboxAdmission(queued)) {
-        retireOutboxPayload(queued);
+      if (!submittedCredentialOwnerIsCurrent()) {
+        return;
       }
-      return;
-    }
-    if (!admittedDurably && !submittedCredentialOwnerIsCurrent()) {
-      const retained =
-        persistPendingChatOutboxAdmission(queued) ||
-        journalChatOutboxAdmission(
-          host,
-          submission.admission.scope,
-          queued,
-          submission.admission.recoveryOwner,
-        );
-      if (!retained) {
-        retireOutboxPayload(queued);
-      }
-      return;
-    }
-    if (admittedDurably) {
-      releasePendingProtection();
-    }
-    const canSendFromMemory =
-      !admittedDurably &&
-      !queued.attachments?.length &&
-      (!resumedEdit || !resumedEdit.sourceWasDurable) &&
-      // A still-open edit means its stored source outlived the rejected write;
-      // sending the replacement from memory would strand the original as a duplicate.
-      !activeQueuedMessageEdit(host) &&
-      !waitingForSettings &&
-      canSendVolatileQueueItem(host, queued, submittedSessionKey);
-    if (!admittedDurably && !canSendFromMemory) {
-      if (!host.chatMessage && !host.chatAttachments.length) {
-        retireOutboxPayload(queued);
-        await cancelChatDelivery(host, queued, {
-          previousDraft: cleared.previousDraft,
-          previousAttachments: cleared.previousAttachments,
-          previousMentions: cleared.previousMentions,
-        });
-        releasePendingProtection();
-      } else {
-        queued = { ...queued, sendState: "failed", sendError: OFFLINE_QUEUE_STORAGE_ERROR };
-        keepVolatileQueuedMessage(host, submittedSessionKey, queued, queued.agentId, {
-          retryable: true,
-        });
-        updatePendingChatOutboxAdmission(queued);
-      }
-      setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
-      return;
-    }
-    if (!submittedCredentialOwnerIsCurrent()) {
-      return;
-    }
-    const current = readQueuedMessageById(host, queued.id);
-    // Input may retire this admission or another drain may advance it. Only
-    // position changes preserve the handoff; the drain owns ordering/edit holds.
-    const deliveryItem =
-      current &&
-      sameQueuedDeliveryVersion(queued, {
-        ...current,
-        agentId: queued.agentId,
-        orderKey: queued.orderKey,
-        sessionKey: queued.sessionKey,
-      })
-        ? { ...queued, ...current, attachments: queued.attachments }
-        : null;
-    if (deliveryItem && canSendFromMemory) {
-      updatePendingChatOutboxAdmission({
-        ...deliveryItem,
-        sendAttempts: (deliveryItem.sendAttempts ?? 0) + 1,
-        sendState: "sending",
-      });
-    }
-    const sendResult = deliveryItem
-      ? await deliverChatQueueItem(host, deliveryItem, {
-          previousDraft: cleared.previousDraft,
-          previousAttachments: cleared.previousAttachments,
-          previousMentions: cleared.previousMentions,
-          ...(intent || (directRunActive && followUpMode !== "queue")
-            ? { allowActiveRunSend: true }
-            : {}),
-          ...(expectedLeafEntryId !== undefined ? { expectedLeafEntryId } : {}),
-          ...(pendingSettings ? { pendingSettings } : {}),
-          restoreAttachments: Boolean(messageOverride && opts?.restoreDraft),
-          restoreDraft: Boolean(messageOverride && opts?.restoreDraft),
-          restoreOnTerminalFailure: Boolean(rawParsedCommand || intent),
-          routingSessionKey: submittedSessionKey,
-          storageMode: canSendFromMemory ? "memory" : "durable",
+      const current = readQueuedMessageById(host, queued.id);
+      // Input may retire this admission or another drain may advance it. Only
+      // position changes preserve the handoff; the drain owns ordering/edit holds.
+      const deliveryItem =
+        current &&
+        sameQueuedDeliveryVersion(queued, {
+          ...current,
+          agentId: queued.agentId,
+          orderKey: queued.orderKey,
+          sessionKey: queued.sessionKey,
         })
-      : "pending";
-    syncVisibleChatQueueProjection(host);
-    const pending = readQueuedMessageById(host, queued.id);
-    if (!admittedDurably && pending && (pending.sendAttempts ?? 0) > 0) {
-      updatePendingChatOutboxAdmission(pending);
-    }
-    if (admittedDurably && (pending?.sendAttempts ?? 0) > 0) {
-      releasePendingProtection();
-    }
-    accepted = sendResult !== "failed";
-    const pendingBusySend =
-      sendResult === "pending" &&
-      pending?.sendState === "waiting-idle" &&
-      host.sessionKey === submittedSessionKey &&
-      visibleSessionMatches(host, submittedSessionKey, pending.agentId) &&
-      (isChatBusy(host) || hasDirectSessionRun(host));
-    if (pendingBusySend) {
-      recordChatSendTiming(host, pending, "queued-busy", submittedAtMs);
-    }
-    if (
-      (sendResult !== "failed" || pending?.sendState === "failed") &&
-      replyTarget &&
-      host.chatReplyTarget === replyTarget &&
-      submissionOwnerIsCurrent()
-    ) {
-      // The reconnect queue owns the quote; later offline turns must not reuse it.
-      host.chatReplyTarget = null;
+          ? { ...queued, ...current, attachments: queued.attachments }
+          : null;
+      if (deliveryItem && canSendFromMemory) {
+        updatePendingChatOutboxAdmission({
+          ...deliveryItem,
+          sendAttempts: (deliveryItem.sendAttempts ?? 0) + 1,
+          sendState: "sending",
+        });
+      }
+      const sendResult = deliveryItem
+        ? await deliverChatQueueItem(host, deliveryItem, {
+            previousDraft: cleared.previousDraft,
+            previousAttachments: cleared.previousAttachments,
+            previousMentions: cleared.previousMentions,
+            ...(intent || (directRunActive && followUpMode !== "queue")
+              ? { allowActiveRunSend: true }
+              : {}),
+            ...(expectedLeafEntryId !== undefined ? { expectedLeafEntryId } : {}),
+            ...(pendingSettings ? { pendingSettings } : {}),
+            restoreAttachments: Boolean(messageOverride && opts?.restoreDraft),
+            restoreDraft: Boolean(messageOverride && opts?.restoreDraft),
+            restoreOnTerminalFailure: Boolean(rawParsedCommand || intent),
+            routingSessionKey: submittedSessionKey,
+            storageMode: canSendFromMemory ? "memory" : "durable",
+          })
+        : "pending";
+      syncVisibleChatQueueProjection(host);
+      const pending = readQueuedMessageById(host, queued.id);
+      if (!admittedDurably && pending && (pending.sendAttempts ?? 0) > 0) {
+        updatePendingChatOutboxAdmission(pending);
+      }
+      accepted = sendResult !== "failed";
+      const pendingBusySend =
+        sendResult === "pending" &&
+        pending?.sendState === "waiting-idle" &&
+        host.sessionKey === submittedSessionKey &&
+        visibleSessionMatches(host, submittedSessionKey, pending.agentId) &&
+        (isChatBusy(host) || hasDirectSessionRun(host));
+      if (pendingBusySend) {
+        recordChatSendTiming(host, pending, "queued-busy", submittedAtMs);
+      }
+      if (
+        (sendResult !== "failed" || pending?.sendState === "failed") &&
+        replyTarget &&
+        host.chatReplyTarget === replyTarget &&
+        submissionOwnerIsCurrent()
+      ) {
+        // The reconnect queue owns the quote; later offline turns must not reuse it.
+        host.chatReplyTarget = null;
+      }
+    } finally {
+      // Every exit ends live preparation; recovery never has to infer whether
+      // a canceled or failed submission still has asynchronous work in flight.
+      finishPendingChatOutboxAdmission(submission.item.id);
     }
   };
   await withChatSubmitGuard(host, submitKey, submitMessage, submissionAction);

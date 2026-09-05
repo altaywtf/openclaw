@@ -20,6 +20,7 @@ import {
 import { createTestChatPane } from "../pages/chat/chat-pane.test-support.ts";
 import {
   admitQueuedMessageForSession,
+  keepVolatileQueuedMessage,
   subscribeChatOutboxProjection,
 } from "../pages/chat/chat-queue.ts";
 import { handleSendChat } from "../pages/chat/chat-send-submit.ts";
@@ -198,15 +199,25 @@ describe("Control UI Gateway target lineage", () => {
       const releaseShell = gateway.subscribe(drawShell);
       const composer = document.createElement("div");
       try {
-        expect(
-          await admitQueuedMessageForSession(state, captureChatOutboxAdmission(state, sessionKey), {
-            id: "owner-row",
-            text: "Original queued message",
-            createdAt: 1000,
-            sessionKey,
-            sendState: "waiting-reconnect",
-          }),
-        ).toBe(true);
+        const item = {
+          id: "owner-row",
+          text: "Original queued message",
+          createdAt: 1000,
+          sessionKey,
+          sendState: "waiting-reconnect" as const,
+        };
+        if (incognito) {
+          keepVolatileQueuedMessage(state, sessionKey, item);
+          expect(listStoredChatOutboxes(state)).toEqual([]);
+        } else {
+          expect(
+            await admitQueuedMessageForSession(
+              state,
+              captureChatOutboxAdmission(state, sessionKey),
+              item,
+            ),
+          ).toBe(true);
+        }
         expect(beginQueuedMessageEdit(state, "owner-row")).toBe("started");
         const captured = state.chatQueuedEdit!;
         const initialClient = state.client;

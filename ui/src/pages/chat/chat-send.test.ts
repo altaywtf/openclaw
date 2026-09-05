@@ -3110,8 +3110,9 @@ describe("handleSendChat", () => {
         settings: { chatFollowUpMode: "steer" },
       });
       const send = handleSendChat(host);
-      await Promise.resolve();
-      expect(scrollToEnd).toHaveBeenCalledWith({ source: "manual", behavior: "auto" });
+      await waitForFast(() =>
+        expect(scrollToEnd).toHaveBeenCalledWith({ source: "manual", behavior: "auto" }),
+      );
       expect(host.request).not.toHaveBeenCalledWith("chat.send", expect.anything());
       container.scrollTop = 1200;
       handleChatScrollTakeover(host);

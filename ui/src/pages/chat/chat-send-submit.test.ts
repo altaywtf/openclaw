@@ -7,12 +7,7 @@ import {
   hydrateChatOutboxMetadata,
   readChatOutboxMetadata,
 } from "../../lib/chat/outbox-metadata-store.runtime.ts";
-import {
-  captureChatOutboxAdmission,
-  readStoredOutboxStore,
-  storageTargetForGateway,
-} from "../../lib/chat/outbox-store.ts";
-import { createSessionCapability } from "../../lib/sessions/index.ts";
+import { captureChatOutboxAdmission } from "../../lib/chat/outbox-store.ts";
 import {
   createStorageMock,
   installSafeLocalStorageForTesting,
@@ -22,7 +17,6 @@ import {
   registerChatAttachmentPayload,
   releaseChatAttachmentPayloads,
 } from "./attachment-payload-store.ts";
-import { composeBrowserAnnotationContext } from "./browser-annotation-context.ts";
 import { handleChatGatewayEvent } from "./chat-gateway.ts";
 import type { ChatHistoryResult } from "./chat-history-snapshot.ts";
 import { loadChatHistory } from "./chat-history.ts";
@@ -200,42 +194,6 @@ describe("structured Goal admission", () => {
     expect(requests).toHaveLength(2);
     expect(requests[1]?.[1]).toEqual(original);
     expect(host.chatMessage).toBe("A separate conversation draft");
-  });
-});
-
-describe("composeBrowserAnnotationContext", () => {
-  it("materializes an annotation-only message", async () => {
-    const attachment = createBrowserAnnotationAttachment("only", "Inspect the marked region.");
-
-    expect(composeBrowserAnnotationContext("", [attachment])).toBe("Inspect the marked region.");
-  });
-
-  it("prepends annotation context to the user's draft", async () => {
-    const attachment = createBrowserAnnotationAttachment("mixed", "Browser context");
-
-    expect(composeBrowserAnnotationContext("Please fix this", [attachment])).toBe(
-      "Browser context\n\nPlease fix this",
-    );
-  });
-
-  it("preserves attachment order across two annotations", async () => {
-    const first = createBrowserAnnotationAttachment("first", "First context");
-    const second = createBrowserAnnotationAttachment("second", "Second context");
-
-    expect(composeBrowserAnnotationContext("Compare them", [first, second])).toBe(
-      "First context\n\nSecond context\n\nCompare them",
-    );
-  });
-
-  it("omits context for an annotation removed before submit", async () => {
-    const removed = createBrowserAnnotationAttachment("removed", "Removed context");
-    const remaining = createBrowserAnnotationAttachment("remaining", "Remaining context");
-    const attachments = [removed, remaining];
-    attachments.splice(0, 1);
-
-    expect(composeBrowserAnnotationContext("Continue", attachments)).toBe(
-      "Remaining context\n\nContinue",
-    );
   });
 });
 

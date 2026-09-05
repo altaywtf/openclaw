@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { GatewaySessionRow, SessionsListResult } from "../../api/types.ts";
@@ -15,8 +15,13 @@ import {
 } from "./chat-pane.test-support.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
 import { admitStoredChatComposerQueueItem } from "./composer-persistence.ts";
+import { installOutboxBrowserStorage } from "./outbox-browser.test-support.ts";
 
-afterEach(() => vi.unstubAllGlobals());
+beforeEach(() => installOutboxBrowserStorage());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 function sessionsResult(row: GatewaySessionRow): SessionsListResult {
   return {
@@ -28,7 +33,7 @@ function sessionsResult(row: GatewaySessionRow): SessionsListResult {
   };
 }
 
-function createQueuedSendRecoveryFixture() {
+async function createQueuedSendRecoveryFixture() {
   vi.stubGlobal("sessionStorage", createStorageMock());
   const listRefresh = createDeferred<SessionsListResult>();
   const active: GatewaySessionRow = {
@@ -67,7 +72,7 @@ function createQueuedSendRecoveryFixture() {
     sessionsResult: sessionsResult(active),
   });
   const admission = captureChatOutboxAdmission(host, host.sessionKey);
-  expect(admitStoredChatComposerQueueItem(host, admission, host.chatQueue[0]!)).toBe(true);
+  expect(await admitStoredChatComposerQueueItem(host, admission, host.chatQueue[0]!)).toBe(true);
   const { pane } = createTestChatPane({ client: host.client!, sessions: host.sessions });
   pane.state = host as unknown as ChatPageHost;
   pane.applySessionsState(host.sessions.state);
@@ -125,7 +130,7 @@ describe("chat pane session recovery", () => {
   });
 
   it("releases a restored queued send when the canonical session state records idle", async () => {
-    const fixture = createQueuedSendRecoveryFixture();
+    const fixture = await createQueuedSendRecoveryFixture();
     try {
       fixture.pane.active = true;
       await vi.waitFor(() =>
@@ -146,7 +151,7 @@ describe("chat pane session recovery", () => {
   });
 
   it("keeps a queued send parked after a non-canonical idle publication", async () => {
-    const fixture = createQueuedSendRecoveryFixture();
+    const fixture = await createQueuedSendRecoveryFixture();
     try {
       fixture.host.sessions.reconcile(fixture.idle);
       await Promise.resolve();

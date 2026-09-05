@@ -3,7 +3,6 @@ import { compareChatQueueOrder, isMovableChatQueueItem } from "../../lib/chat/ch
 import type { ChatAttachment, ChatQueueItem } from "../../lib/chat/chat-types.ts";
 import {
   hydrateChatOutboxMetadata,
-  releasePendingChatOutboxAdmission,
   retirePendingChatOutboxAdmission,
 } from "../../lib/chat/outbox-metadata-store.runtime.ts";
 import { observeOutboxRecoveryOwner } from "../../lib/chat/outbox-payload-store.runtime.ts";
@@ -53,12 +52,6 @@ export function steerableQueuedMessage(queue: readonly ChatQueueItem[]): ChatQue
 
 function isProcessLiveQueueProjection(item: ChatQueueItem): boolean {
   return item.sendState === "sending" || item.sendState === "executing-command";
-}
-
-function hasCompleteDurablePayload(item: ChatQueueItem): boolean {
-  return (
-    !item.attachments?.length || Boolean(item.attachmentPayload || item.attachmentStorageError)
-  );
 }
 
 export function isVolatileQueuedMessage(host: ChatQueueScopedSessionHost, id: string): boolean {
@@ -247,9 +240,6 @@ export async function updateQueuedMessage(
   } else {
     owner.projectLive(host, scope, id);
   }
-  if (hasCompleteDurablePayload(nextItem)) {
-    releasePendingChatOutboxAdmission(id);
-  }
   return nextItem;
 }
 
@@ -343,25 +333,16 @@ export async function admitQueuedMessageForSession(
       captured.recoveryOwner !== undefined &&
       observeOutboxRecoveryOwner(host) !== captured.recoveryOwner;
     if (recoveryOwnerChanged) {
-      if (hasCompleteDurablePayload(item)) {
-        releasePendingChatOutboxAdmission(item.id);
-      }
       return true;
     }
-    const removed = await removeStoredChatComposerQueueItem(
+    await removeStoredChatComposerQueueItem(
       host,
       captured.scope.sessionKey,
       item.id,
       item,
       captured.scope.agentId,
     );
-    if (removed) {
-      releasePendingChatOutboxAdmission(item.id);
-    }
     return false;
-  }
-  if (hasCompleteDurablePayload(item)) {
-    releasePendingChatOutboxAdmission(item.id);
   }
   if (item.sendState !== "waiting-model") {
     owner.change(host, item.id);

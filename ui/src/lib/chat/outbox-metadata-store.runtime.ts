@@ -29,6 +29,8 @@ import {
   adoptAbandonedPendingChatOutboxJournals,
   omitPendingChatOutboxAdmissions,
   readPendingChatOutboxJournal,
+  writePendingChatOutboxItem,
+  removePendingChatOutboxItem,
   settledPendingChatOutboxRetirements,
   writePendingChatOutboxJournal,
   type PendingChatOutboxJournal,
@@ -57,101 +59,66 @@ type CachedOutbox = {
 };
 
 const cacheByStorage = new WeakMap<Storage, Map<string, CachedOutbox>>();
-type PendingAdmission = {
-  item: ChatQueueItem;
-  metadataStorage: Storage;
-  scope: StoredChatOutboxScope;
-  recoveryOwner: string;
-  tabId: string;
-  state: ChatComposerScope;
-  storage: Storage;
-  target: ReturnType<typeof storageTargetForGateway>;
-};
-const pendingAdmissions = new Set<PendingAdmission>();
-const pendingAdmissionJournals = new Map<string, PendingAdmission>();
-let pagehideInstalled = false;
-
-function flushPendingAdmission(pending: PendingAdmission, invalidate = true): void {
-  if (
-    !pending.item.attachmentPayload &&
-    pending.item.attachments?.some((attachment) => !attachment.dataUrl)
-  ) {
-    return;
+// One admission registration owns both live preparation and recoverable failure.
+// Recovery may adopt a detached row, but cannot race a live preparation.
+class PendingAdmission {
+  phase: "preparing" | "recoverable" | "retiring" | "retired" | "committed" = "preparing";
+  get active(): boolean {
+    return this.phase === "preparing" || this.phase === "retiring";
   }
-  const target = pending.target;
-  const store = readPendingChatOutboxJournal(
-    pending.storage,
-    target.gatewayOwner,
-    pending.recoveryOwner,
-    pending.tabId,
-  );
-  const scopeKey = storedChatOutboxScopeKey(pending.scope);
-  const session = store.sessions[scopeKey];
-  const queue = session?.queue ?? [];
-  if (store.retired.includes(pending.item.id)) {
-    return;
-  }
-  const storedItem = applyStoredChatOutboxScope(pending.item, pending.scope);
-  const existingIndex = queue.findIndex((item) => item.id === pending.item.id);
-  const nextQueue = queue.slice();
-  if (existingIndex >= 0) {
-    nextQueue[existingIndex] = storedItem;
-  } else {
-    nextQueue.push(storedItem);
-  }
-  store.sessions[scopeKey] = {
-    ...session,
-    queue: nextQueue,
-    updatedAt: Date.now(),
-  };
-  writePendingChatOutboxJournal(pending.storage, store);
-  if (invalidate) {
-    cacheEntry(pending.metadataStorage, target.gatewayOwner, pending.recoveryOwner).hydration =
-      null;
-  }
-}
-
-function flushPendingAdmissions(): void {
-  for (const pending of pendingAdmissions) {
+  constructor(
+    public item: ChatQueueItem,
+    readonly metadataStorage: Storage,
+    readonly storage: Storage,
+    readonly scope: StoredChatOutboxScope,
+    readonly gatewayOwner: string,
+    readonly recoveryOwner: string,
+    readonly tabId: string,
+  ) {}
+  write(item = this.item, recoverable = false): boolean {
+    if (this.phase === "retiring" || this.phase === "retired" || this.phase === "committed") {
+      return false;
+    }
+    if (!item.attachmentPayload && item.attachments?.some((attachment) => !attachment.dataUrl)) {
+      // Native Blob ownership cannot leave the composer until its payload is durable.
+      return false;
+    }
     try {
-      flushPendingAdmission(pending);
-    } catch {}
+      writePendingChatOutboxItem(this.storage, this, item.id, {
+        scopeKey: storedChatOutboxScopeKey(this.scope),
+        item: applyStoredChatOutboxScope(item, this.scope),
+      });
+      this.item = item;
+      if (recoverable) {
+        this.phase = "recoverable";
+        cacheEntry(this.metadataStorage, this.gatewayOwner, this.recoveryOwner).hydration = null;
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  release(): void {
+    this.phase = "committed";
+    try {
+      removePendingChatOutboxItem(this.storage, this, this.item.id);
+      pendingAdmissions.delete(this.item.id);
+    } catch {
+      // Keep the settled registration so later durable transitions can retry cleanup.
+    }
+  }
+  retire(): boolean {
+    try {
+      writePendingChatOutboxItem(this.storage, this, this.item.id);
+      this.phase = this.active ? "retiring" : "retired";
+      cacheEntry(this.metadataStorage, this.gatewayOwner, this.recoveryOwner).hydration = null;
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
-
-export function journalChatOutboxAdmission(
-  state: ChatComposerScope,
-  scope: StoredChatOutboxScope,
-  item: ChatQueueItem,
-  recoveryOwner = observeOutboxRecoveryOwner(state) ?? UNRESOLVED_RECOVERY_OWNER,
-): boolean {
-  if (state.selectedChatSessionIncognito) {
-    return false;
-  }
-  const storage = getSafeLocalStorage();
-  const metadataStorage = getSafeSessionStorage();
-  const tabId = metadataStorage ? outboxPayloadTabCandidate(metadataStorage) : null;
-  if (!storage || !metadataStorage || !tabId) {
-    return false;
-  }
-  try {
-    const pending = {
-      item,
-      metadataStorage,
-      recoveryOwner,
-      scope,
-      state,
-      storage,
-      tabId,
-      target: storageTargetForGateway(state.settings?.gatewayUrl),
-    };
-    flushPendingAdmission(pending);
-    pendingAdmissionJournals.set(item.id, pending);
-    return true;
-  } catch {
-    return false;
-  }
-}
+const pendingAdmissions = new Map<string, PendingAdmission>();
 
 export function protectPendingChatOutboxAdmission(
   state: ChatComposerScope,
@@ -161,147 +128,51 @@ export function protectPendingChatOutboxAdmission(
   if (state.selectedChatSessionIncognito) {
     return () => undefined;
   }
-  if (typeof document === "undefined") {
-    return () => undefined;
-  }
   const storage = getSafeLocalStorage();
   const metadataStorage = getSafeSessionStorage();
   const tabId = metadataStorage ? outboxPayloadTabCandidate(metadataStorage) : null;
   if (!storage || !metadataStorage || !tabId) {
     return null;
   }
-  if (typeof window !== "undefined" && !pagehideInstalled) {
-    window.addEventListener("pagehide", flushPendingAdmissions);
-    pagehideInstalled = true;
-  }
-  const pending = {
+  const pending = new PendingAdmission(
     item,
     metadataStorage,
-    recoveryOwner: observeOutboxRecoveryOwner(state) ?? UNRESOLVED_RECOVERY_OWNER,
-    scope,
-    state,
     storage,
+    scope,
+    storageTargetForGateway(state.settings?.gatewayUrl).gatewayOwner,
+    observeOutboxRecoveryOwner(state) ?? UNRESOLVED_RECOVERY_OWNER,
     tabId,
-    target: storageTargetForGateway(state.settings?.gatewayUrl),
-  };
-  pendingAdmissions.add(pending);
-  pendingAdmissionJournals.set(item.id, pending);
-  try {
-    // Reserve one submission synchronously before the composer releases it. The
-    // journal stays O(one in-flight prompt); the durable queue remains IndexedDB-owned.
-    flushPendingAdmission(pending, false);
-  } catch {
-    pendingAdmissions.delete(pending);
-    pendingAdmissionJournals.delete(item.id);
+  );
+  // Native attachments are still composer-owned here. Their first write follows
+  // payload persistence; every releasable prompt is protected synchronously.
+  const native =
+    !item.attachmentPayload && item.attachments?.some((attachment) => !attachment.dataUrl);
+  if (!native && !pending.write()) {
     return null;
   }
-  return () => releasePendingChatOutboxAdmission(item.id);
+  pendingAdmissions.set(item.id, pending);
+  return () => pending.release();
 }
 
-export function releasePendingChatOutboxAdmission(itemId: string): void {
-  const pending = pendingAdmissionJournals.get(itemId);
-  if (!pending) {
+export function finishPendingChatOutboxAdmission(itemId: string): void {
+  const pending = pendingAdmissions.get(itemId);
+  if (!pending || !pending.active) {
     return;
   }
-  pendingAdmissions.delete(pending);
-  pendingAdmissionJournals.delete(itemId);
-  try {
-    const journal = readPendingChatOutboxJournal(
-      pending.storage,
-      pending.target.gatewayOwner,
-      pending.recoveryOwner,
-      pending.tabId,
-    );
-    for (const [scopeKey, session] of Object.entries(journal.sessions)) {
-      const queue = session.queue?.filter((item) => item.id !== itemId) ?? [];
-      if (queue.length) {
-        journal.sessions[scopeKey] = { ...session, queue };
-      } else {
-        delete journal.sessions[scopeKey];
-      }
-    }
-    journal.retired = journal.retired.filter((id) => id !== itemId);
-    writePendingChatOutboxJournal(pending.storage, journal);
-  } catch {
-    // A verified IndexedDB row remains authoritative if shutdown storage is unavailable.
-  }
+  pending.phase = pending.phase === "retiring" ? "retired" : "recoverable";
+  cacheEntry(pending.metadataStorage, pending.gatewayOwner, pending.recoveryOwner).hydration = null;
 }
 
 export function retirePendingChatOutboxAdmission(itemId: string): boolean {
-  const pending = pendingAdmissionJournals.get(itemId);
-  if (!pending) {
-    return true;
-  }
-  try {
-    const journal = readPendingChatOutboxJournal(
-      pending.storage,
-      pending.target.gatewayOwner,
-      pending.recoveryOwner,
-      pending.tabId,
-    );
-    for (const [scopeKey, session] of Object.entries(journal.sessions)) {
-      const queue = session.queue?.filter((item) => item.id !== itemId) ?? [];
-      if (queue.length) {
-        journal.sessions[scopeKey] = { ...session, queue };
-      } else {
-        delete journal.sessions[scopeKey];
-      }
-    }
-    journal.retired = [...new Set([...journal.retired, itemId])];
-    writePendingChatOutboxJournal(pending.storage, journal);
-    cacheEntry(
-      pending.metadataStorage,
-      pending.target.gatewayOwner,
-      pending.recoveryOwner,
-    ).hydration = null;
-  } catch {
-    return false;
-  }
-  pendingAdmissions.delete(pending);
-  pendingAdmissionJournals.delete(itemId);
-  return true;
+  return pendingAdmissions.get(itemId)?.retire() ?? true;
 }
 
 export function persistPendingChatOutboxAdmission(item: ChatQueueItem): boolean {
-  for (const pending of pendingAdmissions) {
-    if (pending.item.id === item.id) {
-      const retired = readPendingChatOutboxJournal(
-        pending.storage,
-        pending.target.gatewayOwner,
-        pending.recoveryOwner,
-        pending.tabId,
-      ).retired.includes(item.id);
-      if (retired) {
-        pendingAdmissions.delete(pending);
-        return false;
-      }
-      pending.item = item;
-      try {
-        flushPendingAdmission(pending);
-        pendingAdmissions.delete(pending);
-        return true;
-      } catch {
-        return false;
-      }
-    }
-  }
-  return false;
+  return pendingAdmissions.get(item.id)?.write(item, true) ?? false;
 }
 
 export function updatePendingChatOutboxAdmission(item: ChatQueueItem): boolean {
-  for (const pending of pendingAdmissions) {
-    if (pending.item.id !== item.id) {
-      continue;
-    }
-    pending.item = item;
-    try {
-      flushPendingAdmission(pending, false);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  return false;
+  return pendingAdmissions.get(item.id)?.write(item) ?? false;
 }
 
 function cacheEntry(storage: Storage, gatewayOwner: string, recoveryOwner: string): CachedOutbox {
@@ -334,9 +205,47 @@ function retireMigratedPendingChatOutboxJournal(
     return;
   }
   const journal = readPendingChatOutboxJournal(storage, gatewayOwner, recoveryOwner, tabId);
+  const settled = settledPendingChatOutboxRetirements(
+    retired,
+    [...pendingAdmissions.values()]
+      .filter(
+        (pending) =>
+          pending.active &&
+          pending.storage === storage &&
+          pending.gatewayOwner === gatewayOwner &&
+          pending.recoveryOwner === recoveryOwner,
+      )
+      .map((pending) => pending.item.id),
+  );
   retireMigratedChatOutboxQueues(journal, migrated);
-  journal.retired = journal.retired.filter((id) => !retired.has(id));
+  journal.retired = journal.retired.filter((id) => !settled.has(id));
   writePendingChatOutboxJournal(storage, journal);
+  // A cancellation written during the commit still owns the row until the
+  // next recovery transaction removes it; migration must not erase that fence.
+  const retained = new Set([
+    ...journal.retired,
+    ...Object.values(journal.sessions).flatMap((session) =>
+      (session.queue ?? []).map((item) => item.id),
+    ),
+  ]);
+  for (const items of migrated.values()) {
+    for (const id of items.keys()) {
+      settled.add(id);
+    }
+  }
+  for (const id of settled) {
+    const pending = pendingAdmissions.get(id);
+    if (
+      pending &&
+      !pending.active &&
+      pending.storage === storage &&
+      pending.gatewayOwner === gatewayOwner &&
+      pending.recoveryOwner === recoveryOwner &&
+      !retained.has(id)
+    ) {
+      pending.release();
+    }
+  }
 }
 
 function omitActivePendingAdmissions(
@@ -346,11 +255,12 @@ function omitActivePendingAdmissions(
   recoveryOwner: string,
 ): PendingChatOutboxJournal {
   const active = new Set(
-    [...pendingAdmissions]
+    [...pendingAdmissions.values()]
       .filter(
         (pending) =>
+          pending.active &&
           pending.storage === storage &&
-          pending.target.gatewayOwner === gatewayOwner &&
+          pending.gatewayOwner === gatewayOwner &&
           pending.recoveryOwner === recoveryOwner,
       )
       .map((pending) => pending.item.id),
@@ -516,24 +426,25 @@ async function hydrateEntry(
     recoveryOwner,
     tabId,
     journalMigrated,
-    settledPendingChatOutboxRetirements(
-      retired,
-      [...pendingAdmissions]
-        .filter(
-          (pending) =>
-            pending.storage === journalStorage &&
-            pending.target.gatewayOwner === target.gatewayOwner &&
-            pending.recoveryOwner === recoveryOwner,
-        )
-        .map((pending) => pending.item.id),
-    ),
+    retired,
   );
-  if (unresolvedJournal) {
-    if (unresolvedJournalQuarantined) {
-      unresolvedJournal.sessions = {};
-      unresolvedJournal.retired = [];
-      writePendingChatOutboxJournal(journalStorage, unresolvedJournal);
-    }
+  if (unresolvedJournal && unresolvedJournalQuarantined) {
+    // The commit may outlive a new admission. Retire only the versions copied
+    // into recovery, never replace the journal with the pre-commit snapshot.
+    const quarantined = new Map(
+      Object.entries(unresolvedJournal.sessions).map(([scope, session]) => [
+        scope,
+        new Map((session.queue ?? []).map((item) => [item.id, JSON.stringify(item)])),
+      ]),
+    );
+    retireMigratedPendingChatOutboxJournal(
+      journalStorage,
+      target.gatewayOwner,
+      UNRESOLVED_RECOVERY_OWNER,
+      tabId,
+      quarantined,
+      new Set(unresolvedJournal.retired),
+    );
   }
   if (migrated.size) {
     retireMigratedLegacyChatOutboxQueues(storage, state, migrated);
@@ -616,6 +527,9 @@ export async function mutateChatOutboxMetadata(
   state: ChatComposerScope,
   mutate: (store: StoredComposerState) => boolean,
 ): Promise<boolean> {
+  const pendingVersions = new Map(
+    [...pendingAdmissions].map(([id, pending]) => [id, pending.item]),
+  );
   const storage = getSafeSessionStorage();
   if (!storage) {
     return false;
@@ -639,6 +553,11 @@ export async function mutateChatOutboxMetadata(
       return;
     }
     const database = await openControlUiDatabase();
+    const previousRows = new Map(
+      Object.values(current.sessions).flatMap((session) =>
+        (session.queue ?? []).map((item) => [item.id, JSON.stringify(item)] as const),
+      ),
+    );
     const document = structuredClone(current);
     const store = chatOutboxDocumentStore(document);
     if (!mutate(store)) {
@@ -650,6 +569,25 @@ export async function mutateChatOutboxMetadata(
     await transactionComplete(transaction);
     retireRemovedChatOutboxPayloads(current, document);
     entry.document = document;
+    // Only rows changed by this commit can release their captured admission.
+    // A later journal revision or an unrelated write must retain recovery ownership.
+    for (const session of Object.values(document.sessions)) {
+      for (const item of session.queue ?? []) {
+        const pending = pendingAdmissions.get(item.id);
+        if (
+          pending?.phase !== "retiring" &&
+          pending?.phase !== "retired" &&
+          pending?.metadataStorage === storage &&
+          pending.gatewayOwner === target.gatewayOwner &&
+          pending.recoveryOwner === recoveryOwner &&
+          pending.item === pendingVersions.get(item.id) &&
+          previousRows.get(item.id) !== JSON.stringify(item) &&
+          (!item.attachments?.length || item.attachmentPayload || item.attachmentStorageError)
+        ) {
+          pending.release();
+        }
+      }
+    }
     result = true;
     notifyStoredChatOutboxChanges();
   })().catch(() => undefined);

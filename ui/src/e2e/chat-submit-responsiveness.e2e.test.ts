@@ -268,136 +268,160 @@ suite.define(() => {
     });
   });
 
-  it("accepts a second prompt while durability and acknowledgment remain pending", async () => {
-    await withChatPage(async (page) => {
-      const gateway = await installMockGateway(page);
-      await page.goto(`${suite.server.baseUrl}chat`);
+  it.each(["Enter", "Meta+Enter", "Control+Enter", "Send"])(
+    "accepts a second prompt before durability and acknowledgment settle via %s",
+    async (action) => {
+      await withChatPage(async (page) => {
+        const gateway = await installMockGateway(page);
+        await page.goto(`${suite.server.baseUrl}chat`);
 
-      const composer = page.locator(".agent-chat__composer-combobox textarea");
-      await composer.waitFor();
-      const gate = await holdChatOutboxWrites(page);
-      await composer.fill("first prompt");
-      if (proofDir) {
-        await page.screenshot({ path: path.join(proofDir, "before-submit.png") });
-        await page.waitForTimeout(400);
-      }
-      await composer.evaluate((element) => {
-        const textarea = element as HTMLTextAreaElement;
-        const order: string[] = [];
-        let submissionStarted = false;
-        const record = (value: string) => {
-          order.push(value);
-          textarea.dataset.submitTaskOrder = JSON.stringify(order);
-        };
-        const tracksOutbox = (key: string, value: string | null) =>
-          submissionStarted &&
-          key.startsWith("openclaw.control.chatComposer") &&
-          value?.includes('"queue":') === true;
-        // oxlint-disable-next-line typescript/unbound-method -- the wrapper restores `this` via call.
-        const getItem = Storage.prototype.getItem;
-        Storage.prototype.getItem = function (this: Storage, key: string) {
-          const value = getItem.call(this, key);
-          if (tracksOutbox(key, value)) {
-            record("storage:getItem");
-          }
-          return value;
-        };
-        // oxlint-disable-next-line typescript/unbound-method -- the wrapper restores `this` via call.
-        const removeItem = Storage.prototype.removeItem;
-        Storage.prototype.removeItem = function (this: Storage, key: string) {
-          if (tracksOutbox(key, getItem.call(this, key))) {
-            record("storage:removeItem");
-          }
-          return removeItem.call(this, key);
-        };
-        // oxlint-disable-next-line typescript/unbound-method -- the wrapper restores `this` via call.
-        const setItem = Storage.prototype.setItem;
-        Storage.prototype.setItem = function (this: Storage, key: string, value: string) {
-          if (tracksOutbox(key, value)) {
-            record("storage:setItem");
-          }
-          return setItem.call(this, key, value);
-        };
-        const send = Object.getOwnPropertyDescriptor(WebSocket.prototype, "send")
-          ?.value as WebSocket["send"];
-        WebSocket.prototype.send = function (data) {
-          if (
-            typeof data === "string" &&
-            (JSON.parse(data) as { method?: string }).method === "chat.send"
-          ) {
-            const frame = JSON.parse(data) as { params?: { message?: string } };
-            record(`transport:${frame.params?.message ?? ""}`);
-          }
-          Reflect.apply(send, this, [data]);
-        };
-        textarea.addEventListener(
-          "keydown",
-          function onSubmit(event) {
-            // Meta+Enter emits a modifier keydown first; only submission queues the next input.
-            if (event.key !== "Enter") {
-              return;
+        const composer = page.locator(".agent-chat__composer-combobox textarea");
+        await composer.waitFor();
+        const gate = await holdChatOutboxWrites(page);
+        await composer.fill("first prompt");
+        if (proofDir) {
+          await page.screenshot({ path: path.join(proofDir, `before-submit-${action}.png`) });
+          await page.waitForTimeout(400);
+        }
+        await composer.evaluate((element, inputAction) => {
+          const textarea = element as HTMLTextAreaElement;
+          const order: string[] = [];
+          let submissionStarted = false;
+          let startedAt = 0;
+          const record = (value: string) => {
+            order.push(value);
+            textarea.dataset.submitTaskOrder = JSON.stringify(order);
+          };
+          const tracksOutbox = (key: string, value: string | null) =>
+            submissionStarted &&
+            key.startsWith("openclaw.control.chatComposer") &&
+            value?.includes('"queue":') === true;
+          // oxlint-disable-next-line typescript/unbound-method -- the wrapper restores `this` via call.
+          const getItem = Storage.prototype.getItem;
+          Storage.prototype.getItem = function (this: Storage, key: string) {
+            const value = getItem.call(this, key);
+            if (tracksOutbox(key, value)) {
+              record("storage:getItem");
             }
-            submissionStarted = true;
-            textarea.removeEventListener("keydown", onSubmit, true);
-            const channel = new MessageChannel();
-            channel.port1.addEventListener(
-              "message",
-              () => {
-                channel.port1.close();
-                channel.port2.close();
-                textarea.value = "second prompt";
-                textarea.dispatchEvent(
-                  new InputEvent("input", {
-                    bubbles: true,
-                    data: "second prompt",
-                    inputType: "insertText",
-                  }),
-                );
-                record("next-input-task");
-                submissionStarted = false;
-              },
-              { once: true },
-            );
-            channel.port1.start();
-            channel.port2.postMessage(undefined);
-          },
-          { capture: true },
-        );
-      });
+            return value;
+          };
+          // oxlint-disable-next-line typescript/unbound-method -- the wrapper restores `this` via call.
+          const removeItem = Storage.prototype.removeItem;
+          Storage.prototype.removeItem = function (this: Storage, key: string) {
+            if (tracksOutbox(key, getItem.call(this, key))) {
+              record("storage:removeItem");
+            }
+            return removeItem.call(this, key);
+          };
+          // oxlint-disable-next-line typescript/unbound-method -- the wrapper restores `this` via call.
+          const setItem = Storage.prototype.setItem;
+          Storage.prototype.setItem = function (this: Storage, key: string, value: string) {
+            if (submissionStarted && key.startsWith("openclaw.control.chatPending.v1:")) {
+              textarea.dataset.journalCharacters = String(value.length);
+            }
+            if (tracksOutbox(key, value)) {
+              record("storage:setItem");
+            }
+            return setItem.call(this, key, value);
+          };
+          const send = Object.getOwnPropertyDescriptor(WebSocket.prototype, "send")
+            ?.value as WebSocket["send"];
+          WebSocket.prototype.send = function (data) {
+            if (
+              typeof data === "string" &&
+              (JSON.parse(data) as { method?: string }).method === "chat.send"
+            ) {
+              const frame = JSON.parse(data) as { params?: { message?: string } };
+              record(`transport:${frame.params?.message ?? ""}`);
+            }
+            Reflect.apply(send, this, [data]);
+          };
+          const eventType = inputAction === "Send" ? "click" : "keydown";
+          document.addEventListener(
+            eventType,
+            function onSubmit(event) {
+              // Capture the real activation before the composer handler queues its handoff.
+              if (
+                inputAction === "Send"
+                  ? !(
+                      event.target instanceof Element &&
+                      event.target.closest(".chat-send-btn--send")
+                    )
+                  : !(event instanceof KeyboardEvent && event.key === "Enter")
+              ) {
+                return;
+              }
+              submissionStarted = true;
+              startedAt = performance.now();
+              document.removeEventListener(eventType, onSubmit, true);
+              const channel = new MessageChannel();
+              channel.port1.addEventListener(
+                "message",
+                () => {
+                  channel.port1.close();
+                  channel.port2.close();
+                  textarea.value = "second prompt";
+                  textarea.dispatchEvent(
+                    new InputEvent("input", {
+                      bubbles: true,
+                      data: "second prompt",
+                      inputType: "insertText",
+                    }),
+                  );
+                  textarea.dataset.inputReleaseMs = String(performance.now() - startedAt);
+                  record("next-input-task");
+                  submissionStarted = false;
+                },
+                { once: true },
+              );
+              channel.port1.start();
+              channel.port2.postMessage(undefined);
+            },
+            { capture: true },
+          );
+        }, action);
 
-      await composer.press("Meta+Enter");
-      await expect
-        .poll(async () =>
-          JSON.parse((await composer.getAttribute("data-submit-task-order")) ?? "[]"),
-        )
-        .toEqual(["next-input-task"]);
-      expect(await composer.inputValue()).toBe("second prompt");
-      await composer.press("Meta+Enter");
-      await expect.poll(() => composer.inputValue()).toBe("");
-      await expect.poll(() => page.locator(".chat-queue__item").count()).toBe(2);
-      expect(await gateway.getRequests("chat.send")).toHaveLength(0);
-      if (proofDir) {
-        await page.screenshot({ path: path.join(proofDir, "next-prompt-ready.png") });
-      }
-      await gateway.deferNext("chat.send");
-      await gate.evaluate((value) => value.release());
-      await gate.dispose();
-      const first = await gateway.waitForRequest("chat.send");
-      expect(first.params).toMatchObject({ message: "first prompt" });
-      await gateway.resolveDeferred("chat.send");
-      await gateway.emitChatFinal({
-        runId: String((first.params as { idempotencyKey?: string }).idempotencyKey),
-        text: "first complete",
+        const submit = () =>
+          action === "Send" ? page.locator(".chat-send-btn--send").click() : composer.press(action);
+        await submit();
+        await expect
+          .poll(async () =>
+            JSON.parse((await composer.getAttribute("data-submit-task-order")) ?? "[]"),
+          )
+          .toEqual(["next-input-task"]);
+        expect(await composer.inputValue()).toBe("second prompt");
+        console.info("admission-critical-path", {
+          action,
+          inputReleaseMs: await composer.getAttribute("data-input-release-ms"),
+          journalCharacters: await composer.getAttribute("data-journal-characters"),
+        });
+        await submit();
+        await expect.poll(() => composer.inputValue()).toBe("");
+        await expect.poll(() => page.locator(".chat-queue__item").count()).toBe(2);
+        expect(await gateway.getRequests("chat.send")).toHaveLength(0);
+        if (proofDir) {
+          await page.screenshot({ path: path.join(proofDir, `next-prompt-ready-${action}.png`) });
+        }
+        await gateway.deferNext("chat.send");
+        await gate.evaluate((value) => value.release());
+        await gate.dispose();
+        const first = await gateway.waitForRequest("chat.send");
+        expect(first.params).toMatchObject({ message: "first prompt" });
+        await gateway.resolveDeferred("chat.send");
+        await gateway.emitChatFinal({
+          runId: String((first.params as { idempotencyKey?: string }).idempotencyKey),
+          text: "first complete",
+        });
+        const second = await gateway.waitForRequest("chat.send", { after: 1 });
+        expect(second.params).toMatchObject({ message: "second prompt" });
+        await expect
+          .poll(async () =>
+            JSON.parse((await composer.getAttribute("data-submit-task-order")) ?? "[]"),
+          )
+          .toEqual(["next-input-task", "transport:first prompt", "transport:second prompt"]);
       });
-      const second = await gateway.waitForRequest("chat.send", { after: 1 });
-      expect(second.params).toMatchObject({ message: "second prompt" });
-      await expect
-        .poll(async () =>
-          JSON.parse((await composer.getAttribute("data-submit-task-order")) ?? "[]"),
-        )
-        .toEqual(["next-input-task", "transport:first prompt", "transport:second prompt"]);
-    });
-  });
+    },
+  );
 
   it("hands off consecutive prompts before an authoritative history refresh settles", async () => {
     await withChatPage(async (page) => {

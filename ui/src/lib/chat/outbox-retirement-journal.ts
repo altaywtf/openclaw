@@ -5,7 +5,8 @@ import {
 } from "./outbox-payload-store.runtime.ts";
 import {
   readPendingChatOutboxJournal,
-  writePendingChatOutboxJournal,
+  writePendingChatOutboxItem,
+  removePendingChatOutboxItem,
 } from "./outbox-pending-journal.ts";
 import { storageTargetForGateway, type ChatComposerScope } from "./outbox-store.ts";
 
@@ -42,15 +43,9 @@ export function protectChatOutboxRetirement(
   }
   const target = storageTargetForGateway(state.settings?.gatewayUrl);
   const recoveryOwner = observeOutboxRecoveryOwner(state) ?? UNRESOLVED_RECOVERY_OWNER;
+  const owner = { gatewayOwner: target.gatewayOwner, recoveryOwner, tabId };
   try {
-    const journal = readPendingChatOutboxJournal(
-      storage,
-      target.gatewayOwner,
-      recoveryOwner,
-      tabId,
-    );
-    journal.retired = [...new Set([...journal.retired, itemId])];
-    writePendingChatOutboxJournal(storage, journal);
+    writePendingChatOutboxItem(storage, owner, itemId);
   } catch {
     return null;
   }
@@ -61,22 +56,7 @@ export function protectChatOutboxRetirement(
     }
     active = false;
     try {
-      const journal = readPendingChatOutboxJournal(
-        storage,
-        target.gatewayOwner,
-        recoveryOwner,
-        tabId,
-      );
-      for (const [scopeKey, session] of Object.entries(journal.sessions)) {
-        const queue = session.queue?.filter((item) => item.id !== itemId) ?? [];
-        if (queue.length) {
-          journal.sessions[scopeKey] = { ...session, queue };
-        } else {
-          delete journal.sessions[scopeKey];
-        }
-      }
-      journal.retired = journal.retired.filter((id) => id !== itemId);
-      writePendingChatOutboxJournal(storage, journal);
+      removePendingChatOutboxItem(storage, owner, itemId);
     } catch {
       // A retained tombstone is safer than replaying a user-deleted prompt.
     }

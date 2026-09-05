@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { SessionsListResult, SessionsPatchResult } from "../../api/types.ts";
 import {
@@ -12,8 +12,13 @@ import { waitForFast } from "../../test-helpers/wait-for.ts";
 import { makeChatHost } from "./chat-host.test-support.ts";
 import { handleSendChat } from "./chat-send-submit.ts";
 import { getPendingChatPickerPatch, switchChatModel } from "./chat-session.ts";
+import { installOutboxBrowserStorage } from "./outbox-browser.test-support.ts";
 
-afterEach(() => vi.unstubAllGlobals());
+beforeEach(() => installOutboxBrowserStorage());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 it("dispatches a fresh-pane send without waiting for background roster loading", async () => {
   vi.stubGlobal("sessionStorage", createStorageMock());

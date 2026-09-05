@@ -85,9 +85,9 @@ export function ownsSubmittedComposerState(
         attachmentSubmitSignature(submittedAttachments[index]!),
     );
   return (
-    (host.chatMessage !== submittedDraft ||
-      JSON.stringify(host.chatMentions ?? []) !== JSON.stringify(submittedMentions ?? []) ||
-      !attachmentsUnchanged) === false
+    host.chatMessage === submittedDraft &&
+    JSON.stringify(host.chatMentions ?? []) === JSON.stringify(submittedMentions ?? []) &&
+    attachmentsUnchanged
   );
 }
 

@@ -6,11 +6,13 @@ import {
   transactionComplete,
 } from "../../lib/chat/control-ui-database.runtime.ts";
 import {
+  finishPendingChatOutboxAdmission,
   hydrateChatOutboxMetadata,
   migrateLegacyChatOutboxMetadata,
   persistPendingChatOutboxAdmission,
   protectPendingChatOutboxAdmission,
   retirePendingChatOutboxAdmission,
+  updatePendingChatOutboxAdmission,
 } from "../../lib/chat/outbox-metadata-store.runtime.ts";
 import { outboxPayloadTab } from "../../lib/chat/outbox-payload-store.runtime.ts";
 import { readChatOutboxRecovery } from "../../lib/chat/outbox-recovery.ts";
@@ -89,6 +91,232 @@ afterEach(() => {
 });
 
 describe("chat composer persistence", () => {
+  it("releases admission protection at the durable commit boundary", async () => {
+    vi.stubGlobal("document", {});
+    vi.stubGlobal("window", { addEventListener: vi.fn() });
+    const state = createState();
+    const item = reconnectItem("committed-admission", 1);
+    const admission = captureChatOutboxAdmission(state, state.sessionKey);
+    await outboxPayloadTab();
+    const release = protectPendingChatOutboxAdmission(state, admission.scope, item);
+    try {
+      expect(release).toBeTypeOf("function");
+      expect(await admitStoredChatComposerQueueItem(state, admission, item)).toBe(true);
+      expect(persistPendingChatOutboxAdmission(item)).toBe(false);
+      expect(
+        Array.from({ length: journalStorage.length }, (_, index) =>
+          journalStorage.getItem(journalStorage.key(index)!),
+        ).join(""),
+      ).not.toContain(item.id);
+      expect(listStoredChatOutboxes(state)[0]?.queue).toEqual([
+        expect.objectContaining({ id: item.id }),
+      ]);
+    } finally {
+      release?.();
+      await removeStoredChatComposerQueueItem(state, state.sessionKey, item.id);
+    }
+  });
+
+  it("does not release a pending retry when another row commits", async () => {
+    const state = createState();
+    const original = reconnectItem("pending-retry", 1);
+    const captured = captureChatOutboxAdmission(state, state.sessionKey);
+    expect(await admitStoredChatComposerQueueItem(state, captured, original)).toBe(true);
+    const retry = { ...original, text: "retry still needs admission" };
+    const release = protectPendingChatOutboxAdmission(state, captured.scope, retry);
+    try {
+      expect(release).toBeTypeOf("function");
+      expect(
+        await admitStoredChatComposerQueueItem(state, captured, reconnectItem("other-row", 2)),
+      ).toBe(true);
+      expect(
+        Array.from({ length: journalStorage.length }, (_, index) =>
+          journalStorage.getItem(journalStorage.key(index)!),
+        ).join(""),
+      ).toContain(retry.text);
+    } finally {
+      release?.();
+    }
+  });
+
+  it("retains a newer recovery revision when an older admission commits", async () => {
+    const state = createState();
+    await hydrateChatOutboxMetadata(state);
+    const database = await openControlUiDatabase();
+    const original = reconnectItem("revision-during-commit", 1);
+    const newer = { ...original, text: "newer accepted revision" };
+    const captured = captureChatOutboxAdmission(state, state.sessionKey);
+    const release = protectPendingChatOutboxAdmission(state, captured.scope, original);
+    const transaction = database.transaction.bind(database);
+    let revised = false;
+    const intercept = vi.spyOn(database, "transaction").mockImplementation((...args) => {
+      const pending = transaction(...args);
+      if (args[1] === "readwrite") {
+        pending.addEventListener(
+          "complete",
+          () => {
+            revised = updatePendingChatOutboxAdmission(newer);
+          },
+          { once: true },
+        );
+      }
+      return pending;
+    });
+    try {
+      expect(release).toBeTypeOf("function");
+      expect(await admitStoredChatComposerQueueItem(state, captured, original)).toBe(true);
+      expect(revised).toBe(true);
+      expect(listStoredChatOutboxes(state)[0]?.queue[0]?.text).toBe(original.text);
+      expect(
+        Array.from({ length: journalStorage.length }, (_, index) =>
+          journalStorage.getItem(journalStorage.key(index)!),
+        ).join(""),
+      ).toContain(newer.text);
+    } finally {
+      intercept.mockRestore();
+      release?.();
+    }
+  });
+
+  it("does not resurrect a recovered admission canceled during its commit", async () => {
+    const state = createState();
+    await hydrateChatOutboxMetadata(state);
+    const item = reconnectItem("cancel-during-recovery", 1);
+    const captured = captureChatOutboxAdmission(state, state.sessionKey);
+    const release = protectPendingChatOutboxAdmission(state, captured.scope, item);
+    expect(persistPendingChatOutboxAdmission(item)).toBe(true);
+    const database = await openControlUiDatabase();
+    const transaction = database.transaction.bind(database);
+    let canceled = false;
+    const intercept = vi.spyOn(database, "transaction").mockImplementation((...args) => {
+      const pending = transaction(...args);
+      if (args[1] === "readwrite") {
+        pending.addEventListener(
+          "complete",
+          () => {
+            canceled = retirePendingChatOutboxAdmission(item.id);
+          },
+          { once: true },
+        );
+      }
+      return pending;
+    });
+    try {
+      expect(await hydrateChatOutboxMetadata(state)).toBe(true);
+      expect(canceled).toBe(true);
+      intercept.mockRestore();
+      expect(await hydrateChatOutboxMetadata(state)).toBe(true);
+      expect(listStoredChatOutboxes(state)).toEqual([]);
+    } finally {
+      intercept.mockRestore();
+      release?.();
+    }
+  });
+
+  it("retains a new admission while an older unresolved journal is quarantined", async () => {
+    const source = createState();
+    const captured = captureChatOutboxAdmission(source, source.sessionKey);
+    await outboxPayloadTab();
+    const first = reconnectItem("quarantine-old", 1);
+    const second = reconnectItem("quarantine-new", 2);
+    const releaseFirst = protectPendingChatOutboxAdmission(source, captured.scope, first);
+    expect(persistPendingChatOutboxAdmission(first)).toBe(true);
+    const authenticated = createState({
+      client: { recoveryScope: "authenticated-owner", recoveryScopeReady: true },
+    });
+    const database = await openControlUiDatabase();
+    const transaction = database.transaction.bind(database);
+    const secondAdmission: { release?: (() => void) | null } = {};
+    const intercept = vi.spyOn(database, "transaction").mockImplementation((...args) => {
+      const pending = transaction(...args);
+      if (args[1] === "readwrite") {
+        pending.addEventListener(
+          "complete",
+          () => {
+            secondAdmission.release = protectPendingChatOutboxAdmission(
+              source,
+              captured.scope,
+              second,
+            );
+          },
+          { once: true },
+        );
+      }
+      return pending;
+    });
+    try {
+      expect(await hydrateChatOutboxMetadata(authenticated)).toBe(true);
+      expect(secondAdmission.release).toBeTypeOf("function");
+      expect(
+        readChatOutboxRecovery(authenticated).entries.flatMap((entry) => entry.session.queue ?? []),
+      ).toEqual(expect.arrayContaining([expect.objectContaining({ id: first.id })]));
+      expect(
+        Array.from({ length: journalStorage.length }, (_, index) =>
+          journalStorage.getItem(journalStorage.key(index)!),
+        ).join(""),
+      ).toContain(second.id);
+    } finally {
+      intercept.mockRestore();
+      releaseFirst?.();
+      secondAdmission.release?.();
+    }
+  });
+
+  it("keeps cancellation authoritative while admission work can still finish", async () => {
+    const state = createState();
+    const item = reconnectItem("cancel-during-admission", 1);
+    const captured = captureChatOutboxAdmission(state, state.sessionKey);
+    await outboxPayloadTab();
+    const release = protectPendingChatOutboxAdmission(state, captured.scope, item);
+    try {
+      expect(release).toBeTypeOf("function");
+      expect(retirePendingChatOutboxAdmission(item.id)).toBe(true);
+      await hydrateChatOutboxMetadata(state);
+      expect(await admitStoredChatComposerQueueItem(state, captured, item)).toBe(false);
+      expect(persistPendingChatOutboxAdmission(item)).toBe(false);
+      finishPendingChatOutboxAdmission(item.id);
+      await hydrateChatOutboxMetadata(state);
+      expect(listStoredChatOutboxes(state)).toEqual([]);
+      expect(
+        Array.from({ length: journalStorage.length }, (_, index) =>
+          journalStorage.getItem(journalStorage.key(index)!),
+        ).join(""),
+      ).not.toContain(item.id);
+    } finally {
+      release?.();
+    }
+  });
+
+  it("protects a new prompt without reading or rewriting another pending prompt", async () => {
+    vi.stubGlobal("document", {});
+    vi.stubGlobal("window", { addEventListener: vi.fn() });
+    const state = createState();
+    const admission = captureChatOutboxAdmission(state, state.sessionKey);
+    await outboxPayloadTab();
+    const first = { ...reconnectItem("first-pending", 1), text: "x".repeat(1_000_000) };
+    const releaseFirst = protectPendingChatOutboxAdmission(state, admission.scope, first);
+    expect(releaseFirst).toBeTypeOf("function");
+    const read = vi.spyOn(journalStorage, "getItem");
+    const write = vi.spyOn(journalStorage, "setItem");
+    const second = reconnectItem("second-pending", 2);
+    const releaseSecond = protectPendingChatOutboxAdmission(state, admission.scope, second);
+    try {
+      expect(releaseSecond).toBeTypeOf("function");
+      expect(read.mock.results.some((result) => String(result.value).includes(first.text))).toBe(
+        false,
+      );
+      expect(write.mock.calls.some(([, value]) => value.includes(first.text))).toBe(false);
+      expect(write.mock.calls.reduce((bytes, [, value]) => bytes + value.length, 0)).toBeLessThan(
+        2_000,
+      );
+    } finally {
+      read.mockRestore();
+      write.mockRestore();
+      releaseFirst?.();
+      releaseSecond?.();
+    }
+  });
+
   it("retires a journaled admission after its in-memory registration settles", async () => {
     vi.stubGlobal("document", {});
     vi.stubGlobal("window", { addEventListener: vi.fn() });
@@ -1636,7 +1864,7 @@ describe("chat composer persistence", () => {
       sessions: { [scopeKey]: { queue: [item], updatedAt: 1 } },
     });
     await transactionComplete(transaction);
-    const journalKey = `openclaw.control.chatPending.v1:${encodeURIComponent(gatewayOwner(gatewayUrl))}:${encodeURIComponent(owner)}:${encodeURIComponent(tabId)}`;
+    const journalKey = `openclaw.control.chatPending.v1:${encodeURIComponent(gatewayOwner(gatewayUrl))}:${encodeURIComponent(owner)}:${encodeURIComponent(tabId)}:${encodeURIComponent(item.id)}`;
     journalStorage.setItem(
       journalKey,
       JSON.stringify({

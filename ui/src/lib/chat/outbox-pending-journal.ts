@@ -1,4 +1,5 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import type { ChatQueueItem } from "./chat-types.ts";
 import { normalizeStoredSession, type StoredComposerSession } from "./outbox-store-codec.ts";
 
 const PENDING_JOURNAL_PREFIX = "openclaw.control.chatPending.v1:";
@@ -11,9 +12,45 @@ export type PendingChatOutboxJournal = {
   sessions: Record<string, StoredComposerSession>;
   retired: string[];
 };
+type JournalOwner = Pick<PendingChatOutboxJournal, "gatewayOwner" | "recoveryOwner" | "tabId">;
 
-function pendingJournalKey(gatewayOwner: string, recoveryOwner: string, tabId: string): string {
-  return `${PENDING_JOURNAL_PREFIX}${encodeURIComponent(gatewayOwner)}:${encodeURIComponent(recoveryOwner)}:${encodeURIComponent(tabId)}`;
+function pendingJournalKey(owner: JournalOwner): string {
+  return `${PENDING_JOURNAL_PREFIX}${encodeURIComponent(owner.gatewayOwner)}:${encodeURIComponent(owner.recoveryOwner)}:${encodeURIComponent(owner.tabId)}:`;
+}
+
+function journalKeys(storage: Storage, prefix: string): string[] {
+  return Array.from({ length: storage.length }, (_, index) => storage.key(index)).filter(
+    (key): key is string => key?.startsWith(prefix) === true,
+  );
+}
+
+// Acceptance only touches this row. Enumerating other admissions belongs to async
+// recovery, never to the synchronous composer handoff.
+export function writePendingChatOutboxItem(
+  storage: Storage,
+  owner: JournalOwner,
+  id: string,
+  submission?: { scopeKey: string; item: ChatQueueItem },
+): void {
+  const journal: PendingChatOutboxJournal = {
+    gatewayOwner: owner.gatewayOwner,
+    recoveryOwner: owner.recoveryOwner,
+    tabId: owner.tabId,
+    version: 1,
+    sessions: submission
+      ? { [submission.scopeKey]: { queue: [submission.item], updatedAt: Date.now() } }
+      : {},
+    retired: submission ? [] : [id],
+  };
+  storage.setItem(`${pendingJournalKey(owner)}${encodeURIComponent(id)}`, JSON.stringify(journal));
+}
+
+export function removePendingChatOutboxItem(
+  storage: Storage,
+  owner: JournalOwner,
+  id: string,
+): void {
+  storage.removeItem(`${pendingJournalKey(owner)}${encodeURIComponent(id)}`);
 }
 
 export function readPendingChatOutboxJournal(
@@ -22,44 +59,65 @@ export function readPendingChatOutboxJournal(
   recoveryOwner: string,
   tabId: string,
 ): PendingChatOutboxJournal {
-  const key = pendingJournalKey(gatewayOwner, recoveryOwner, tabId);
-  try {
-    const value: unknown = JSON.parse(storage.getItem(key) ?? "null");
-    if (
-      !isRecord(value) ||
-      value.version !== 1 ||
-      value.gatewayOwner !== gatewayOwner ||
-      value.recoveryOwner !== recoveryOwner ||
-      value.tabId !== tabId ||
-      !isRecord(value.sessions)
-    ) {
-      throw new Error("Invalid pending chat journal");
-    }
-    const sessions: Record<string, StoredComposerSession> = {};
-    for (const [scopeKey, storedSession] of Object.entries(value.sessions)) {
-      const session = normalizeStoredSession(storedSession);
-      if (session?.queue?.length) {
-        sessions[scopeKey] = session;
+  const journal: PendingChatOutboxJournal = {
+    version: 1,
+    gatewayOwner,
+    recoveryOwner,
+    tabId,
+    sessions: {},
+    retired: [],
+  };
+  for (const key of journalKeys(storage, pendingJournalKey(journal))) {
+    try {
+      const value: unknown = JSON.parse(storage.getItem(key) ?? "null");
+      if (
+        !isRecord(value) ||
+        value.version !== 1 ||
+        value.gatewayOwner !== gatewayOwner ||
+        value.recoveryOwner !== recoveryOwner ||
+        value.tabId !== tabId ||
+        !isRecord(value.sessions)
+      ) {
+        continue;
       }
+      for (const [scopeKey, storedSession] of Object.entries(value.sessions)) {
+        const session = normalizeStoredSession(storedSession);
+        if (session?.queue?.length) {
+          journal.sessions[scopeKey] = {
+            ...session,
+            queue: [...(journal.sessions[scopeKey]?.queue ?? []), ...session.queue],
+          };
+        }
+      }
+      if (Array.isArray(value.retired)) {
+        journal.retired.push(...value.retired.filter((id): id is string => typeof id === "string"));
+      }
+    } catch {
+      // Corrupt records cannot authorize replay or erase another admission.
     }
-    const retired = Array.isArray(value.retired)
-      ? value.retired.filter((id): id is string => typeof id === "string")
-      : [];
-    return { version: 1, gatewayOwner, recoveryOwner, tabId, sessions, retired };
-  } catch {
-    return { version: 1, gatewayOwner, recoveryOwner, tabId, sessions: {}, retired: [] };
   }
+  return journal;
 }
 
 export function writePendingChatOutboxJournal(
   storage: Storage,
   journal: PendingChatOutboxJournal,
 ): void {
-  const key = pendingJournalKey(journal.gatewayOwner, journal.recoveryOwner, journal.tabId);
-  if (Object.keys(journal.sessions).length || journal.retired.length) {
-    storage.setItem(key, JSON.stringify(journal));
-  } else {
-    storage.removeItem(key);
+  const retained = new Set<string>();
+  for (const [scopeKey, session] of Object.entries(journal.sessions)) {
+    for (const item of session.queue ?? []) {
+      writePendingChatOutboxItem(storage, journal, item.id, { scopeKey, item });
+      retained.add(`${pendingJournalKey(journal)}${encodeURIComponent(item.id)}`);
+    }
+  }
+  for (const id of journal.retired) {
+    writePendingChatOutboxItem(storage, journal, id);
+    retained.add(`${pendingJournalKey(journal)}${encodeURIComponent(id)}`);
+  }
+  for (const key of journalKeys(storage, pendingJournalKey(journal))) {
+    if (!retained.has(key)) {
+      storage.removeItem(key);
+    }
   }
 }
 
@@ -67,9 +125,6 @@ export function omitPendingChatOutboxAdmissions(
   journal: PendingChatOutboxJournal,
   active: ReadonlySet<string>,
 ): PendingChatOutboxJournal {
-  if (!active.size) {
-    return journal;
-  }
   const sessions = Object.fromEntries(
     Object.entries(journal.sessions).flatMap(([key, session]) => {
       const queue = session.queue?.filter((item) => !active.has(item.id));
@@ -99,32 +154,37 @@ export async function adoptAbandonedPendingChatOutboxJournals(
   if (!navigator.locks) {
     return false;
   }
-  const candidates = Array.from({ length: storage.length }, (_, index) => storage.key(index))
-    .filter((key): key is string => key?.startsWith(PENDING_JOURNAL_PREFIX) === true)
-    .flatMap((key) => {
-      try {
-        const value: unknown = JSON.parse(storage.getItem(key) ?? "null");
-        return isRecord(value) &&
-          value.gatewayOwner === gatewayOwner &&
-          value.recoveryOwner === recoveryOwner &&
-          typeof value.tabId === "string" &&
-          value.tabId !== tabId
-          ? [readPendingChatOutboxJournal(storage, gatewayOwner, recoveryOwner, value.tabId)]
-          : [];
-      } catch {
-        return [];
+  const tabs = new Set<string>();
+  for (const key of journalKeys(storage, PENDING_JOURNAL_PREFIX)) {
+    try {
+      const value: unknown = JSON.parse(storage.getItem(key) ?? "null");
+      if (
+        isRecord(value) &&
+        value.gatewayOwner === gatewayOwner &&
+        value.recoveryOwner === recoveryOwner &&
+        typeof value.tabId === "string" &&
+        value.tabId !== tabId
+      ) {
+        tabs.add(value.tabId);
       }
-    });
+    } catch {}
+  }
   let blocked = false;
-  for (const candidate of candidates) {
+  for (const sourceTab of tabs) {
     await navigator.locks.request(
-      `openclaw-outbox:${candidate.tabId}`,
+      `openclaw-outbox:${sourceTab}`,
       { ifAvailable: true, mode: "exclusive" },
       (lock) => {
         if (!lock) {
           blocked = true;
           return;
         }
+        const candidate = readPendingChatOutboxJournal(
+          storage,
+          gatewayOwner,
+          recoveryOwner,
+          sourceTab,
+        );
         const current = readPendingChatOutboxJournal(storage, gatewayOwner, recoveryOwner, tabId);
         for (const [scopeKey, session] of Object.entries(candidate.sessions)) {
           const existing = current.sessions[scopeKey];
@@ -142,7 +202,7 @@ export async function adoptAbandonedPendingChatOutboxJournals(
         }
         current.retired = [...new Set([...current.retired, ...candidate.retired])];
         writePendingChatOutboxJournal(storage, current);
-        storage.removeItem(pendingJournalKey(gatewayOwner, recoveryOwner, candidate.tabId));
+        writePendingChatOutboxJournal(storage, { ...candidate, sessions: {}, retired: [] });
       },
     );
   }

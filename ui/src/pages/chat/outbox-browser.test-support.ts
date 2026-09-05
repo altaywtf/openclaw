@@ -1,6 +1,7 @@
 import { Blob as NodeBlob, File as NodeFile } from "node:buffer";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, vi } from "vitest";
+import { createStorageMock } from "../../test-helpers/storage.ts";
 import * as payloads from "./durable-composer-persistence.ts";
 
 let factory: IDBFactory | undefined;
@@ -37,6 +38,9 @@ const documentLocks = new WeakMap<Navigator, ReturnType<typeof createDocumentLoc
 /** Node send tests exercise IDB transactions and lock ownership; native FileReader lives in E2E. */
 export function installOutboxBrowserStorage(): void {
   factory = new IDBFactory();
+  // Each fixture owns one browser profile: journal and IndexedDB must reset
+  // together, or a later test recovers a prior test's deliberately failed send.
+  vi.stubGlobal("localStorage", createStorageMock());
   vi.stubGlobal("indexedDB", factory);
   vi.stubGlobal("Blob", NodeBlob);
   vi.stubGlobal("File", NodeFile);
