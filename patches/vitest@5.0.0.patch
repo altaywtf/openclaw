@@ -17,7 +17,7 @@ index 3b3446e1720bf0f2a6f78e11f091260fffc57c84..9b076b8fea2d246c5a1e3cc48f36a4c2
  	if (arrayArgs[2] === "run" && !options.watch) options.run = true;
  	if (arrayArgs[2] === "related") {
 diff --git a/dist/chunks/index.B89dZ0-N.js b/dist/chunks/index.B89dZ0-N.js
-index 50abf4fbed1dc8670b7941ee466a7c8443840c5f..4420ea94f7ef53526cd5426b54f4a5dead108ba1 100644
+index 50abf4fbed1dc8670b7941ee466a7c8443840c5f..3cc3794a08088868bf8fc9482d65166f05781803 100644
 --- a/dist/chunks/index.B89dZ0-N.js
 +++ b/dist/chunks/index.B89dZ0-N.js
 @@ -6599,6 +6599,7 @@ class FileSystemModuleCache {
@@ -224,14 +224,75 @@ index 50abf4fbed1dc8670b7941ee466a7c8443840c5f..4420ea94f7ef53526cd5426b54f4a5de
  		const errors = results.filter((result) => result.status === "rejected").map((result) => result.reason);
  		if (errors.length > 0) throw new AggregateError(errors, "Errors occurred while running tests. For more information, see serialized error.");
  	}
-@@ -12545,6 +12572,25 @@ async function resolveDeclaredProjectEntries(context, definitions) {
+@@ -12005,6 +12032,7 @@ class TestProject {
+ 	config;
+ 	viteConfig;
+ 	vite;
++	namePrefix;
+ 	hash;
+ 	/** @internal */ typechecker;
+ 	/** @internal */ _resolver;
+@@ -12018,13 +12046,18 @@ class TestProject {
+ 	typecheckFilesList = null;
+ 	_globalSetups;
+ 	_provided = {};
+-	constructor(vitest, server, viteConfig, projectConfig) {
++	constructor(vitest, server, viteConfig, projectConfig, namePrefix = "") {
+ 		this.vitest = vitest;
+ 		this.globalConfig = vitest.config;
+ 		this.tmpDir = join(tmpdir(), nanoid());
+ 		this.vite = server;
+ 		this.viteConfig = viteConfig;
+ 		this.config = projectConfig;
++		// Container identity is fixed when the entry resolves and must survive sibling attachment.
++		Object.defineProperty(this, "namePrefix", {
++			value: namePrefix,
++			enumerable: true
++		});
+ 		this.hash = generateHash(this.config.root + this.config.name);
+ 		this._provideObject(projectConfig.provide);
+ 	}
+@@ -12307,8 +12340,8 @@ class TestProject {
+ 		}
+ 	}
+ 	/** @internal */
+-	static _createBasicProject(vitest) {
+-		const project = new TestProject(vitest, vitest.vite, vitest.viteConfig, vitest.config);
++	static _createBasicProject(vitest, namePrefix = "") {
++		const project = new TestProject(vitest, vitest.vite, vitest.viteConfig, vitest.config, namePrefix);
+ 		project.runner = vitest.runner;
+ 		project._resolver = vitest._resolver;
+ 		project._fetcher = vitest._fetcher;
+@@ -12325,8 +12358,8 @@ class TestProject {
+ 	*
+ 	* @internal
+ 	*/
+-	static _spawnSibling(parent, config) {
+-		const sibling = new TestProject(parent.vitest, parent.vite, parent.viteConfig, config);
++	static _spawnSibling(parent, config, namePrefix = parent.namePrefix) {
++		const sibling = new TestProject(parent.vitest, parent.vite, parent.viteConfig, config, namePrefix);
+ 		sibling.runner = parent.runner;
+ 		sibling._resolver = parent._resolver;
+ 		sibling._fetcher = parent._fetcher;
+@@ -12442,7 +12475,8 @@ async function resolveProjectEntries(harness, globalViteConfig, globalConfig, de
+ 		debug?.(`no projects declared, the root config is the only project`);
+ 		baseEntries = [{
+ 			viteConfig: globalViteConfig,
+-			projectConfig: globalConfig
++			projectConfig: globalConfig,
++			namePrefix: ""
+ 		}];
+ 	}
+ 	// Ensure project names are unique across declared projects (and any
+@@ -12545,6 +12579,28 @@ async function resolveDeclaredProjectEntries(context, definitions) {
  	const fileProjects = [...configFiles, ...nonConfigDirectories];
  	const promises = [];
  	projectConfigs.forEach((options, index) => {
 +		if (typeof options.config === "string") {
 +			const configRoot = parentConfig.root;
 +			const configFile = resolve(configRoot, options.config);
-+			const { config: _, root: optionRoot, test: testOptions, ...restOptions } = options;
++			const { config: _, root: optionRoot, test: testOptions, namePrefix, ...restOptions } = options;
++			if (namePrefix !== void 0 && typeof namePrefix !== "string") throw new TypeError("The file-backed project namePrefix must be a string.");
 +			const customRoot = testOptions?.root ?? optionRoot;
 +			const root = customRoot === void 0 ? dirname(configFile) : resolve(configRoot, customRoot);
 +			const test = customRoot === void 0 ? testOptions : {
@@ -243,14 +304,150 @@ index 50abf4fbed1dc8670b7941ee466a7c8443840c5f..4420ea94f7ef53526cd5426b54f4a5de
 +				...restOptions,
 +				test,
 +				root,
-+				configFile
++				configFile,
++				namePrefix,
++				replayExecutedProject: namePrefix !== void 0
 +			}, configFile)));
 +			return;
 +		}
  		const ownServerReason = getOwnServerReason(context, options);
  		if (ownServerReason === void 0) {
  			debug?.(`inline project ${inlineProjectLabel(options, index)} shares the Vite server of ${parentViteConfig.configFile ?? parentConfig.root}`);
-@@ -20618,6 +20661,7 @@ class Vitest {
+@@ -12574,10 +12630,12 @@ async function resolveDeclaredProjectEntries(context, definitions) {
+ 		// resolved pair: the root (or the container) also runs as a regular project
+ 		if (parentViteConfig.configFile === path) {
+ 			debug?.(`project at ${path} is the declaring config itself, reusing its resolved config`);
++			const ancestors = context.ancestors.length > 1 ? context.ancestors.slice(0, -1) : void 0;
+ 			promises.push(Promise.resolve({
+ 				viteConfig: parentViteConfig,
+ 				projectConfig: parentConfig,
+-				ancestors: context.ancestors.length > 1 ? context.ancestors.slice(0, -1) : void 0
++				ancestors,
++				namePrefix: ancestors?.at(-1) ?? ""
+ 			}));
+ 			continue;
+ 		}
+@@ -12610,7 +12668,7 @@ async function flattenContainerEntries(context, entries) {
+ 		// inline projects cannot declare `projects`; the declaring config's own
+ 		// entry (emitted when it references its own config file) is kept as-is —
+ 		// its `projects` are the definitions currently being resolved
+-		if (entry.inline || definitions === void 0 || entry.projectConfig === context.parentConfig) {
++		if (entry.replayExecutedProject || entry.inline || definitions === void 0 || entry.projectConfig === context.parentConfig) {
+ 			result.push(entry);
+ 			continue;
+ 		}
+@@ -12820,18 +12878,21 @@ function resolveSharedServerEntry(context, options, index) {
+ 			moduleRunnerOptions: parentConfig._moduleRunnerOptions
+ 		}
+ 	});
+-	mergedOptions.name = resolveProjectName(mergedOptions.name, index, context.ancestors.at(-1));
++	const namePrefix = context.ancestors.at(-1) ?? "";
++	mergedOptions.name = resolveProjectName(mergedOptions.name, index, namePrefix);
+ 	return {
+ 		viteConfig: parentViteConfig,
+ 		projectConfig: resolveTestConfig(harness.logger, mergedOptions, parentViteConfig, parentConfig),
+ 		inline: true,
+ 		sharedServer: true,
++		namePrefix,
+ 		ancestors: context.ancestors.length ? [...context.ancestors] : void 0
+ 	};
+ }
+ async function resolveSingleProjectEntry(context, options, workspacePath) {
+ 	const { harness, rootViteConfig, rootConfig, parentViteConfig, parentConfig, cliOverrides } = context;
+-	const { configFile, ...restOptions } = options;
++	const { configFile, namePrefix: explicitNamePrefix, replayExecutedProject, ...restOptions } = options;
++	const namePrefix = explicitNamePrefix ?? context.ancestors.at(-1) ?? "";
+ 	const captures = {};
+ 	// only inline entries (keyed by their index) extend another config;
+ 	// file-based projects own all of their values
+@@ -12865,7 +12926,7 @@ async function resolveSingleProjectEntry(context, options, workspacePath) {
+ 	for (const key in parentViteConfig.env) projectViteConfig.env[key] ??= parentViteConfig.env[key];
+ 	const mergedOptions = projectViteConfig.test ?? {};
+ 	// resolved after `viteResolveConfig` so a plugin can still set `test.name`
+-	mergedOptions.name = resolveProjectName(mergedOptions.name, workspacePath, context.ancestors.at(-1));
++	mergedOptions.name = resolveProjectName(mergedOptions.name, workspacePath, namePrefix);
+ 	const projectConfig = resolveTestConfig(harness.logger, mergedOptions, projectViteConfig, parentConfig);
+ 	projectViteConfig.test = projectConfig;
+ 	if (inheritsParentConfig && options.extends === void 0 && configFile) warnDuplicateInheritedPlugins(harness.logger, projectConfig, projectViteConfig, parentViteConfig, configFile, rootConfig.root);
+@@ -12883,6 +12944,8 @@ async function resolveSingleProjectEntry(context, options, workspacePath) {
+ 		viteConfig: projectViteConfig,
+ 		projectConfig,
+ 		inline: isInlineEntry,
++		namePrefix,
++		replayExecutedProject,
+ 		ancestors: context.ancestors.length ? [...context.ancestors] : void 0
+ 	};
+ }
+@@ -12975,6 +13038,7 @@ function expandBrowserInstancesInEntries(globalConfig, entries, names) {
+ 			result.push({
+ 				viteConfig,
+ 				projectConfig: clonedConfig,
++				namePrefix: entry.namePrefix,
+ 				ancestors: entry.ancestors
+ 			});
+ 		});
+@@ -13036,6 +13100,7 @@ function expandBenchmarksInEntries(entries, names, benchmarkOnly) {
+ 		result.push({
+ 			viteConfig: entry.viteConfig,
+ 			projectConfig: benchmarkConfig,
++			namePrefix: entry.namePrefix,
+ 			ancestors: entry.ancestors,
+ 			sharedServer: entry.sharedServer
+ 		});
+@@ -13182,7 +13247,7 @@ function resolveDirectoryConfig(directory) {
+ 	if (configFile) return resolve(directory, configFile);
+ 	return null;
+ }
+-function resolveProjectName(name, workspacePath, containerLabel) {
++function resolveProjectName(name, workspacePath, namePrefix) {
+ 	let { label, color } = typeof name === "string" ? { label: name } : {
+ 		label: "",
+ 		...name
+@@ -13196,7 +13261,7 @@ function resolveProjectName(name, workspacePath, containerLabel) {
+ 	}
+ 	// Projects declared by a container config are namespaced by the container's
+ 	// name: the "unit" project of an "app" container is named "app (unit)".
+-	if (containerLabel) label = `${containerLabel} (${label})`;
++	if (namePrefix) label = `${namePrefix} (${label})`;
+ 	return {
+ 		label,
+ 		color
+@@ -13226,7 +13291,7 @@ async function attachProjectsFromEntries(vitest, entries) {
+ 	}
+ 	const projects = [];
+ 	for (const entry of entries) {
+-		const { viteConfig, projectConfig, hidden } = entry;
++		const { viteConfig, projectConfig, hidden, namePrefix } = entry;
+ 		const primary = primaryByViteConfig.get(viteConfig);
+ 		if (primary) {
+ 			if (hidden) continue;
+@@ -13239,14 +13304,14 @@ async function attachProjectsFromEntries(vitest, entries) {
+ 			// a shared-server project reuses only the Vite server
+ 			if (entry.sharedServer) {
+ 				debug?.(`project ${projectLabel(projectConfig.name)} reuses the Vite server of ${projectLabel(primary.name)} with its own module runner`);
+-				const project = new TestProject(vitest, primary.vite, viteConfig, projectConfig);
++				const project = new TestProject(vitest, primary.vite, viteConfig, projectConfig, namePrefix);
+ 				project._sharedViteServer = true;
+ 				project._initializeRunners(primary.vite);
+ 				projects.push(project);
+ 				continue;
+ 			}
+ 			debug?.(`project ${projectLabel(projectConfig.name)} shares the Vite server and module runner of ${projectLabel(primary.name)}`);
+-			const sibling = TestProject._spawnSibling(primary, projectConfig);
++			const sibling = TestProject._spawnSibling(primary, projectConfig, namePrefix);
+ 			// Browser-instance siblings share the primary's single (browser) Vite
+ 			// server; each gets its own `ProjectBrowser` view onto it.
+ 			if (primary._parentBrowser) sibling.browser = primary._parentBrowser.spawn(sibling);
+@@ -13259,7 +13324,7 @@ async function attachProjectsFromEntries(vitest, entries) {
+ 		debug?.(`creating a Vite server for project ${projectLabel(projectConfig.name)}`);
+ 		const children = childrenByViteConfig.get(viteConfig) ?? [];
+ 		const { server, parent } = await createClusterServer(vitest, viteConfig, projectConfig, children);
+-		const project = new TestProject(vitest, server, viteConfig, projectConfig);
++		const project = new TestProject(vitest, server, viteConfig, projectConfig, namePrefix);
+ 		// a shared entry can create the container's server on first use,
+ 		// but the server still belongs to the declaring config
+ 		project._sharedViteServer = !!entry.sharedServer;
+@@ -20618,6 +20683,7 @@ class Vitest {
  		// populate will merge all configs into every project,
  		// we don't want that when just listing tags
  		if (!resolved.listTags) populateProjectsTags(this.coreWorkspaceProject, this.projects);
@@ -258,7 +455,7 @@ index 50abf4fbed1dc8670b7941ee466a7c8443840c5f..4420ea94f7ef53526cd5426b54f4a5de
  		this.reporters = await createReporters(resolved.reporters, this);
  		// API setup (watch mode only). Must run after the reporters array is built
  		// above, since `setup()` appends the UI/API WebSocket reporter to it. For a
-@@ -20634,7 +20678,6 @@ class Vitest {
+@@ -20634,7 +20700,6 @@ class Vitest {
  				setup(this, browserServer);
  			}
  		}
@@ -266,7 +463,7 @@ index 50abf4fbed1dc8670b7941ee466a7c8443840c5f..4420ea94f7ef53526cd5426b54f4a5de
  		await Promise.all([...this._onSetServer.map((fn) => fn()), this._traces.waitInit()]);
  	}
  	/** @internal */
-@@ -20675,7 +20718,7 @@ class Vitest {
+@@ -20675,7 +20740,7 @@ class Vitest {
  		if (this.coverageProvider?.onFileTransform) this.clearAllCachePaths();
  	}
  	clearAllCachePaths() {
@@ -312,10 +509,26 @@ index dbb1a04882b2ff60ab0968d6dabd10dfad696eb2..818981f891f170e197a16e41dfe98b34
  		off: (cb) => processOff("message", cb),
  		teardown: () => {
 diff --git a/dist/chunks/plugin.d.BbcoZhuj.d.ts b/dist/chunks/plugin.d.BbcoZhuj.d.ts
-index f399a7658b43c34df38c976e6f41744d9af7a5fd..a650874d5d482f0b2e3e0cc2eac480855daae8f9 100644
+index f399a7658b43c34df38c976e6f41744d9af7a5fd..60e2a21c06055643819affb23c563e242db96906 100644
 --- a/dist/chunks/plugin.d.BbcoZhuj.d.ts
 +++ b/dist/chunks/plugin.d.BbcoZhuj.d.ts
-@@ -2694,6 +2694,8 @@ interface PoolWorker {
+@@ -1032,13 +1032,14 @@ declare class TestProject {
+ 	config: ResolvedConfig;
+ 	viteConfig: ResolvedConfig$1;
+ 	vite: ViteDevServer;
++	readonly namePrefix: string;
+ 	hash: string;
+ 	private runner;
+ 	private closingPromise;
+ 	private typecheckFilesList;
+ 	private _globalSetups?;
+ 	private _provided;
+-	constructor(vitest: Vitest, server: ViteDevServer, viteConfig: ResolvedConfig$1, projectConfig: ResolvedConfig);
++	constructor(vitest: Vitest, server: ViteDevServer, viteConfig: ResolvedConfig$1, projectConfig: ResolvedConfig, namePrefix?: string);
+ 	/**
+ 	* Provide a value to the test context. This value will be available to all tests with `inject`.
+ 	*/
+@@ -2694,6 +2695,8 @@ interface PoolWorker {
  	send: (message: WorkerRequest) => void;
  	deserialize: (data: unknown) => unknown;
  	start: () => Promise<void>;
@@ -324,7 +537,7 @@ index f399a7658b43c34df38c976e6f41744d9af7a5fd..a650874d5d482f0b2e3e0cc2eac48085
  	stop: () => Promise<void>;
  	/**
  	* This is called on workers that already satisfy certain constraints:
-@@ -2759,6 +2761,8 @@ type WorkerResponse = {
+@@ -2759,6 +2762,8 @@ type WorkerResponse = {
  	error?: unknown;
  } | {
  	type: "stopped";
@@ -333,7 +546,15 @@ index f399a7658b43c34df38c976e6f41744d9af7a5fd..a650874d5d482f0b2e3e0cc2eac48085
  	error?: unknown;
  } | {
  	type: "testfileFinished";
-@@ -4489,6 +4493,11 @@ interface UserWorkspaceConfig extends UserConfig$1 {
+@@ -4432,6 +4437,7 @@ interface ResolvedConfig extends Omit<Required<UserConfig>, "project" | "config"
+ interface ResolvedProjectEntry {
+ 	viteConfig: ResolvedConfig$1;
+ 	projectConfig: ResolvedConfig;
++	namePrefix: string;
+ 	/**
+ 	* When set, this entry exists only so browser-instance siblings can attach
+ 	* to a parent that owns the Vite server and (later) the browser provider.
+@@ -4489,6 +4495,16 @@ interface UserWorkspaceConfig extends UserConfig$1 {
  type UserProjectConfigFn = (env: ConfigEnv) => UserWorkspaceConfig | Promise<UserWorkspaceConfig>;
  type UserProjectConfigExport = UserWorkspaceConfig | Promise<UserWorkspaceConfig> | UserProjectConfigFn;
  type TestProjectInlineConfiguration = (UserWorkspaceConfig & {
@@ -342,6 +563,11 @@ index f399a7658b43c34df38c976e6f41744d9af7a5fd..a650874d5d482f0b2e3e0cc2eac48085
 +	* Unlike `extends`, the file owns its complete project config and is evaluated once.
 +	*/
 +	config?: string;
++	/**
++	* Preserve the resolved container prefix when replaying an executed file project.
++	* When present, the file is treated as a standalone project.
++	*/
++	namePrefix?: string;
  	/**
  	* Relative path to the extendable config. All other options will be merged with this config.
  	* If `true`, the project will inherit all options from the root config.

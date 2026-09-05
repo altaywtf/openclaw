@@ -15,16 +15,16 @@ runner, and `@vitest/runner@5.0.0` is not published, so no standalone runner
 dependency or patch remains. The published package integrity is
 `sha512-gpsMNoRhMjMktVxPtstOH4/PJuPyovVaMDr4oDilXaGH1EcqM2OE96SoHT2VIQ6fTGtTjqmHDrEu2X9RQiXf8Q==`.
 The patch SHA-256 is
-`5be95735cfbcc46632b96b1bfda848f632b39e844d18f919e2c0b66e09bb0ddc`
+`76a69c6de8bc85bb68eebebddf7e1e798a4ebf46d36ad60e6447ebc62c49f702`
 and it changes exactly these seven published files:
 
 | Target | Published SHA-256 | Patched SHA-256 |
 | --- | --- | --- |
 | `dist/chunks/cac.D805sv8h.js` | `a0971660b8c52884366a1ca3dceb6a7eb7ff41e2e3cfaed27b98395ed054e1d0` | `f37acc539be54a668448c9ae1faeacc4b37df68f81952a21001c377a775da55e` |
-| `dist/chunks/index.B89dZ0-N.js` | `7ae1406d3a808a5a2915895eede01e4e79fac5838f5a6457adbffd78df1bf56d` | `7ba00f429646a774d1813c8d450c98240570edadc43cdb0c66c0009cb0796954` |
+| `dist/chunks/index.B89dZ0-N.js` | `7ae1406d3a808a5a2915895eede01e4e79fac5838f5a6457adbffd78df1bf56d` | `54a978632cf3584e4507bed3f09ba22d6f344ec45bac5ea37fda0b9718b59e58` |
 | `dist/chunks/index.OVGXnVRj.js` | `57c89e884bab20623afc06a58119c70c4f2e06397ae63e961ad0a0810c9a94b5` | `c4b8a1c9f865c4719d1bf01d871d89fd405b9a3141f2ef9bc9690e1d5078d0a8` |
 | `dist/chunks/init-forks.CiCtIMPj.js` | `ef8cf8283d7b420d2fae017b8f284555ed67e207ea12fa9f53ab28421168adfc` | `ce9b827f016907bd054c9c8041e70db67ba28943c13a0b66b8551b5b51f1fafa` |
-| `dist/chunks/plugin.d.BbcoZhuj.d.ts` | `fc8d53b3329bf55bc3dba0709c2280e997a860d2b45189589f43ea21b4076087` | `f51eb09836507b090c03467cd4949c9a7fae9ffca0bc4998088cecf99bdb4925` |
+| `dist/chunks/plugin.d.BbcoZhuj.d.ts` | `fc8d53b3329bf55bc3dba0709c2280e997a860d2b45189589f43ea21b4076087` | `9409856e49fb8b6b9a84725340c7f68af76dc5c35e237ba7da71e5534d22e54c` |
 | `dist/chunks/run.CQOUYP-x.js` | `8aa94c491fc34a880fdcaaea493fdba5d05affd8e5be68bb7a70c6ebe74ddf63` | `1d424d73af1e301188789e2b82a28cde2e037998a7d995a5374dfc36c352fe99` |
 | `dist/node.d.ts` | `2b82496067d8e4387e08f4902a8f81718f1ba5b2504097c6c7d05b420ea18f63` | `d09c5c26f971a500cc8f34a5c5a29eafca3988e13f42408ef91b488702aa6305` |
 
@@ -52,10 +52,13 @@ The patch owns these temporary invariants and removal gates:
   `test/scripts/run-vitest-state-cleanup.test.ts`, and
   `test/scripts/run-vitest-profile.test.ts`.
 - **File-backed report projects (`index.B89dZ0-N.js`,
-  `plugin.d.BbcoZhuj.d.ts`):** a Vitest-owned `{ config, root? }` descriptor
-  loads its config exactly once, keeps the file-owned root when omitted,
-  preserves the explicit root when supplied, and derives its final name after
-  Vite hooks. Remove these hunks when stock Vitest passes
+  `plugin.d.BbcoZhuj.d.ts`):** a Vitest-owned
+  `{ config, root?, namePrefix? }` descriptor loads its config exactly once,
+  keeps the file-owned root when omitted, preserves the explicit root when
+  supplied, and derives its final name after Vite hooks. A replayed prefix
+  retains the container-owned identity and marks the executed config as a
+  standalone project so its children are not rediscovered. Remove these hunks
+  when stock Vitest passes
   `test/scripts/vitest-report-owner.test.ts` without pre-resolving configs or
   injecting captured names and `test/vitest-ui-package-config.test.ts` without
   losing omitted or explicit project roots.

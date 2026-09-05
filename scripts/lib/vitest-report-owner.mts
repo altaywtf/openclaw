@@ -241,7 +241,12 @@ export async function createVitestReportOwner(invocations: Invocation[], cwd: st
           ).values(),
         ].map((project) => {
           assert(typeof project.config === "string", "Missing native project configuration");
-          return { config: project.config, root: project.root };
+          assert(typeof project.namePrefix === "string", "Missing native project name prefix");
+          return {
+            config: project.config,
+            root: project.root,
+            namePrefix: project.namePrefix,
+          };
         });
         const blobs = path.join(directory, "accepted-blobs");
         fs.mkdirSync(blobs);

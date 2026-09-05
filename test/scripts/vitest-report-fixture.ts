@@ -15,6 +15,9 @@ export type ReportFixtureMode =
   | "parallel"
   | "grouped"
   | "grouped-conflict"
+  | "nested-shared-leaf"
+  | "nested-shared-leaf-name-drift"
+  | "nested-shared-leaf-root-drift"
   | "batch"
   | "batch-real-home"
   | "batch-parallel"
@@ -188,6 +191,43 @@ ${index === 0 ? "test('alpha/two',()=>expect(2).toBe(2));" : "test.skip('beta/sk
         `export default {root:${JSON.stringify(root)},test:{projects:${JSON.stringify([leaf, configs[1]])}}};`,
       );
     }
+    if (mode.startsWith("nested-shared-leaf")) {
+      const alpha = path.join(root, "test/vitest/vitest.alpha.config.ts");
+      const beta = path.join(root, "test/vitest/vitest.beta.config.ts");
+      const inner = path.join(root, "test/vitest/vitest.inner.config.ts");
+      const outer = path.join(root, "test/vitest/vitest.outer.config.ts");
+      const other = path.join(root, "test/vitest/vitest.other.config.ts");
+      const changedRoot = path.join(root, "changed-root");
+      fs.mkdirSync(changedRoot);
+      write(
+        alpha,
+        `import fs from 'node:fs';const merging=process.argv.includes('--mergeReports');if(merging)fs.appendFileSync(${JSON.stringify(configLoads)},'alpha\\n');export default {root:${JSON.stringify(root)},plugins:[{name:'derive-alpha-identity',enforce:'post',config(){const root=merging&&${JSON.stringify(mode === "nested-shared-leaf-root-drift")}?${JSON.stringify(changedRoot)}:${JSON.stringify(root)};return {root,test:{root,name:merging&&${JSON.stringify(mode === "nested-shared-leaf-name-drift")}?'changed-alpha':'alpha',pool:'threads'}}}}],test:{include:[${JSON.stringify(path.join(root, "alpha.test.ts"))}],maxWorkers:1,fileParallelism:false,cache:false,fsModuleCache:false}};`,
+      );
+      write(
+        beta,
+        `import fs from 'node:fs';const merging=process.argv.includes('--mergeReports');if(merging)fs.appendFileSync(${JSON.stringify(configLoads)},'beta\\n');export default {root:${JSON.stringify(root)},test:{name:'beta',include:[${JSON.stringify(path.join(root, "beta.test.ts"))}],projects:[${JSON.stringify(beta)}],pool:'forks',maxWorkers:1,fileParallelism:false,cache:false,fsModuleCache:false}};`,
+      );
+      write(
+        inner,
+        `export default {root:${JSON.stringify(root)},test:{name:'inner',projects:[${JSON.stringify(alpha)}]}};`,
+      );
+      write(
+        outer,
+        `export default {root:${JSON.stringify(root)},test:{name:'outer',projects:[${JSON.stringify(inner)}]}};`,
+      );
+      write(
+        other,
+        `export default {root:${JSON.stringify(root)},test:{name:'other',projects:[${JSON.stringify(alpha)}]}};`,
+      );
+      write(
+        path.join(root, configs[0]!),
+        `export default {root:${JSON.stringify(root)},test:{projects:[${JSON.stringify(outer)}]}};`,
+      );
+      write(
+        path.join(root, configs[1]!),
+        `export default {root:${JSON.stringify(root)},test:{projects:[${JSON.stringify(other)},${JSON.stringify(beta)}]}};`,
+      );
+    }
     if (mode === "chunks") {
       const files = [
         "extensions/telegram/src/owned-one.test.ts",
@@ -234,6 +274,8 @@ ${index === 0 ? "test('alpha/two',()=>expect(2).toBe(2));" : "test.skip('beta/sk
         "final-write",
         "identity",
         "pool-identity",
+        "nested-shared-leaf-name-drift",
+        "nested-shared-leaf-root-drift",
         "config-error",
       ].includes(mode)
     ) {
