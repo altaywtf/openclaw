@@ -801,6 +801,11 @@ it contains original reports, per-attempt coverage files when coverage is enable
 and an `index.json` with child exit codes, signals, timeouts and unstarted work.
 Only the accepted retry attempt contributes to the aggregate.
 
+During merge, each captured file project is resolved once with its execution root.
+Config factories and hooks supply the current project identity; a changed name,
+resolved root, config path, or pool prevents publication. Nested projects are not
+discovered again when replaying a captured file's own tests.
+
 Native blob reports can only be merged by the exact Vitest version that produced
 them. Preserve older report sets as evidence; to merge with the current toolchain,
 rerun the tests to generate fresh blobs instead of mixing versions.

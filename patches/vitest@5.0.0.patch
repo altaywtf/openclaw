@@ -17,7 +17,7 @@ index 3b3446e1720bf0f2a6f78e11f091260fffc57c84..9b076b8fea2d246c5a1e3cc48f36a4c2
  	if (arrayArgs[2] === "run" && !options.watch) options.run = true;
  	if (arrayArgs[2] === "related") {
 diff --git a/dist/chunks/index.B89dZ0-N.js b/dist/chunks/index.B89dZ0-N.js
-index 50abf4fbed1dc8670b7941ee466a7c8443840c5f..d369712bd4c8cee79aed9f4bf805098608286a7e 100644
+index 50abf4fbed1dc8670b7941ee466a7c8443840c5f..16822759355c39c26af9e8ff22356c0ac2f4bdf0 100644
 --- a/dist/chunks/index.B89dZ0-N.js
 +++ b/dist/chunks/index.B89dZ0-N.js
 @@ -10875,7 +10875,8 @@ class PoolRunner {
@@ -120,6 +120,142 @@ index 50abf4fbed1dc8670b7941ee466a7c8443840c5f..d369712bd4c8cee79aed9f4bf8050986
  		const errors = results.filter((result) => result.status === "rejected").map((result) => result.reason);
  		if (errors.length > 0) throw new AggregateError(errors, "Errors occurred while running tests. For more information, see serialized error.");
  	}
+@@ -12487,7 +12504,7 @@ async function resolveProjectEntries(harness, globalViteConfig, globalConfig, de
+ 	if (throwIfEmpty && definitions && !filterMatched) throw new Error([
+ 		"No projects were found. Make sure your configuration is correct. ",
+ 		globalConfig.project.length ? `The filter matched no projects: ${globalConfig.project.join(", ")}. ` : "",
+-		`The projects definition: ${JSON.stringify(definitions.map((p, index) => typeof p === "string" ? p : p instanceof Promise ? "Promise" : typeof p === "function" ? p.name : { name: p.test?.name ?? index }), null, 4)}.`
++		`The projects definition: ${JSON.stringify(definitions.map((p, index) => typeof p === "string" ? p : p instanceof Promise ? "Promise" : typeof p === "function" ? p.name : "configFile" in p ? p : { name: p.test?.name ?? index }), null, 4)}.`
+ 	].join(""));
+ 	debug?.(`resolved projects: ${filtered.filter((e) => !e.hidden).map((e) => projectLabel(e.projectConfig.name)).join(", ")}`);
+ 	await applyBrowserOptimizeDeps(harness, filtered);
+@@ -12540,9 +12557,9 @@ async function applyBrowserOptimizeDeps(harness, entries) {
+ }
+ async function resolveDeclaredProjectEntries(context, definitions) {
+ 	const { parentViteConfig, parentConfig } = context;
+-	const { configFiles, projectConfigs, nonConfigDirectories } = await resolveTestProjectConfigs(parentViteConfig, parentConfig, definitions);
++	const { configFiles, projectConfigs, nonConfigDirectories, explicitFileProjects } = await resolveTestProjectConfigs(parentViteConfig, parentConfig, definitions);
+ 	const concurrent = limitConcurrency(os__default.availableParallelism?.() || os__default.cpus().length || 5);
+-	const fileProjects = [...configFiles, ...nonConfigDirectories];
++	const fileProjects = [...[...configFiles, ...nonConfigDirectories].map((path) => ({ path })), ...explicitFileProjects];
+ 	const promises = [];
+ 	projectConfigs.forEach((options, index) => {
+ 		const ownServerReason = getOwnServerReason(context, options);
+@@ -12569,25 +12586,26 @@ async function resolveDeclaredProjectEntries(context, definitions) {
+ 			configFile
+ 		}, index)));
+ 	});
+-	for (const path of fileProjects) {
++	for (const { path, root, standalone } of fileProjects) {
+ 		// if the file leads to the declaring config itself, reuse the already
+ 		// resolved pair: the root (or the container) also runs as a regular project
+-		if (parentViteConfig.configFile === path) {
++		if (parentViteConfig.configFile === path && (root === void 0 || root === parentConfig.root)) {
+ 			debug?.(`project at ${path} is the declaring config itself, reusing its resolved config`);
+ 			promises.push(Promise.resolve({
+ 				viteConfig: parentViteConfig,
+ 				projectConfig: parentConfig,
++				standalone,
+ 				ancestors: context.ancestors.length > 1 ? context.ancestors.slice(0, -1) : void 0
+ 			}));
+ 			continue;
+ 		}
+ 		const configFile = path.endsWith("/") ? false : path;
+-		const projectRoot = path.endsWith("/") ? path : dirname(path);
++		const projectRoot = root ?? (path.endsWith("/") ? path : dirname(path));
+ 		debug?.(`project at ${path} resolves its own Vite config: file and directory projects never share the server`);
+ 		promises.push(concurrent(() => resolveSingleProjectEntry(context, {
+ 			root: projectRoot,
+ 			configFile
+-		}, path)));
++		}, path, standalone)));
+ 	}
+ 	const settled = await Promise.allSettled(promises);
+ 	const errors = [];
+@@ -12607,10 +12625,11 @@ async function flattenContainerEntries(context, entries) {
+ 	const result = [];
+ 	for (const entry of entries) {
+ 		const definitions = entry.projectConfig.projects;
+-		// inline projects cannot declare `projects`; the declaring config's own
++		// Explicit configFile entries denote one project, without child discovery.
++		// Inline projects cannot declare `projects`; the declaring config's own
+ 		// entry (emitted when it references its own config file) is kept as-is —
+ 		// its `projects` are the definitions currently being resolved
+-		if (entry.inline || definitions === void 0 || entry.projectConfig === context.parentConfig) {
++		if (entry.inline || entry.standalone || definitions === void 0 || entry.projectConfig === context.parentConfig) {
+ 			result.push(entry);
+ 			continue;
+ 		}
+@@ -12829,7 +12848,7 @@ function resolveSharedServerEntry(context, options, index) {
+ 		ancestors: context.ancestors.length ? [...context.ancestors] : void 0
+ 	};
+ }
+-async function resolveSingleProjectEntry(context, options, workspacePath) {
++async function resolveSingleProjectEntry(context, options, workspacePath, standalone = false) {
+ 	const { harness, rootViteConfig, rootConfig, parentViteConfig, parentConfig, cliOverrides } = context;
+ 	const { configFile, ...restOptions } = options;
+ 	const captures = {};
+@@ -12883,6 +12902,7 @@ async function resolveSingleProjectEntry(context, options, workspacePath) {
+ 		viteConfig: projectViteConfig,
+ 		projectConfig,
+ 		inline: isInlineEntry,
++		standalone,
+ 		ancestors: context.ancestors.length ? [...context.ancestors] : void 0
+ 	};
+ }
+@@ -13104,6 +13124,7 @@ async function resolveTestProjectConfigs(parentViteConfig, parentConfig, project
+ 	const projectsOptions = [];
+ 	// custom config files that were specified directly or resolved from a directory
+ 	const projectsConfigFiles = [];
++	const explicitFileProjects = [];
+ 	// custom glob matches that should be resolved as directories or config files
+ 	const projectsGlobMatches = [];
+ 	// directories that don't have a config file inside, but should be treated as projects
+@@ -13132,13 +13153,27 @@ async function resolveTestProjectConfigs(parentViteConfig, parentConfig, project
+  // should never happen
+ 			throw new TypeError(`Unexpected file type: ${file}`);
+ 		} else projectsGlobMatches.push(stringOption);
+-	} else if (typeof definition === "function") projectsOptions.push(await definition({
+-		command: "serve",
+-		mode: parentViteConfig.mode,
+-		isPreview: false,
+-		isSsrBuild: false
+-	}));
+-	else projectsOptions.push(await definition);
++	} else if (typeof definition === "object" && "configFile" in definition) {
++		const { configFile } = definition;
++		const root = "root" in definition ? definition.root : void 0;
++		if (typeof configFile !== "string" || root !== void 0 && typeof root !== "string" || Object.keys(definition).some((key) => key !== "configFile" && key !== "root")) throw new TypeError("A file project accepts only a string configFile and an optional string root. Use extends for inline project options.");
++		const path = resolve(parentConfig.root, configFile.replace("<rootDir>", parentConfig.root));
++		if (!existsSync(path) || !statSync(path).isFile()) throw new Error(`Projects definition references a non-existing config file: ${path}`);
++		explicitFileProjects.push({
++			path,
++			root: root === void 0 ? void 0 : resolve(parentConfig.root, root),
++			standalone: true
++		});
++	} else {
++		const options = typeof definition === "function" ? await definition({
++			command: "serve",
++			mode: parentViteConfig.mode,
++			isPreview: false,
++			isSsrBuild: false
++		}) : await definition;
++		if ("configFile" in options) throw new TypeError("File project definitions must be direct objects; functions and Promises return inline project options.");
++		projectsOptions.push(options);
++	}
+ 	if (projectsGlobMatches.length) {
+ 		const globOptions = {
+ 			absolute: true,
+@@ -13171,7 +13206,8 @@ async function resolveTestProjectConfigs(parentViteConfig, parentConfig, project
+ 	return {
+ 		projectConfigs: projectsOptions,
+ 		nonConfigDirectories: nonConfigProjectDirectories,
+-		configFiles: Array.from(new Set(projectsConfigFiles))
++		configFiles: Array.from(new Set(projectsConfigFiles)),
++		explicitFileProjects
+ 	};
+ }
+ function resolveDirectoryConfig(directory) {
 diff --git a/dist/chunks/index.OVGXnVRj.js b/dist/chunks/index.OVGXnVRj.js
 index a7b39bf9e1dd97c44fb78888d02f9e7cc4b0ceef..8dcd740f54fe7e190aa39935808a30d80e6e1b40 100644
 --- a/dist/chunks/index.OVGXnVRj.js
@@ -157,7 +293,7 @@ index dbb1a04882b2ff60ab0968d6dabd10dfad696eb2..818981f891f170e197a16e41dfe98b34
  		off: (cb) => processOff("message", cb),
  		teardown: () => {
 diff --git a/dist/chunks/plugin.d.BbcoZhuj.d.ts b/dist/chunks/plugin.d.BbcoZhuj.d.ts
-index f399a7658b43c34df38c976e6f41744d9af7a5fd..f250dfa9e8a1f83e86f501b749eda933270a8004 100644
+index f399a7658b43c34df38c976e6f41744d9af7a5fd..ed390c53f69d97cab6155d75e62498eb92f46fc9 100644
 --- a/dist/chunks/plugin.d.BbcoZhuj.d.ts
 +++ b/dist/chunks/plugin.d.BbcoZhuj.d.ts
 @@ -2694,6 +2694,8 @@ interface PoolWorker {
@@ -178,6 +314,37 @@ index f399a7658b43c34df38c976e6f41744d9af7a5fd..f250dfa9e8a1f83e86f501b749eda933
  	error?: unknown;
  } | {
  	type: "testfileFinished";
+@@ -4445,6 +4449,8 @@ interface ResolvedProjectEntry {
+ 	* by default), not a file of its own.
+ 	*/
+ 	inline?: boolean;
++	/** Explicit configFile entries denote one file-owned project without child discovery. @internal */
++	standalone?: boolean;
+ }
+ type NonProjectOptions = "shard" | "watch" | "run" | "cache" | "update" | "reporters" | "outputFile" | "teardownTimeout" | "silent" | "forceRerunTriggers" | "testNamePattern" | "ui" | "open" | "uiBase" | "snapshotFormat" | "resolveSnapshotPath" | "passWithNoTests" | "onConsoleLog" | "onStackTrace" | "dangerouslyIgnoreUnhandledErrors" | "slowTestThreshold" | "inspect" | "inspectBrk" | "coverage" | "watchTriggerPatterns" | "tagsFilter" | "sharedViteServer";
+ interface ServerDepsOptions {
+@@ -4482,6 +4488,7 @@ type ProjectConfig = Omit<InlineConfig, NonProjectOptions | "projects" | "sequen
+ };
+ type ResolvedProjectConfig = Omit<ResolvedConfig, Exclude<NonProjectOptions, "coverage" | "watch">>;
+ interface UserWorkspaceConfig extends UserConfig$1 {
++	configFile?: never;
+ 	test?: ProjectConfig & {
+ 		projects?: TestProjectConfiguration[];
+ 	};
+@@ -4498,7 +4505,12 @@ type TestProjectInlineConfiguration = (UserWorkspaceConfig & {
+ 	*/
+ 	extends?: string | boolean;
+ });
+-type TestProjectConfiguration = string | TestProjectInlineConfiguration | Promise<UserWorkspaceConfig> | UserProjectConfigFn;
++type TestProjectConfiguration = string | {
++	/** Resolve one project from this config file; its nested projects are not expanded. */
++	configFile: string;
++	/** Override the file project's root; defaults to the config file's directory. */
++	root?: string;
++} | TestProjectInlineConfiguration | Promise<UserWorkspaceConfig> | UserProjectConfigFn;
+ 
+ /**
+ * Generate a unique cache identifier.
 diff --git a/dist/chunks/run.CQOUYP-x.js b/dist/chunks/run.CQOUYP-x.js
 index 50374ec931f5343cc2e8ba05de075fe38d211a69..2c8f745748733f4a588b6ad58cf64901c5a3c4b7 100644
 --- a/dist/chunks/run.CQOUYP-x.js

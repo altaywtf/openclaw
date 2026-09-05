@@ -241,7 +241,7 @@ export async function createVitestReportOwner(invocations: Invocation[], cwd: st
           ).values(),
         ].map((project) => {
           assert(typeof project.config === "string", "Missing native project configuration");
-          return { config: project.config, root: project.root };
+          return { configFile: project.config, root: project.root };
         });
         const blobs = path.join(directory, "accepted-blobs");
         fs.mkdirSync(blobs);
@@ -252,17 +252,11 @@ export async function createVitestReportOwner(invocations: Invocation[], cwd: st
         const config = path.join(directory, "vitest.merge.config.mjs");
         fs.writeFileSync(
           config,
-          // V5 file projects force their directory as root, while extends drops
-          // test.name. Resolve each name afresh in the merge process: copying the
-          // captured name would hide a changed config from the identity check.
-          `import { resolveConfig } from ${JSON.stringify(import.meta.resolve("vitest/node"))};
-const projects = await Promise.all(${JSON.stringify(projectConfigs)}.map(async ({ config, root }) => {
-  const resolved = await resolveConfig({ config, root, configLoader: "runner" });
-  return { extends: config, root, test: { name: resolved.test.name } };
-}));
-const config = ${JSON.stringify({
+          `export default ${JSON.stringify({
             root: cwd,
             test: {
+              // An omitted list lets native Vitest host a wholly empty blob replay.
+              projects: projectConfigs.length ? projectConfigs : undefined,
               coverage: { enabled: false },
               passWithNoTests: captures.every((capture) => capture.passWithNoTests),
               dangerouslyIgnoreUnhandledErrors: captures.every(
@@ -273,10 +267,7 @@ const config = ${JSON.stringify({
                 [captureReporter, { expected: captures }],
               ],
             },
-          })};
-// An omitted list lets native Vitest host a wholly empty blob replay.
-config.test.projects = projects.length ? projects : undefined;
-export default config;\n`,
+          })};\n`,
         );
         const mergeArgs = [
           "run",

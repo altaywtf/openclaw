@@ -4,7 +4,7 @@ import { spawnOwnedVitestProcess } from "../../scripts/lib/vitest-process.mts";
 import { waitForPidFile } from "../helpers/process-wait.js";
 
 const repoRoot = path.resolve(import.meta.dirname, "../..");
-const configs = [
+const defaultConfigs = [
   "test/vitest/vitest.unit-fast-isolated.config.ts",
   "test/vitest/vitest.agents-embedded-agent.config.ts",
 ];
@@ -100,8 +100,22 @@ export function createVitestReportFixture(root: string, evidence = path.join(roo
       entry?: "projects" | "batch-cli";
       report?: boolean;
       crashSignal?: "SIGABRT" | "SIGKILL";
+      configBehavior?:
+        | "normal-hook"
+        | "early-pool"
+        | "post-hook"
+        | "changed-hook"
+        | "changed-root"
+        | "async-config"
+        | "promise-config"
+        | "self-project"
+        | "arbitrary-file";
     } = {},
   ) => {
+    const configs =
+      options.configBehavior === "arbitrary-file"
+        ? ["test/vitest/owned-alpha.ts", defaultConfigs[1]!]
+        : defaultConfigs;
     const deadline = performance.now() + 45000;
     const output = path.join(evidence, "result.json");
     const ready = path.join(root, "ready");
@@ -120,11 +134,15 @@ export function createVitestReportFixture(root: string, evidence = path.join(roo
       );
       write(path.join(env.HOME!, "canary"), "synthetic caller home\n");
     }
+    const configEvents = path.join(evidence, "config-events.jsonl");
+    const changedRoot = path.join(root, "changed-root");
+    fs.mkdirSync(changedRoot);
     const isParallel = ["parallel", "batch-parallel", "failure", "overlap"].includes(mode);
     for (const [index, name] of ["alpha", "beta"].entries()) {
       const prelude = `import fs from 'node:fs';
 ${mode === "teardown-timeout" && index === 0 ? "setInterval(()=>{},1000);" : ""}
 const merging = process.argv.includes('--mergeReports');
+${options.configBehavior ? `const record=(event,details={})=>fs.appendFileSync(${JSON.stringify(configEvents)},JSON.stringify({name:${JSON.stringify(name)},merging,event,...details})+'\\n');record('load');` : ""}
 ${options.crashSignal && index === 0 ? `if(!merging){process.kill(process.pid,${JSON.stringify(options.crashSignal)});await new Promise(()=>setInterval(()=>{},1000));}` : ""}
 const output = process.argv.find(arg => arg.startsWith('--outputFile.json='))?.slice('--outputFile.json='.length);
 ${mode === "coverage-missing" && index === 0 ? `if(!merging)process.once('exit',()=>{const dir=process.argv.find(arg=>arg.startsWith('--coverage.reportsDirectory='))?.split('=').slice(1).join('=');if(dir&&fs.existsSync(dir+'/lcov.info')){fs.copyFileSync(dir+'/lcov.info',dir+'/lcov.info.native-original');fs.unlinkSync(dir+'/lcov.info');}});` : ""}
@@ -135,10 +153,46 @@ ${mode === "child-write" && index === 0 ? `if(!merging&&output)fs.mkdirSync(outp
 ${mode === "watchdog" && index === 0 ? `if(!merging&&!fs.existsSync(${JSON.stringify(ready)})){fs.writeFileSync(${JSON.stringify(ready)},'started');await new Promise(()=>setInterval(()=>{},1000));}` : ""}
 ${["missing", "corrupt"].includes(mode) && index === 0 ? `if(!merging)process.once('exit',()=>{const file=${mode === "missing" ? "output" : "process.argv.find(arg=>arg.startsWith('--outputFile.blob='))?.slice('--outputFile.blob='.length)"};if(file&&fs.existsSync(file)){fs.copyFileSync(file,file+'.native-original');${mode === "missing" ? "fs.unlinkSync(file)" : "fs.writeFileSync(file,'owned corruption')"};}});` : ""}
 `;
+      const configSource = `const config = {root:${JSON.stringify(root)},cacheDir:${JSON.stringify(path.join(root, "vite-" + name))},test:{name:${mode === "identity" ? `merging?'changed-${name}':'${name}'` : JSON.stringify(name)},include:[${mode === "empty" ? "'absent.test.ts'" : JSON.stringify(name + ".test.ts")}],${mode === "empty" ? "passWithNoTests:true," : ""}${mode === "ignored-unhandled" ? "dangerouslyIgnoreUnhandledErrors:true," : ""}pool:${mode === "pool-identity" ? "merging?'threads':'forks'" : "'forks'"},maxWorkers:1,fileParallelism:false,cache:false,fsModuleCache:false,teardownTimeout:1000,${["metadata", "coverage-missing"].includes(mode) ? "coverage:{provider:'v8',include:['covered.ts'],reporter:['json','lcov']}," : ""}${mode === "tuple" ? `reporters:[['json',{outputFile:${JSON.stringify(path.join(evidence, "tuple.json"))}}]],` : ""}}};`;
+      const behavior = options.configBehavior;
+      const hooks =
+        behavior === "early-pool"
+          ? ["early", "normal", "post"]
+          : behavior === "post-hook"
+            ? ["post"]
+            : behavior === "normal-hook" || behavior === "changed-hook"
+              ? ["normal"]
+              : [];
+      const configure = hooks.length
+        ? `config.plugins=[${hooks
+            .map(
+              (hook) => `{
+        name:'fixture-${hook}',${hook === "early" ? "enforce:'pre'," : hook === "post" ? "enforce:'post'," : ""}
+        config:{${hook === "early" ? "order:'pre'," : hook === "post" ? "order:'post'," : ""}handler(config){
+          record('hook',{hook:${JSON.stringify(hook)},input:config.test.name});
+          ${behavior === "early-pool" && hook === "early" ? `config.test.pool=config.test.name===${JSON.stringify(name)}?'threads':'forks';` : ""}
+          config.test.name+=${behavior === "changed-hook" ? "merging?'-changed':'-normal'" : JSON.stringify("-" + hook)};
+        }}
+      }`,
+            )
+            .join(",")}];`
+        : "";
       write(
         path.join(root, configs[index]!),
         prelude +
-          `export default {root:${JSON.stringify(root)},cacheDir:${JSON.stringify(path.join(root, "vite-" + name))},test:{name:${mode === "identity" ? `merging?'changed-${name}':'${name}'` : JSON.stringify(name)},include:[${mode === "empty" ? "'absent.test.ts'" : JSON.stringify(name + ".test.ts")}],${mode === "empty" ? "passWithNoTests:true," : ""}${mode === "ignored-unhandled" ? "dangerouslyIgnoreUnhandledErrors:true," : ""}pool:${mode === "pool-identity" ? "merging?'threads':'forks'" : "'forks'"},maxWorkers:1,fileParallelism:false,cache:false,fsModuleCache:false,teardownTimeout:1000,${["metadata", "coverage-missing"].includes(mode) ? "coverage:{provider:'v8',include:['covered.ts'],reporter:['json','lcov']}," : ""}${mode === "tuple" ? `reporters:[['json',{outputFile:${JSON.stringify(path.join(evidence, "tuple.json"))}}]],` : ""}}};`,
+          configSource +
+          configure +
+          (behavior === "changed-root"
+            ? `config.test.root=merging?${JSON.stringify(changedRoot)}:${JSON.stringify(root)};`
+            : "") +
+          (behavior === "self-project" && index === 0
+            ? `config.test.projects=${JSON.stringify([configs[0], "test/vitest/vitest.unselected.config.ts"])};`
+            : "") +
+          (behavior === "async-config"
+            ? "export default async({command,mode,isPreview,isSsrBuild})=>{if(command!=='serve'||mode!=='test'||isPreview!==false||isSsrBuild!==false)throw new Error('changed config environment');record('factory');return config;};"
+            : behavior === "promise-config"
+              ? "export default Promise.resolve().then(()=>{record('factory');return config;});"
+              : "export default config;"),
       );
       const failure =
         (["failure", "batch-failure"].includes(mode) && index === 1) ||
@@ -204,6 +258,12 @@ ${index === 0 ? "test('alpha/two',()=>expect(2).toBe(2));" : "test.skip('beta/sk
       write(env.OPENCLAW_VITEST_INCLUDE_FILE, JSON.stringify(files));
       targets = ["test/vitest/vitest.extension-telegram.config.ts"];
     }
+    if (options.configBehavior === "self-project") {
+      write(
+        path.join(root, "test/vitest/vitest.unselected.config.ts"),
+        `import fs from 'node:fs';fs.appendFileSync(${JSON.stringify(configEvents)},JSON.stringify({name:'unselected',merging:process.argv.includes('--mergeReports'),event:'load'})+'\\n');export default {test:{name:'unselected'}};`,
+      );
+    }
     const args = [
       "--reporter=verbose",
       "--reporter=json",
@@ -214,6 +274,9 @@ ${index === 0 ? "test('alpha/two',()=>expect(2).toBe(2));" : "test.skip('beta/sk
       args.splice(0, args.length, "--configLoader=runner");
     }
     args.push(...(options.nativeArgs ?? []));
+    if (options.configBehavior === "self-project") {
+      args.push("--project=alpha", "--project=beta");
+    }
     if (mode === "dotted") {
       args.push("--reporter", "json");
     }
@@ -232,7 +295,8 @@ ${index === 0 ? "test('alpha/two',()=>expect(2).toBe(2));" : "test.skip('beta/sk
         "identity",
         "pool-identity",
         "config-error",
-      ].includes(mode)
+      ].includes(mode) ||
+      options.configBehavior?.startsWith("changed-")
     ) {
       write(output, "old report");
     }

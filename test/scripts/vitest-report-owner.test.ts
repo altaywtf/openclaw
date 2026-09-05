@@ -141,6 +141,89 @@ describe.skipIf(process.platform === "win32")("native multi-invocation report ow
     },
   );
 
+  it.each([
+    ["normal-hook", "-normal", "forks", ["normal"]],
+    ["early-pool", "-early-normal-post", "threads", ["early", "normal", "post"]],
+    ["post-hook", "-post", "forks", ["post"]],
+    ["async-config", "", "forks", []],
+    ["promise-config", "", "forks", []],
+    ["self-project", "", "forks", []],
+    ["arbitrary-file", "", "forks", []],
+  ] as const)(
+    "replays native configuration once without changing hook inputs: %s",
+    { timeout: 60000 },
+    async (configBehavior, suffix, pool, hooks) => {
+      const root = dirs.make("oc-report-config-");
+      const result = await createVitestReportFixture(root)(
+        configBehavior === "arbitrary-file" ? "batch" : "serial",
+        { configBehavior, entry: configBehavior === "self-project" ? "projects" : undefined },
+      );
+      expect(result.code, result.stderr).toBe(0);
+      expect(inventory(json(result.output))).toEqual(expected);
+      const index = json(path.join(result.reportSet!, "index.json"));
+      const captures = index.entries.map((entry: { attempts: { json: string }[] }) =>
+        json(`${entry.attempts.at(-1)!.json}.capture.json`),
+      );
+      expect(
+        captures.map((capture: { projects: { name: string; pool: string }[] }) =>
+          capture.projects.map(({ name, pool: actualPool }) => ({ name, pool: actualPool })),
+        ),
+      ).toEqual([[{ name: `alpha${suffix}`, pool }], [{ name: `beta${suffix}`, pool }]]);
+      const events = fs
+        .readFileSync(path.join(root, "reports/config-events.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      for (const name of ["alpha", "beta"]) {
+        const expectedEvents = [
+          { event: "load" },
+          ...(["async-config", "promise-config"].includes(configBehavior)
+            ? [{ event: "factory" }]
+            : []),
+          ...hooks.map((hook, hookIndex) => ({
+            event: "hook",
+            hook,
+            input:
+              name +
+              hooks
+                .slice(0, hookIndex)
+                .map((entry) => `-${entry}`)
+                .join(""),
+          })),
+        ];
+        for (const merging of [false, true]) {
+          expect(
+            events.filter((event) => event.name === name && event.merging === merging),
+          ).toEqual(expectedEvents.map((event) => Object.assign({ name, merging }, event)));
+        }
+      }
+      if (configBehavior === "self-project") {
+        expect(events.filter((event) => event.name === "unselected")).toEqual([
+          { name: "unselected", merging: false, event: "load" },
+        ]);
+      }
+      expect(index.complete).toBe(true);
+      expect(json(path.join(result.reportSet!, "aggregate.json.capture.json")).modules).toEqual(
+        captures.flatMap((capture: { modules: unknown[] }) => capture.modules),
+      );
+    },
+  );
+
+  it.each(["changed-hook", "changed-root"] as const)(
+    "rejects freshly changed configuration without replacing old output: %s",
+    { timeout: 60000 },
+    async (configBehavior) => {
+      const result = await createVitestReportFixture(dirs.make("oc-report-config-change-"))(
+        "serial",
+        { configBehavior },
+      );
+      expect(result.code, result.stderr).toBe(1);
+      expect(result.stderr).toContain("Native merge project identity changed");
+      expect(json(path.join(result.reportSet!, "index.json")).complete).toBe(false);
+      expect(fs.readFileSync(result.output, "utf8")).toBe("old report");
+    },
+  );
+
   it(
     "publishes a wholly live-aware real-home batch without consuming the caller home",
     { timeout: 60000 },
