@@ -9,6 +9,7 @@ import { createTransportAwareStreamFnForModel } from "@openclaw/ai/transports";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { getModelLlmRuntime } from "../llm/model-runtime-binding.js";
 import type { Api, Model } from "../llm/types.js";
+import { getModelProviderRuntimePluginHandle } from "../plugins/provider-hook-runtime.js";
 import { resolveProviderStreamFn } from "../plugins/provider-runtime.js";
 import { ensureCustomApiRegistered } from "./custom-api-registry.js";
 import {
@@ -40,6 +41,7 @@ export function registerProviderStreamForModel<TApi extends Api>(params: {
     workspaceDir: params.workspaceDir,
     env: params.env,
     allowRuntimePluginLoad: params.allowRuntimePluginLoad,
+    runtimeHandle: getModelProviderRuntimePluginHandle(params.model),
     context: {
       config: params.cfg,
       agentDir: params.agentDir,
