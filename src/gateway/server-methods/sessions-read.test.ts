@@ -296,6 +296,14 @@ test("sessions.resolve preserves presentation facts on unique and ambiguous wire
       boardFace: "dashboard",
     },
   });
+  for (const reference of [
+    { key: firstKey },
+    { key: "agent:main:deploy-monitor", slug: "deploy-monitor" },
+  ]) {
+    expect(await directSessionReq("sessions.resolve", { reference, agentId: "main" })).toEqual(
+      unique,
+    );
+  }
 
   await replaceSessionEntry(
     { agentId: "main", sessionKey: secondKey, storePath },
