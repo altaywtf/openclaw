@@ -47,6 +47,7 @@ internal class TalkRealtimeClient(
   private val scope = CoroutineScope(scope.coroutineContext + Dispatchers.Main.immediate)
   private val json = Json { ignoreUnknownKeys = true }
   private var closed = false
+  private var retiring = false
   private var started = false
   private val responseState = TalkRealtimeResponseState()
   private var voiceSessionId: String? = null
@@ -58,8 +59,11 @@ internal class TalkRealtimeClient(
   private var transcriptTail: Deferred<Unit> = CompletableDeferred(Unit)
   private var queuedTranscripts = 0
   private var transcriptFailureReported = false
-  private val transcriptOrder =
-    TalkRealtimeTranscriptOrder { _, role, entryId, text -> enqueueTranscript(role, entryId, text) }
+  private val transcriptOrder: TalkRealtimeTranscriptOrder by lazy {
+    TalkRealtimeTranscriptOrder { itemId, role, entryId, text, afterPrevious, written ->
+      enqueueTranscript(role, entryId, text, afterPrevious, written) { transcriptOrder.release(itemId) }
+    }
+  }
   private val toolBatch = TalkRealtimeToolBatch()
   private val cancelledResponses = mutableSetOf<String>()
 
@@ -179,7 +183,7 @@ internal class TalkRealtimeClient(
   }
 
   private fun handleProviderEvent(payload: String) {
-    if (closed) return
+    if (closed && !retiring) return
     val event = runCatching { json.parseToJsonElement(payload) as? JsonObject }.getOrNull() ?: return fail("Invalid realtime event")
     if (event.string("response_id") in cancelledResponses && event.string("type")?.contains("transcript") == true) return
     val itemId = event.string("item_id")
@@ -234,7 +238,7 @@ internal class TalkRealtimeClient(
         val turn = event["turn"] as? JsonObject ?: return
         // Frameless Bidi does not require a turn id. The reliable data channel owns
         // delivery order; retain one local id for each queued persistence operation.
-        val entryId = turn.string("id") ?: "native-${++nativeTranscriptSequence}"
+        val entryId = "native-${++nativeTranscriptSequence}"
         transcriptFrameless(turn.string("role") ?: return, turn.string("transcript"), entryId)
       }
 
@@ -312,9 +316,13 @@ internal class TalkRealtimeClient(
         // The Realtime contract keeps most event errors recoverable. Clear only
         // our correlated rejected response.create; unrelated errors stay open.
         val error = event["error"] as? JsonObject
-        responseState.creationRejected(error?.string("event_id"))
+        val rejectedCreation = responseState.creationRejected(error?.string("event_id"))
         Log.w("TalkRealtime", "Recoverable provider event error")
-        publishResponseStatus()
+        if (rejectedCreation && responseState.responsePending) {
+          scope.launch { sendResponse() }
+        } else {
+          publishResponseStatus()
+        }
       }
 
       "conversation.item.input_audio_transcription.failed" -> {
@@ -384,29 +392,40 @@ internal class TalkRealtimeClient(
   ) {
     if (role !in listOf("user", "assistant") || text.isNullOrEmpty()) return
     if (!remember(finalTranscripts, "$role:$entryId")) return
-    if (!gatewayTranscripts) enqueueTranscript(role, entryId, CompletableDeferred(text))
+    if (!gatewayTranscripts) {
+      enqueueTranscript(
+        role,
+        CompletableDeferred(entryId),
+        CompletableDeferred(text),
+        CompletableDeferred(CompletableDeferred(Unit)),
+        CompletableDeferred(),
+      ) {}
+    }
     onTranscript(role, text, true)
   }
 
   private fun enqueueTranscript(
     role: String,
-    entryId: String,
+    entryId: Deferred<String>,
     text: Deferred<String?>,
+    afterPrevious: Deferred<Deferred<Unit>>,
+    written: CompletableDeferred<Unit>,
+    release: () -> Unit,
   ) {
     val voiceId = voiceSessionId ?: return
     queuedTranscripts++
-    val previous = transcriptTail
-    transcriptTail =
+    val job =
       scope.async<Unit>(Dispatchers.Main.immediate) {
         try {
-          previous.await()
+          afterPrevious.await().await()
+          val orderedEntryId = entryId.await()
           val finalText = text.await() ?: return@async
           lease.request(
             "talk.client.transcript",
             buildJsonObject {
               put("sessionKey", sessionKey)
               put("voiceSessionId", voiceId)
-              put("entryId", entryId)
+              put("entryId", orderedEntryId)
               put("role", role)
               put("text", finalText)
             }.toString(),
@@ -417,8 +436,16 @@ internal class TalkRealtimeClient(
           // retirement can still issue the logical session close exactly once.
           reportTranscriptFailure()
         } finally {
+          written.complete(Unit)
+          release()
           queuedTranscripts--
         }
+      }
+    val previous = transcriptTail
+    transcriptTail =
+      scope.async(Dispatchers.Main.immediate) {
+        previous.await()
+        job.await()
       }
   }
 
@@ -495,11 +522,17 @@ internal class TalkRealtimeClient(
 
   suspend fun close() =
     withContext(NonCancellable + Dispatchers.Main.immediate) {
+      if (retiring) return@withContext
+      retiring = true
       closed = true
       snapshot = null
       agent.endSession()
-      peer.close()
-      transcriptOrder.close()
+      try {
+        peer.close()
+      } finally {
+        transcriptOrder.close()
+        retiring = false
+      }
       val voiceId = voiceSessionId ?: return@withContext
       voiceSessionId = null
       try {
@@ -526,10 +559,7 @@ internal class TalkRealtimeClient(
       transcriptFailureReported = true
       onFailure("Voice transcript could not be saved")
     }
-    if (!closed) {
-      closed = true
-      scope.launch { close() }
-    }
+    closed = true
   }
 
   private fun fail(message: String) {

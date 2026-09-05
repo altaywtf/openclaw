@@ -9,6 +9,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -60,6 +61,26 @@ class TalkRealtimeClientTest {
         client.close()
         Dispatchers.resetMain()
       }
+    }
+
+  @Test
+  fun framelessProviderIdentityNeverCrossesTheGatewayWire() =
+    runTest {
+      Dispatchers.setMain(UnconfinedTestDispatcher(testScheduler))
+      val lease = GatewaySession.RequestLease("fixture", requestImpl = { _, _, _, _ -> "{}" })
+      val client = TalkRealtimeClient(RuntimeEnvironment.getApplication(), this, lease, "main", {}, { _, _, _ -> }, {})
+      val event = client.javaClass.getDeclaredMethod("handleProviderEvent", String::class.java).apply { isAccessible = true }
+      event.invoke(client, """{"type":"turn.done","turn":{"id":"provider:item/ü","role":"user","transcript":"hello"}}""")
+      @Suppress("UNCHECKED_CAST")
+      val finals =
+        client.javaClass
+          .getDeclaredField("finalTranscripts")
+          .apply { isAccessible = true }
+          .get(client) as Set<String>
+      assertTrue("user:native-1" in finals)
+      assertFalse(finals.any { "provider:item" in it })
+      client.close()
+      Dispatchers.resetMain()
     }
 
   @Test
@@ -160,7 +181,7 @@ class TalkRealtimeClientTest {
       event.invoke(client, """{"type":"conversation.item.input_audio_transcription.completed","item_id":"u1","transcript":"question"}""")
       runCurrent()
       client.close()
-      runCurrent()
+      advanceUntilIdle()
       assertEquals(listOf("Voice transcript could not be saved"), failures)
       assertEquals(1, closes)
       Dispatchers.resetMain()

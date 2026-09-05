@@ -43,9 +43,22 @@ class TalkRealtimeResponseStateTest {
     assertTrue(state.requestResponse(hasPendingTools = false, eventId = "create-1"))
     assertFalse(state.creationRejected("other"))
     assertTrue(state.createInFlight)
+    assertNull(state.cancel())
     assertTrue(state.creationRejected("create-1"))
     assertFalse(state.createInFlight)
     assertTrue(state.requestResponse(hasPendingTools = false, eventId = "create-2"))
+    assertNull(state.created("response-2"))
+  }
+
+  @Test
+  fun queuedContinuationCanStartAfterCreationRejection() {
+    val state = TalkRealtimeResponseState()
+    assertTrue(state.requestResponse(hasPendingTools = false, eventId = "create-1"))
+    assertFalse(state.requestResponse(hasPendingTools = false, eventId = "queued"))
+    assertTrue(state.responsePending)
+    assertTrue(state.creationRejected("create-1"))
+    assertTrue(state.requestResponse(hasPendingTools = false, eventId = "create-2"))
+    assertFalse(state.responsePending)
   }
 
   @Test

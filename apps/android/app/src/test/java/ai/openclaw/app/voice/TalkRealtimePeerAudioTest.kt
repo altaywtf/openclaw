@@ -5,8 +5,12 @@ import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.os.Looper
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.Assert.assertEquals
@@ -21,11 +25,64 @@ import org.robolectric.annotation.Config
 import org.robolectric.shadows.AudioDeviceInfoBuilder
 import org.robolectric.util.ReflectionHelpers
 import org.webrtc.audio.JavaAudioDeviceModule
+import org.webrtc.audio.JavaAudioDeviceModule.AudioRecordErrorCallback
+import org.webrtc.audio.JavaAudioDeviceModule.AudioTrackErrorCallback
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class TalkRealtimePeerAudioTest {
+  @Test fun asynchronousAudioDeviceFailuresCloseTheCallVisibly() =
+    runTest {
+      Dispatchers.setMain(UnconfinedTestDispatcher(testScheduler))
+      val failures = mutableListOf<String>()
+      val peer = TalkRealtimePeer(RuntimeEnvironment.getApplication(), this, {}, { failures.add(it) })
+      val record =
+        peer.javaClass
+          .getDeclaredField("audioRecordErrors")
+          .apply { isAccessible = true }
+          .get(peer) as AudioRecordErrorCallback
+      record.onWebRtcAudioRecordInitError("redacted")
+      runCurrent()
+      assertEquals(listOf("Realtime microphone initialization failed"), failures)
+      peer.close()
+      val trackPeer = TalkRealtimePeer(RuntimeEnvironment.getApplication(), this, {}, { failures.add(it) })
+      val track =
+        trackPeer.javaClass
+          .getDeclaredField("audioTrackErrors")
+          .apply { isAccessible = true }
+          .get(trackPeer) as AudioTrackErrorCallback
+      track.onWebRtcAudioTrackError("redacted")
+      runCurrent()
+      assertEquals("Realtime speaker failed", failures.last())
+      trackPeer.close()
+      Dispatchers.resetMain()
+    }
+
+  @Test fun closeDrainsProviderEventsAcceptedBeforeObserverRetirement() =
+    runTest {
+      val dispatcher = StandardTestDispatcher(testScheduler)
+      Dispatchers.setMain(dispatcher)
+      val received = mutableListOf<String>()
+      val peer = TalkRealtimePeer(RuntimeEnvironment.getApplication(), this, { received += it }, {})
+      try {
+        @Suppress("UNCHECKED_CAST")
+        val events =
+          peer.javaClass
+            .getDeclaredField("events")
+            .apply { isAccessible = true }
+            .get(peer) as Channel<String>
+        assertTrue(events.trySend("accepted-before-close").isSuccess)
+        val closing = launch { peer.close() }
+        runCurrent()
+        closing.join()
+        assertEquals(listOf("accepted-before-close"), received)
+      } finally {
+        peer.close()
+        Dispatchers.resetMain()
+      }
+    }
+
   @Test fun pauseResumeAndCloseOwnFocusWithoutAllocatingANativeCall() =
     runTest {
       Dispatchers.setMain(UnconfinedTestDispatcher(testScheduler))

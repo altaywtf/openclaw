@@ -1,16 +1,20 @@
 package ai.openclaw.app.voice
 
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Deferred
 
 internal class TalkRealtimeTranscriptOrder(
   private val maxItems: Int = 1024,
   private val maxSpeechItems: Int = 128,
-  private val onOrdered: (itemId: String, role: String, entryId: String, text: CompletableDeferred<String?>) -> Unit,
+  private val onReserved: (itemId: String, role: String, entryId: CompletableDeferred<String>, text: CompletableDeferred<String?>, afterPrevious: CompletableDeferred<Deferred<Unit>>, written: CompletableDeferred<Unit>) -> Unit,
 ) {
   private data class Item(
     val previousItemId: String?,
     val role: String?,
     val text: CompletableDeferred<String?> = CompletableDeferred(),
+    val entryId: CompletableDeferred<String> = CompletableDeferred(),
+    val afterPrevious: CompletableDeferred<Deferred<Unit>> = CompletableDeferred(),
+    val written: CompletableDeferred<Unit> = CompletableDeferred(),
     var ordered: Boolean = false,
   )
 
@@ -18,6 +22,7 @@ internal class TalkRealtimeTranscriptOrder(
   private var lastItemId: String? = null
   private var sequence = 0
   private var speechItems = 0
+  private var lastSpeechWritten: Deferred<Unit> = CompletableDeferred(Unit)
 
   fun reserve(
     itemId: String,
@@ -28,7 +33,9 @@ internal class TalkRealtimeTranscriptOrder(
     if (items.size >= maxItems) return false
     if (role != null && speechItems >= maxSpeechItems) return false
     if (role != null) speechItems++
-    items[itemId] = Item(previousItemId, role)
+    val item = Item(previousItemId, role)
+    items[itemId] = item
+    if (role != null) onReserved(itemId, role, item.entryId, item.text, item.afterPrevious, item.written)
     assignOrders()
     return true
   }
@@ -51,22 +58,37 @@ internal class TalkRealtimeTranscriptOrder(
     return true
   }
 
+  fun release(itemId: String) {
+    val item = items[itemId] ?: return
+    if (item.role != null && item.written.isCompleted) {
+      items.remove(itemId)
+      speechItems--
+    }
+  }
+
   fun close() {
+    assignOrders(closing = true)
     items.values.forEach { if (!it.text.isCompleted) it.text.complete(null) }
   }
 
-  private fun assignOrders() {
+  private fun assignOrders(closing: Boolean = false) {
     while (true) {
+      val pending = items.entries.filter { !it.value.ordered }
       val next =
-        items.entries.firstOrNull { (_, item) ->
-          !item.ordered &&
-            (if (item.previousItemId == null) lastItemId == null else item.previousItemId == lastItemId)
-        } ?: return
+        pending.firstOrNull { (_, item) ->
+          if (item.previousItemId == null) lastItemId == null else item.previousItemId == lastItemId
+        } ?: (if (closing) pending.firstOrNull() else null) ?: return
       val (itemId, item) = next
       item.ordered = true
       lastItemId = itemId
       if (item.role != null) {
-        onOrdered(itemId, item.role, (++sequence).toString(), item.text)
+        item.entryId.complete((++sequence).toString())
+        item.afterPrevious.complete(lastSpeechWritten)
+        lastSpeechWritten = item.written
+      } else {
+        // Reliable event order means the next announcement can link via lastItemId;
+        // the ancestry-only node no longer needs map capacity once ordered.
+        items.remove(itemId)
       }
     }
   }

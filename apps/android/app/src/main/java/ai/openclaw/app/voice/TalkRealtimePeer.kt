@@ -24,7 +24,13 @@ import org.webrtc.PeerConnectionFactory
 import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
 import org.webrtc.audio.JavaAudioDeviceModule
+import org.webrtc.audio.JavaAudioDeviceModule.AudioRecordErrorCallback
+import org.webrtc.audio.JavaAudioDeviceModule.AudioRecordStartErrorCode
+import org.webrtc.audio.JavaAudioDeviceModule.AudioTrackErrorCallback
+import org.webrtc.audio.JavaAudioDeviceModule.AudioTrackStartErrorCode
 import java.nio.ByteBuffer
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 /** One WebRTC call. All JNI ownership is serialized on Main, never on a native callback thread. */
 internal class TalkRealtimePeer(
@@ -48,18 +54,17 @@ internal class TalkRealtimePeer(
   private var captureEnabled = true
   private var playbackEnabled = true
   private val ready = CompletableDeferred<Unit>()
+  private val callbackLock = ReentrantLock()
+  private val callbacksDrained = callbackLock.newCondition()
+  private var acceptingCallbacks = true
+  private var callbacksInFlight = 0
   private val events = Channel<String>(64)
   private val eventPump: Job =
     scope.launch(Dispatchers.Main.immediate) {
       try {
-        for (event in events) {
-          if (!closed) onEvent(event)
-        }
+        for (event in events) onEvent(event)
       } catch (error: Exception) {
         if (error !is CancellationException) onFailure("Realtime event processing failed")
-      } finally {
-        // Parent cancellation must release JNI capture, not only stop event delivery.
-        close()
       }
     }
 
@@ -72,6 +77,8 @@ internal class TalkRealtimePeer(
           JavaAudioDeviceModule
             .builder(context)
             .setAudioAttributes(RealtimeCommunicationAudio.playbackAttributes())
+            .setAudioRecordErrorCallback(audioRecordErrors)
+            .setAudioTrackErrorCallback(audioTrackErrors)
             .createAudioDeviceModule()
         audioDevice = audio
         selectedAudioInputKey = preferredAudioInputDevice()
@@ -110,15 +117,26 @@ internal class TalkRealtimePeer(
             }
 
             override fun onMessage(buffer: DataChannel.Buffer) {
-              // WebRTC frees the native buffer after this callback returns (DataChannel.java).
-              if (buffer.binary || buffer.data.remaining() > 1_048_576) {
-                scope.launch(Dispatchers.Main.immediate) { fail("Invalid realtime event") }
-                return
+              callbackLock.withLock {
+                if (!acceptingCallbacks) return
+                callbacksInFlight++
               }
-              val bytes = ByteArray(buffer.data.remaining())
-              buffer.data.get(bytes)
-              if (events.trySend(bytes.toString(Charsets.UTF_8)).isFailure) {
-                scope.launch(Dispatchers.Main.immediate) { fail("Realtime event queue overflow") }
+              try {
+                // WebRTC frees the native buffer after this callback returns (DataChannel.java).
+                if (buffer.binary || buffer.data.remaining() > 1_048_576) {
+                  scope.launch(Dispatchers.Main.immediate) { fail("Invalid realtime event") }
+                  return
+                }
+                val bytes = ByteArray(buffer.data.remaining())
+                buffer.data.get(bytes)
+                if (events.trySend(bytes.toString(Charsets.UTF_8)).isFailure) {
+                  scope.launch(Dispatchers.Main.immediate) { fail("Realtime event queue overflow") }
+                }
+              } finally {
+                callbackLock.withLock {
+                  callbacksInFlight--
+                  callbacksDrained.signalAll()
+                }
               }
             }
           },
@@ -230,10 +248,16 @@ internal class TalkRealtimePeer(
       closed = true
       try {
         ready.cancel()
+        channel?.unregisterObserver()
+        callbackLock.withLock { acceptingCallbacks = false }
+        withContext(Dispatchers.IO) {
+          callbackLock.withLock {
+            while (callbacksInFlight > 0) callbacksDrained.await()
+          }
+        }
         events.close()
-        eventPump.cancel()
+        eventPump.join()
         channel?.let {
-          it.unregisterObserver()
           it.close()
           it.dispose()
         }
@@ -267,6 +291,34 @@ internal class TalkRealtimePeer(
       scope.launch(Dispatchers.Main.immediate) { close() }
     }
   }
+
+  private fun audioFailure(message: String) {
+    scope.launch(Dispatchers.Main.immediate) { fail(message) }
+  }
+
+  private val audioRecordErrors =
+    object : AudioRecordErrorCallback {
+      override fun onWebRtcAudioRecordInitError(error: String) = audioFailure("Realtime microphone initialization failed")
+
+      override fun onWebRtcAudioRecordStartError(
+        code: AudioRecordStartErrorCode,
+        error: String,
+      ) = audioFailure("Realtime microphone start failed")
+
+      override fun onWebRtcAudioRecordError(error: String) = audioFailure("Realtime microphone failed")
+    }
+
+  private val audioTrackErrors =
+    object : AudioTrackErrorCallback {
+      override fun onWebRtcAudioTrackInitError(error: String) = audioFailure("Realtime speaker initialization failed")
+
+      override fun onWebRtcAudioTrackStartError(
+        code: AudioTrackStartErrorCode,
+        error: String,
+      ) = audioFailure("Realtime speaker start failed")
+
+      override fun onWebRtcAudioTrackError(error: String) = audioFailure("Realtime speaker failed")
+    }
 
   private val observer =
     object : PeerConnection.Observer {

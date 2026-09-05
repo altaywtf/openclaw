@@ -43,6 +43,7 @@ internal class TalkRealtimeResponseState {
     if (!createInFlight || eventId == null || createEventId != eventId) return false
     createInFlight = false
     createEventId = null
+    cancelOnCreation = false
     return true
   }
 
