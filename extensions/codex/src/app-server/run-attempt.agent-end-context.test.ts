@@ -3,7 +3,7 @@ import * as agentHarnessRuntime from "openclaw/plugin-sdk/agent-harness-runtime"
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { formatSqliteSessionFileMarker } from "openclaw/plugin-sdk/sqlite-runtime-testing";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, onTestFailed, vi } from "vitest";
 import { dynamicToolBuildState } from "./dynamic-tool-build-state.js";
 import {
   createParams,
@@ -27,6 +27,19 @@ describe("runCodexAppServerAttempt agent-end context", () => {
   it.each(["completed", "aborted", "provider refusal"] as const)(
     "hands deep-turn context to agent-end without reviewing a refusal: %s",
     async (outcome) => {
+      let phase = "seed session";
+      let lastRequest: string | undefined;
+      let promptPersisted = false;
+      let agentEndObserved = false;
+      onTestFailed(() => {
+        console.error("agent-end context fixture", {
+          outcome,
+          phase,
+          lastRequest,
+          promptPersisted,
+          agentEndObserved,
+        });
+      });
       const source = {
         agentId: "main",
         sessionId: "session-1",
@@ -41,27 +54,42 @@ describe("runCodexAppServerAttempt agent-end context", () => {
       const workspaceDir = path.join(tempDir, "agent-end-context-workspace");
       const turnStarted = createDeferred<void>();
       const harness = createStartedThreadHarness(async (method) => {
+        lastRequest = method;
         if (method === "turn/start") {
           turnStarted.resolve();
         }
       });
       const runAgentEndSideEffects = vi
         .spyOn(agentHarnessRuntime, "runAgentEndSideEffects")
-        .mockImplementation(() => {});
+        .mockImplementation(() => {
+          agentEndObserved = true;
+        });
       const params = createParams(sessionFile, workspaceDir);
       const abortController = new AbortController();
       params.abortSignal = abortController.signal;
       params.sessionTarget = source;
       params.messageChannel = "discord";
       params.memberRoleIds = ["maintainer-role"];
+      params.onUserMessagePersisted = () => {
+        promptPersisted = true;
+      };
       setCodexTestModelSupportsTools(params, true);
       dynamicToolBuildState.openClawCodingToolsFactory = () => [
         createRuntimeDynamicTool("skill_workshop"),
       ];
 
+      phase = "turn/start";
       const run = runCodexAppServerAttempt(params);
-      await turnStarted.promise;
+      // Preserve an early attempt error instead of waiting on a readiness
+      // signal that a failed attempt can never produce.
+      await Promise.race([
+        turnStarted.promise,
+        run.then(() => {
+          throw new Error("Codex attempt settled before turn/start");
+        }),
+      ]);
       for (let index = 0; index < 10; index++) {
+        phase = `raw response ${index}`;
         await harness.notify({
           method: "rawResponse/completed",
           params: {
@@ -71,6 +99,7 @@ describe("runCodexAppServerAttempt agent-end context", () => {
           },
         });
       }
+      phase = "terminal outcome";
       if (outcome === "aborted") {
         abortController.abort("user cancelled");
       } else {
@@ -103,8 +132,10 @@ describe("runCodexAppServerAttempt agent-end context", () => {
           },
         });
       }
+      phase = "attempt settlement";
       const result = await run;
 
+      phase = "context assertions";
       const ctx = runAgentEndSideEffects.mock.calls.at(-1)?.[0]?.ctx;
       expect(ctx?.foregroundPromptContext?.memberRoleIds).toEqual(["maintainer-role"]);
       expect(typeof ctx?.foregroundPromptContext?.agentDir).toBe("string");
