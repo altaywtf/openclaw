@@ -39,42 +39,49 @@ const readManifest = (file, ref) => {
     return bytes;
   } finally { fs.closeSync(fd); }
 };
-const runSetup = (script, workspaceDir, homeDir) => new Promise((resolve, reject) => {
+const runSetup = (script, workspaceDir, homeDir) => {
   // Verification and copying consume this command's budget before repository code starts.
   const timeoutMs = input.timeoutMs - (performance.now() - startedAt);
   if (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs > 2147483647 || timeoutMs <= 0) throw new Error("Prepared project command budget exhausted");
-  const child = spawn(script, [], {
-    cwd: workspaceDir,
-    env: { PATH: process.env.PATH, HOME: homeDir, LANG: "C.UTF-8", OPENCLAW_SOURCE_TREE_PATH: workspaceDir, OPENCLAW_WORKTREE_PATH: workspaceDir },
-    detached: true,
-    stdio: ["ignore", "ignore", "pipe"],
-  });
+  let child;
+  let timeout;
   let stderr = "";
   let failure;
   // A deadline/signal may retire the group before exit; never signal that group twice.
   let killed = false;
   const killGroup = () => {
-    if (child.pid && !killed) {
+    if (child?.pid && !killed) {
       try { process.kill(-child.pid, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }
       killed = true;
     }
   };
   const stop = (reason) => { failure ??= reason; killGroup(); };
-  const timeout = setTimeout(() => stop("timed out within the provider command budget (" + input.timeoutMs + " ms)"), timeoutMs);
   const signals = ["SIGTERM", "SIGINT"].map((signal) => [signal, () => stop("interrupted by " + signal)]);
+  // A recipe can signal its parent before spawn returns. Own those signals
+  // before it starts, and release them even when spawn throws synchronously.
   for (const [signal, handler] of signals) process.once(signal, handler);
-  child.stderr.on("data", (chunk) => { stderr = (stderr + chunk.toString()).slice(-16384); });
-  child.once("error", (error) => { failure ??= error.message; });
-  // Descendants can retain stderr after the script exits. Kill them at exit,
-  // then await close to prove all inherited pipes are drained before capture.
-  child.once("exit", killGroup);
-  child.once("close", (code) => {
+  return new Promise((resolve, reject) => {
+    child = spawn(script, [], {
+      cwd: workspaceDir,
+      env: { PATH: process.env.PATH, HOME: homeDir, LANG: "C.UTF-8", OPENCLAW_SOURCE_TREE_PATH: workspaceDir, OPENCLAW_WORKTREE_PATH: workspaceDir },
+      detached: true,
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    timeout = setTimeout(() => stop("timed out within the provider command budget (" + input.timeoutMs + " ms)"), timeoutMs);
+    child.stderr.on("data", (chunk) => { stderr = (stderr + chunk.toString()).slice(-16384); });
+    child.once("error", (error) => { failure ??= error.message; });
+    // Descendants can retain stderr after the script exits. Kill them at exit,
+    // then await close to prove all inherited pipes are drained before capture.
+    child.once("exit", killGroup);
+    child.once("close", (code) => {
+      if (code !== 0 || failure) reject(new Error("Prepared project setup failed: " + (failure || stderr.trim() || "exit " + code)));
+      else resolve();
+    });
+  }).finally(() => {
     clearTimeout(timeout);
     for (const [signal, handler] of signals) process.removeListener(signal, handler);
-    if (code !== 0 || failure) reject(new Error("Prepared project setup failed: " + (failure || stderr.trim() || "exit " + code)));
-    else resolve();
   });
-});
+};
   const workerRoot = ownedDirectory(machineHome, ".openclaw-worker");
   // Inspection cannot create a workspace or execute repository code before the Gateway rechecks its owner.
   if (inspectOnly && !fs.existsSync(path.join(workerRoot, "prepared", input.namespace, input.preparationKey))) return;
