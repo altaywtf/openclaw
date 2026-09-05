@@ -173,14 +173,16 @@ function formatToolSearchCatalogDirectory(
   mode: ToolSearchMode,
   maxChars: number,
 ): string {
-  if (entries.length === 0) {
+  const deferredEntries = entries.filter((entry) => !entry.directVisible);
+  if (deferredEntries.length === 0) {
     return "Available deferred-schema tools: none.";
   }
   const nameCounts = new Map<string, number>();
   for (const entry of entries) {
     nameCounts.set(entry.name, (nameCounts.get(entry.name) ?? 0) + 1);
   }
-  const listedEntries = entries
+  // Count collisions before excluding native tools: their lookalikes remain ambiguous.
+  const listedEntries = deferredEntries
     .filter((entry) => nameCounts.get(entry.name) === 1)
     .toSorted(
       (left, right) =>
@@ -198,7 +200,7 @@ function formatToolSearchCatalogDirectory(
   const omittedLabel = " additional tools omitted. ";
   // Each line includes its newline; three fixed separators remain outside the rows.
   let lineChars = lines.reduce((chars, line) => chars + line.length + 1, 0);
-  let omitted = entries.length - lines.length;
+  let omitted = deferredEntries.length - lines.length;
   let guidance: string;
   for (;;) {
     guidance =

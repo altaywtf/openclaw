@@ -1097,6 +1097,47 @@ describe("Tool Search", () => {
     expect(directory.length).toBeLessThanOrEqual(testing.maxToolSchemaDirectoryPromptChars);
   });
 
+  it.each(["tools", "directory"] as const)(
+    "lists only deferred tools while keeping direct tools searchable in %s mode",
+    async (mode) => {
+      const catalogRef = createToolSearchCatalogRef();
+      const config = { tools: { toolSearch: { enabled: true, mode } } };
+      const read = fakeTool("read", "Read a workspace file");
+      const status = fakeTool("session_status", "Inspect the current session");
+      const tools = [...createToolSearchTools({ config, catalogRef }), read, status];
+      const apply = mode === "directory" ? applyToolSchemaDirectoryCatalog : applyToolSearchCatalog;
+      const ctx = { config, catalogRef };
+      const first = apply({ ...ctx, tools });
+      expect(first.tools).toContain(read);
+      expect(first.tools).not.toContain(status);
+      expect(buildToolSchemaDirectoryPrompt(ctx)).not.toContain("- read (core)");
+      expect(buildToolSchemaDirectoryPrompt(ctx)).toContain("- session_status (core)");
+      const runtime = new ToolSearchRuntime(ctx, resolveToolSearchConfig(config));
+      expect(await runtime.search("read", { limit: 1 })).toEqual([
+        expect.objectContaining({ name: "read" }),
+      ]);
+      expect(await runtime.call("openclaw:core:read", { value: "file.txt" })).toEqual(
+        expect.objectContaining({
+          result: expect.objectContaining({
+            details: { name: "read", input: { value: "file.txt" } },
+          }),
+        }),
+      );
+
+      // Same tools, different native surface: a cached deferred row must disappear.
+      const direct = apply({ ...ctx, tools, directToolNames: ["session_status"] });
+      expect(direct.tools).toContain(status);
+      expect(buildToolSchemaDirectoryPrompt(ctx)).toBe("Available deferred-schema tools: none.");
+      apply({ ...ctx, tools });
+      expect(buildToolSchemaDirectoryPrompt(ctx)).toContain("- session_status (core)");
+
+      const lookalike = pluginTool("read", "Unrelated plugin reader");
+      apply({ ...ctx, tools: [...tools, lookalike] });
+      expect(buildToolSchemaDirectoryPrompt(ctx)).not.toContain("- read (");
+      expect(await runtime.search("read", { limit: 5 })).toHaveLength(2);
+    },
+  );
+
   it("keeps the capability directory byte-stable across catalog insertion orders", () => {
     const config = { tools: { toolSearch: true } } as never;
     const buildDirectory = (reverse: boolean) => {

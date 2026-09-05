@@ -46,6 +46,9 @@ entry remains searchable and callable. Invalid arguments for OpenClaw-owned
 tools include a bounded expected input signature when one can be rendered, so
 the model can correct the call without another schema lookup.
 
+The deferred directory omits tools already exposed directly. They remain searchable,
+so discovery can still return their complete schemas without duplicating native guidance.
+
 The catalog can include catalog-eligible OpenClaw tools, plugin tools, MCP
 tools, and client-provided tools. The directory gives the model an idea of
 which trusted capabilities it can discover without exposing every cataloged
