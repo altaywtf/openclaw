@@ -4,7 +4,7 @@ import { loadBundledProviderStaticCatalogContextModels } from "./embedded-agent-
 import { modelCatalogRowToEntry } from "./model-catalog-entry.js";
 import { loadManifestModelCatalog } from "./model-catalog.js";
 import type { ModelCatalogSnapshot } from "./model-catalog.types.js";
-import { modelCatalogLogicalKey } from "./openai-model-routes.js";
+import { resolveModelCatalogIdentityKey } from "./openai-model-routes.js";
 import {
   getPreparedModelFullCatalogAuth,
   setPreparedModelFullCatalogAuth,
@@ -64,7 +64,7 @@ export async function prepareFullCatalogFacts(
   const providerOutcomes = catalogSource.providerOutcomes ?? [];
   const completeModelCatalog = markPreparedModelCatalogFull({
     ...modelCatalog,
-    staticEntries: dedupeByKey(staticEntries, modelCatalogLogicalKey),
+    staticEntries: dedupeByKey(staticEntries, resolveModelCatalogIdentityKey),
     ...(providerOutcomes.length > 0 ? { providerOutcomes } : {}),
   });
   return {
@@ -85,13 +85,13 @@ export function materializePreparedModelCatalog(
   const sourceEntries = snapshot.entries;
   const runtimeByKey = new Map(
     runtimeCapabilityModels.map(({ provider, modelId, model }) => [
-      modelCatalogLogicalKey({ provider, id: modelId }),
+      resolveModelCatalogIdentityKey({ provider, id: modelId }),
       modelCatalogRowToEntry(model),
     ]),
   );
   const project = (entries: ModelCatalogSnapshot["entries"]) =>
     entries.map((entry) => {
-      const runtime = runtimeByKey.get(modelCatalogLogicalKey(entry));
+      const runtime = runtimeByKey.get(resolveModelCatalogIdentityKey(entry));
       if (!runtime) {
         return entry;
       }

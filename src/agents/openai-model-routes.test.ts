@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
-  modelCatalogLogicalKey,
+  resolveModelCatalogIdentityKey,
   openAIModelCatalogRoutePolicy,
   resolveConfiguredOpenAIAuthMode,
   resolveOpenAIModelRoutes,
@@ -77,11 +77,11 @@ describe("OpenAI model route adapter", () => {
   });
 
   it("uses the provider-owned logical catalog identity", () => {
-    expect(modelCatalogLogicalKey({ provider: "OpenAI", id: "GPT-5.4-Codex@Work" })).toBe(
-      "openai/gpt-5.4-codex",
+    expect(resolveModelCatalogIdentityKey({ provider: "OpenAI", id: "GPT-5.4-Codex@Work" })).toBe(
+      "openai/gpt-5.4",
     );
-    expect(modelCatalogLogicalKey({ provider: "custom", id: "custom/Model@profile" })).toBe(
-      "custom/model",
+    expect(resolveModelCatalogIdentityKey({ provider: "custom", id: "custom/Model@profile" })).toBe(
+      "custom/custom/Model@profile",
     );
     expect(
       openAIModelCatalogRoutePolicy.resolveIdentity({

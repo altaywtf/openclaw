@@ -2,10 +2,7 @@ import {
   collectConfiguredModelRefs,
   type ConfiguredModelRef,
 } from "@openclaw/model-catalog-core/configured-model-refs";
-import {
-  buildModelCatalogMergeKey,
-  type ModelCatalogRef,
-} from "@openclaw/model-catalog-core/model-catalog-refs";
+import type { ModelCatalogRef } from "@openclaw/model-catalog-core/model-catalog-refs";
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
@@ -20,6 +17,7 @@ import { buildInlineProviderModels } from "./embedded-agent-runner/model.inline-
 import type { StaticModelIdMatcher } from "./embedded-agent-runner/model.static-id.js";
 import { resolveConfiguredModelHarnessRuntime } from "./harness-runtimes.js";
 import type { ModelCatalogEntry } from "./model-catalog.js";
+import { resolveModelCatalogIdentityKey } from "./openai-model-routes.js";
 import type { AuthStorageData } from "./sessions/auth-storage.js";
 import { resolveEffectiveAgentRuntime } from "./thinking-runtime.js";
 
@@ -110,7 +108,7 @@ export function prepareConfiguredRuntimeModels(params: {
   const prepared: PreparedConfiguredRuntimeModel[] = [];
   const seen = new Set<string>();
   for (const { modelId, provider } of params.configuredModelRefs) {
-    const key = buildModelCatalogMergeKey(provider, modelId);
+    const key = resolveModelCatalogIdentityKey({ provider, id: modelId });
     if (seen.has(key)) {
       continue;
     }
@@ -170,7 +168,7 @@ export function prepareRuntimeCapabilityModels(params: {
     if (runtime === provider || runtime === "openclaw") {
       continue;
     }
-    const key = buildModelCatalogMergeKey(provider, modelId);
+    const key = resolveModelCatalogIdentityKey({ provider, id: modelId });
     if (seen.has(key)) {
       continue;
     }

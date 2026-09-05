@@ -22,7 +22,7 @@ import type { ModelCatalogEntry, ModelCatalogSnapshot } from "./model-catalog.ty
 import { resolveCatalogOwnedModelCompat } from "./model-compat-catalog.js";
 import { createConfiguredProviderCatalogModelIdNormalizer } from "./model-ref-shared.js";
 import { buildConfiguredModelCatalog } from "./model-selection-shared.js";
-import { modelCatalogLogicalKey } from "./openai-model-routes.js";
+import { resolveModelCatalogIdentityKey } from "./openai-model-routes.js";
 import type { AuthStorageData, ModelRegistry } from "./sessions/index.js";
 
 const log = createSubsystemLogger("model-catalog");
@@ -223,9 +223,11 @@ function mergeCatalogEntries(
   entries: ModelCatalogEntry[],
   catalogRoutes?: readonly ModelCatalogEntry[],
 ): void {
-  const indexByKey = new Map(models.map((entry, index) => [modelCatalogLogicalKey(entry), index]));
+  const indexByKey = new Map(
+    models.map((entry, index) => [resolveModelCatalogIdentityKey(entry), index]),
+  );
   for (const entry of entries) {
-    const key = modelCatalogLogicalKey(entry);
+    const key = resolveModelCatalogIdentityKey(entry);
     const existingIndex = indexByKey.get(key);
     if (existingIndex === undefined) {
       models.push(entry);
@@ -235,7 +237,7 @@ function mergeCatalogEntries(
     const existing = models.at(existingIndex);
     if (existing) {
       const catalogRoute = catalogRoutes?.find(
-        (candidate) => modelCatalogLogicalKey(candidate) === key,
+        (candidate) => resolveModelCatalogIdentityKey(candidate) === key,
       );
       models[existingIndex] = overlayCatalogMetadata(catalogRoute ?? existing, entry, {
         preserveBaseCompat: catalogRoutes !== undefined,
@@ -246,7 +248,7 @@ function mergeCatalogEntries(
 
 function catalogRouteVariantKey(entry: ModelCatalogEntry): string {
   return [
-    modelCatalogLogicalKey(entry),
+    resolveModelCatalogIdentityKey(entry),
     entry.api ?? "",
     normalizeCatalogRouteBaseUrl(entry.baseUrl) ?? "",
   ].join("\u0000");
@@ -350,7 +352,7 @@ export function loadManifestModelCatalog(params: {
       plugin.modelCatalog?.providers ?? {},
     )) {
       providerCatalog.models.forEach((model, providerOrder) => {
-        const key = modelCatalogLogicalKey({ provider, id: model.id });
+        const key = resolveModelCatalogIdentityKey({ provider, id: model.id });
         if (!providerOrderByKey.has(key)) {
           providerOrderByKey.set(key, providerOrder);
         }
@@ -359,7 +361,7 @@ export function loadManifestModelCatalog(params: {
   }
   const rows = plan.rows.map((row) => {
     const entry = modelCatalogRowToEntry(row);
-    const providerOrder = providerOrderByKey.get(modelCatalogLogicalKey(row));
+    const providerOrder = providerOrderByKey.get(resolveModelCatalogIdentityKey(row));
     if (providerOrder !== undefined) {
       entry.providerOrder = providerOrder;
     }
@@ -475,7 +477,7 @@ export async function buildPreparedModelCatalogSnapshot(
     const dynamicManifestKeys = new Set(
       supplementalManifestPlan.entries.flatMap((entry) =>
         entry.discovery === "runtime" || entry.discovery === "refreshable"
-          ? entry.rows.map(modelCatalogLogicalKey)
+          ? entry.rows.map(resolveModelCatalogIdentityKey)
           : [],
       ),
     );
@@ -490,7 +492,7 @@ export async function buildPreparedModelCatalogSnapshot(
       params.includeProviderPluginAugmentation === false
         ? declaredManifestModels
         : declaredManifestModels.filter(
-            (entry) => !dynamicManifestKeys.has(modelCatalogLogicalKey(entry)),
+            (entry) => !dynamicManifestKeys.has(resolveModelCatalogIdentityKey(entry)),
           );
     // Manifest rows are the curated baseline for static publication. Live discovery overlays the
     // same logical rows and prunes runtime-owned rows absent from the account response.
@@ -541,7 +543,7 @@ export async function buildPreparedModelCatalogSnapshot(
         // runtime-owned manifest rows must be present in the account response first.
         const accountVisibleModelKeys = new Set(
           [...models, ...configuredModels].map((entry) =>
-            modelCatalogLogicalKey({
+            resolveModelCatalogIdentityKey({
               provider: entry.provider,
               id: normalizeModelId(entry.provider, entry.id),
             }),
@@ -553,7 +555,7 @@ export async function buildPreparedModelCatalogSnapshot(
           const id = normalizeModelId(provider, entry.id);
           if (
             runtimeDiscoveryProviders.has(normalizeProviderId(provider)) &&
-            !accountVisibleModelKeys.has(modelCatalogLogicalKey({ provider, id }))
+            !accountVisibleModelKeys.has(resolveModelCatalogIdentityKey({ provider, id }))
           ) {
             continue;
           }

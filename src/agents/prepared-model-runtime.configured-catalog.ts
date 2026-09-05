@@ -4,7 +4,7 @@ import type { InlineModelEntry } from "./embedded-agent-runner/model.inline-prov
 import { modelCatalogRowToEntry } from "./model-catalog-entry.js";
 import type { ModelCatalogEntry } from "./model-catalog.js";
 import type { ModelCatalogSnapshot } from "./model-catalog.types.js";
-import { modelCatalogLogicalKey } from "./openai-model-routes.js";
+import { resolveModelCatalogIdentityKey } from "./openai-model-routes.js";
 import type { PreparedConfiguredRuntimeModel } from "./prepared-model-runtime.configured.js";
 import type { ModelRegistry } from "./sessions/model-registry.js";
 
@@ -33,7 +33,7 @@ function createConfiguredModelCatalogSnapshot(params: {
 }): ModelCatalogSnapshot {
   const entries = new Map<string, ModelCatalogEntry>();
   const addEntry = (entry: ModelCatalogEntry) => {
-    const key = modelCatalogLogicalKey(entry);
+    const key = resolveModelCatalogIdentityKey(entry);
     if (!entries.has(key)) {
       entries.set(key, entry);
     }

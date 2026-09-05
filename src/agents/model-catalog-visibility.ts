@@ -4,6 +4,7 @@
  * auth-backed availability.
  */
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { dedupeByKey } from "../shared/dedupe-by-key.js";
 import type { ModelAuthAvailabilityEvaluation } from "./model-auth-availability.js";
 import { compareModelCatalogEntries } from "./model-catalog-order.js";
 import {
@@ -19,11 +20,12 @@ import {
   createModelVisibilityPolicy,
   type ModelVisibilityPolicy,
 } from "./model-visibility-policy.js";
-import { modelCatalogLogicalKey } from "./openai-model-routes.js";
+import { resolveModelCatalogIdentityKey } from "./openai-model-routes.js";
 
 type ModelCatalogVisibilityView = "default" | "configured" | "all";
 
 type LogicalModelCatalogEntryState = {
+  evaluation: ModelAuthAvailabilityEvaluation;
   authBacked: boolean;
   compatible: boolean;
   routeManaged: boolean;
@@ -44,6 +46,7 @@ export function resolveLogicalModelCatalogEntryState(params: {
       ? { kind: "selected", route: selectedRoute, policy: params.routePolicy }
       : { kind: "unresolved", policy: params.routePolicy };
   return {
+    evaluation: params.evaluation,
     authBacked: params.authBacked ?? params.evaluation.availability === true,
     compatible: params.evaluation.routeResolution?.kind !== "incompatible",
     routeManaged,
@@ -55,38 +58,15 @@ function sortModelCatalogEntries(entries: ModelCatalogEntry[]): ModelCatalogEntr
   return entries.toSorted(compareModelCatalogEntries);
 }
 
-function resolveLogicalKey(
-  entry: Pick<ModelCatalogEntry, "provider" | "id">,
-  routePolicy: ModelCatalogRoutePolicy,
-): string {
-  return routePolicy.resolveIdentity(entry)?.key ?? modelCatalogLogicalKey(entry);
-}
-
-function dedupeLogicalModelCatalogEntries(
-  entries: readonly ModelCatalogEntry[],
-  routePolicy: ModelCatalogRoutePolicy,
-) {
-  const seen = new Set<string>();
-  return entries.filter((entry) => {
-    const key = resolveLogicalKey(entry, routePolicy);
-    if (seen.has(key)) {
-      return false;
-    }
-    seen.add(key);
-    return true;
-  });
-}
-
 function isPickerVisibleCatalogEntry(
   entry: ModelCatalogEntry,
   configuredKeys: ReadonlySet<string>,
-  routePolicy: ModelCatalogRoutePolicy,
 ): boolean {
   // Deprecated and disabled rows stay selectable but are picker-hidden.
   // Exact configured refs always remain visible so pinned models never disappear.
   return (
     (entry.status !== "deprecated" && entry.status !== "disabled") ||
-    configuredKeys.has(resolveLogicalKey(entry, routePolicy))
+    configuredKeys.has(resolveModelCatalogIdentityKey(entry))
   );
 }
 
@@ -118,8 +98,7 @@ export async function prepareLogicalVisibleModelCatalog(
       agentId: params.agentId,
       ...RUNTIME_MODEL_VISIBILITY_NORMALIZATION,
     });
-  const keyOf = (entry: Pick<ModelCatalogEntry, "provider" | "id">) =>
-    resolveLogicalKey(entry, params.routePolicy);
+  const keyOf = resolveModelCatalogIdentityKey;
   const projectionCatalog = params.routeVariants?.length ? params.routeVariants : params.catalog;
   const routeVariantsByKey = new Map<string, ModelCatalogEntry[]>();
   for (const entry of projectionCatalog) {
@@ -164,19 +143,23 @@ export async function prepareLogicalVisibleModelCatalog(
     return state;
   };
   const projectEntries = (entries: readonly ModelCatalogEntry[]) =>
-    dedupeLogicalModelCatalogEntries(entries, params.routePolicy)
-      .map((entry) =>
-        projectModelCatalogEntryForRoute({
-          entry,
-          projection: getEntryState(entry).routeProjection,
-          catalog: variantsOf(entry),
-          overrides: resolveConfiguredModelCatalogOverrides({
-            cfg: params.cfg,
+    dedupeByKey(entries, keyOf)
+      .map((entry) => {
+        const { routeProjection, evaluation } = getEntryState(entry);
+        return {
+          ...projectModelCatalogEntryForRoute({
             entry,
-            policy: params.routePolicy,
+            projection: routeProjection,
+            catalog: variantsOf(entry),
+            overrides: resolveConfiguredModelCatalogOverrides({
+              cfg: params.cfg,
+              entry,
+              policy: params.routePolicy,
+            }),
           }),
-        }),
-      )
+          evaluation,
+        };
+      })
       .toSorted((left, right) => compareModelCatalogEntries(left.entry, right.entry));
   if (params.view === "all") {
     return projectEntries(params.catalog);
@@ -239,6 +222,6 @@ export async function prepareLogicalVisibleModelCatalog(
     ({ entry }) =>
       (!policy.hasProviderWildcards ||
         policy.allows({ provider: entry.provider, model: entry.id })) &&
-      isPickerVisibleCatalogEntry(entry, configuredKeys, params.routePolicy),
+      isPickerVisibleCatalogEntry(entry, configuredKeys),
   );
 }

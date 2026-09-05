@@ -83,8 +83,7 @@ export async function prepareModelCatalogView(params: ModelCatalogViewParams) {
     ...RUNTIME_MODEL_VISIBILITY_NORMALIZATION,
     manifestPlugins: params.metadataSnapshot,
   });
-  const evaluations = new Map<string, ModelAuthAvailabilityEvaluation>();
-  const rows = await prepareLogicalVisibleModelCatalog({
+  const visibleRows = await prepareLogicalVisibleModelCatalog({
     cfg: params.cfg,
     catalog,
     defaultProvider: DEFAULT_PROVIDER,
@@ -97,7 +96,6 @@ export async function prepareModelCatalogView(params: ModelCatalogViewParams) {
     routeVariants,
     prepareEntry: async (entry) => {
       const evaluation = await decisions.evaluate(entry, params);
-      evaluations.set(resolveModelCatalogIdentityKey(entry), evaluation);
       const syntheticLocal =
         evaluation.routeResolution === null &&
         normalizeProviderId(entry.provider) !== "openai" &&
@@ -118,26 +116,35 @@ export async function prepareModelCatalogView(params: ModelCatalogViewParams) {
     ...RUNTIME_MODEL_VISIBILITY_NORMALIZATION,
     manifestPlugins: params.metadataSnapshot,
   });
-  const runtimes = new Map<string, GatewayAgentRuntime | undefined>();
-  const runtimeChoices = new Map<string, readonly string[]>();
+  const factsByKey = new Map<
+    string,
+    {
+      evaluation: ModelAuthAvailabilityEvaluation;
+      runtime: GatewayAgentRuntime | undefined;
+      runtimeChoices: readonly string[];
+      supportsFastMode: boolean | undefined;
+    }
+  >();
   const labelsByProvider = new Map<string, Set<string | undefined>>();
-  const entries: ModelCatalogEntry[] = [];
-  const runtimeCatalog: ModelCatalogEntry[] = [];
-  for (const { entry, runtimeEntry } of rows) {
+  const rows = visibleRows.map(({ entry, runtimeEntry, evaluation }) => {
     const configured = configuredEntries.byKey.get(`${entry.provider}/${entry.id}`);
     const alias = configured?.aliasDisabled
       ? undefined
       : (configured?.aliases.at(-1) ?? entry.alias);
-    entries.push(alias === entry.alias ? entry : { ...entry, alias });
-    runtimeCatalog.push(alias === runtimeEntry.alias ? runtimeEntry : { ...runtimeEntry, alias });
-  }
+    return {
+      entry: alias === entry.alias ? entry : { ...entry, alias },
+      runtimeEntry: alias === runtimeEntry.alias ? runtimeEntry : { ...runtimeEntry, alias },
+      evaluation,
+    };
+  });
+  const entries = rows.map(({ entry }) => entry);
+  const runtimeCatalog = rows.map(({ runtimeEntry }) => runtimeEntry);
   const resolveFastMode = createModelCatalogFastModeResolver({
     cfg: params.cfg,
     agentId: params.agentId,
     metadataSnapshot: params.metadataSnapshot,
     entries: runtimeCatalog,
   });
-  const fastModes = new Map<string, boolean | undefined>();
   const providerOwners = new Map<string, readonly string[]>();
   const ownersForProvider = (provider: string) => {
     let owners = providerOwners.get(provider);
@@ -151,16 +158,18 @@ export async function prepareModelCatalogView(params: ModelCatalogViewParams) {
     }
     return owners;
   };
-  for (const entry of runtimeCatalog) {
+  for (const { runtimeEntry: entry, evaluation } of rows) {
     const key = resolveModelCatalogIdentityKey(entry);
-    const evaluation = evaluations.get(key)!;
     const runtime = await decisions.runtime(entry, params);
     const labels = labelsByProvider.get(entry.provider) ?? new Set<string | undefined>();
     labels.add(preparedAuthLabel(evaluation));
     labelsByProvider.set(entry.provider, labels);
-    runtimes.set(key, runtime);
-    runtimeChoices.set(key, await decisions.runtimeChoices(entry, params));
-    fastModes.set(key, resolveFastMode({ entry, evaluation, runtime }));
+    factsByKey.set(key, {
+      evaluation,
+      runtime,
+      runtimeChoices: await decisions.runtimeChoices(entry, params),
+      supportsFastMode: resolveFastMode({ entry, evaluation, runtime }),
+    });
   }
   return {
     isCurrent: decisions.isCurrent,
@@ -191,13 +200,14 @@ export async function prepareModelCatalogView(params: ModelCatalogViewParams) {
         return labels.size === 1 && label ? [[provider, label] as const] : [];
       }),
     ),
-    runtime: (entry: ModelCatalogEntry) => runtimes.get(resolveModelCatalogIdentityKey(entry)),
+    runtime: (entry: ModelCatalogEntry) =>
+      factsByKey.get(resolveModelCatalogIdentityKey(entry))?.runtime,
     runtimeChoices: (entry: ModelCatalogEntry) =>
-      runtimeChoices.get(resolveModelCatalogIdentityKey(entry)) ?? [],
+      factsByKey.get(resolveModelCatalogIdentityKey(entry))?.runtimeChoices ?? [],
     supportsFastMode: (entry: ModelCatalogEntry) =>
-      fastModes.get(resolveModelCatalogIdentityKey(entry)),
+      factsByKey.get(resolveModelCatalogIdentityKey(entry))?.supportsFastMode,
     evaluate(entry: ModelCatalogEntry) {
-      const evaluation = evaluations.get(resolveModelCatalogIdentityKey(entry));
+      const evaluation = factsByKey.get(resolveModelCatalogIdentityKey(entry))?.evaluation;
       if (!evaluation) {
         throw new Error("Model catalog view omitted prepared auth evaluation");
       }

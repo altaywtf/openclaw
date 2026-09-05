@@ -69,10 +69,6 @@ type ModelCatalogLogicalOverrides = Partial<
   >
 >;
 
-function normalizeExactModelId(value: string): string {
-  return splitTrailingAuthProfile(value).model.trim().toLowerCase();
-}
-
 /** Reads explicit logical capability overrides without re-resolving auth. */
 export function resolveConfiguredModelCatalogOverrides(params: {
   cfg: OpenClawConfig;
@@ -87,11 +83,11 @@ export function resolveConfiguredModelCatalogOverrides(params: {
   const configuredIdentity = params.policy?.resolveIdentity(params.entry);
   const normalizeConfiguredModelId = (modelId: string) =>
     params.policy?.resolveIdentity({ provider: params.entry.provider, id: modelId })?.key ??
-    normalizeExactModelId(modelId);
+    modelId;
   const model = resolveMergedModelProviderModels({
     models: providerConfig.models,
     normalizeModelId: normalizeConfiguredModelId,
-  }).get(configuredIdentity?.key ?? normalizeExactModelId(params.entry.id));
+  }).get(configuredIdentity?.key ?? params.entry.id);
   const overrides: ModelCatalogLogicalOverrides = {
     ...(model?.name ? { name: model.name } : {}),
     ...(model?.contextWindow !== undefined ? { contextWindow: model.contextWindow } : {}),

@@ -11,6 +11,7 @@ import { isModelThinkingFormat, type ModelCompatConfig } from "../config/types.m
 import type { Model } from "../llm/types.js";
 import type { ModelCatalogEntry, ModelInputType } from "./model-catalog.types.js";
 import { modelTransportRoutesMatch } from "./model-compat-catalog.js";
+import { resolveModelCatalogIdentityKey } from "./openai-model-routes.js";
 import { canonicalizeProviderModelId } from "./provider-model-route.js";
 
 type ModelThinkingCompat = {
@@ -140,19 +141,25 @@ export function modelSupportsInput(
   return entry?.input?.includes(input) ?? false;
 }
 
-/** Finds a provider-qualified model entry in a catalog. */
+/** Prefers exact identity; retains the shipped SDK's case-insensitive lookup only when unique. */
 export function findModelInCatalog<T extends Pick<ModelCatalogEntry, "provider" | "id">>(
   catalog: readonly T[],
   provider: string,
   modelId: string,
 ): T | undefined {
   const normalizedProvider = normalizeProviderId(provider);
+  const key = resolveModelCatalogIdentityKey({ provider, id: modelId.trim() });
+  const exact = catalog.find((entry) => resolveModelCatalogIdentityKey(entry) === key);
+  if (exact) {
+    return exact;
+  }
   const normalizedModelId = normalizeLowercaseStringOrEmpty(modelId);
-  return catalog.find(
+  const matches = catalog.filter(
     (entry) =>
       normalizeProviderId(entry.provider) === normalizedProvider &&
       normalizeLowercaseStringOrEmpty(entry.id) === normalizedModelId,
   );
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 /** Finds a model entry, requiring uniqueness when provider is omitted. */
@@ -170,9 +177,17 @@ export function findModelCatalogEntry(
     return findModelInCatalog(catalog, provider, modelId);
   }
 
-  const normalizedModelId = normalizeLowercaseStringOrEmpty(modelId);
-  const matches = catalog.filter(
-    (entry) => normalizeLowercaseStringOrEmpty(entry.id) === normalizedModelId,
+  const exact = catalog.filter(
+    (entry) =>
+      resolveModelCatalogIdentityKey(entry) ===
+      resolveModelCatalogIdentityKey({ provider: entry.provider, id: modelId }),
   );
+  const matches =
+    exact.length > 0
+      ? exact
+      : catalog.filter(
+          (entry) =>
+            normalizeLowercaseStringOrEmpty(entry.id) === normalizeLowercaseStringOrEmpty(modelId),
+        );
   return matches.length === 1 ? matches[0] : undefined;
 }
