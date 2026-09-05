@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { Result } from "@openclaw/normalization-core/result";
+import { z } from "zod";
 import { tryResolveAmbientOwnerAgentId } from "../agents/agent-scope-config.js";
 import { resolveAgentEffectiveModelPrimary } from "../agents/agent-scope.js";
 import {
@@ -25,8 +26,10 @@ import {
   withInstallationTarget,
   type InstallationTarget,
 } from "../infra/installation-target-context.js";
+import { resolveOpenClawPackageRoot } from "../infra/openclaw-root.js";
 import { readRestartSentinelReadOnly } from "../infra/restart-sentinel.js";
 import { acceptTriageContinuation } from "../infra/triage-continuation.js";
+import type { UpdateRepairValidation } from "../infra/update-repair-agent.js";
 import {
   redactSupportString,
   type SupportRedactionContext,
@@ -65,6 +68,13 @@ type TriageOptions = {
   agent?: TriageExternalAgent;
   recovery?: TriageRecoveryContext;
 };
+
+const triageDoctorReportSchema = z.object({
+  ok: z.boolean(),
+  findings: z.array(
+    z.object({ severity: z.enum(["error", "warning", "info"]), message: z.string() }),
+  ),
+});
 
 function triageCollectionError(error: unknown, redaction: SupportRedactionContext): string {
   const message = error instanceof Error ? error.message : String(error);
@@ -218,7 +228,8 @@ export async function triageCommand(
   // Standalone Doctor loads dotenv; recovery carries selectors captured before mutation.
   const target = options.recovery?.target ?? resolveInstallationTarget();
   const targetEnv = { ...process.env, ...installationTargetEnv(target) };
-  const agentOptions = options.recovery?.cwd ? { cwd: options.recovery.cwd } : {};
+  const agentCwd = automatic?.failure.installationRoot ?? options.recovery?.cwd;
+  const agentOptions = agentCwd ? { cwd: agentCwd } : {};
   const redaction = { env: targetEnv, stateDir: target.stateDir };
   const updateFailure = options.recovery
     ? sanitizeTriageUpdateFailure(options.recovery.updateFailure, redaction)
@@ -469,39 +480,175 @@ export async function triageCommand(
     );
   }
 
-  // Preflight and repair must validate the same local transport and installation.
-  const result = await withInstallationTarget(target, async () => {
-    const { verifySetupInference } = await import("../system-agent/setup-inference.js");
-    if (!isCurrent()) {
-      return { exitCode: 1 };
-    }
-    const inference = await verifySetupInference({
-      runtime,
-      timeoutMs: 15_000,
+  if (automatic && !automatic.diagnosticOnly) {
+    // Automatic recovery must verify the original symptom and may need an atomic restart.
+    // Its preflight and turn share one target; Doctor-only validation cannot replace them.
+    const result = await withInstallationTarget(target, async () => {
+      const { verifySetupInference } = await import("../system-agent/setup-inference.js");
+      if (!isCurrent()) {
+        return { exitCode: 1 };
+      }
+      const inference = await verifySetupInference({
+        runtime,
+        timeoutMs: 15_000,
+      });
+      if (!isCurrent()) {
+        return { exitCode: 1 };
+      }
+      if (!inference.ok) {
+        const reason = triageCollectionError(inference.error, redaction);
+        throw new Error(
+          `Embedded agent unavailable: ${reason}. Run \`openclaw onboard\` or use a suggested handoff command.`,
+        );
+      }
+      const { agentExecCommand } = await import("./agent-exec.js");
+      if (!isCurrent()) {
+        return { exitCode: 1 };
+      }
+      return agentExecCommand(prompt, agentOptions, runtime, {
+        abortSignal: automatic.signal,
+        assertSourceCurrent: automatic.assertCurrent,
+      });
     });
-    if (!isCurrent()) {
-      return { exitCode: 1 };
+    if (result.exitCode !== 0) {
+      exitCliAfterOutput(runtime, result.exitCode);
     }
-    if (!inference.ok) {
-      const reason = triageCollectionError(inference.error, redaction);
+
+    return;
+  }
+
+  const { runUpdateRepairLoop } = await import("../infra/update-repair-agent.js");
+  const installRoot = await resolveOpenClawPackageRoot({
+    moduleUrl: import.meta.url,
+    argv1: process.argv[1],
+  });
+  if (!isCurrent()) {
+    return;
+  }
+  if (!installRoot) {
+    throw new Error("Cannot locate the OpenClaw installation; use a suggested handoff command.");
+  }
+  const failedResult =
+    updateFailure && "result" in updateFailure ? updateFailure.result : undefined;
+  const result = await runUpdateRepairLoop({
+    target: {
+      stateDir: target.stateDir,
+      configPath: target.configPath,
+      workspaceDir: target.defaultWorkspaceDir,
+      installRoot,
+    },
+    context: {
+      ...(updateFailure ?? { error: "Operator requested installation triage" }),
+      phase: "verifying",
+      beforeVersion: failedResult?.before?.version ?? undefined,
+      targetVersion: failedResult?.after?.version ?? undefined,
+      symptoms: findings
+        .slice(0, 20)
+        .map((finding) =>
+          redactSupportString(
+            `[${finding.severity}] ${finding.checkId}: ${finding.message}`,
+            redaction,
+            { maxLength: 200 },
+          ),
+        ),
+    },
+    budget: { maxTurns: 1 },
+    isCurrent,
+    onEvent: (event) => {
+      if (event.type === "turn-started" && isCurrent()) {
+        runtime.log(`Starting repair turn ${event.turn} with ${event.provider}/${event.model}.`);
+      }
+    },
+    validate: async (signal): Promise<UpdateRepairValidation> => {
+      try {
+        const [{ resolveGatewayInstallEntrypoint }, { runUtf8CommandWithTimeout }] =
+          await Promise.all([
+            import("../daemon/gateway-entrypoint.js"),
+            import("../process/exec.js"),
+          ]);
+        const entrypoint = await resolveGatewayInstallEntrypoint(installRoot);
+        signal.throwIfAborted();
+        if (!entrypoint) {
+          throw new Error("The installed OpenClaw entrypoint is unavailable.");
+        }
+        // A fresh child reads the repaired installation and can be cancelled without
+        // leaving Doctor's temporary process-global state active in this CLI.
+        const doctorCommand = await runUtf8CommandWithTimeout(
+          [
+            isNodeRuntime(process.execPath) ? process.execPath : "node",
+            entrypoint,
+            "doctor",
+            "--lint",
+            "--json",
+            "--severity-min",
+            "error",
+          ],
+          {
+            cwd: installRoot,
+            baseEnv: {},
+            env: targetEnv,
+            input: "",
+            signal,
+            killProcessTree: true,
+            maxOutputBytes: { stdout: 1024 * 1024, stderr: 16 * 1024 },
+            terminateOnOutputLimit: true,
+          },
+        );
+        signal.throwIfAborted();
+        if (doctorCommand.termination !== "exit" || doctorCommand.outputLimitExceeded) {
+          throw new Error("Doctor lint did not complete within its execution or output budget.");
+        }
+        const doctorReport = triageDoctorReportSchema.parse(JSON.parse(doctorCommand.stdout));
+        const errors = doctorReport.findings.filter((finding) => finding.severity === "error");
+        if (errors.length === 0 && (doctorCommand.code !== 0 || !doctorReport.ok)) {
+          throw new Error("Doctor lint failed without reporting an error finding.");
+        }
+        return {
+          ok: errors.length === 0,
+          score: errors.length === 0 ? 0 : -errors.length,
+          summary:
+            errors.length === 0
+              ? "Doctor lint reports no errors."
+              : `${errors.length} Doctor lint error(s): ${errors
+                  .slice(0, 3)
+                  .map((finding) =>
+                    redactSupportString(finding.message, redaction, { maxLength: 200 }),
+                  )
+                  .join("; ")}`,
+        };
+      } catch (error) {
+        signal.throwIfAborted();
+        return {
+          ok: false,
+          // An unavailable oracle must never appear better than known Doctor errors.
+          score: Number.MIN_SAFE_INTEGER,
+          summary: `Doctor checks unavailable: ${triageCollectionError(error, redaction)}`,
+        };
+      }
+    },
+  });
+  if (!isCurrent()) {
+    return;
+  }
+  if (result.status === "unavailable") {
+    if (result.reason === "exec-denied-by-policy") {
       throw new Error(
-        `Embedded agent unavailable: ${reason}. Run \`openclaw onboard\` or use a suggested handoff command.`,
+        "The operator's policy denies unattended repair (exec-denied-by-policy). Use `openclaw triage` for an external handoff.",
       );
     }
-    const { agentExecCommand } = await import("./agent-exec.js");
-    if (!isCurrent()) {
-      return { exitCode: 1 };
-    }
-    return agentExecCommand(
-      prompt,
-      agentOptions,
-      runtime,
-      automatic && !automatic.diagnosticOnly
-        ? { abortSignal: automatic.signal, assertSourceCurrent: automatic.assertCurrent }
-        : {},
+    throw new Error(
+      `Embedded agent unavailable: ${result.reason}. Run \`openclaw onboard\` or use a suggested handoff command.`,
     );
-  });
-  if (result.exitCode !== 0) {
-    exitCliAfterOutput(runtime, result.exitCode);
+  }
+  for (const attempt of result.attempts) {
+    runtime.log(attempt.summary);
+  }
+  runtime.log(`Embedded repair ${result.status}: ${result.finalValidation.summary}`);
+  if (result.status !== "repaired") {
+    if (result.reason) {
+      runtime.error(result.reason);
+    }
+    const timedOut = result.reason === "per-turn-budget" || result.reason === "wall-clock-budget";
+    exitCliAfterOutput(runtime, timedOut ? 2 : 1);
   }
 }

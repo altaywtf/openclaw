@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
 import { loadPersistedAuthProfileStore } from "../agents/auth-profiles/persisted.js";
 import {
@@ -20,6 +21,8 @@ import {
 } from "../gateway/test-helpers.env.js";
 import * as nodeSqlite from "../infra/node-sqlite.js";
 import { createOpenClawTestState, withOpenClawTestState } from "../plugin-sdk/test-state.js";
+import { trackAsyncWork } from "../shared/async-work-scope.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import {
   closeOpenClawAgentDatabaseByPath,
   isOpenClawAgentDatabaseOpen,
@@ -29,7 +32,7 @@ import {
   closeOpenClawStateDatabaseByPath,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
-import { captureEnv, setTestEnvValue, withEnvAsync } from "./env.js";
+import { captureEnv, captureFullEnv, setTestEnvValue, withEnvAsync } from "./env.js";
 import * as sessionCleanup from "./session-state-cleanup.js";
 
 async function expectPathMissing(targetPath: string): Promise<void> {
@@ -43,6 +46,146 @@ async function expectPathMissing(targetPath: string): Promise<void> {
 }
 
 describe("openclaw test state", () => {
+  it("joins callback descendants before beginning state release", async () => {
+    const gate = createDeferredCore();
+    const entered = createDeferredCore();
+    let background: Promise<void> | undefined;
+    let fixtureStateDir: string | undefined;
+    let selectedStateDir: string | undefined;
+    let cleanupStarted = false;
+    const cleanup = sessionCleanup.cleanupSessionStateForTest;
+    const observedCleanup = vi
+      .spyOn(sessionCleanup, "cleanupSessionStateForTest")
+      .mockImplementation((options) => {
+        cleanupStarted = true;
+        return cleanup(options);
+      });
+    const operation = withOpenClawTestState({ label: "callback-descendant" }, async (state) => {
+      fixtureStateDir = state.stateDir;
+      background = trackAsyncWork(async () => {
+        entered.resolve();
+        await gate.promise;
+        selectedStateDir = process.env.OPENCLAW_STATE_DIR;
+      });
+    });
+    try {
+      await entered.promise;
+      await nextTurn();
+      expect.soft(cleanupStarted).toBe(false);
+      expect.soft(process.env.OPENCLAW_STATE_DIR).toBe(fixtureStateDir);
+    } finally {
+      gate.resolve();
+      await background;
+      await operation;
+      observedCleanup.mockRestore();
+    }
+    expect(selectedStateDir).toBe(fixtureStateDir);
+  });
+
+  it.each(["cleanup", "restoreEnv"] as const)(
+    "joins concurrent %s callers before restoring selectors",
+    async (method) => {
+      const state = await createOpenClawTestState({ label: "concurrent-release" });
+      const gate = createDeferredCore();
+      const drain = vi
+        .spyOn(sessionCleanup, "cleanupSessionStateForTest")
+        .mockReturnValue(gate.promise);
+      const settled: number[] = [];
+      const releases = [0, 1].map((index) =>
+        Promise.resolve(state[method]()).then(() => settled.push(index)),
+      );
+      try {
+        await nextTurn();
+        expect.soft(settled).toEqual([]);
+        expect.soft(process.env.OPENCLAW_STATE_DIR).toBe(state.stateDir);
+        expect.soft(drain).toHaveBeenCalledOnce();
+      } finally {
+        gate.resolve();
+        await Promise.all(releases);
+        drain.mockRestore();
+        await state.cleanup();
+      }
+      expect(settled).toHaveLength(2);
+      expect(() => state.applyEnv()).toThrow("released OpenClaw test state");
+    },
+  );
+
+  it.each(["cleanup", "restoreEnv"] as const)(
+    "retains selectors and files when %s cannot drain",
+    async (method) => {
+      const environment = captureFullEnv();
+      const state = await createOpenClawTestState({ label: "failed-release" });
+      const fault = new Error("synthetic drain failed");
+      const drain = vi.spyOn(sessionCleanup, "cleanupSessionStateForTest").mockRejectedValue(fault);
+      try {
+        const results = await Promise.allSettled([state[method](), state[method]()]);
+        expect.soft(results).toEqual([
+          { status: "rejected", reason: fault },
+          { status: "rejected", reason: fault },
+        ]);
+        expect.soft(process.env.OPENCLAW_STATE_DIR).toBe(state.stateDir);
+        expect
+          .soft(
+            await fs.stat(state.root).then(
+              () => true,
+              () => false,
+            ),
+          )
+          .toBe(true);
+      } finally {
+        // The injected drain has settled and owns no real work. Dispose this
+        // deliberately retained fixture without borrowing a failed release API.
+        drain.mockRestore();
+        environment.restore();
+        await fs.rm(state.root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each([
+    { label: "successful callback", failed: false, error: undefined },
+    { label: "rejected callback", failed: true, error: new Error("callback assertion failed") },
+    { label: "undefined callback rejection", failed: true, error: undefined },
+  ])("retains $label evidence when cleanup rejects", async (callback) => {
+    const environment = captureFullEnv();
+    const cleanupError = new Error("fixture drain failed");
+    const drain = vi
+      .spyOn(sessionCleanup, "cleanupSessionStateForTest")
+      .mockRejectedValue(cleanupError);
+    let fixture: Awaited<ReturnType<typeof createOpenClawTestState>> | undefined;
+    try {
+      const [result] = await Promise.allSettled([
+        withOpenClawTestState({ label: "callback-cleanup-failure" }, async (state) => {
+          fixture = state;
+          if (callback.failed) {
+            throw callback.error;
+          }
+          return "callback result";
+        }),
+      ]);
+      if (result?.status !== "rejected" || !fixture) {
+        throw new Error("Expected cleanup rejection after fixture creation");
+      }
+      if (callback.failed) {
+        expect(result.reason).toBeInstanceOf(AggregateError);
+        expect(result.reason).toMatchObject({ errors: [callback.error, cleanupError] });
+      } else {
+        expect(result.reason).toBe(cleanupError);
+      }
+      expect(process.env.OPENCLAW_STATE_DIR).toBe(fixture.stateDir);
+      expect((await fs.stat(fixture.root)).isDirectory()).toBe(true);
+      await expect(fixture.cleanup()).rejects.toBe(cleanupError);
+      expect(drain).toHaveBeenCalledOnce();
+    } finally {
+      // The injected drain is settled and owns no work; dispose only this retained fixture.
+      drain.mockRestore();
+      environment.restore();
+      if (fixture) {
+        await fs.rm(fixture.root, { recursive: true, force: true });
+      }
+    }
+  });
+
   it.each([
     { stage: "realpath", layout: "home" },
     { stage: ".openclaw", layout: "home" },
@@ -399,15 +542,15 @@ describe("openclaw test state", () => {
       expect(unrelatedAuthReader.isOpen).toBe(true);
       return originalRm(...args);
     });
-    state.restoreEnv = () => {
+    state.restoreEnv = async () => {
       expect(process.env.OPENCLAW_STATE_DIR).toBe(state.stateDir);
+      await restoreEnv();
       expect(fixtureAuthReader.isOpen).toBe(false);
       expect(fixtureShared.db.isOpen).toBe(false);
       expect(fixtureAgent.db.isOpen).toBe(false);
       expect(unrelatedAuthReader.isOpen).toBe(true);
       expect(unrelatedShared.db.isOpen).toBe(true);
       expect(unrelatedAgent.db.isOpen).toBe(true);
-      restoreEnv();
     };
 
     try {
@@ -426,7 +569,7 @@ describe("openclaw test state", () => {
       expect(unrelatedAgent.db.isOpen).toBe(true);
     } finally {
       state.restoreEnv = restoreEnv;
-      restoreEnv();
+      await restoreEnv();
       closeAuthProfileReadPool({ kind: "database", databasePath: fixtureAuthPath });
       closeAuthProfileReadPool({ kind: "database", databasePath: unrelatedAgent.path });
       closeOpenClawAgentDatabaseByPath(fixtureAgent.path);

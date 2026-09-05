@@ -415,8 +415,9 @@ describe("agent exec command composition", () => {
       runAgent: async (invocation) => {
         stateDir = process.env.OPENCLAW_STATE_DIR!;
         const signal = invocation.abortSignal as AbortSignal;
-        expect(signal).toBe(controller.signal);
+        expect(signal.aborted).toBe(false);
         controller.abort(new Error("operator stopped the Gateway"));
+        expect(signal.reason).toBe(controller.signal.reason);
         signal.throwIfAborted();
         return successResult();
       },

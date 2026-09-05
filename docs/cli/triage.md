@@ -47,11 +47,23 @@ The repair prompt directs the agent to preserve migrated state, investigate befo
 
 Triage captures the diagnosed installation's resolved state directory, exact config path, and default workspace, including custom paths and named profiles. Local shell commands receive these as `OPENCLAW_STATE_DIR`, `OPENCLAW_CONFIG_PATH`, and `OPENCLAW_WORKSPACE_DIR`, so archive references and default workspace checks resolve against the diagnosed installation even when its selectors were implicit. An authored workspace in the installation's config still takes precedence over its default workspace. The embedded agent keeps its own config snapshot, sessions, execution cwd, and temporary run state separate; in-process config and session tools refer to that temporary run. Use local shell commands to inspect or repair the diagnosed installation.
 
-`openclaw triage --run` explicitly requests one embedded OpenClaw agent turn. It first verifies the configured model with a live inference check. This route requires a working OpenClaw model configuration and an interactive terminal.
+`openclaw triage --run` requests up to one bounded embedded repair turn in an interactive terminal. Inference uses the system-agent owner's default model, then its configured `model.fallbacks`, then other configured agents' authenticated routes. Models that explicitly lack tool support and routes without usable authentication are skipped. If no route works, triage reports that embedded repair is unavailable; use a saved handoff command or repair model setup with `openclaw onboard`.
 
-Embedded triage supports local OpenClaw tools, local CLI harness children, and local Codex native shells through an owned stdio process. Both manual and automatic embedded triage refuse Codex Unix-socket and WebSocket app-server connections for the diagnosed installation target. A local socket's server has an independent lifetime: disconnecting does not stop its active turns, so repair work could continue after recovery closes. WebSocket URLs, including loopback URLs that may forward to another host, also cannot establish where native commands execute. Ordinary Codex runs without a triage installation target retain Unix-socket and WebSocket support.
+The loop runs Doctor lint before and after the turn, using the number of error findings to measure improvement. If the initial check reports no errors, it returns successfully without starting inference or a repair turn. Validation determines whether the installation is repaired; an agent's successful exit or claim that it fixed the problem is not enough. Triage allows one turn, ten minutes total, five minutes for the turn, and 40 tool calls. More error findings after a turn report the installation as unrepaired.
 
-For targeted Codex repair, use the existing `plugins.entries.codex.config.appServer.transport` setting with `"stdio"`, or use the saved prompt with an external/manual handoff on this machine. Triage does not silently switch a configured socket route to stdio. Selected ACP turns, OpenClaw-provisioned sandboxes, remote/node execution, and a Codex app-server with `remoteWorkspaceRoot` remain unsupported for this local target. Triage does not redirect unsupported routes onto the host or relax native sandbox and approval policy.
+Post-turn Doctor checks run only after the executor confirms cleanup. If cleanup fails or times out, repair reports failure, retains execution state, and refuses another repair in that CLI process. Inspect the diagnostics and stop any remaining work before retrying from a new process.
+
+Because the operator owns the update or explicit `--run` request, embedded repair replaces interactive exec approval with a prompt-free run scoped to the installation or staged candidate root (`fs.workspaceOnly: true`), preserves safe-bin and tool allowlists, and never overrides explicit exec or repair-tool denies. It refuses configured sandbox, node, and remote execution routes instead of redirecting them onto the host, and does not launch external coding-agent CLIs. An explicit deny reports `exec-denied-by-policy`; use `openclaw triage` for an external handoff. The saved execution policy is unchanged.
+
+The repair prompt instructs the agent to change only the installation or staged candidate root and use the pinned OpenClaw state for diagnostics. It forbids editing credentials or auth stores, deleting state or databases, package-manager writes outside the target root, and starting, stopping, or restarting services or the Gateway. Filesystem tools enforce the workspace boundary; host commands follow the prompt's scope contract and are not an OS sandbox. Allowed checks include `openclaw doctor --lint --json`, `openclaw doctor --fix`, and `openclaw health --json`. The repair loop does not activate updates, restart services, take snapshots, or undo files.
+
+Each turn is asked to end with a machine-readable line:
+
+```text
+REPAIR_RESULT: {"status":"fixed","summary":"Repaired the installation and checked Doctor lint."}
+```
+
+The status may be `fixed`, `partial`, or `not-fixed`. A missing or malformed line falls back to a bounded summary of the final text. Doctor validation remains authoritative. The failure context and repair instructions share the 8 KiB prompt limit.
 
 On Windows, recognized npm `.cmd` and `.bat` shims launch their Node.js or native executable entrypoint directly, preserving the interactive terminal. Node.js entrypoints require the running Node.js runtime or `node.exe` on `PATH`. Custom wrappers that require a shell remain manual handoffs. An explicit `--agent` that is missing or manual-only exits non-zero without selecting a different agent.
 
@@ -79,9 +91,13 @@ Failed updates that reached installation changes, unhealthy update restarts, and
 
 The automatic handoff selects the configured embedded agent first, otherwise a directly launchable Claude Code or Codex CLI, in that order. External agents run non-interactively with their existing authentication and permissions. Claude Code uses `--safe-mode` to disable custom hooks, plugins, and project instructions while retaining authentication and built-in tools. Finding an executable does not establish authentication. A failed selected route, including a Claude version that does not support safe mode, is reported without trying another agent; the private prompt and manual handoff commands remain available.
 
+Automatic embedded recovery retains the configured runtime because it must investigate the original failure, including symptoms that Doctor lint cannot detect. Its repair prompt can permit an owned atomic Gateway restart when running health verification is required; an intentionally stopped installation stays stopped. This differs from manual `triage --run`, whose Doctor-validated repair loop never owns service lifecycle changes.
+
+Targeted automatic Codex repair requires an owned stdio app-server process. Unix-socket and WebSocket connections are refused: a socket server has an independent lifetime, and disconnecting does not stop its active turns; WebSocket URLs also cannot establish where native commands execute. Use the existing `plugins.entries.codex.config.appServer.transport` setting with `"stdio"`, or a saved external/manual handoff on this machine. Triage never silently switches a configured socket route to stdio. Ordinary Codex runs without an installation target retain socket and WebSocket support. ACP, provisioned sandboxes, remote/node execution and a Codex app-server with `remoteWorkspaceRoot` remain unsupported for automatic local-target repair; native sandbox and approval policy are preserved.
+
 The fixing agent receives the original failure and a verification goal: check the intended installation with `openclaw health --json` and `openclaw status --all` or `openclaw gateway status --deep`, confirm the expected running version after an update when known, and verify the original symptom. A PID, valid config, or successful repair command alone does not prove recovery. The report must include changes, verification evidence, and any remaining blocker.
 
-Skipped or blocked updates, capability approval refusals, ownership and schema refusals, existing-Gateway lock conflicts, external supervisors, and commands already running inside a fixing agent do not trigger another automatic agent. Automatic triage honors `--no-restart` and leaves intentionally stopped services stopped. Termination signals cancel foreground triage. Diagnostics and agent output go to stderr; the original failure result and exit status remain unchanged even if the agent reports success.
+Skipped or blocked updates, capability approval refusals, ownership and schema refusals, startup failures with unconfirmed cleanup, existing-Gateway lock conflicts, external supervisors, and commands already running inside a fixing agent do not trigger another automatic agent. Automatic triage honors `--no-restart` and leaves intentionally stopped services stopped. Termination signals cancel foreground triage. Diagnostics and agent output go to stderr; the original failure result and exit status remain unchanged even if the agent reports success.
 
 When upgrading from an older managed-update helper, a leftover transient claim is
 reclaimed on the next admission only if its recorded process instance is positively
@@ -120,6 +136,8 @@ If a support artifact cannot be saved, triage reports the storage error and stil
 
 A launched external agent inherits the current environment with the captured installation's state, config, and default workspace selectors pinned. The printed commands pin the same selectors and preserve shell quoting. External agents still control their own shell environment and execution policy; keep the handoff on this machine. Triage exits with the launched agent's exit code. If the agent cannot start, triage prints its manual command and exits non-zero; it does not try another provider. A failed embedded inference check, unsupported execution route, or `--run` without an interactive terminal also exits non-zero. Saved prompts and manual handoff commands remain available.
 
+Embedded repair exits with 0 when Doctor validation passes, 2 when a time budget stops the run, and 1 for other incomplete or unavailable repairs. An improvement that leaves errors is still incomplete.
+
 ## Options
 
 | Option                   | Effect                                                                                     |
@@ -127,7 +145,7 @@ A launched external agent inherits the current environment with the captured ins
 | `--json`                 | Emit prompt and archive paths, finding counts, detected agents, and commands.              |
 | `--no-export`            | Skip the diagnostics archive; still prepare the prompt and use the selected handoff route. |
 | `--agent <name>`         | Select `claude`, `codex`, `opencode`, or `pi` instead of automatic detection.              |
-| `--run`                  | Run one embedded agent turn after checking the model in an interactive terminal.           |
+| `--run`                  | Run one bounded embedded repair turn with Doctor validation in an interactive terminal.    |
 | `--non-interactive`      | Prepare diagnostics without prompting or starting an agent, including on a terminal.       |
 | `--update-result <path>` | Include the bounded update-failure JSON diagnostics artifact written by the updater.       |
 

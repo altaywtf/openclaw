@@ -754,9 +754,11 @@ Use `openclaw triage --agent codex` to select a particular agent.
 
 Failed interactive updates open triage automatically after updater cleanup and
 pass the captured failure to the agent before fresh diagnostics can delay the
-handoff. JSON, `--yes`, and non-interactive update invocations collect diagnostics
-and print handoff commands without starting an agent. For diagnostic collection
-alone, use `openclaw triage --non-interactive`; add `--update-result <path>` to
+handoff. Eligible mutation and restart failures in JSON, `--yes`, and
+non-interactive update invocations can instead start one owned automatic repair
+after updater settlement. Failures that cannot admit owned recovery retain
+diagnostics and manual commands. For diagnostic collection alone, use
+`openclaw triage --non-interactive`; add `--update-result <path>` to
 include a saved update-failure artifact. See [Triage](/cli/triage) for command
 formatting and installation targeting.
 
@@ -766,6 +768,17 @@ The failed update retains its nonzero exit code even if the agent repairs it.
 - For `openclaw update --channel dev` on source checkouts, the updater auto-bootstraps `pnpm` when needed. If you see a pnpm/corepack bootstrap error, install `pnpm` manually (or re-enable `corepack`) and rerun the update.
 - Check: [Troubleshooting](/gateway/troubleshooting)
 - Ask in Discord: [https://discord.gg/clawd](https://discord.gg/clawd)
+
+To repair using OpenClaw's configured inference, run `openclaw triage --run`
+in a terminal on the Gateway host. It checks Doctor lint, then runs up to one
+embedded repair turn with time and tool-call limits and checks Doctor again.
+It uses the system-agent owner's model and configured fallbacks before trying
+other agents' authenticated routes. Operator-owned updates and explicit repair requests
+replace interactive exec approval with a prompt-free run scoped to the installation
+or staged candidate root (`fs.workspaceOnly: true`), preserving safe-bin and tool
+allowlists and refusing explicit exec or repair-tool denies with `exec-denied-by-policy`
+and an `openclaw triage` external handoff. See [Triage](/cli/triage#installation-target-and-embedded-handoff)
+for the repair contract, installation targeting, and validation results.
 
 ## Related
 

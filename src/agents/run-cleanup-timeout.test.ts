@@ -268,6 +268,49 @@ describe("agent cleanup timeout", () => {
     );
   });
 
+  it.each(["returned", "operation threw", "finish threw", "finish alone threw"])(
+    "preserves nested cleanup uncertainty when the child %s",
+    async (mode) => {
+      const failure = new Error(mode);
+      const finish = vi.fn(async (_outcome: "closed" | "uncertain") => {});
+      const nestedFinish = vi.fn(async (_outcome: "closed" | "uncertain") => {
+        if (mode === "finish threw" || mode === "finish alone threw") {
+          throw failure;
+        }
+      });
+      const result = withAgentCleanupOutcome(
+        () =>
+          withAgentCleanupOutcome(async () => {
+            if (mode !== "finish alone threw") {
+              await runAgentCleanupStep({
+                runId: "nested",
+                sessionId: "isolated",
+                step: "registered-owner",
+                cleanup: async () => {
+                  throw new Error("cleanup failed");
+                },
+                log,
+              });
+            }
+            if (mode === "operation threw") {
+              throw failure;
+            }
+            return "result";
+          }, nestedFinish),
+        finish,
+      );
+      if (mode === "returned") {
+        await expect(result).resolves.toBe("result");
+      } else {
+        await expect(result).rejects.toBe(failure);
+      }
+      expect(nestedFinish).toHaveBeenCalledExactlyOnceWith(
+        mode === "finish alone threw" ? "closed" : "uncertain",
+      );
+      expect(finish).toHaveBeenCalledExactlyOnceWith("uncertain");
+    },
+  );
+
   it.each([
     {
       runId: "run-invalid-env-number",

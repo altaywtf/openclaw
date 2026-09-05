@@ -1,8 +1,10 @@
 import fs from "node:fs/promises";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import type { ChannelPlugin } from "../channels/plugins/types.public.js";
 import { flushDiagnosticsTimeline } from "../infra/diagnostics-timeline.js";
+import { getProcessGatewayPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-state.js";
 import { createPluginRecord } from "../plugins/loader-records.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import {
@@ -21,7 +23,7 @@ import { dispatchGatewayRequestInProcess } from "./server-in-process-dispatch.js
 import { createGatewayKernel } from "./server-kernel.js";
 import type { GatewayClient } from "./server-methods/types.js";
 import { createSyntheticPluginRuntimeClient } from "./server-plugin-runtime-client.js";
-import type { GatewayHostLifecycle } from "./server-public.js";
+import type { GatewayHostLifecycle, GatewayServer } from "./server-public.js";
 
 describe("createGatewayKernel", () => {
   it("does not start recovered channels after close prelude begins", async () => {
@@ -125,133 +127,213 @@ describe("createGatewayKernel", () => {
     }
   });
 
-  it("reports draining and fences hosted lifecycle authority during a direct close", async () => {
-    const port = 19_789;
-    const state = await createOpenClawTestState({
-      label: "gateway-kernel-direct-close-readiness",
-      layout: "home",
-      env: {
-        OPENCLAW_GATEWAY_PASSWORD: undefined,
-        OPENCLAW_GATEWAY_TOKEN: undefined,
-        OPENCLAW_SKIP_BROWSER_CONTROL_SERVER: "1",
-        OPENCLAW_SKIP_CANVAS_HOST: "1",
-        OPENCLAW_SKIP_CHANNELS: "1",
-        OPENCLAW_SKIP_CRON: "1",
-        OPENCLAW_SKIP_GMAIL_WATCHER: "1",
-        OPENCLAW_SKIP_PROVIDERS: "1",
-        OPENCLAW_TEST_MINIMAL_GATEWAY: "1",
-        VITEST: "1",
-      },
-    });
-    const token = "gateway-kernel-direct-close-readiness-token";
-    const bootId = "gateway-kernel-direct-close";
-    const configReloaderStop = createDeferred();
-    const updateCheckStopped = createDeferred();
-    const nativePreparation = createDeferred();
-    const preparationStarted = createDeferred();
-    const acceptRequest = vi.fn();
-    const hostLifecycle: GatewayHostLifecycle = {
-      async request(_action, assertCaller) {
-        assertCaller();
-        preparationStarted.resolve();
-        await nativePreparation.promise;
-        assertCaller();
-        acceptRequest();
-        return { ok: true, value: { outcome: "scheduled" } };
-      },
-    };
-    let kernel: Awaited<ReturnType<typeof createGatewayKernel>> | undefined;
-    let closing: Promise<void> | undefined;
-    try {
-      await state.writeConfig({
-        gateway: { auth: { mode: "token", token }, controlUi: { enabled: false }, port },
-      });
-      state.applyEnv();
-      kernel = await createGatewayKernel(port, {
-        bootId,
-        auth: { mode: "token", token },
-        bind: "loopback",
-        controlUiEnabled: false,
-        sidecarStartup: "defer",
-        hostLifecycle,
-      });
-      kernel.kernel.unlockStartupMethods();
-      kernel.kernel.markSidecarsReady();
-      // Direct kernel proof must publish the dispatch readiness normally owned by transport attach.
-      kernel.kernel.setDispatchReady(true);
-      const { getStartup, getReadiness } = kernel.createHttpTransportOptions();
-      expect(getStartup()).toMatchObject({ ok: true, status: "started" });
-      expect(getReadiness()).toMatchObject({ ready: true, failing: [] });
-      const reader = {
-        connect: {
-          minProtocol: 1,
-          maxProtocol: 1,
-          client: { id: "openclaw-control-ui", version: "test", platform: "web", mode: "webchat" },
-          role: "operator",
-          scopes: ["operator.read"],
+  it.for(["direct", "public"] as const)(
+    "fences hosted authority and joins shutdown owners during %s close",
+    async (entry, { signal }) => {
+      const port = await getFreePort();
+      const state = await createOpenClawTestState({
+        label: `gateway-kernel-${entry}-close-readiness`,
+        layout: "home",
+        env: {
+          OPENCLAW_GATEWAY_PASSWORD: undefined,
+          OPENCLAW_GATEWAY_TOKEN: undefined,
+          OPENCLAW_SKIP_BROWSER_CONTROL_SERVER: "1",
+          OPENCLAW_SKIP_CANVAS_HOST: "1",
+          OPENCLAW_SKIP_CHANNELS: "1",
+          OPENCLAW_SKIP_CRON: "1",
+          OPENCLAW_SKIP_GMAIL_WATCHER: "1",
+          OPENCLAW_SKIP_PROVIDERS: "1",
+          OPENCLAW_TEST_MINIMAL_GATEWAY: "1",
+          VITEST: "1",
         },
-        authenticatedUserProfile: {
-          profileId: ensureProfileForEmail("mention-reader@example.test").id,
-          displayName: "Reader",
-          hasAvatar: false,
-          updatedAt: 1,
+      });
+      const token = "gateway-kernel-close-readiness-token";
+      const bootId = `gateway-kernel-${entry}-close`;
+      const configReloaderStop = createDeferred();
+      const recoveryStop = createDeferred();
+      const updateCheckStopped = createDeferred();
+      const nativePreparation = createDeferred();
+      const preparationStarted = createDeferred();
+      const acceptRequest = vi.fn();
+      const hostLifecycle: GatewayHostLifecycle = {
+        async request(_action, assertCaller) {
+          assertCaller();
+          preparationStarted.resolve();
+          await nativePreparation.promise;
+          assertCaller();
+          acceptRequest();
+          return { ok: true, value: { outcome: "scheduled" } };
         },
-      } satisfies GatewayClient;
-      expect(kernel.gatewayRequestContext.mentionInbox?.list(reader)).toMatchObject({
-        ok: true,
-        value: { gatewayInstanceId: bootId, items: [] },
-      });
-      const boundHost = kernel.gatewayRequestContext.hostLifecycle!;
-      const pendingStop = expect(boundHost.request("stop", () => {})).rejects.toThrow(
-        "closed instance",
-      );
-      await preparationStarted.promise;
-
-      const closeFirstStop = vi.fn(async () => {});
-      kernel.kernel.swapDiscovery({ update: async () => {}, stop: closeFirstStop });
-      vi.spyOn(kernel.runtimeState.configReloader, "stop").mockReturnValue(
-        configReloaderStop.promise,
-      );
-      const stopUpdateCheck = vi
-        .spyOn(kernel.runtimeState, "stopGatewayUpdateCheck")
-        .mockReturnValue(updateCheckStopped.promise);
-      closing = kernel.createCloseHandler()({ reason: "direct close readiness test" });
-
-      expect(getStartup()).toMatchObject({ ok: false, status: "draining" });
-      expect(getReadiness()).toMatchObject({ ready: false, failing: ["gateway-draining"] });
-      expect(kernel.gatewayRequestContext.mentionInbox?.list(reader)).toMatchObject({
-        ok: false,
-        error: { code: "UNAVAILABLE" },
-      });
-      nativePreparation.resolve();
-      await pendingStop;
-      await expect(boundHost.request("start", () => {})).rejects.toThrow("closed instance");
-      expect(acceptRequest).not.toHaveBeenCalled();
-      configReloaderStop.resolve();
-      await vi.waitFor(() => expect(stopUpdateCheck).toHaveBeenCalled());
-      await new Promise<void>((resolve) => {
-        setImmediate(resolve);
-      });
-      expect(closeFirstStop).not.toHaveBeenCalled();
-      updateCheckStopped.resolve();
-      await closing;
-      expect(closeFirstStop).toHaveBeenCalledOnce();
-      expect(kernel.runtimeState.discovery).toBeNull();
-    } finally {
-      nativePreparation.resolve();
-      configReloaderStop.resolve();
-      updateCheckStopped.resolve();
+      };
+      const reloadSettled = vi.fn(() => {});
+      const recoverySettled = vi.fn(() => {});
+      const updateSettled = vi.fn(() => {});
+      const reloadWork = configReloaderStop.promise.then(reloadSettled);
+      const recoveryWork = recoveryStop.promise.then(recoverySettled);
+      const updateWork = updateCheckStopped.promise.then(updateSettled);
+      const release = () => {
+        configReloaderStop.resolve();
+        recoveryStop.resolve();
+        updateCheckStopped.resolve();
+        nativePreparation.resolve();
+      };
+      signal.addEventListener("abort", release, { once: true });
+      let kernel: Awaited<ReturnType<typeof createGatewayKernel>> | undefined;
+      let server: GatewayServer | undefined;
+      let closing: Promise<void> | undefined;
+      let pendingStop: Promise<void> | undefined;
+      let maintenanceTimer: ReturnType<typeof setTimeout> | undefined;
+      const createKernel = createGatewayKernel;
+      // Capture the actual owner; public startup, prelude, and teardown remain real.
+      const factory = vi
+        .spyOn(await import("./server-kernel.js"), "createGatewayKernel")
+        .mockImplementation(async (...args) => {
+          kernel = await createKernel(...args);
+          return kernel;
+        });
       try {
+        await state.writeConfig({
+          gateway: { auth: { mode: "token", token }, controlUi: { enabled: false }, port },
+        });
+        state.applyEnv();
+        const options = {
+          bootId,
+          auth: { mode: "token" as const, token },
+          bind: "loopback" as const,
+          controlUiEnabled: false,
+          sidecarStartup: "defer" as const,
+          hostLifecycle,
+        };
+        if (entry === "public") {
+          const { startGatewayServerCore } = await import("./server-start.js");
+          server = await startGatewayServerCore(port, options);
+          await server.startupSettled;
+        } else {
+          kernel = await createGatewayKernel(port, options);
+          kernel.kernel.unlockStartupMethods();
+          kernel.kernel.markSidecarsReady();
+          kernel.kernel.setDispatchReady(true);
+        }
+        if (!kernel) {
+          throw new Error("Expected the real Gateway kernel to be captured");
+        }
+        const { getStartup, getReadiness } = kernel.createHttpTransportOptions();
+        expect(getStartup()).toMatchObject({ ok: true, status: "started" });
+        expect(getReadiness()).toMatchObject({ ready: true, failing: [] });
+        const reader = {
+          connect: {
+            minProtocol: 1,
+            maxProtocol: 1,
+            client: {
+              id: "openclaw-control-ui",
+              version: "test",
+              platform: "web",
+              mode: "webchat",
+            },
+            role: "operator",
+            scopes: ["operator.read"],
+          },
+          authenticatedUserProfile: {
+            profileId: ensureProfileForEmail("mention-reader@example.test").id,
+            displayName: "Reader",
+            hasAvatar: false,
+            updatedAt: 1,
+          },
+        } satisfies GatewayClient;
+        expect(kernel.gatewayRequestContext.mentionInbox?.list(reader)).toMatchObject({
+          ok: true,
+          value: { gatewayInstanceId: bootId, items: [] },
+        });
+        const boundHost = kernel.gatewayRequestContext.hostLifecycle!;
+        pendingStop = expect(boundHost.request("stop", () => {})).rejects.toThrow(
+          "closed instance",
+        );
+        await preparationStarted.promise;
+
+        const closeFirstStop = vi.fn(async () => {});
+        kernel.kernel.swapDiscovery({ update: async () => {}, stop: closeFirstStop });
+        const reloadStop = vi
+          .spyOn(kernel.runtimeState.configReloader, "stop")
+          .mockReturnValue(reloadWork);
+        const stopRecovery = vi.fn(() => recoveryWork);
+        kernel.kernel.setScheduledServiceHandles({
+          heartbeatRunner: kernel.runtimeState.heartbeatRunner,
+          stopDeliveryRecovery: stopRecovery,
+        });
+        const stopUpdateCheck = vi
+          .spyOn(kernel.runtimeState, "stopGatewayUpdateCheck")
+          .mockReturnValue(updateWork);
+        const terminalDispose = vi.spyOn(kernel.terminalSessions, "disposeAll");
+        const gatewayStop = vi.spyOn(kernel.shutdownRuntime, "runGlobalGatewayStopSafely");
+        const invalidateCron = vi.spyOn(kernel.cronReconciliation, "invalidate");
+        const startMaintenance = vi.fn(() => {});
+        maintenanceTimer = setTimeout(startMaintenance, 0);
+        kernel.postReadyState.maintenanceTimer = maintenanceTimer;
+        closing = server
+          ? server.close({ reason: "close ordering test" })
+          : kernel.prepareClose({ reason: "close ordering test" }).then((close) => close());
+
+        expect(getStartup()).toMatchObject({ ok: false, status: "draining" });
+        expect(getReadiness()).toMatchObject({ ready: false, failing: ["gateway-draining"] });
+        expect(kernel.gatewayRequestContext.mentionInbox?.list(reader)).toMatchObject({
+          ok: false,
+          error: { code: "UNAVAILABLE" },
+        });
+        nativePreparation.resolve();
+        await pendingStop;
+        await expect(boundHost.request("start", () => {})).rejects.toThrow("closed instance");
+        expect(acceptRequest).not.toHaveBeenCalled();
+        expect(kernel.postReadyState.maintenanceTimer).toBeNull();
+        expect(invalidateCron).toHaveBeenCalledOnce();
+        expect(stopRecovery).toHaveBeenCalledOnce();
+        await nextTurn();
+        expect(startMaintenance).not.toHaveBeenCalled();
+        expect(reloadStop).toHaveBeenCalledOnce();
+        expect(terminalDispose).not.toHaveBeenCalled();
+        expect(gatewayStop).not.toHaveBeenCalled();
+        configReloaderStop.resolve();
+        await nextTurn();
+        expect(reloadSettled).toHaveBeenCalledOnce();
+        if (server) {
+          // Finishing reload alone must not bypass the other admitted producer.
+          expect(terminalDispose).not.toHaveBeenCalled();
+          expect(gatewayStop).not.toHaveBeenCalled();
+        }
+        recoveryStop.resolve();
+        await nextTurn();
+        expect(stopUpdateCheck).toHaveBeenCalled();
+        expect(closeFirstStop).not.toHaveBeenCalled();
+        updateCheckStopped.resolve();
         await closing;
+        expect(closeFirstStop).toHaveBeenCalledOnce();
+        expect(kernel.runtimeState.discovery).toBeNull();
+        if (server) {
+          expect(terminalDispose).toHaveBeenCalledOnce();
+          expect(gatewayStop).toHaveBeenCalledOnce();
+          for (const settled of [reloadSettled, recoverySettled, updateSettled]) {
+            expect(settled).toHaveBeenCalledBefore(terminalDispose);
+            expect(settled).toHaveBeenCalledBefore(gatewayStop);
+          }
+        }
       } finally {
+        release();
+        clearTimeout(maintenanceTimer);
         try {
-          await kernel?.closeOnStartupFailure();
+          await Promise.all([closing, reloadWork, recoveryWork, updateWork]);
         } finally {
-          await state.cleanup();
+          try {
+            await (server?.close() ?? kernel?.closeOnStartupFailure());
+            await pendingStop;
+          } finally {
+            factory.mockRestore();
+            vi.restoreAllMocks();
+            signal.removeEventListener("abort", release);
+            await state.cleanup();
+          }
         }
       }
-    }
-  });
+    },
+  );
 
   it("keeps startup readiness and sidecar shutdown at their lifecycle boundaries", async () => {
     const port = await getFreePort();
@@ -356,11 +438,49 @@ describe("createGatewayKernel", () => {
         .mockResolvedValue(undefined);
       kernel.kernel.setPostReadySidecars([{ stop: postReadySidecar }]);
 
+      const connectionStopError = new Error("remote worker stop failed");
+      const connectionStopEntered = createDeferred();
+      const releaseConnectionStop = createDeferred();
+      const releaseLateConnectionStop = createDeferred();
+      const connectionSidecar = {
+        stop: vi
+          .fn<() => Promise<void>>()
+          .mockImplementationOnce(async () => {
+            connectionStopEntered.resolve();
+            await releaseConnectionStop.promise;
+            throw connectionStopError;
+          })
+          .mockResolvedValue(undefined),
+      };
+      kernel.registerConnectionDependentSidecars([connectionSidecar]);
+      const closeTransport = vi.fn(() => releaseConnection());
+      const releaseConnection = kernel.connectionWork.registerConnection(closeTransport);
       const closePreludeReached = vi.spyOn(kernel.watchNodeHttpRuntime, "close");
       const closing = kernel.closeOnStartupFailure();
+      void closing.catch(() => undefined);
+      await connectionStopEntered.promise;
+      const lateConnectionSidecar = { stop: vi.fn(() => releaseLateConnectionStop.promise) };
+      kernel.registerConnectionDependentSidecars([lateConnectionSidecar]);
+      const lateGeneralSidecar = { stop: vi.fn(async () => {}) };
+      const latePostReadySidecar = { stop: vi.fn(async () => {}) };
+      kernel.registerGatewayLifetimeSidecars([lateGeneralSidecar]);
+      kernel.registerPostReadySidecars([latePostReadySidecar]);
+      expect(closeTransport).not.toHaveBeenCalled();
+      releaseConnectionStop.resolve();
+      await vi.waitFor(() => expect(lateConnectionSidecar.stop).toHaveBeenCalledOnce());
+      expect(closeTransport).not.toHaveBeenCalled();
+      expect(lifetimeSidecar.stop).not.toHaveBeenCalled();
+      expect(lateGeneralSidecar.stop).not.toHaveBeenCalled();
+      expect(latePostReadySidecar.stop).not.toHaveBeenCalled();
+      releaseLateConnectionStop.resolve();
       await vi.waitFor(() => {
         expect(lifetimeSidecar.stop).toHaveBeenCalledOnce();
       });
+      expect(closeTransport).toHaveBeenCalledOnce();
+      expect(connectionSidecar.stop).toHaveBeenCalledTimes(2);
+      expect(() => kernel?.registerConnectionDependentSidecars([lateConnectionSidecar])).toThrow(
+        "cannot publish a Gateway sidecar after shutdown sealed its owner",
+      );
       const lateSidecar = { stop: vi.fn(async () => {}) };
       kernel.registerGatewayLifetimeSidecars([lifetimeSidecar, lateSidecar]);
       const lateStop = kernel.stopRegisteredGatewayLifetimeSidecars();
@@ -378,9 +498,14 @@ describe("createGatewayKernel", () => {
       const lateLifetimeSidecar = { stop: vi.fn(() => lateLifetimeStop) };
       kernel.registerGatewayLifetimeSidecars([lateLifetimeSidecar]);
       let closeSettled = false;
-      void closing.then(() => {
-        closeSettled = true;
-      });
+      void closing.then(
+        () => {
+          closeSettled = true;
+        },
+        () => {
+          closeSettled = true;
+        },
+      );
       rejectPostReadyStop(postReadyError);
       await vi.waitFor(() => {
         expect(closePreludeReached).toHaveBeenCalledOnce();
@@ -393,6 +518,8 @@ describe("createGatewayKernel", () => {
       closePreludeReached.mockRestore();
       expect(lifetimeSidecar.stop).toHaveBeenCalledTimes(2);
       expect(trailingSidecar).toHaveBeenCalledOnce();
+      expect(lateGeneralSidecar.stop).toHaveBeenCalledOnce();
+      expect(latePostReadySidecar.stop).toHaveBeenCalledOnce();
       expect(reentrantSidecar.stop).toHaveBeenCalledOnce();
       expect(lateSidecar.stop).toHaveBeenCalledOnce();
       expect(duringSealSidecar.stop).toHaveBeenCalledOnce();
@@ -406,26 +533,6 @@ describe("createGatewayKernel", () => {
       );
       expect(kernel.runtimeState.gatewayLifetimeSidecars).toEqual([]);
       expect(postSealSidecar.stop).not.toHaveBeenCalled();
-
-      const persistentError = new Error("persistent sidecar cleanup failed");
-      const persistentStop = vi
-        .fn<() => Promise<void>>()
-        .mockRejectedValueOnce(persistentError)
-        .mockRejectedValueOnce(persistentError)
-        .mockResolvedValue(undefined);
-      const persistentSidecar = { stop: persistentStop };
-      const successfulPeer = { stop: vi.fn(async () => {}) };
-      kernel.kernel.setGatewayLifetimeSidecars([persistentSidecar, successfulPeer]);
-
-      await expect(kernel.closeOnStartupFailure()).resolves.toBeUndefined();
-      expect(persistentStop).toHaveBeenCalledTimes(2);
-      expect(successfulPeer.stop).toHaveBeenCalledOnce();
-      expect(kernel.runtimeState.gatewayLifetimeSidecars).toEqual([persistentSidecar]);
-
-      await expect(kernel.closeOnStartupFailure()).resolves.toBeUndefined();
-      expect(persistentStop).toHaveBeenCalledTimes(3);
-      expect(successfulPeer.stop).toHaveBeenCalledOnce();
-      expect(kernel.runtimeState.gatewayLifetimeSidecars).toEqual([]);
     } finally {
       try {
         await kernel?.closeOnStartupFailure();
@@ -434,6 +541,175 @@ describe("createGatewayKernel", () => {
       }
     }
   });
+
+  it.for([
+    ["startup", "settled", "lifetime"],
+    ["startup", "settled", "post-ready"],
+    ["startup", "late", "lifetime"],
+    ["startup", "late", "post-ready"],
+    ["public", "settled", "lifetime"],
+    ["public", "settled", "post-ready"],
+    ["public", "late", "lifetime"],
+    ["public", "late", "post-ready"],
+  ] as const)(
+    "retains shared dependencies after %s close with a %s failed %s sidecar",
+    async ([entry, timing, group], { signal }) => {
+      const port = await getFreePort();
+      const state = await createOpenClawTestState({
+        label: `gateway-kernel-${entry}-${timing}-${group}-cleanup`,
+        layout: "home",
+        env: {
+          OPENCLAW_GATEWAY_PASSWORD: undefined,
+          OPENCLAW_GATEWAY_TOKEN: undefined,
+          OPENCLAW_SKIP_BROWSER_CONTROL_SERVER: "1",
+          OPENCLAW_SKIP_CANVAS_HOST: "1",
+          OPENCLAW_SKIP_CHANNELS: "1",
+          OPENCLAW_SKIP_CRON: "1",
+          OPENCLAW_SKIP_GMAIL_WATCHER: "1",
+          OPENCLAW_SKIP_PROVIDERS: "1",
+          OPENCLAW_TEST_MINIMAL_GATEWAY: "1",
+          VITEST: "1",
+        },
+      });
+      const originalPluginRegistry = captureActivePluginRegistrySnapshot();
+      const stopEntered = createDeferred();
+      const releaseStop = createDeferred();
+      let cleanupAllowed = false;
+      const release = () => {
+        cleanupAllowed = true;
+        releaseStop.resolve();
+      };
+      signal.addEventListener("abort", release, { once: true });
+      const cleanupError = new Error("sidecar still owns its resource");
+      const failingSidecar = {
+        stop: vi.fn(async () => {
+          stopEntered.resolve();
+          await releaseStop.promise;
+          if (!cleanupAllowed) {
+            throw cleanupError;
+          }
+        }),
+      };
+      const lifetimePeer = { stop: vi.fn(async () => {}) };
+      const postReadyPeer = { stop: vi.fn(async () => {}) };
+      let kernel: Awaited<ReturnType<typeof createGatewayKernel>> | undefined;
+      let server: GatewayServer | undefined;
+      let closing: Promise<void> | undefined;
+      const createKernel = createGatewayKernel;
+      const factory = vi
+        .spyOn(await import("./server-kernel.js"), "createGatewayKernel")
+        .mockImplementation(async (...args) => {
+          kernel = await createKernel(...args);
+          return kernel;
+        });
+      try {
+        const token = "gateway-kernel-sidecar-cleanup-token";
+        await state.writeConfig({
+          gateway: { auth: { mode: "token", token }, controlUi: { enabled: false }, port },
+        });
+        state.applyEnv();
+        const options = {
+          auth: { mode: "token" as const, token },
+          bind: "loopback" as const,
+          controlUiEnabled: false,
+          sidecarStartup: "defer" as const,
+        };
+        if (entry === "public") {
+          const { startGatewayServerCore } = await import("./server-start.js");
+          server = await startGatewayServerCore(port, options);
+          await server.startupSettled;
+        } else {
+          kernel = await createGatewayKernel(port, options);
+        }
+        if (!kernel) {
+          throw new Error("Expected the real Gateway kernel to be captured");
+        }
+        const activeKernel = kernel;
+        const registry = captureActivePluginRegistrySnapshot().activeRegistry;
+        const secrets = getActiveSecretsRuntimeConfigSnapshot();
+        const metadata = getProcessGatewayPluginMetadataSnapshot();
+        expect(registry).not.toBeNull();
+        expect(secrets).not.toBeNull();
+        expect(metadata).toBeDefined();
+        const completeClose = vi.spyOn(kernel.shutdownRuntime, "completeGatewayClose");
+        kernel.registerGatewayLifetimeSidecars([lifetimePeer]);
+        kernel.registerPostReadySidecars([postReadyPeer]);
+        const publishFailure = () => {
+          if (group === "lifetime") {
+            activeKernel.registerGatewayLifetimeSidecars([failingSidecar]);
+          } else {
+            activeKernel.registerPostReadySidecars([failingSidecar]);
+          }
+        };
+        if (timing === "settled") {
+          publishFailure();
+          releaseStop.resolve();
+        } else {
+          const runPrelude = kernel.shutdownRuntime.runGatewayClosePrelude;
+          vi.spyOn(kernel.shutdownRuntime, "runGatewayClosePrelude").mockImplementationOnce(
+            async (...args) => {
+              await runPrelude(...args);
+              // Publish after real prelude work, while the final join still owns late cleanup.
+              publishFailure();
+            },
+          );
+        }
+        closing = server
+          ? server.close({ reason: "sidecar cleanup test" })
+          : kernel.closeOnStartupFailure();
+        void closing.catch(() => {});
+        await stopEntered.promise;
+        if (timing === "late") {
+          await nextTurn();
+          expect(completeClose).not.toHaveBeenCalled();
+          releaseStop.resolve();
+        }
+        await expect(closing).rejects.toMatchObject({
+          errors: expect.arrayContaining([expect.objectContaining({ cause: cleanupError })]),
+        });
+        expect(captureActivePluginRegistrySnapshot().activeRegistry).toBe(registry);
+        expect(getActiveSecretsRuntimeConfigSnapshot()).toEqual(secrets);
+        expect(getProcessGatewayPluginMetadataSnapshot()).toBe(metadata);
+        expect(completeClose).not.toHaveBeenCalled();
+        expect(failingSidecar.stop).toHaveBeenCalledTimes(2);
+        expect(lifetimePeer.stop).toHaveBeenCalledOnce();
+        expect(postReadyPeer.stop).toHaveBeenCalledOnce();
+        const retained =
+          group === "lifetime"
+            ? kernel.runtimeState.gatewayLifetimeSidecars
+            : kernel.runtimeState.postReadySidecars;
+        expect(retained).toEqual([failingSidecar]);
+        if (server) {
+          // Public close is single-flight even after failure; the retained kernel owns retry.
+          expect(server.close()).toBe(closing);
+          expect(failingSidecar.stop).toHaveBeenCalledTimes(2);
+        }
+        cleanupAllowed = true;
+        await expect(kernel.closeOnStartupFailure()).resolves.toBeUndefined();
+        expect(failingSidecar.stop).toHaveBeenCalledTimes(3);
+        expect(lifetimePeer.stop).toHaveBeenCalledOnce();
+        expect(postReadyPeer.stop).toHaveBeenCalledOnce();
+        expect(kernel.runtimeState.gatewayLifetimeSidecars).toEqual([]);
+        expect(kernel.runtimeState.postReadySidecars).toEqual([]);
+        expect(completeClose).toHaveBeenCalledOnce();
+        expect(captureActivePluginRegistrySnapshot().activeRegistry).toBeNull();
+        expect(getActiveSecretsRuntimeConfigSnapshot()).toBeNull();
+        expect(getProcessGatewayPluginMetadataSnapshot()).toBeUndefined();
+      } finally {
+        release();
+        try {
+          await closing?.catch(() => {});
+          await kernel?.closeOnStartupFailure();
+        } finally {
+          factory.mockRestore();
+          vi.restoreAllMocks();
+          signal.removeEventListener("abort", release);
+          restoreActivePluginRegistrySnapshot(originalPluginRegistry);
+          await state.cleanup();
+        }
+      }
+    },
+  );
 
   it("dispatches health and an agent turn without creating a transport", async () => {
     const port = await getFreePort();

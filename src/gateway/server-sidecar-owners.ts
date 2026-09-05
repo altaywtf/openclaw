@@ -5,6 +5,7 @@ export function createGatewaySidecarStopOwner(params: {
   setRegistered: (sidecars: GatewayPostReadySidecarHandle[]) => void;
 }) {
   let activeStop: Promise<void> | null = null;
+  let failure: Error | undefined;
   let phase: "open" | "closing" | "sealed" = "open";
   const publish = (sidecars: readonly GatewayPostReadySidecarHandle[]) => {
     if (phase === "sealed") {
@@ -23,13 +24,14 @@ export function createGatewaySidecarStopOwner(params: {
     }
   };
   const stop = () => {
+    beginClose();
     if (activeStop) {
       return activeStop;
     }
     // Install single-flight before any stop can synchronously publish another owner.
     const stopping = Promise.resolve().then(async () => {
       const failedSidecars = new Set<GatewayPostReadySidecarHandle>();
-      let failure: unknown;
+      failure = undefined;
       try {
         while (params.getRegistered().some((sidecar) => !failedSidecars.has(sidecar))) {
           const sidecars = [
@@ -57,7 +59,10 @@ export function createGatewaySidecarStopOwner(params: {
           );
           if (pending.length > 0) {
             const rejected = results.find((result) => result.status === "rejected");
-            failure ??= rejected?.reason;
+            failure ??=
+              rejected?.reason instanceof Error
+                ? rejected.reason
+                : new Error(String(rejected?.reason));
             for (const sidecar of pending) {
               failedSidecars.add(sidecar);
             }
@@ -78,21 +83,17 @@ export function createGatewaySidecarStopOwner(params: {
   };
 
   const sealAndJoin = async () => {
-    let failure: Error | undefined;
-    while (true) {
-      const stopping = activeStop;
-      if (!stopping) {
-        phase = "sealed";
-        break;
-      }
+    while (activeStop) {
       try {
-        await stopping;
+        await activeStop;
       } catch (error) {
         failure ??= error instanceof Error ? error : new Error(String(error));
       }
     }
-    if (failure) {
-      throw failure;
+    phase = "sealed";
+    // A settled failed stop still owns its handles and original failure until a retry succeeds.
+    if (failure || params.getRegistered().length > 0) {
+      throw failure ?? new Error("Gateway sidecar cleanup did not complete");
     }
   };
 

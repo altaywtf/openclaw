@@ -1863,9 +1863,11 @@ describe("gateway run option collisions", () => {
     { supervised: true, transition: false, recorded: true, attempts: 0 },
     { supervised: true, transition: true, recorded: true, attempts: 1 },
     { supervised: true, transition: true, recorded: false, attempts: 0 },
+    { supervised: false, transition: false, recorded: true, attempts: 0, cleanupFailure: "direct" },
+    { supervised: true, transition: true, recorded: true, attempts: 0, cleanupFailure: "wrapped" },
   ])(
     "triages failed starts once with supervisor transition gating: %j",
-    async ({ supervised, transition, recorded, attempts }) => {
+    async ({ supervised, transition, recorded, attempts, cleanupFailure }) => {
       triageAfterFailure.mockClear();
       detectRespawnSupervisor.mockReturnValue(supervised ? "systemd" : null);
       bootLifecycle.record.mockReturnValueOnce(recorded ? "boot-id" : undefined);
@@ -1876,7 +1878,17 @@ describe("gateway run option collisions", () => {
         shouldWriteStabilityBundle: transition,
         recovered: false,
       });
-      const failure = new Error("configured plugin crashed during startup");
+      let failure: Error = new Error("configured plugin crashed during startup");
+      if (cleanupFailure) {
+        const { GatewayStartupCleanupError } = await import("../../gateway/server-shutdown.js");
+        failure = new GatewayStartupCleanupError(
+          failure,
+          new Error("required cleanup unconfirmed"),
+        );
+        if (cleanupFailure === "wrapped") {
+          failure = new Error("startup wrapper failed", { cause: failure });
+        }
+      }
       runGatewayLoop.mockImplementationOnce(
         async (
           params: GatewayLoopParams & {

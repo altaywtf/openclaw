@@ -36,6 +36,7 @@ import {
   isLoopbackHost,
   resolveGatewayBindHost,
 } from "../../gateway/net.js";
+import { GatewayStartupCleanupError } from "../../gateway/server-shutdown.js";
 import type { GatewayWsLogStyle } from "../../gateway/ws-logging.js";
 import { setGatewayWsLogStyle } from "../../gateway/ws-logging.js";
 import { setVerbose } from "../../globals.js";
@@ -1069,14 +1070,16 @@ async function runGatewayCommandOnce(opts: GatewayRunOpts, hooks: GatewayRunRunt
       isInvalidConfigError(error) ||
       isTailscaleRouteOwnershipConflictError(error) ||
       collectNestedErrorCandidates(error).some(
-        (candidate) => candidate instanceof SessionStoreMigrationRequiredError,
+        (candidate) =>
+          candidate instanceof SessionStoreMigrationRequiredError ||
+          candidate instanceof GatewayStartupCleanupError,
       ) ||
       resolveGatewayStartupMaintenanceReason(error)
     ) {
       return;
     }
-    // A recorded boot excludes shared-store schema refusals. Supervised retries
-    // additionally reuse the persisted breaker transition to avoid agent storms.
+    // Unconfirmed startup cleanup retains its generation; never overlap it with a fixer.
+    // Supervised retries reuse the persisted breaker transition to avoid agent storms.
     if (
       (supervisor || process.env.OPENCLAW_SERVICE_MARKER) &&
       !crashLoopDecision?.shouldWriteStabilityBundle

@@ -31,13 +31,29 @@ export async function withAgentCleanupOutcome<T>(
   finish: (outcome: "closed" | "uncertain") => Promise<void>,
 ): Promise<T> {
   const receipt = { uncertain: false };
-  return await oneShotCleanup.run(receipt, async () => {
+  const parent = oneShotCleanup.getStore();
+  const finishCleanup = async () => {
     try {
-      return await operation();
-    } finally {
       await finish(receipt.uncertain ? "uncertain" : "closed");
+    } catch (error) {
+      receipt.uncertain = true;
+      throw error;
     }
-  });
+  };
+  try {
+    return await oneShotCleanup.run(receipt, async () => {
+      try {
+        return await operation();
+      } finally {
+        await finishCleanup();
+      }
+    });
+  } finally {
+    // Nested executors cannot certify the outer owner after any child cleanup failed.
+    if (receipt.uncertain && parent) {
+      parent.uncertain = true;
+    }
+  }
 }
 
 // The budget bounds reporting, not resource closure; automatic timeout stays uncertain.
