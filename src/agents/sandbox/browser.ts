@@ -45,6 +45,7 @@ import {
   readDockerContainerLabel,
   readDockerPort,
   resolveDockerEnvPolicyEpoch,
+  validateSandboxDockerConfig,
 } from "./docker.js";
 import {
   buildNoVncObserverTokenUrl,
@@ -374,12 +375,20 @@ async function ensureSandboxBrowserContainer(
     }
   }
 
-  if (!hasContainer || !running) {
+  const prepareSkillMountpoints = async () => {
+    validateSandboxDockerConfig({
+      cfg: browserDockerCfg,
+      bindSourceRoots: [params.workspaceDir, params.agentWorkspaceDir],
+    });
     await prepareWorkspaceSkillMountpoints(
       params.workspaceDir,
-      params.cfg.docker.workdir,
+      browserDockerCfg.workdir,
       readOnlyWorkspaceSkillMounts,
+      browserDockerCfg.binds,
     );
+  };
+  if (!hasContainer || !running) {
+    await prepareSkillMountpoints();
   }
   if (!hasContainer) {
     if (noVncEnabled) {
@@ -528,11 +537,7 @@ async function ensureSandboxBrowserContainer(
       ? async () => {
           const currentState = await dockerContainerState(containerName);
           if (currentState.exists && !currentState.running) {
-            await prepareWorkspaceSkillMountpoints(
-              params.workspaceDir,
-              params.cfg.docker.workdir,
-              readOnlyWorkspaceSkillMounts,
-            );
+            await prepareSkillMountpoints();
             await execDocker(["start", containerName]);
           }
           const ok = await waitForSandboxCdp({

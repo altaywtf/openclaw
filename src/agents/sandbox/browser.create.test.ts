@@ -341,60 +341,69 @@ describe("ensureSandboxBrowser create args", () => {
     expect(createArgs).toContain(`openclaw.createArgsEpoch=${SANDBOX_DOCKER_CREATE_ARGS_EPOCH}`);
   });
 
-  it("prepares managed skill mountpoints before browser creation, restart, and auto-start", async () => {
-    const workspaceDir = realpathSync(tempDirs.make("openclaw-browser-mounts-"));
-    const skillsWorkspaceDir = realpathSync(tempDirs.make("openclaw-browser-skills-"));
-    mkdirSync(path.join(skillsWorkspaceDir, "skills"));
-    const cfg = buildConfig(false);
-    cfg.workspaceAccess = "rw";
-    const params = {
-      scopeKey: "session:test",
-      workspaceDir,
-      agentWorkspaceDir: workspaceDir,
-      skillsWorkspaceDir,
-      cfg,
-    };
-    const execute = dockerMocks.execDocker.getMockImplementation()!;
-    dockerMocks.execDocker.mockImplementation(async (args: string[]) => {
-      if (args[0] === "start") {
-        for (const relative of [
-          ".openclaw",
-          ".openclaw/sandbox-skills",
-          ".openclaw/sandbox-skills/skills",
-        ]) {
-          const stat = lstatSync(path.join(workspaceDir, relative));
-          expect(stat.isDirectory()).toBe(true);
-          expect(stat.uid).toBe(statSync(workspaceDir).uid);
-        }
+  it.each([false, true])(
+    "prepares managed skill mountpoints before browser creation, restart, and auto-start (custom=%s)",
+    async (custom) => {
+      const workspaceDir = realpathSync(tempDirs.make("openclaw-browser-mounts-"));
+      const skillsWorkspaceDir = realpathSync(tempDirs.make("openclaw-browser-skills-"));
+      mkdirSync(path.join(skillsWorkspaceDir, "skills"));
+      const cfg = buildConfig(false);
+      cfg.workspaceAccess = "rw";
+      const mountRoot = path.join(workspaceDir, custom ? "browser-custom" : ".openclaw");
+      if (custom) {
+        mkdirSync(mountRoot);
+        cfg.docker.dangerouslyAllowReservedContainerTargets = true;
+        cfg.browser.binds = [`${mountRoot}:/workspace/.openclaw:ro`];
       }
-      return await execute(args);
-    });
-    await ensureTestSandboxBrowser(params);
-    const createArgs = requireDockerCreateArgs();
-    expect(createArgs).toContain(
-      `${path.join(skillsWorkspaceDir, "skills")}:/workspace/.openclaw/sandbox-skills/skills:ro,z`,
-    );
-    const configHash = collectDockerFlagValues(createArgs, "--label")
-      .find((entry) => entry.startsWith("openclaw.configHash="))
-      ?.slice("openclaw.configHash=".length);
-    dockerMocks.readDockerContainerLabel.mockResolvedValue(configHash);
-    dockerMocks.readDockerContainerEnvVar.mockResolvedValue("existing-cdp-token");
-    dockerMocks.dockerContainerState.mockResolvedValue({ exists: true, running: false });
-    rmSync(path.join(workspaceDir, ".openclaw"), { recursive: true });
-    await ensureTestSandboxBrowser(params);
+      const params = {
+        scopeKey: "session:test",
+        workspaceDir,
+        agentWorkspaceDir: workspaceDir,
+        skillsWorkspaceDir,
+        cfg,
+      };
+      const execute = dockerMocks.execDocker.getMockImplementation()!;
+      dockerMocks.execDocker.mockImplementation(async (args: string[]) => {
+        if (args[0] === "start") {
+          for (const relative of [".", "sandbox-skills", "sandbox-skills/skills"]) {
+            const stat = lstatSync(path.join(mountRoot, relative));
+            expect(stat.isDirectory()).toBe(true);
+            expect(stat.uid).toBe(statSync(workspaceDir).uid);
+          }
+        }
+        return await execute(args);
+      });
+      await ensureTestSandboxBrowser(params);
+      const createArgs = requireDockerCreateArgs();
+      if (custom) {
+        expect(createArgs).toContain(`${mountRoot}:/workspace/.openclaw:ro`);
+      }
+      expect(createArgs).toContain(
+        `${path.join(skillsWorkspaceDir, "skills")}:/workspace/.openclaw/sandbox-skills/skills:ro,z`,
+      );
+      const configHash = collectDockerFlagValues(createArgs, "--label")
+        .find((entry) => entry.startsWith("openclaw.configHash="))
+        ?.slice("openclaw.configHash=".length);
+      dockerMocks.readDockerContainerLabel.mockResolvedValue(configHash);
+      dockerMocks.readDockerContainerEnvVar.mockResolvedValue("existing-cdp-token");
+      dockerMocks.dockerContainerState.mockResolvedValue({ exists: true, running: false });
+      rmSync(path.join(mountRoot, "sandbox-skills"), { recursive: true });
+      await ensureTestSandboxBrowser(params);
 
-    rmSync(path.join(workspaceDir, ".openclaw"), { recursive: true });
-    vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true } as Response);
-    const attach = bridgeMocks.startBrowserBridgeServer.mock.calls.at(-1)?.[0].onEnsureAttachTarget;
-    expect(attach).toBeTypeOf("function");
-    await attach({});
-    expect(dockerMocks.execDocker.mock.calls.filter(([args]) => args[0] === "create")).toHaveLength(
-      1,
-    );
-    expect(dockerMocks.execDocker.mock.calls.filter(([args]) => args[0] === "start")).toHaveLength(
-      3,
-    );
-  });
+      rmSync(path.join(mountRoot, "sandbox-skills"), { recursive: true });
+      vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true } as Response);
+      const attach =
+        bridgeMocks.startBrowserBridgeServer.mock.calls.at(-1)?.[0].onEnsureAttachTarget;
+      expect(attach).toBeTypeOf("function");
+      await attach({});
+      expect(
+        dockerMocks.execDocker.mock.calls.filter(([args]) => args[0] === "create"),
+      ).toHaveLength(1);
+      expect(
+        dockerMocks.execDocker.mock.calls.filter(([args]) => args[0] === "start"),
+      ).toHaveLength(3);
+    },
+  );
 
   it("serializes concurrent provisioning for the same browser container", async () => {
     let created = false;

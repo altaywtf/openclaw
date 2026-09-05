@@ -1,6 +1,8 @@
 // Shared test fixtures for container lifecycle suites. These keep the suites'
 // distinct configs and fake Docker/Podman process behavior unchanged.
 import fs from "node:fs";
+import path from "node:path";
+import { expect } from "vitest";
 import type { SandboxConfig } from "./types.js";
 
 export type ContainerSpawnCall = {
@@ -265,6 +267,84 @@ export function createBrowserSandboxConfig(noVncEnabled: boolean): SandboxConfig
     prune: {
       idleHours: 24,
       maxAgeDays: 7,
+    },
+  };
+}
+
+/** Observe actual host mountpoints at every engine start, including stopped reuse. */
+export function managedSkillMountLifecycle(options: {
+  backend: "docker" | "podman";
+  layout: "workspace" | "ancestor" | "deep";
+  makeTempDir: (prefix: string) => string;
+  spawnState: ContainerSpawnState;
+  ensureSandboxContainer: typeof import("./docker.js").ensureSandboxContainer;
+  engine?: import("./docker.js").SandboxContainerEngine;
+}) {
+  const { backend, layout, spawnState, ensureSandboxContainer } = options;
+  const workspaceDir = fs.realpathSync(options.makeTempDir("openclaw-docker-mounts-"));
+  const skillsWorkspaceDir = fs.realpathSync(options.makeTempDir("openclaw-docker-skills-"));
+  const skillsDir = path.join(skillsWorkspaceDir, "skills");
+  fs.mkdirSync(skillsDir);
+  const custom = layout !== "workspace";
+  const backingDir = custom ? path.join(workspaceDir, "custom") : workspaceDir;
+  if (custom) {
+    fs.mkdirSync(backingDir);
+  }
+  const containerTarget =
+    layout === "deep" ? "/workspace/.openclaw/sandbox-skills" : "/workspace/.openclaw";
+  const cfg = {
+    ...createSandboxConfig([], custom ? [`${backingDir}:${containerTarget}:rw`] : []),
+    backend,
+  };
+  const attachment = path.join(workspaceDir, ".openclaw");
+  const skillsParent =
+    layout === "ancestor"
+      ? path.join(backingDir, "sandbox-skills")
+      : path.join(attachment, "sandbox-skills");
+  const overlayTarget =
+    layout === "deep" ? path.join(backingDir, "skills") : path.join(skillsParent, "skills");
+  const params = {
+    scopeKey: "shared",
+    workspaceDir,
+    agentWorkspaceDir: workspaceDir,
+    skillsWorkspaceDir,
+    cfg,
+    engine: options.engine,
+  };
+  spawnState.containerExists = false;
+  return {
+    start: () => ensureSandboxContainer(params),
+    expectHostOwnedMountpointsBeforeEveryStart() {
+      spawnState.beforeStart = () => {
+        for (const target of [attachment, skillsParent, overlayTarget]) {
+          expect(fs.existsSync(target)).toBe(true);
+          const stat = fs.lstatSync(target);
+          expect(stat.isDirectory()).toBe(true);
+          expect(stat.uid).toBe(fs.statSync(workspaceDir).uid);
+        }
+      };
+    },
+    expectReadOnlySkillMount() {
+      const createCall = spawnState.calls.find((call) => call.args[0] === "create");
+      expect(createCall?.args).toContain(
+        `${skillsDir}:/workspace/.openclaw/sandbox-skills/skills:ro,z`,
+      );
+    },
+    stopAndRemoveMountpoints() {
+      fs.rmSync(attachment, { recursive: true });
+      if (custom) {
+        fs.rmSync(layout === "deep" ? overlayTarget : skillsParent, { recursive: true });
+      }
+      spawnState.inspectRunning = false;
+    },
+    expectOneCreationAndTwoStarts() {
+      expect(spawnState.calls.filter((call) => call.args[0] === "create")).toHaveLength(1);
+      expect(spawnState.calls.filter((call) => call.args[0] === "start")).toHaveLength(2);
+    },
+    expectWorkspaceCleanupPreservesSkills() {
+      fs.rmSync(workspaceDir, { recursive: true });
+      expect(fs.existsSync(workspaceDir)).toBe(false);
+      expect(fs.statSync(skillsDir).isDirectory()).toBe(true);
     },
   };
 }

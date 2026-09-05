@@ -334,7 +334,14 @@ paths read-only.
 ### Recover from a skill mountpoint collision
 
 Before creating or restarting a local container, OpenClaw prepares real
-host-owned directories for its read-only skill mounts. If a required path or
+host-owned directories for its read-only skill mounts. With an authorized custom
+bind above a skill mount, it prepares the host source of the deepest containing
+bind. It also prepares the intermediate attachment paths for the containing
+binds, including the workspace mount when a custom bind contains its container
+path. The source directories must already exist. A `ro` bind restricts container
+access; OpenClaw still creates missing host mountpoint directories as the Gateway
+user, without changing existing ownership or container mount permissions.
+If a required path or
 one of its parents is a file or symlink, startup fails before the container
 starts. This includes dangling symlinks and links to directories inside the
 workspace. OpenClaw preserves the existing entry and does not follow or remove
@@ -349,9 +356,11 @@ If the error names `sandbox workspace skill mountpoints`:
 2. Run `openclaw sandbox explain --session <session-key>` and locate
    `effectiveHostWorkspaceRoot`. Inspect the required skill mount paths under
    that host workspace: `skills`, `.agents/skills`, and
-   `.openclaw/sandbox-skills/skills`. Check their parents too; the collision may
-   be `.openclaw`, rather than the final `skills` directory. The error identifies
-   the mountpoint scope but does not include the colliding path.
+   `.openclaw/sandbox-skills/skills`. For a custom ancestor bind, use its host
+   source instead: a bind at `/workspace/.openclaw` requires
+   `sandbox-skills/skills` beneath that source. The error identifies the containing
+   container bind and required relative path. Check each parent along that path;
+   the collision may be a parent directory rather than the final `skills` entry.
 3. Move the colliding entry itself to an unused backup name outside the managed
    mount paths. Keep the backup in a directory you control and do not overwrite
    an existing backup. For a symlink, move the link without following it or moving

@@ -12,6 +12,7 @@ import {
 import { SANDBOX_DOCKER_CREATE_ARGS_EPOCH } from "./constants.js";
 import {
   createSandboxConfig,
+  managedSkillMountLifecycle,
   spawnContainerProcess,
   type ContainerSpawnCall as SpawnCall,
 } from "./container-lifecycle.test-support.js";
@@ -126,61 +127,6 @@ async function ensureSandboxCreateCallForTest(params: {
   return createCall;
 }
 
-/** A fresh container and a stopped container share the same mount ownership contract. */
-function managedSkillMountLifecycle(backend: "docker" | "podman") {
-  const workspaceDir = fs.realpathSync(tempDirs.make("openclaw-docker-mounts-"));
-  const skillsWorkspaceDir = fs.realpathSync(tempDirs.make("openclaw-docker-skills-"));
-  const skillsDir = path.join(skillsWorkspaceDir, "skills");
-  fs.mkdirSync(skillsDir);
-  const cfg = { ...createSandboxConfig([], []), backend };
-  const params = {
-    scopeKey: "shared",
-    workspaceDir,
-    agentWorkspaceDir: workspaceDir,
-    skillsWorkspaceDir,
-    cfg,
-    ...(backend === "podman" ? { engine: PODMAN_SANDBOX_ENGINE } : {}),
-  };
-  spawnState.containerExists = false;
-  registryMocks.readRegistryEntry.mockResolvedValue(null);
-
-  return {
-    start: () => ensureSandboxContainer(params),
-    expectHostOwnedMountpointsBeforeEveryStart() {
-      spawnState.beforeStart = () => {
-        for (const relative of [
-          ".openclaw",
-          ".openclaw/sandbox-skills",
-          ".openclaw/sandbox-skills/skills",
-        ]) {
-          const stat = fs.lstatSync(path.join(workspaceDir, relative));
-          expect(stat.isDirectory()).toBe(true);
-          expect(stat.uid).toBe(fs.statSync(workspaceDir).uid);
-        }
-      };
-    },
-    expectReadOnlySkillMount() {
-      const createCall = spawnState.calls.find((call) => call.args[0] === "create");
-      expect(createCall?.args).toContain(
-        `${skillsDir}:/workspace/.openclaw/sandbox-skills/skills:ro,z`,
-      );
-    },
-    stopAndRemoveMountpoints() {
-      fs.rmSync(path.join(workspaceDir, ".openclaw"), { recursive: true });
-      spawnState.inspectRunning = false;
-    },
-    expectOneCreationAndTwoStarts() {
-      expect(spawnState.calls.filter((call) => call.args[0] === "create")).toHaveLength(1);
-      expect(spawnState.calls.filter((call) => call.args[0] === "start")).toHaveLength(2);
-    },
-    expectWorkspaceCleanupPreservesSkills() {
-      fs.rmSync(workspaceDir, { recursive: true });
-      expect(fs.existsSync(workspaceDir)).toBe(false);
-      expect(fs.statSync(skillsDir).isDirectory()).toBe(true);
-    },
-  };
-}
-
 describe("ensureSandboxContainer config-hash recreation", () => {
   beforeEach(() => {
     spawnState.calls.length = 0;
@@ -225,10 +171,25 @@ describe("ensureSandboxContainer config-hash recreation", () => {
     expect(registryMocks.updateRegistry).toHaveBeenCalledTimes(2);
   });
 
-  it.each(["docker", "podman"] as const)(
-    "prepares user-owned managed skill mountpoints before %s creation and restart",
-    async (backend) => {
-      const lifecycle = managedSkillMountLifecycle(backend);
+  it.each([
+    ["docker", "workspace"],
+    ["podman", "workspace"],
+    ["docker", "ancestor"],
+    ["podman", "ancestor"],
+    ["docker", "deep"],
+    ["podman", "deep"],
+  ] as const)(
+    "prepares user-owned managed skill mountpoints before %s creation and restart (layout=%s)",
+    async (backend, layout) => {
+      registryMocks.readRegistryEntry.mockResolvedValue(null);
+      const lifecycle = managedSkillMountLifecycle({
+        backend,
+        layout,
+        makeTempDir: (prefix) => tempDirs.make(prefix),
+        spawnState,
+        ensureSandboxContainer,
+        engine: backend === "podman" ? PODMAN_SANDBOX_ENGINE : undefined,
+      });
       lifecycle.expectHostOwnedMountpointsBeforeEveryStart();
 
       await lifecycle.start();
@@ -238,6 +199,40 @@ describe("ensureSandboxContainer config-hash recreation", () => {
       await lifecycle.start();
       lifecycle.expectOneCreationAndTwoStarts();
       lifecycle.expectWorkspaceCleanupPreservesSkills();
+    },
+  );
+
+  it.each(["reserved target", "external source", "blocked source"] as const)(
+    "rejects %s before preparing any managed mountpoint",
+    async (rejection) => {
+      const workspaceDir = fs.realpathSync(tempDirs.make("openclaw-bind-reject-"));
+      const externalDir = fs.realpathSync(tempDirs.make("openclaw-bind-external-"));
+      const skillsWorkspaceDir = fs.realpathSync(tempDirs.make("openclaw-bind-skills-"));
+      fs.mkdirSync(path.join(skillsWorkspaceDir, "skills"));
+      const source = rejection === "reserved target" ? workspaceDir : externalDir;
+      const binds = [`${source}:/workspace/.openclaw:rw`];
+      if (rejection === "blocked source") {
+        binds.push("/etc:/blocked:ro");
+      }
+      const cfg = createSandboxConfig([], binds);
+      cfg.docker.dangerouslyAllowReservedContainerTargets = rejection !== "reserved target";
+      cfg.docker.dangerouslyAllowExternalBindSources = rejection === "blocked source";
+      spawnState.containerExists = false;
+      registryMocks.readRegistryEntry.mockResolvedValue(null);
+      await expect(
+        ensureSandboxContainer({
+          scopeKey: "shared",
+          workspaceDir,
+          agentWorkspaceDir: workspaceDir,
+          skillsWorkspaceDir,
+          cfg,
+        }),
+      ).rejects.toThrow(/Sandbox security/);
+      expect(fs.readdirSync(workspaceDir)).toEqual([]);
+      expect(fs.readdirSync(externalDir)).toEqual([]);
+      expect(
+        spawnState.calls.some((call) => call.args[0] === "create" || call.args[0] === "start"),
+      ).toBe(false);
     },
   );
 
