@@ -608,6 +608,7 @@ describe("prepared worker reserve lifecycle", () => {
   it.each(["profile", "gateway"] as const)(
     "retires excess then disabled %s capacity without touching an attached session",
     async (scope) => {
+      developmentProfile.provider = scope === "profile" ? provider.id : " Test-Provider ";
       developmentProfile.readyWorkers = 3;
       const source = attach(ready(seed("source")));
       await schedule(pool());

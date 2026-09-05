@@ -338,6 +338,46 @@ public enum ChatRunStartupPhase: String, Codable, Sendable {
     case startingModel = "starting_model"
 }
 
+public struct CanvasDocumentViewParams: Codable, Sendable {
+    public let docid: String
+
+    public init(
+        docid: String)
+    {
+        self.docid = docid
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case docid = "docId"
+    }
+}
+
+public struct CanvasDocumentViewResult: Codable, Sendable {
+    public let html: String
+    public let sandboxurl: String
+    public let sandboxport: Int
+    public let sandboxorigin: String?
+
+    public init(
+        html: String,
+        sandboxurl: String,
+        sandboxport: Int,
+        sandboxorigin: String? = nil)
+    {
+        self.html = html
+        self.sandboxurl = sandboxurl
+        self.sandboxport = sandboxport
+        self.sandboxorigin = sandboxorigin
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case html
+        case sandboxurl = "sandboxUrl"
+        case sandboxport = "sandboxPort"
+        case sandboxorigin = "sandboxOrigin"
+    }
+}
+
 public struct BoardTab: Codable, Sendable {
     public let tabid: String
     public let title: String
@@ -1647,6 +1687,7 @@ public struct Snapshot: Codable, Sendable {
     public let configpath: String?
     public let statedir: String?
     public let sessiondefaults: [String: AnyCodable]?
+    public let controluiidentityurl: String?
     public let authmode: AnyCodable?
     public let updateavailable: UpdateAvailable?
     public let updateschedule: UpdateScheduleState?
@@ -1661,6 +1702,7 @@ public struct Snapshot: Codable, Sendable {
         configpath: String? = nil,
         statedir: String? = nil,
         sessiondefaults: [String: AnyCodable]? = nil,
+        controluiidentityurl: String? = nil,
         authmode: AnyCodable? = nil,
         updateavailable: UpdateAvailable? = nil,
         updateschedule: UpdateScheduleState? = nil)
@@ -1674,6 +1716,7 @@ public struct Snapshot: Codable, Sendable {
         self.configpath = configpath
         self.statedir = statedir
         self.sessiondefaults = sessiondefaults
+        self.controluiidentityurl = controluiidentityurl
         self.authmode = authmode
         self.updateavailable = updateavailable
         self.updateschedule = updateschedule
@@ -1689,6 +1732,7 @@ public struct Snapshot: Codable, Sendable {
         case configpath = "configPath"
         case statedir = "stateDir"
         case sessiondefaults = "sessionDefaults"
+        case controluiidentityurl = "controlUiIdentityUrl"
         case authmode = "authMode"
         case updateavailable = "updateAvailable"
         case updateschedule = "updateSchedule"
@@ -1842,6 +1886,24 @@ public struct SetupAdmissionBusyErrorDetails: Codable, Sendable {
         code: String)
     {
         self.code = code
+    }
+}
+
+public struct GitHubPublicationSelectionRejectedErrorDetails: Codable, Sendable {
+    public let code: String
+    public let idempotencykey: String
+
+    public init(
+        code: String,
+        idempotencykey: String)
+    {
+        self.code = code
+        self.idempotencykey = idempotencykey
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case code
+        case idempotencykey = "idempotencyKey"
     }
 }
 
@@ -21245,6 +21307,150 @@ public struct PluginControlUiDescriptor: Codable, Sendable {
     }
 }
 
+public struct PluginControlUiModule: Codable, Sendable {
+    public let pluginid: String
+    public let name: String
+    public let revision: String
+    public let entryurl: String
+    public let styles: [String]
+
+    public init(
+        pluginid: String,
+        name: String,
+        revision: String,
+        entryurl: String,
+        styles: [String])
+    {
+        self.pluginid = pluginid
+        self.name = name
+        self.revision = revision
+        self.entryurl = entryurl
+        self.styles = styles
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case pluginid = "pluginId"
+        case name
+        case revision
+        case entryurl = "entryUrl"
+        case styles
+    }
+}
+
+public struct PluginControlUiDiagnostic: Codable, Sendable {
+    public let pluginid: String
+    public let message: String
+    public let code: String?
+
+    public init(
+        pluginid: String,
+        message: String,
+        code: String? = nil)
+    {
+        self.pluginid = pluginid
+        self.message = message
+        self.code = code
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case pluginid = "pluginId"
+        case message
+        case code
+    }
+}
+
+public struct PluginsControlUiListParams: Codable, Sendable {}
+
+public struct PluginsControlUiReloadParams: Codable, Sendable {
+    public let pluginid: String?
+
+    public init(
+        pluginid: String? = nil)
+    {
+        self.pluginid = pluginid
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case pluginid = "pluginId"
+    }
+}
+
+public struct PluginsControlUiCatalog: Codable, Sendable {
+    public let revision: String
+    public let plugins: [PluginControlUiModule]
+    public let diagnostics: [PluginControlUiDiagnostic]
+
+    public init(
+        revision: String,
+        plugins: [PluginControlUiModule],
+        diagnostics: [PluginControlUiDiagnostic])
+    {
+        self.revision = revision
+        self.plugins = plugins
+        self.diagnostics = diagnostics
+    }
+}
+
+public struct PluginsControlUiChangedEvent: Codable, Sendable {
+    public let revision: String
+
+    public init(
+        revision: String)
+    {
+        self.revision = revision
+    }
+}
+
+public struct PluginsControlUiReportParams: Codable, Sendable {
+    public let pluginid: String
+    public let revision: String
+    public let status: AnyCodable
+    public let error: String?
+
+    public init(
+        pluginid: String,
+        revision: String,
+        status: AnyCodable,
+        error: String? = nil)
+    {
+        self.pluginid = pluginid
+        self.revision = revision
+        self.status = status
+        self.error = error
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case pluginid = "pluginId"
+        case revision
+        case status
+        case error
+    }
+}
+
+public struct PluginsControlUiStatusParams: Codable, Sendable {
+    public let pluginid: String?
+
+    public init(
+        pluginid: String? = nil)
+    {
+        self.pluginid = pluginid
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case pluginid = "pluginId"
+    }
+}
+
+public struct PluginsControlUiStatusResult: Codable, Sendable {
+    public let clients: [[String: AnyCodable]]
+
+    public init(
+        clients: [[String: AnyCodable]])
+    {
+        self.clients = clients
+    }
+}
+
 public struct PluginDeclaredSurface: Codable, Sendable {
     public let channels: [String]
     public let providers: [String]
@@ -22416,6 +22622,7 @@ public struct ChatHistoryParams: Codable, Sendable {
     public let agentid: String?
     public let cursor: String?
     public let limit: Int?
+    public let maxbytes: Int?
     public let offset: Int?
     public let pendingbefore: Int?
     public let inputrunids: [String]?
@@ -22428,6 +22635,7 @@ public struct ChatHistoryParams: Codable, Sendable {
         agentid: String? = nil,
         cursor: String? = nil,
         limit: Int? = nil,
+        maxbytes: Int? = nil,
         offset: Int? = nil,
         pendingbefore: Int? = nil,
         inputrunids: [String]? = nil,
@@ -22439,6 +22647,7 @@ public struct ChatHistoryParams: Codable, Sendable {
         self.agentid = agentid
         self.cursor = cursor
         self.limit = limit
+        self.maxbytes = maxbytes
         self.offset = offset
         self.pendingbefore = pendingbefore
         self.inputrunids = inputrunids
@@ -22452,6 +22661,7 @@ public struct ChatHistoryParams: Codable, Sendable {
         case agentid = "agentId"
         case cursor
         case limit
+        case maxbytes = "maxBytes"
         case offset
         case pendingbefore = "pendingBefore"
         case inputrunids = "inputRunIds"
@@ -23114,17 +23324,23 @@ public struct UpdateStatusParams: Codable, Sendable {
 public struct UpdateStatusResult: Codable, Sendable {
     public let sentinel: AnyCodable
     public let updateavailable: AnyCodable
+    public let activerun: UpdateRunRecord?
+    public let lastrun: UpdateRunRecord?
     public let effectivechannel: AnyCodable?
     public let schedule: UpdateScheduleState?
 
     public init(
         sentinel: AnyCodable,
         updateavailable: AnyCodable,
+        activerun: UpdateRunRecord? = nil,
+        lastrun: UpdateRunRecord? = nil,
         effectivechannel: AnyCodable? = nil,
         schedule: UpdateScheduleState? = nil)
     {
         self.sentinel = sentinel
         self.updateavailable = updateavailable
+        self.activerun = activerun
+        self.lastrun = lastrun
         self.effectivechannel = effectivechannel
         self.schedule = schedule
     }
@@ -23132,6 +23348,8 @@ public struct UpdateStatusResult: Codable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case sentinel
         case updateavailable = "updateAvailable"
+        case activerun = "activeRun"
+        case lastrun = "lastRun"
         case effectivechannel = "effectiveChannel"
         case schedule
     }
@@ -23263,6 +23481,200 @@ public struct UpdateRunParams: Codable, Sendable {
         case restartdelayms = "restartDelayMs"
         case timeoutms = "timeoutMs"
         case target
+    }
+}
+
+public struct UpdateRunRecord: Codable, Sendable {
+    public let runid: String
+    public let createdatms: Int
+    public let updatedatms: Int
+    public let trigger: String
+    public let phase: String
+    public let status: String
+    public let reason: AnyCodable
+    public let origin: [String: AnyCodable]
+    public let target: [String: AnyCodable]
+    public let before: [String: AnyCodable]
+    public let after: [String: AnyCodable]
+    public let steps: [[String: AnyCodable]]
+    public let verification: [String: AnyCodable]
+    public let repair: [[String: AnyCodable]]
+    public let confirmedatms: AnyCodable
+    public let finishedatms: AnyCodable
+    public let downtimems: AnyCodable
+
+    public init(
+        runid: String,
+        createdatms: Int,
+        updatedatms: Int,
+        trigger: String,
+        phase: String,
+        status: String,
+        reason: AnyCodable,
+        origin: [String: AnyCodable],
+        target: [String: AnyCodable],
+        before: [String: AnyCodable],
+        after: [String: AnyCodable],
+        steps: [[String: AnyCodable]],
+        verification: [String: AnyCodable],
+        repair: [[String: AnyCodable]],
+        confirmedatms: AnyCodable,
+        finishedatms: AnyCodable,
+        downtimems: AnyCodable)
+    {
+        self.runid = runid
+        self.createdatms = createdatms
+        self.updatedatms = updatedatms
+        self.trigger = trigger
+        self.phase = phase
+        self.status = status
+        self.reason = reason
+        self.origin = origin
+        self.target = target
+        self.before = before
+        self.after = after
+        self.steps = steps
+        self.verification = verification
+        self.repair = repair
+        self.confirmedatms = confirmedatms
+        self.finishedatms = finishedatms
+        self.downtimems = downtimems
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case runid = "runId"
+        case createdatms = "createdAtMs"
+        case updatedatms = "updatedAtMs"
+        case trigger
+        case phase
+        case status
+        case reason
+        case origin
+        case target
+        case before
+        case after
+        case steps
+        case verification
+        case repair
+        case confirmedatms = "confirmedAtMs"
+        case finishedatms = "finishedAtMs"
+        case downtimems = "downtimeMs"
+    }
+}
+
+public struct UpdateRunResult: Codable, Sendable {
+    public let runid: String
+    public let ok: Bool
+    public let result: AnyCodable
+    public let ackdelivered: Bool?
+    public let code: String?
+    public let message: String?
+    public let handoff: AnyCodable?
+    public let restart: AnyCodable?
+    public let sentinel: AnyCodable?
+
+    public init(
+        runid: String,
+        ok: Bool,
+        result: AnyCodable,
+        ackdelivered: Bool? = nil,
+        code: String? = nil,
+        message: String? = nil,
+        handoff: AnyCodable? = nil,
+        restart: AnyCodable? = nil,
+        sentinel: AnyCodable? = nil)
+    {
+        self.runid = runid
+        self.ok = ok
+        self.result = result
+        self.ackdelivered = ackdelivered
+        self.code = code
+        self.message = message
+        self.handoff = handoff
+        self.restart = restart
+        self.sentinel = sentinel
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case runid = "runId"
+        case ok
+        case result
+        case ackdelivered = "ackDelivered"
+        case code
+        case message
+        case handoff
+        case restart
+        case sentinel
+    }
+}
+
+public struct UpdateRunsGetParams: Codable, Sendable {
+    public let runid: String
+
+    public init(
+        runid: String)
+    {
+        self.runid = runid
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case runid = "runId"
+    }
+}
+
+public struct UpdateRunsGetResult: Codable, Sendable {
+    public let run: AnyCodable
+
+    public init(
+        run: AnyCodable)
+    {
+        self.run = run
+    }
+}
+
+public struct UpdateRunsListParams: Codable, Sendable {
+    public let limit: Int?
+
+    public init(
+        limit: Int? = nil)
+    {
+        self.limit = limit
+    }
+}
+
+public struct UpdateRunsListResult: Codable, Sendable {
+    public let runs: [UpdateRunRecord]
+
+    public init(
+        runs: [UpdateRunRecord])
+    {
+        self.runs = runs
+    }
+}
+
+public struct UpdateRunChangedEvent: Codable, Sendable {
+    public let runid: String
+    public let phase: String
+    public let status: String
+    public let updatedatms: Int
+
+    public init(
+        runid: String,
+        phase: String,
+        status: String,
+        updatedatms: Int)
+    {
+        self.runid = runid
+        self.phase = phase
+        self.status = status
+        self.updatedatms = updatedatms
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case runid = "runId"
+        case phase
+        case status
+        case updatedatms = "updatedAtMs"
     }
 }
 
@@ -23628,6 +24040,7 @@ public enum GatewayErrorDetails: Codable, Sendable {
     case unknownAgentId(UnknownAgentIdErrorDetails)
     case wizardNotFound(WizardNotFoundErrorDetails)
     case setupAdmissionBusy(SetupAdmissionBusyErrorDetails)
+    case githubPublicationSelectionRejected(GitHubPublicationSelectionRejectedErrorDetails)
 
     public init(code: String, missingscope: String, requiredscopes: [String]) {
         self = .missingScope(
@@ -23651,6 +24064,7 @@ public enum GatewayErrorDetails: Codable, Sendable {
         case .unknownAgentId(let value): value.code
         case .wizardNotFound(let value): value.code
         case .setupAdmissionBusy(let value): value.code
+        case .githubPublicationSelectionRejected(let value): value.code
         }
     }
 
@@ -23682,6 +24096,7 @@ public enum GatewayErrorDetails: Codable, Sendable {
         case "UNKNOWN_AGENT_ID": self = try .unknownAgentId(UnknownAgentIdErrorDetails(from: decoder))
         case "WIZARD_NOT_FOUND": self = try .wizardNotFound(WizardNotFoundErrorDetails(from: decoder))
         case "SETUP_ADMISSION_BUSY": self = try .setupAdmissionBusy(SetupAdmissionBusyErrorDetails(from: decoder))
+        case "GITHUB_PUBLICATION_SELECTION_REJECTED": self = try .githubPublicationSelectionRejected(GitHubPublicationSelectionRejectedErrorDetails(from: decoder))
         default:
             throw DecodingError.dataCorruptedError(
                 forKey: .discriminator,
@@ -23703,6 +24118,7 @@ public enum GatewayErrorDetails: Codable, Sendable {
         case .unknownAgentId(let value): try value.encode(to: encoder)
         case .wizardNotFound(let value): try value.encode(to: encoder)
         case .setupAdmissionBusy(let value): try value.encode(to: encoder)
+        case .githubPublicationSelectionRejected(let value): try value.encode(to: encoder)
         }
     }
 }

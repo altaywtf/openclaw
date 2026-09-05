@@ -59,7 +59,7 @@ function deviceProof(
     clientId: GATEWAY_CLIENT_IDS.NODE_HOST,
     clientMode: GATEWAY_CLIENT_MODES.NODE,
     protocolFeature: NODE_WORKER_SUPERVISOR_PROTOCOL_FEATURE,
-    workerHost: { enabled: true as const, capacity: { total: 2, available } },
+    workerHost: { enabled: true as const, capacity: { total: 2, available }, workspaceManifest: 1 },
     commands,
   };
 }
@@ -563,6 +563,17 @@ describe("device worker placement dispatch", () => {
       config: { gateway: { nodes: { commands: { allow: [CODEX_COMMAND] } } } },
       expected: true,
     },
+    ...[OPENCLAW_DEVICE_REQUIREMENT, CODEX_DEVICE_REQUIREMENT].map((requirement) => ({
+      name: `rejects missing workspace manifests (worker slot=${requirement.consumesWorkerSlot})`,
+      node: {
+        ...deviceProof(),
+        workerHost: { enabled: true as const, capacity: { total: 2, available: 2 } },
+      },
+      requirement,
+      config: { gateway: { nodes: { commands: { allow: [CODEX_COMMAND] } } } },
+      expected: false,
+      message: "run openclaw update",
+    })),
     {
       name: "rejects worker-turn when all slots are occupied",
       node: deviceProof(0),

@@ -397,7 +397,11 @@ describe("worker placement dispatch authority", () => {
           clientId: GATEWAY_CLIENT_IDS.NODE_HOST,
           clientMode: GATEWAY_CLIENT_MODES.NODE,
           protocolFeature: NODE_WORKER_SUPERVISOR_PROTOCOL_FEATURE,
-          workerHost: { enabled: true as const, capacity: { total: 2, available: 2 } },
+          workerHost: {
+            enabled: true as const,
+            capacity: { total: 2, available: 2 },
+            workspaceManifest: 1,
+          },
           commands: ["system.run"],
         };
         let readinessObserved = false;

@@ -850,7 +850,9 @@ describe("gateway/node-registry", () => {
       }
       // JavaScript consumers can mutate a readonly-typed snapshot without changing admission.
       Object.assign(projectedCapacity, { available: 2 });
-      expect(nodeWorkerSupervisorTransport.isCurrent(proof, true)).toBe(false);
+      expect(nodeWorkerSupervisorTransport.isCurrent(proof, { launchEligibility: true })).toBe(
+        false,
+      );
       expect(frames).toEqual([]);
 
       const workspaceInvoke = nodeWorkerSupervisorTransport.invoke({
@@ -896,7 +898,9 @@ describe("gateway/node-registry", () => {
           },
         },
       });
-      expect(nodeWorkerSupervisorTransport.isCurrent(proof, true)).toBe(false);
+      expect(nodeWorkerSupervisorTransport.isCurrent(proof, { launchEligibility: true })).toBe(
+        false,
+      );
       for (const command of [
         NODE_WORKER_SUPERVISOR_LAUNCH_COMMAND,
         NODE_WORKER_ENVIRONMENT_STOP_COMMAND,
@@ -1179,7 +1183,14 @@ describe("gateway/node-registry", () => {
     expect(await nodeWorkerSupervisorTransport.listCurrentNodes()).toHaveLength(1);
     update(1);
     expect(nodeWorkerSupervisorTransport.getIssue?.("node-1")).toBeUndefined();
+    const [proof] = await nodeWorkerSupervisorTransport.listCurrentNodes();
+    if (!proof) {
+      throw new Error("expected current node proof");
+    }
+    expect(nodeWorkerSupervisorTransport.isCurrent(proof, { workspaceManifest: true })).toBe(true);
     update();
+    expect(nodeWorkerSupervisorTransport.isCurrent(proof, { workspaceManifest: true })).toBe(false);
+    expect(nodeWorkerSupervisorTransport.isCurrent(proof)).toBe(true);
     expect(nodeWorkerSupervisorTransport.getIssue?.("node-1")).toMatchObject({
       code: "update-required",
     });
@@ -1222,19 +1233,33 @@ describe("gateway/node-registry", () => {
     ).toEqual({ changed: true });
     const [negotiatedProof] = await nodeWorkerSupervisorTransport.listCurrentNodes();
 
-    expect(priorProof && nodeWorkerSupervisorTransport.isCurrent(priorProof, true)).toBe(true);
+    expect(
+      priorProof &&
+        nodeWorkerSupervisorTransport.isCurrent(priorProof, { launchEligibility: true }),
+    ).toBe(true);
     expect(negotiatedProof?.workerHost).toEqual({
       enabled: true,
       capacity: { total: 2, available: 2 },
       bundlePrewarm: 1,
     });
     expect(
-      priorProof && nodeWorkerSupervisorTransport.isCurrent(priorProof, true, ["system.run"]),
+      priorProof &&
+        nodeWorkerSupervisorTransport.isCurrent(priorProof, {
+          launchEligibility: true,
+          commands: ["system.run"],
+        }),
     ).toBe(true);
     expect(nodeRegistry.updateSurface("node-1", { commands: [] })).not.toBeNull();
-    expect(priorProof && nodeWorkerSupervisorTransport.isCurrent(priorProof, true)).toBe(true);
     expect(
-      priorProof && nodeWorkerSupervisorTransport.isCurrent(priorProof, true, ["system.run"]),
+      priorProof &&
+        nodeWorkerSupervisorTransport.isCurrent(priorProof, { launchEligibility: true }),
+    ).toBe(true);
+    expect(
+      priorProof &&
+        nodeWorkerSupervisorTransport.isCurrent(priorProof, {
+          launchEligibility: true,
+          commands: ["system.run"],
+        }),
     ).toBe(false);
   });
 

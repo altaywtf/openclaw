@@ -297,7 +297,9 @@ describe("nodeHandlers node.runnerInventory.update", () => {
       bundlePrewarm: 1,
     });
     expect(proof && runtime.nodeWorkerSupervisorTransport.isCurrent(proof)).toBe(true);
-    expect(proof && runtime.nodeWorkerSupervisorTransport.isCurrent(proof, true)).toBe(false);
+    expect(
+      proof && runtime.nodeWorkerSupervisorTransport.isCurrent(proof, { launchEligibility: true }),
+    ).toBe(false);
     runtime.nodeRegistry.unregister("conn-1");
   });
 

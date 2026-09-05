@@ -120,7 +120,7 @@ export function createWorkerNodePortalCarrier(options: {
     runtime === capturedRuntime &&
     isNodePortalBindingCurrent(options.store, binding) &&
     node.workerHost.portalStream === NODE_WORKER_PORTAL_STREAM_VERSION &&
-    capturedRuntime.transport.isCurrent(node, false);
+    capturedRuntime.transport.isCurrent(node);
 
   const findCurrentNode = async (
     binding: NodePortalBinding,

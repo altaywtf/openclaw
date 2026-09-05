@@ -72,7 +72,7 @@ export async function startPreparedPoolWireProvider(root: string) {
       lease.controller.signal.throwIfAborted();
       lease.allocations = 1;
       lease.provisions += 1;
-      return {};
+      return { commandTimeoutMs: PROOF_TIMEOUT_MS };
     }
     if (action === "/inspect") {
       return !lease || lease.destroyed

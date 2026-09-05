@@ -40,6 +40,7 @@ import {
   type NodeRunnerStatePublisher,
   type NodeWorkerBundleStatusObservation,
   type NodeWorkerSupervisorNodeProof,
+  type NodeWorkerSupervisorProofRequirements,
 } from "./node-runner-inventory-runtime.js";
 import { MAX_PAYLOAD_BYTES } from "./server-constants.js";
 
@@ -94,8 +95,7 @@ export type NodeWorkerSupervisorTransport = {
   ): boolean;
   isCurrent(
     node: NodeWorkerSupervisorNodeProof,
-    requireLaunchEligibility?: boolean,
-    requiredCommands?: readonly string[],
+    requirements?: NodeWorkerSupervisorProofRequirements,
   ): boolean;
   invoke(params: {
     node: NodeWorkerSupervisorNodeProof;
@@ -490,12 +490,12 @@ export function registerNodeRegistryPrivateRuntime(
       }
       return true;
     },
-    isCurrent: (node, requireLaunchEligibility = false, requiredCommands = []) =>
+    isCurrent: (node, requirements) =>
       isNodeWorkerSupervisorProofCurrent(
         state.context.getNode(node.nodeId),
         state.runnerInventoryByConn,
         node,
-        { launchEligibility: requireLaunchEligibility, commands: requiredCommands },
+        requirements,
       ),
     invoke: async (params) => {
       if (!NODE_WORKER_PRIVATE_COMMANDS.includes(params.command)) {

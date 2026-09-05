@@ -149,18 +149,20 @@ export function resolveNodeWorkerSupervisorProof(
   };
 }
 
+export type NodeWorkerSupervisorProofRequirements = {
+  launchEligibility?: boolean;
+  commands?: readonly string[];
+  environmentSession?: boolean;
+  workspaceManifest?: boolean;
+  workspaceSkillResources?: boolean;
+};
+
 /** Match a captured proof against the registry's current connection and inventory. */
 export function isNodeWorkerSupervisorProofCurrent(
   node: NodeRunnerRegistrySession | undefined,
   runnerInventoryByConn: ReadonlyMap<string, NodeRunnerInventoryRecord>,
   proof: NodeWorkerSupervisorNodeProof,
-  requirements: {
-    launchEligibility?: boolean;
-    commands?: readonly string[];
-    environmentSession?: boolean;
-    workspaceManifest?: boolean;
-    workspaceSkillResources?: boolean;
-  } = {},
+  requirements: NodeWorkerSupervisorProofRequirements = {},
 ): boolean {
   if (!node || node.client.invalidated === true || node.connId !== proof.connId) {
     return false;

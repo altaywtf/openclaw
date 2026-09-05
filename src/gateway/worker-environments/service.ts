@@ -3,9 +3,6 @@ import type {
   WorkerSessionsSendParams,
   WorkerSessionsSpawnParams,
   WorkerSessionToolResult,
-  WorkerTranscriptCommitErrorReason,
-  WorkerTranscriptCommitParams,
-  WorkerTranscriptCommitResult,
 } from "../../../packages/gateway-protocol/src/schema/worker-admission.js";
 import type { WorkerSkillWorkshopParams } from "../../../packages/gateway-protocol/src/schema/worker-skill-workshop.js";
 import { onSessionIdentityMutation } from "../../config/sessions/session-accessor.js";
@@ -43,6 +40,7 @@ import type {
   WorkerProviderLifecycleInputOptions,
 } from "./provider-lifecycle.types.js";
 import type { WorkerEnvironmentState } from "./state.js";
+import type { WorkerTranscriptCommitApplication } from "./transcript-commit.js";
 import { joinWorkerTunnelStops, type WorkerTunnelStopReason } from "./tunnel-contract.js";
 import type { WorkerTunnelManager } from "./tunnel.js";
 import {
@@ -73,13 +71,7 @@ type WorkerEnvironmentServiceOptions = WorkerProviderLifecycleInputOptions & {
   generateWorkerCredential?: (bytes: number) => string;
   now?: () => number;
   logger?: { warn: (message: string) => void };
-  applyTranscriptCommit?: (params: {
-    identity: WorkerConnectionIdentity;
-    request: WorkerTranscriptCommitParams;
-  }) => Promise<
-    | { ok: true; result: WorkerTranscriptCommitResult }
-    | { ok: false; reason: WorkerTranscriptCommitErrorReason }
-  >;
+  applyTranscriptCommit?: WorkerTranscriptCommitApplication;
   liveEvents?: Pick<
     WorkerLiveEventReceiver,
     "apply" | "bindSession" | "clear" | "clearEnvironment" | "rotateCredential" | "start"
@@ -555,7 +547,10 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
     options.liveEvents?.clear();
     options.stopNodeWorkerBundleTransfers?.();
     try {
-      await Promise.all([environmentAccess.stopAllTunnels(), options.nodePortalCarrier?.stopAll()]);
+      await joinWorkerTunnelStops([
+        environmentAccess.stopAllTunnels(),
+        options.nodePortalCarrier?.stopAll(),
+      ]);
     } finally {
       // Tunnel failures cannot release shutdown before admitted owner-bound operations drain.
       const reconciliation = reconcileInFlight;

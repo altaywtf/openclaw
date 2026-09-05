@@ -403,7 +403,7 @@ export async function createGatewayWorkerEnvironmentRuntime(params: {
       (candidate) => candidate.nodeId === request.deviceId,
     );
     assertCurrent();
-    if (!node || !transport.isCurrent(node, false)) {
+    if (!node || !transport.isCurrent(node)) {
       throw new Error("Prepared workspace node protocol is unavailable");
     }
     // Registration hashes the project with the existing workspace command budget.
@@ -427,7 +427,7 @@ export async function createGatewayWorkerEnvironmentRuntime(params: {
       idempotencyKey: `${input.environmentId}:${input.preparationKey}:${input.action}`,
       isDispatchAuthorized: () => {
         assertCurrent();
-        return transport.isCurrent(node, false);
+        return transport.isCurrent(node);
       },
     });
     assertCurrent();

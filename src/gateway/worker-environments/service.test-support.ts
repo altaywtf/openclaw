@@ -204,6 +204,7 @@ export function createService(
       | "now"
       | "nodeTunnelManager"
       | "nodeDesktopCarrier"
+      | "nodePortalCarrier"
       | "placementStore"
       | "workerCredentialTtlMs"
     >

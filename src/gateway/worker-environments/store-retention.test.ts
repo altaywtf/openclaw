@@ -1,7 +1,8 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as sqliteQueries from "../../infra/kysely-sync.js";
 import { openNodeSqliteDatabase } from "../../infra/node-sqlite.js";
 import {
   closeOpenClawStateDatabaseForTest,
@@ -242,6 +243,47 @@ describe("worker environment terminal retention", () => {
     expect(prune()).toBe(1);
     expect(store.get("worker-eligible-second")).toBeUndefined();
     expect(store.get("worker-retained")).toBeDefined();
+  });
+
+  it("bounds each retention fetch while advancing past a full page of retained demand", () => {
+    const environmentIds = Array.from(
+      { length: 303 },
+      (_, index) => `worker-page-${String(index).padStart(4, "0")}`,
+    );
+    for (const [index, environmentId] of environmentIds.entries()) {
+      seedOrphaned(environmentId, DAY_MS);
+      if (index < 300) {
+        database.db
+          .prepare(
+            "UPDATE worker_environments SET last_activated_at_ms = ? WHERE environment_id = ?",
+          )
+          .run(PRUNE_NOW_MS - 500, environmentId);
+      }
+    }
+    const execute = vi.spyOn(sqliteQueries, "executeSqliteQuerySync");
+    try {
+      const prune = () =>
+        store.pruneTerminalEnvironments({
+          nowMs: PRUNE_NOW_MS,
+          limit: 2,
+          canPruneDemand: (record, evaluationTime) =>
+            record.lastActivatedAtMs === null || evaluationTime - record.lastActivatedAtMs >= 1_000,
+        });
+      expect(prune()).toBe(2);
+      expect(store.get(environmentIds[299]!)).toBeDefined();
+      expect(store.get(environmentIds[300]!)).toBeUndefined();
+      expect(store.get(environmentIds[301]!)).toBeUndefined();
+      expect(store.get(environmentIds[302]!)).toBeDefined();
+      expect(prune()).toBe(1);
+      expect(store.get(environmentIds[302]!)).toBeUndefined();
+      const fetchSizes = execute.mock.results.flatMap((result) =>
+        result.type === "return" ? [result.value.rows.length] : [],
+      );
+      expect(fetchSizes.length).toBeGreaterThan(0);
+      expect(Math.max(...fetchSizes)).toBeLessThanOrEqual(256);
+    } finally {
+      execute.mockRestore();
+    }
   });
 
   it.each([

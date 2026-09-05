@@ -41,10 +41,18 @@ export default definePluginEntry({
         }
         const lease = leaseId(operationId);
         try {
-          await call("allocate", { leaseId: lease }, options.signal);
+          const { commandTimeoutMs } = await call("allocate", { leaseId: lease }, options.signal);
           const prepared = await options.project.prepare({
             runScript: async (script, signal) =>
               (await call("script", { leaseId: lease, script }, signal)).stdout,
+            runScriptWithBudget: async (createScript, signal) =>
+              (
+                await call(
+                  "script",
+                  { leaseId: lease, script: createScript(commandTimeoutMs) },
+                  signal,
+                )
+              ).stdout,
             upload: async (localPath, remotePath, signal) => {
               const bytes = await readFile(localPath, { signal });
               await call(

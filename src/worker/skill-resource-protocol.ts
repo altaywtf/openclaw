@@ -130,13 +130,13 @@ export function validateWorkerSkillResourceInput(
   throw new Error("INVALID_REQUEST: invalid worker skill resource chunk");
 }
 
+/** Transport bounds reply bytes; delivery validates the exact workspace-owned root. */
 export function parseWorkerSkillResourceLocator(value: unknown): WorkerSkillResourceLocator {
   if (
     !isRecord(value) ||
     !hasExactOwnKeys(value, ["resourceId", "identity", "root"]) ||
     !isResourceIdentity(value) ||
     typeof value.root !== "string" ||
-    value.root.length > 1_024 ||
     value.root.includes("\0") ||
     (!path.posix.isAbsolute(value.root) && !path.win32.isAbsolute(value.root))
   ) {

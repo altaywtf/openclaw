@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { OpenClawConfig } from "../../config/types.js";
+import { normalizeCapabilityProviderId } from "../../plugins/provider-registry-shared.js";
 import type { WorkerProfile, WorkerProvider } from "../../plugins/types.js";
 import { runTasksWithConcurrency } from "../../utils/run-with-concurrency.js";
 import type { WorkerEnvironmentRecord } from "./environment-record.js";
@@ -52,7 +53,7 @@ export function createPreparedWorkerPool(options: PoolOptions) {
     const profile = config?.profiles?.[record.profileId];
     return {
       target:
-        profile?.provider === record.providerId
+        profile && normalizeCapabilityProviderId(profile.provider) === record.providerId
           ? (profile.readyWorkers ?? DEFAULT_READY_WORKERS)
           : 0,
       maxTotal: config?.preparedPool?.maxTotal ?? DEFAULT_MAX_TOTAL,

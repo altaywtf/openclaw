@@ -1,3 +1,4 @@
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   parseWorkerSkillResourceGeneration,
@@ -22,13 +23,34 @@ describe("worker skill resource locators", () => {
   );
 
   it.each([
+    { name: "POSIX", paths: path.posix, base: "/worker" },
+    { name: "Windows", paths: path.win32, base: "C:\\worker" },
+  ])("accepts resource siblings of long valid $name workspaces", ({ paths, base }) => {
+    const workspace = paths.join(
+      base,
+      ...Array.from({ length: 12 }, () => "a".repeat(100)),
+      "workspace",
+    );
+    const locator = {
+      resourceId,
+      identity: "1:2",
+      root: paths.join(
+        paths.dirname(workspace),
+        `.${Number.MAX_SAFE_INTEGER}.skill-resources-${resourceId}`,
+      ),
+    };
+    expect(workspace.length).toBeLessThanOrEqual(4_096);
+    expect(locator.root.length).toBeGreaterThan(1_024);
+    expect(parseWorkerSkillResourceLocator(locator)).toEqual(locator);
+  });
+
+  it.each([
     { resourceId: "../outside" },
     { resourceId: `${resourceId}\n` },
     { identity: "1:NaN" },
     { identity: "1:2\n" },
     { root: "relative/root" },
     { root: "/tmp/\0outside" },
-    { root: "/" + "a".repeat(1_024) },
     { extra: true },
   ])("rejects invalid or open locator %#", (invalid) => {
     expect(() =>

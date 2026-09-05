@@ -1,11 +1,20 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   GATEWAY_CLIENT_IDS,
   GATEWAY_CLIENT_MODES,
 } from "../../../packages/gateway-protocol/src/client-info.js";
 import { WORKER_EXECUTION_CONTEXT_PROTOCOL_FEATURE } from "../../../packages/gateway-protocol/src/schema/worker-admission.js";
+import { createDeferred } from "../../../test/helpers/promise.js";
+import { getRuntimeConfig } from "../../config/config.js";
 import { NODE_WORKER_SUPERVISOR_PROTOCOL_FEATURE } from "../../infra/node-runner-inventory.js";
-import type { NodeWorkerSupervisorNodeProof } from "../node-registry-private.js";
+import {
+  createNodeRegistryRuntime,
+  updateNodeRunnerInventory,
+  type NodeWorkerSupervisorNodeProof,
+} from "../node-registry-private.js";
+import { NodeRegistry } from "../node-registry.js";
+import type { GatewayWsClient } from "../server/ws-types.js";
+import { isNodeWorkerPlacementCurrent } from "./device-placement-eligibility.js";
 import { bindDeviceWorkerAvailability } from "./device-provider.js";
 import { REQUEST } from "./placement-dispatch-test-fixtures.js";
 import { createHarness } from "./placement-dispatch-test-harness.js";
@@ -39,7 +48,14 @@ function preparedHarness(
     now: () => support.testState.nowMs,
   });
   const harness = createHarness(support.testState.stateDb, placements, {
-    isCurrentNodePlacement: () => nodeCurrent,
+    isCurrentNodePlacement: (proof, requirement) =>
+      nodeCurrent &&
+      isNodeWorkerPlacementCurrent({
+        node: proof,
+        requirement,
+        transport,
+        config: getRuntimeConfig(),
+      }),
   });
   const environmentId = reserve ? "prepared-spare" : harness.ready.environmentId;
   const intent: WorkerProviderPreparedIntent = {
@@ -142,10 +158,62 @@ function preparedHarness(
     clientId: GATEWAY_CLIENT_IDS.NODE_HOST,
     clientMode: GATEWAY_CLIENT_MODES.NODE,
     protocolFeature: NODE_WORKER_SUPERVISOR_PROTOCOL_FEATURE,
-    workerHost: { enabled: true, capacity: { total: 1, available: 1 } },
+    workerHost: { enabled: true, capacity: { total: 1, available: 1 }, workspaceManifest: 1 },
     commands: ["codex.exec-server.stdio.v1"],
   };
-  bindDeviceWorkerAvailability(harness.environments, async () => ({ available: true, node }));
+  const { nodeRegistry, nodeWorkerSupervisorTransport: transport } = createNodeRegistryRuntime(
+    () => new NodeRegistry({ getConfig: getRuntimeConfig }),
+  );
+  const connectNode = () =>
+    nodeRegistry.register(
+      {
+        connId: node.connId,
+        usesSharedGatewayAuth: false,
+        socket: {
+          readyState: 1,
+          bufferedAmount: 0,
+          send: vi.fn(),
+          close: vi.fn(),
+        } as unknown as GatewayWsClient["socket"],
+        connect: {
+          minProtocol: 1,
+          maxProtocol: 1,
+          client: { id: node.clientId, version: "test", platform: "linux", mode: node.clientMode },
+          device: {
+            id: node.nodeId,
+            publicKey: "fixture",
+            signature: "fixture",
+            signedAt: 1,
+            nonce: "fixture",
+          },
+          commands: [...node.commands],
+        },
+      },
+      { pairingIdentity: node.pairingIdentity, pairingGeneration: node.pairingGeneration },
+    );
+  const setWorkspaceManifest = (available: boolean, reconnect = false) => {
+    if (reconnect) {
+      node.connId = "reconnected-without-workspace";
+      connectNode();
+    }
+    node.workerHost.workspaceManifest = available ? 1 : undefined;
+    updateNodeRunnerInventory({
+      registry: nodeRegistry,
+      nodeId: node.nodeId,
+      connId: node.connId,
+      declaration: { protocolFeatures: [node.protocolFeature], workerHost: node.workerHost },
+    });
+  };
+  connectNode();
+  setWorkspaceManifest(true);
+  onTestFinished(() => {
+    nodeRegistry.unregister(node.connId);
+  });
+  const resolveAvailability = vi.fn(async () => ({
+    available: true,
+    node: (await transport.listCurrentNodes())[0],
+  }));
+  bindDeviceWorkerAvailability(harness.environments, resolveAvailability);
   const request = {
     ...REQUEST,
     executionMode,
@@ -164,6 +232,9 @@ function preparedHarness(
     intent,
     request,
     liveEvents,
+    transport,
+    resolveAvailability,
+    setWorkspaceManifest,
     revokeNode: () => {
       nodeCurrent = false;
     },
@@ -252,6 +323,68 @@ describe("prepared worker dispatch", () => {
       expect(harness.environments.create).toHaveBeenCalledOnce();
       expect(store.get(ready.environmentId)?.preparation?.consumedAtMs).toBeNull();
       expect(harness.environments.bindPreparedWorkspace).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { executionMode: "worker-turn", reconnect: false },
+    { executionMode: "remote-exec", reconnect: false },
+    { executionMode: "worker-turn", reconnect: true },
+    { executionMode: "remote-exec", reconnect: true },
+  ] as const)(
+    "keeps a $executionMode reserve unconsumed after workspace capability loss (reconnect=$reconnect)",
+    async ({ executionMode, reconnect }) => {
+      const { harness, store, ready, request, setWorkspaceManifest } = preparedHarness({
+        executionMode,
+      });
+      setWorkspaceManifest(false, reconnect);
+
+      const active = await harness.service.dispatch(request);
+
+      expect(active.environmentId).toBe(harness.ready.environmentId);
+      expect(harness.environments.create).toHaveBeenCalledOnce();
+      expect(store.get(ready.environmentId)?.preparation?.consumedAtMs).toBeNull();
+      expect(store.getCredential(ready.environmentId)?.sessionId).toBeNull();
+      expect(harness.environments.bindPreparedWorkspace).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["worker-turn", "remote-exec"] as const)(
+    "does not consume a %s reserve when workspace capability is withdrawn during admission",
+    async (executionMode) => {
+      const {
+        harness,
+        store,
+        ready,
+        request,
+        transport,
+        resolveAvailability,
+        setWorkspaceManifest,
+      } = preparedHarness({ executionMode });
+      const admitted = createDeferred();
+      const release = createDeferred();
+      resolveAvailability.mockImplementationOnce(async () => {
+        const [node] = await transport.listCurrentNodes();
+        admitted.resolve();
+        await release.promise;
+        return { available: true, node };
+      });
+      const dispatch = harness.service.dispatch(request);
+      try {
+        await admitted.promise;
+        setWorkspaceManifest(false);
+        release.resolve();
+        const active = await dispatch;
+
+        expect(active.environmentId).toBe(harness.ready.environmentId);
+        expect(harness.environments.create).toHaveBeenCalledOnce();
+        expect(store.get(ready.environmentId)?.preparation?.consumedAtMs).toBeNull();
+        expect(store.getCredential(ready.environmentId)?.sessionId).toBeNull();
+        expect(harness.environments.bindPreparedWorkspace).not.toHaveBeenCalled();
+      } finally {
+        release.resolve();
+        await dispatch;
+      }
     },
   );
 
