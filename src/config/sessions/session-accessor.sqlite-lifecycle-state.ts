@@ -40,7 +40,10 @@ import type {
   ProjectedLifecycleMutation,
   SessionEntryRemovalPlan,
 } from "./session-accessor.sqlite-lifecycle-types.js";
-import { collectSessionStateIdsForEntry } from "./session-accessor.sqlite-references.js";
+import {
+  addRetainedWindowSessionReferences,
+  collectSessionStateIdsForEntry,
+} from "./session-accessor.sqlite-references.js";
 import { cloneSessionEntry, getSessionKysely } from "./session-accessor.sqlite-scope.js";
 import {
   parseSessionEntryJson as parseSessionEntryRow,
@@ -164,6 +167,8 @@ function sqliteTranscriptStateHasMarker(params: {
 export function readReferencedSessionIds(
   database: OpenClawAgentDatabase,
   excludedSessionKeys: ReadonlySet<string> = new Set(),
+  candidateSessionIds?: readonly string[],
+  diskBudget?: { preserveRecentMs?: number | null },
 ): Set<string> {
   const db = getSessionKysely(database.db);
   // Only push down keys unchanged by Node/SQLite text conversion; retain exact membership below.
@@ -193,7 +198,16 @@ export function readReferencedSessionIds(
       sessionIds.add(sessionId);
     }
   }
-  return sessionIds;
+  addRetainedWindowSessionReferences(
+    database,
+    sessionIds,
+    excludedSessionKeys,
+    candidateSessionIds,
+    diskBudget,
+  );
+  return candidateSessionIds
+    ? new Set(candidateSessionIds.filter((sessionId) => sessionIds.has(sessionId)))
+    : sessionIds;
 }
 
 // Projects references after a lifecycle mutation so reset/delete can archive
@@ -245,12 +259,18 @@ export function deleteMaterializedSessionStatePlans(
   excludedSessionKeys?: ReadonlySet<string>,
   /** Synchronous mutation notification; durable completion still belongs to COMMIT. */
   onDeleted?: () => void,
+  diskBudget?: { preserveRecentMs?: number | null },
 ): SessionLifecycleArchivedTranscript[] {
   if (plans.length === 0) {
     return [];
   }
   const archivedTranscripts: SessionLifecycleArchivedTranscript[] = [];
-  const referencedSessionIds = readReferencedSessionIds(database, excludedSessionKeys);
+  const referencedSessionIds = readReferencedSessionIds(
+    database,
+    excludedSessionKeys,
+    plans.map((plan) => plan.sessionId),
+    diskBudget,
+  );
   for (const sessionId of protectedSessionIds ?? []) {
     referencedSessionIds.add(sessionId);
   }
