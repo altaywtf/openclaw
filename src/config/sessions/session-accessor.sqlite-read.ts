@@ -31,7 +31,10 @@ import {
   toDatabaseOptions,
 } from "./session-accessor.sqlite-scope.js";
 import { projectResetBoundaryNavigationSql } from "./session-model-context-projection.js";
-import { resolveSqliteSessionTranscriptReadFence } from "./session-transcript-read-fence.js";
+import {
+  resolveSqliteSessionTranscriptReadFence,
+  SessionTranscriptReadFenceError,
+} from "./session-transcript-read-fence.js";
 
 export type SqliteTranscriptSnapshotRow = {
   eventJson: string;
@@ -196,6 +199,23 @@ export function loadTranscriptSuffixEventsBoundedSync(
     database.db,
     () => {
       const db = getSessionKysely(database.db);
+      const fence = resolveSqliteSessionTranscriptReadFence({ database, ...resolved });
+      if (fence) {
+        const hiddenSuffix = executeSqliteQueryTakeFirstSync(
+          database.db,
+          db
+            .selectFrom("transcript_events")
+            .select("seq")
+            .where("session_id", "=", resolved.sessionId)
+            .where("seq", ">=", fence.beforeRawSeq)
+            .limit(1),
+        );
+        if (hiddenSuffix) {
+          throw new SessionTranscriptReadFenceError(
+            `Current-turn transcript admission hides rows needed for suffix mutation: ${fence.admission.entryId}`,
+          );
+        }
+      }
       const metadata = executeSqliteQuerySync(
         database.db,
         db

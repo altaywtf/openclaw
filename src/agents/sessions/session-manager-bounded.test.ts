@@ -174,6 +174,43 @@ it("excludes interleaved display payloads without inventing events or losing fen
   expect(SessionManager.open(scope, dir).getBranch().at(-1)?.id).toBe(appended.entryId);
 });
 
+it("rejects suffix cleanup when the admission fence hides later transcript rows", async () => {
+  const dir = tempDirs.make("openclaw-session-manager-fenced-cleanup-");
+  const scope = {
+    agentId: "main",
+    sessionId: "fenced-cleanup",
+    sessionKey: "agent:main:fenced-cleanup",
+    storePath: path.join(dir, "sessions.json"),
+  };
+  await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 1 });
+  const manager = SessionManager.open(scope, dir);
+  manager.appendMessage({ role: "user", content: "retained", timestamp: 1 });
+  const removableId = manager.appendMessage(buildAssistantMessage("temporary"));
+  const admission = manager.appendMessageWithTranscriptAnchor({
+    role: "user",
+    content: "current turn",
+    timestamp: 2,
+  });
+  manager.appendMessage(buildAssistantMessage("hidden response"));
+  const raw = await loadTranscriptEvents(scope);
+  if (!admission.anchor) {
+    throw new Error("missing current-turn anchor");
+  }
+
+  runWithSessionTranscriptReadFence(
+    { ...admission.anchor, logicalTurnId: "fenced-cleanup", role: "user" },
+    () => {
+      const fenced = SessionManager.open(scope, dir);
+      const entries = fenced.getEntries();
+      expect(() => fenced.removeTrailingEntries((entry) => entry.id === removableId)).toThrow(
+        /admission hides rows needed for suffix mutation/,
+      );
+      expect(fenced.getEntries()).toEqual(entries);
+    },
+  );
+  await expect(loadTranscriptEvents(scope)).resolves.toEqual(raw);
+});
+
 it.each([1, 2])("retains the forward cut after %i excluded first-kept entries", async (count) => {
   const dir = tempDirs.make("openclaw-bounded-excluded-cut-");
   const scope = {
