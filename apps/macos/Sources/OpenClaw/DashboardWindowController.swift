@@ -118,7 +118,14 @@ final class DashboardWindowController: NSWindowController, WKNavigationDelegate,
     }
 
     var hasCurrentBrowserSession: Bool {
-        self.browserSessionLease?.isCurrent ?? true
+        // Renewals revoke the lease before awaited WebKit cleanup replaces the document.
+        guard self.browserSessionLease?.isCurrent != false else { return false }
+        do {
+            try self.browserSession?.validate(for: self.currentURL)
+            return true
+        } catch {
+            return false
+        }
     }
 
     private let dashboardFrameAutosaveName: String
@@ -404,7 +411,7 @@ final class DashboardWindowController: NSWindowController, WKNavigationDelegate,
         showFailure(
             title: error == .expired ? "Gateway sign-in expired" : "Gateway reconnecting",
             message: error?.localizedDescription ?? "The saved Gateway sign-in changed.",
-            detail: "Reconnect in Settings → Gateways.",
+            detail: "Reconnect in Connection → Gateways.",
             present: false,
             preservingPendingCommands: true)
     }
@@ -505,7 +512,7 @@ final class DashboardWindowController: NSWindowController, WKNavigationDelegate,
                 self.showFailure(
                     title: "Gateway sign-in required",
                     message: error.localizedDescription,
-                    detail: "Sign in again in Settings → Gateways.",
+                    detail: "Sign in again in Connection → Gateways.",
                     present: false,
                     preservingPendingCommands: true)
             }

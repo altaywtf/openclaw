@@ -7,7 +7,7 @@ import WebKit
 extension DashboardWindowOwnershipTests {
     @Test(arguments: [
         "replacement", "committed", "provisional", "close", "cancel-domains", "cancel-profile", "normalize-profile",
-        "revoke-domains",
+        "revoke-domains", "revoke-session",
     ])
     func `device settings promises settle with consent and retire with their document`(
         _ transition: String) async throws
@@ -45,16 +45,18 @@ extension DashboardWindowOwnershipTests {
         let autosaveName = "OpenClawDashboardWindow-Test-\(UUID().uuidString)"
         defer { NSWindow.removeFrame(usingName: autosaveName) }
         let auth = DashboardWindowAuth(gatewayUrl: server.websocketURL().absoluteString, token: nil, password: nil)
+        let sessionStore = transition == "revoke-session" ? DashboardBrowserSessionStore(dataStore: .nonPersistent()) :
+            nil
         let controller = DashboardWindowController(
             url: server.url(),
             auth: auth,
-            websiteDataStore: .nonPersistent(),
+            websiteDataStore: sessionStore?.dataStore ?? .nonPersistent(),
+            browserSessionLease: sessionStore?.lease(for: nil),
             windowAutosaveName: autosaveName,
             requestBrowserProfileImportOffer: { _ in false })
         defer { controller.closeDashboard() }
         controller.show(url: server.url(), auth: auth)
-        try #require(await Self
-            .waitForConsentState { controller.canDeliverNativeCommands && !controller.webView.isLoading })
+        try #require(await Self.waitForDashboardDocument(controller))
         let window = try #require(controller.window)
         defer {
             if let sheet = window.attachedSheet { window.endSheet(sheet, returnCode: .cancel) }
@@ -78,12 +80,16 @@ extension DashboardWindowOwnershipTests {
         var replacement: DashboardWindowController?
         defer { replacement?.closeDashboard() }
         var other: DashboardWindowController?
+        var sessionRetirement: Task<Void, Error>?
         let otherAutosaveName = autosaveName + "-other"
         defer {
             other?.closeDashboard()
             NSWindow.removeFrame(usingName: otherAutosaveName)
         }
         switch transition {
+        case "revoke-session":
+            // Renewal revokes the lease synchronously, before cookie cleanup replaces the document.
+            sessionRetirement = try #require(sessionStore).invalidate()
         case "revoke-domains":
             let second = DashboardWindowController(
                 url: server.url(),
@@ -93,8 +99,7 @@ extension DashboardWindowOwnershipTests {
                 requestBrowserProfileImportOffer: { _ in false })
             other = second
             second.show(url: server.url(), auth: auth)
-            try #require(await Self
-                .waitForConsentState { second.canDeliverNativeCommands && !second.webView.isLoading })
+            try #require(await Self.waitForDashboardDocument(second))
             _ = try await second.webView.callAsyncJavaScript("""
             return await window.webkit.messageHandlers.openclawDeviceSettings.postMessage({
               type: 'set', key: 'browser.cookieSync.domains', value: []
@@ -131,14 +136,15 @@ extension DashboardWindowOwnershipTests {
         if let sheet = window.attachedSheet {
             window.endSheet(
                 sheet,
-                returnCode: retired || allowed || transition == "revoke-domains"
+                returnCode: retired || allowed || transition == "revoke-domains" || transition == "revoke-session"
                     ? .alertSecondButtonReturn : .alertFirstButtonReturn)
         }
         let replies = try await self.waitForDeviceReplies(controller.webView)
+        try await sessionRetirement?.value
         #expect(replies.count == 2)
         let expectedDomains = transition == "revoke-domains"
             ? [] : allowed && !changesProfile ? ["existing.test", "added.test"] : ["existing.test"]
-        if retired {
+        if retired || transition == "revoke-session" {
             #expect(replies.allSatisfy { $0["error"] is String && $0["value"] == nil })
         } else {
             let reply = try #require(replies.first { $0["type"] as? String == "set" })
@@ -156,8 +162,7 @@ extension DashboardWindowOwnershipTests {
         guard transition != "close" else { return }
         let current = replacement ?? controller
         if replacement != nil {
-            try #require(await Self
-                .waitForConsentState { current.canDeliverNativeCommands && !current.webView.isLoading })
+            try #require(await Self.waitForDashboardDocument(current))
         }
         let fresh = Task { await current.deviceSettingsMessageHandler.confirm(.activityReporting) }
         defer {
@@ -168,6 +173,14 @@ extension DashboardWindowOwnershipTests {
         let freshSheet = try #require(window.attachedSheet)
         window.endSheet(freshSheet, returnCode: .alertFirstButtonReturn)
         #expect(await fresh.value == false)
+    }
+
+    private static func waitForDashboardDocument(_ controller: DashboardWindowController) async -> Bool {
+        // Lease-backed loads report deliverable before the document exists; requests from the
+        // interim blank page are untrusted, so wait for the real dashboard page to finish.
+        await self.waitForConsentState {
+            controller.webView.url != nil && !controller.webView.isLoading && controller.canDeliverNativeCommands
+        }
     }
 
     private static func waitForDeviceReplies(_ webView: WKWebView) async throws -> [[String: Any]] {

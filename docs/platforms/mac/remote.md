@@ -15,7 +15,7 @@ account. This connection stays separate from the primary Gateway that owns
 Mac node capabilities and Talk Mode.
 
 1. On first launch, choose **Connect to an existing Gateway**. In an already
-   configured app, open **Settings → Gateways → Add Gateway**.
+   configured app, open **Connection… → Gateways → Add Gateway**.
 2. Enter the Gateway's address, such as `gateway.example.com` or
    `https://gateway.example.com/operator/`. A hostname defaults to HTTPS;
    include the full base path when the Gateway is hosted beneath one. **Name**
@@ -53,7 +53,7 @@ queue. Previously queued messages remain with their original account; sign
 back into that account to access them.
 
 To sign out of that Gateway in the Mac app,
-remove it from **Settings → Gateways** and confirm **Remove**. This removes its
+remove it from **Connection… → Gateways** and confirm **Remove**. This removes its
 saved credentials and dashboard browser data. Use your identity provider's
 session controls to revoke account access more broadly.
 

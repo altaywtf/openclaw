@@ -1389,7 +1389,7 @@ extension DashboardManager {
         switch WebChatManager.promptForGatewayProfile(profiles: available, preferredID: nil) {
         case let .profile(profile): return .profile(profile.id)
         case .manage:
-            AppNavigationActions.openSettings(tab: .gateways)
+            AppNavigationActions.openConnection(tab: .gateways)
             return nil
         case nil:
             self.pendingOpenCommands.removeAll()

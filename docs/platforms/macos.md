@@ -140,7 +140,7 @@ unknown values stay on stable app builds.
 For a saved Gateway added with [browser sign-in](/platforms/mac/remote#connect-with-your-browser),
 the dashboard uses that profile's Keychain-backed personal session. You do not
 need a second sign-in inside the embedded browser. **Reconnect** in
-**Settings → Gateways** renews an expired session.
+**Connection… → Gateways** renews an expired session.
 
 For a remote Gateway with identity-aware authentication, the app opens the
 dashboard at its sign-in address: HTTPS `gateway.publicOrigin` for trusted-proxy
