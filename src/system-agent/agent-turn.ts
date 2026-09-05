@@ -2,7 +2,11 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { prepareSystemAgentRunAdmission } from "../agents/admitted-run-context.js";
-import { extractAgentRunText, type AgentRunResultView } from "../agents/agent-run-result.js";
+import {
+  extractAgentRunTerminalError,
+  extractAgentRunText,
+  type AgentRunResultView,
+} from "../agents/agent-run-result.js";
 import { resolveCliBackendConfig, type ResolvedCliBackend } from "../agents/cli-backends.js";
 import { normalizeCliModel } from "../agents/cli-runner/helpers.js";
 import { SessionManager } from "../agents/sessions/index.js";
@@ -411,6 +415,11 @@ async function runSystemAgentTurnWithDeps(
           ? { authProfileId: plan.authProfileId, authProfileIdSource: "user" as const }
           : {}),
       })) as EmbeddedRunResult;
+    }
+    // Failed runs can retain partial text; it must not publish a reply or a tool directive.
+    const terminalError = extractAgentRunTerminalError(result);
+    if (terminalError) {
+      throw new Error(terminalError);
     }
     if (params.session.verifiedInference !== binding) {
       throw new SystemAgentInferenceUnavailableError("agent-turn");
