@@ -1019,9 +1019,9 @@ class TalkModeManager internal constructor(
               try {
                 startRealtimeClient(generation)
               } catch (err: Throwable) {
-                // Without a strict auth selection, keep the legacy relay recovery;
-                // explicit strict auth stays fail-closed instead of substituting.
-                if (strictAuthSelected || err is CancellationException) throw err
+                // Only omitted/Auto transport with omitted auth keeps legacy relay recovery;
+                // any explicit transport or strict auth selection stays fail-closed.
+                if (strictAuthSelected || configured != null || err is CancellationException) throw err
                 Log.w(tag, "client realtime unavailable; recovering with gateway relay")
                 synchronized(realtimeCapturePauseLock) {
                   if (generation != startGeneration.get() || !_isEnabled.value || stopRequested) {

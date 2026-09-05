@@ -556,8 +556,16 @@ class TalkSettingsPage extends OpenClawLightDomElement {
     }
     const runtimeConfig = this.context.runtimeConfig;
     const selection = this.liveSelection();
+    const previousProviderKeys = this.selectedProviderConfigKeys();
     for (const key of ["model", "speakerVoice", "speakerVoiceId"]) {
       runtimeConfig.removeFormValue(["talk", "realtime", key]);
+    }
+    // A strict method belongs to the selected provider identity. Switching the
+    // provider or returning to Auto must not leave that old lock active.
+    if (providerId === null || providerId !== selection.provider) {
+      for (const key of previousProviderKeys) {
+        runtimeConfig.removeFormValue(["talk", "realtime", "providers", key, "authMethod"]);
+      }
     }
     if (providerId === null) {
       // Auto keeps the current transport: it was valid for the configuration

@@ -57,6 +57,9 @@ internal class TalkRealtimeClient(
   private var outputResponseId: String? = null
   private var transcriptTail: Deferred<Unit> = CompletableDeferred(Unit)
   private var queuedTranscripts = 0
+  private var transcriptFailureReported = false
+  private val transcriptOrder =
+    TalkRealtimeTranscriptOrder { _, role, entryId, text -> enqueueTranscript(role, entryId, text) }
   private val toolBatch = TalkRealtimeToolBatch()
   private val cancelledResponses = mutableSetOf<String>()
 
@@ -181,6 +184,35 @@ internal class TalkRealtimeClient(
     if (event.string("response_id") in cancelledResponses && event.string("type")?.contains("transcript") == true) return
     val itemId = event.string("item_id")
     when (event.string("type")) {
+      "input_audio_buffer.committed" -> {
+        val id = itemId ?: return fail("Realtime transcript item has no identity")
+        reserveTranscript(id, event.string("previous_item_id"), "user")
+      }
+
+      "conversation.item.added", "conversation.item.created" -> {
+        val item = event["item"] as? JsonObject ?: return
+        val id = item.string("id") ?: return
+        val role =
+          when {
+            item.string("type") != "message" -> null
+
+            item.string("role") == "assistant" -> "assistant"
+
+            item.string("role") == "user" &&
+              ((item["content"] as? JsonArray)?.any { (it as? JsonObject)?.string("type") == "input_audio" } == true) -> "user"
+
+            else -> null
+          }
+        reserveTranscript(id, event.string("previous_item_id"), role)
+      }
+
+      "conversation.item.done", "response.output_item.done" -> {
+        val item = event["item"] as? JsonObject
+        if (item?.string("type") == "message" && item.string("role") == "assistant") {
+          item.string("id")?.let(transcriptOrder::settle)
+        }
+      }
+
       "conversation.item.input_audio_transcription.completed" -> {
         transcript("user", event.string("transcript"), itemId, true)
       }
@@ -203,7 +235,7 @@ internal class TalkRealtimeClient(
         // Frameless Bidi does not require a turn id. The reliable data channel owns
         // delivery order; retain one local id for each queued persistence operation.
         val entryId = turn.string("id") ?: "native-${++nativeTranscriptSequence}"
-        transcript(turn.string("role") ?: return, turn.string("transcript"), entryId, true)
+        transcriptFrameless(turn.string("role") ?: return, turn.string("transcript"), entryId)
       }
 
       "input_audio_buffer.speech_started" -> {
@@ -286,6 +318,7 @@ internal class TalkRealtimeClient(
       }
 
       "conversation.item.input_audio_transcription.failed" -> {
+        itemId?.let(transcriptOrder::settle)
         Log.w("TalkRealtime", "Recoverable input transcription error")
         publishResponseStatus()
       }
@@ -316,50 +349,77 @@ internal class TalkRealtimeClient(
     return ids.add(id)
   }
 
+  private fun reserveTranscript(
+    itemId: String,
+    previousItemId: String?,
+    role: String?,
+  ) {
+    if (!gatewayTranscripts && !transcriptOrder.reserve(itemId, previousItemId, role)) {
+      fail("Realtime transcript queue overflow")
+    }
+  }
+
   private fun transcript(
     role: String,
     text: String?,
     itemId: String?,
     final: Boolean,
   ) {
-    if (role !in listOf("user", "assistant") || text.isNullOrEmpty()) return
+    if (role !in listOf("user", "assistant")) return
     if (!final && itemId != null && "$role:$itemId" in finalTranscripts) return
     if (final) {
       if (itemId == null) return fail("Realtime transcript has no item identity")
       if (!remember(finalTranscripts, "$role:$itemId")) return
-      if (!gatewayTranscripts) {
-        val voiceId = voiceSessionId ?: return
-        if (queuedTranscripts >= 128) return fail("Realtime transcript queue overflow")
-        queuedTranscripts++
-        val previous = transcriptTail
-        // Keep opaque provider IDs only in local dedupe. Like the Web owner, emit
-        // a bounded per-call sequence for the Gateway's [A-Za-z0-9_-]{1,128} ID.
-        val entryId = finalTranscripts.size.toString()
-        transcriptTail =
-          scope.async(Dispatchers.Main.immediate) {
-            try {
-              previous.await()
-              lease.request(
-                "talk.client.transcript",
-                buildJsonObject {
-                  put("sessionKey", sessionKey)
-                  put("voiceSessionId", voiceId)
-                  put("entryId", entryId)
-                  put("role", role)
-                  put("text", text)
-                }.toString(),
-                10_000,
-              )
-            } catch (error: Exception) {
-              fail("Voice transcript could not be saved")
-              throw error
-            } finally {
-              queuedTranscripts--
-            }
-          }
+      if (!gatewayTranscripts && !transcriptOrder.settle(itemId, role, text)) {
+        return fail("Realtime transcript final has no reserved item")
       }
     }
-    onTranscript(role, text, final)
+    if (!text.isNullOrEmpty()) onTranscript(role, text, final)
+  }
+
+  private fun transcriptFrameless(
+    role: String,
+    text: String?,
+    entryId: String,
+  ) {
+    if (role !in listOf("user", "assistant") || text.isNullOrEmpty()) return
+    if (!remember(finalTranscripts, "$role:$entryId")) return
+    if (!gatewayTranscripts) enqueueTranscript(role, entryId, CompletableDeferred(text))
+    onTranscript(role, text, true)
+  }
+
+  private fun enqueueTranscript(
+    role: String,
+    entryId: String,
+    text: Deferred<String?>,
+  ) {
+    val voiceId = voiceSessionId ?: return
+    queuedTranscripts++
+    val previous = transcriptTail
+    transcriptTail =
+      scope.async<Unit>(Dispatchers.Main.immediate) {
+        try {
+          previous.await()
+          val finalText = text.await() ?: return@async
+          lease.request(
+            "talk.client.transcript",
+            buildJsonObject {
+              put("sessionKey", sessionKey)
+              put("voiceSessionId", voiceId)
+              put("entryId", entryId)
+              put("role", role)
+              put("text", finalText)
+            }.toString(),
+            10_000,
+          )
+        } catch (_: Exception) {
+          // The failure callback closes the call; keep the queue tail completed so
+          // retirement can still issue the logical session close exactly once.
+          reportTranscriptFailure()
+        } finally {
+          queuedTranscripts--
+        }
+      }
   }
 
   private suspend fun submitToolResult(
@@ -439,10 +499,13 @@ internal class TalkRealtimeClient(
       snapshot = null
       agent.endSession()
       peer.close()
+      transcriptOrder.close()
       val voiceId = voiceSessionId ?: return@withContext
       voiceSessionId = null
       try {
-        transcriptTail.await()
+        // Persistence failures already report through fail(); retirement still owns
+        // the logical close and must not rethrow the completed tail failure.
+        runCatching { transcriptTail.await() }
       } finally {
         runCatching {
           lease.request(
@@ -455,7 +518,19 @@ internal class TalkRealtimeClient(
           )
         }.onFailure { onFailure("Realtime session close could not be confirmed") }
       }
+      Unit
     }
+
+  private fun reportTranscriptFailure() {
+    if (!transcriptFailureReported) {
+      transcriptFailureReported = true
+      onFailure("Voice transcript could not be saved")
+    }
+    if (!closed) {
+      closed = true
+      scope.launch { close() }
+    }
+  }
 
   private fun fail(message: String) {
     if (closed) return

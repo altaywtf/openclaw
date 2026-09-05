@@ -34,6 +34,7 @@ type TalkMutationHarnessOptions = {
   defaultModel?: string;
   openAIProviderModel?: string;
   provider?: string | null;
+  authMethod?: string;
   transport?: string | null;
   transports?: TalkCatalogResult["transports"];
   unavailable?: boolean;
@@ -113,9 +114,10 @@ function createTalkMutationHarness(options: TalkMutationHarnessOptions = {}) {
         model: "gpt-realtime-2.1",
         transport: options.transport === undefined ? "gateway-relay" : options.transport,
         consultRouting: options.consultRouting,
-        providers: options.openAIProviderModel
-          ? { openai: { model: options.openAIProviderModel } }
-          : undefined,
+        providers:
+          options.openAIProviderModel || options.authMethod
+            ? { openai: { model: options.openAIProviderModel, authMethod: options.authMethod } }
+            : undefined,
       },
     },
   };
@@ -193,6 +195,41 @@ afterEach(() => {
 });
 
 describe("Talk authentication settings", () => {
+  it("clears the previous strict auth method when switching provider or returning to Auto", async () => {
+    const switchHarness = createTalkMutationHarness({ provider: "openai", authMethod: "oauth" });
+    await vi.waitFor(() => expect(switchHarness.request).toHaveBeenCalledWith("talk.catalog", {}));
+    await switchHarness.page.updateComplete;
+    switchHarness.page.changeProvider("xai");
+    expect(switchHarness.runtimeConfig.removeFormValue).toHaveBeenCalledWith([
+      "talk",
+      "realtime",
+      "providers",
+      "openai",
+      "authMethod",
+    ]);
+    expect(switchHarness.runtimeConfig.patchForm).toHaveBeenCalledWith(
+      ["talk", "realtime", "provider"],
+      "xai",
+    );
+
+    const autoHarness = createTalkMutationHarness({ provider: "openai", authMethod: "api-key" });
+    await vi.waitFor(() => expect(autoHarness.request).toHaveBeenCalledWith("talk.catalog", {}));
+    await autoHarness.page.updateComplete;
+    autoHarness.page.changeProvider(null);
+    expect(autoHarness.runtimeConfig.removeFormValue).toHaveBeenCalledWith([
+      "talk",
+      "realtime",
+      "providers",
+      "openai",
+      "authMethod",
+    ]);
+    expect(autoHarness.runtimeConfig.removeFormValue).toHaveBeenCalledWith([
+      "talk",
+      "realtime",
+      "provider",
+    ]);
+  });
+
   it("locks the selected provider when choosing strict authentication from Auto", async () => {
     const { page, request, runtimeConfig } = createTalkMutationHarness({
       provider: null,

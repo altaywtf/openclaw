@@ -2632,6 +2632,38 @@ class TalkModeManagerTest {
       }
     }
 
+  @Test
+  fun explicitWebRtcTransportFailureDoesNotRecoverThroughRelay() =
+    runTest {
+      val methods = ConcurrentLinkedQueue<String>()
+      withStartedTalk(
+        responseForRequest = { request, _ ->
+          val method = request.getValue("method").jsonPrimitive.content
+          methods.add(method)
+          when (method) {
+            "talk.config" -> """{"config":{"talk":{"realtime":{"transport":"webrtc"}}}}"""
+            else -> null
+          }
+        },
+        interceptRequest = { request, socket ->
+          val method = request.getValue("method").jsonPrimitive.content
+          if (method != "talk.client.create") {
+            false
+          } else {
+            methods.add(method)
+            val id = request.getValue("id").jsonPrimitive.content
+            socket.send("""{"type":"res","id":"$id","ok":false,"error":{"code":"UNAVAILABLE","message":"selected WebRTC unavailable"}}""")
+            true
+          }
+        },
+        expectFailure = true,
+      ) { proof ->
+        assertFalse(proof.manager.isListening.value)
+        assertTrue(proof.manager.hasFailure.value)
+        assertFalse(methods.contains("talk.session.create"))
+      }
+    }
+
   private suspend fun withStartedTalk(
     sessionKey: String = "main",
     captureRelayStopNotification: () -> ((() -> Boolean) -> Unit) = { {} },

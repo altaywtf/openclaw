@@ -63,6 +63,44 @@ class TalkRealtimeClientTest {
     }
 
   @Test
+  fun consultationWaitsForReservedDelayedUserBeforeEarlyAssistantFinal() =
+    runTest {
+      Dispatchers.setMain(UnconfinedTestDispatcher(testScheduler))
+      val methods = mutableListOf<String>()
+      val lease =
+        GatewaySession.RequestLease("fixture", requestImpl = { method, _, _, _ ->
+          methods.add(method)
+          "{}"
+        })
+      val client = TalkRealtimeClient(RuntimeEnvironment.getApplication(), this, lease, "main", {}, { _, _, _ -> }, {})
+      try {
+        client.javaClass
+          .getDeclaredField("voiceSessionId")
+          .apply { isAccessible = true }
+          .set(client, "voice-fixture")
+        val event = client.javaClass.getDeclaredMethod("handleProviderEvent", String::class.java).apply { isAccessible = true }
+        event.invoke(client, """{"type":"input_audio_buffer.committed","item_id":"u1","previous_item_id":null}""")
+        event.invoke(client, """{"type":"conversation.item.created","previous_item_id":"u1","item":{"id":"a1","type":"message","role":"assistant","content":[{"type":"audio"}]}}""")
+        event.invoke(client, """{"type":"response.output_audio_transcript.done","item_id":"a1","transcript":"answer"}""")
+        val transport =
+          client.javaClass
+            .getDeclaredMethod("clientTransport")
+            .apply { isAccessible = true }
+            .invoke(client) as RealtimeAgentClientTransport
+        val consult = async { transport.request("talk.client.toolCall", "{}", 1_000) }
+        runCurrent()
+        assertTrue(methods.isEmpty())
+        event.invoke(client, """{"type":"conversation.item.input_audio_transcription.completed","item_id":"u1","transcript":"question"}""")
+        runCurrent()
+        consult.await()
+        assertEquals(listOf("talk.client.transcript", "talk.client.transcript", "talk.client.toolCall"), methods)
+      } finally {
+        client.close()
+        Dispatchers.resetMain()
+      }
+    }
+
+  @Test
   fun transcriptRequestsMatchTheGatewayProtocolFixture() =
     runTest {
       Dispatchers.setMain(UnconfinedTestDispatcher(testScheduler))
@@ -87,6 +125,45 @@ class TalkRealtimeClientTest {
         client.close()
         Dispatchers.resetMain()
       }
+    }
+
+  @Test
+  fun transcriptFailureIsReportedOnceWhileCloseStillCompletesAndSendsLogicalClose() =
+    runTest {
+      Dispatchers.setMain(UnconfinedTestDispatcher(testScheduler))
+      val failures = mutableListOf<String>()
+      var closes = 0
+      val lease =
+        GatewaySession.RequestLease("fixture", requestImpl = { method, _, _, _ ->
+          when (method) {
+            "talk.client.transcript" -> {
+              error("persistence failed")
+            }
+
+            "talk.client.close" -> {
+              closes++
+              "{}"
+            }
+
+            else -> {
+              "{}"
+            }
+          }
+        })
+      val client = TalkRealtimeClient(RuntimeEnvironment.getApplication(), this, lease, "main", {}, { _, _, _ -> }, { failures.add(it) })
+      client.javaClass
+        .getDeclaredField("voiceSessionId")
+        .apply { isAccessible = true }
+        .set(client, "voice-fixture")
+      val event = client.javaClass.getDeclaredMethod("handleProviderEvent", String::class.java).apply { isAccessible = true }
+      event.invoke(client, """{"type":"input_audio_buffer.committed","item_id":"u1","previous_item_id":null}""")
+      event.invoke(client, """{"type":"conversation.item.input_audio_transcription.completed","item_id":"u1","transcript":"question"}""")
+      runCurrent()
+      client.close()
+      runCurrent()
+      assertEquals(listOf("Voice transcript could not be saved"), failures)
+      assertEquals(1, closes)
+      Dispatchers.resetMain()
     }
 
   @Test
