@@ -21,6 +21,11 @@ export const triageMaintenanceRuntimeEntrypoints = {
 } as const;
 
 export const triageTestRuntimeEntrypoints = {
+  updateRunLedger: {
+    currentModuleUrl,
+    sourceWorkerName: "update-run-ledger",
+    distWorkerPath: "infra/update-run-ledger.js",
+  },
   updateHandoff: {
     currentModuleUrl,
     sourceWorkerName: "../cli/update-cli/update-command-handoff",

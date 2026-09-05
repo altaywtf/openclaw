@@ -72,6 +72,7 @@ type HandoffChild = ChildProcess & {
 };
 type ManagedServiceUpdateHandoffParams = {
   runId?: string;
+  beforePark?: () => Promise<void>;
   root: string;
   timeoutMs?: number;
   restartDrainTimeoutMs: number;
@@ -108,6 +109,7 @@ type ManagedServiceUpdateHandoffResult = {
 
 type ActiveManagedServiceUpdateHandoff = {
   handoffId: string;
+  beforePark?: () => Promise<void>;
   flight?: Promise<ManagedServiceUpdateHandoffResult>;
   launcher?: HandoffChild;
   launcherStartIdentity?: number | null;
@@ -511,7 +513,10 @@ export async function startManagedServiceUpdateHandoff(
       ...(joined.handoffId ? { handoffId: joined.handoffId } : {}),
     };
   }
-  const owner: ActiveManagedServiceUpdateHandoff = { handoffId: params.handoffId ?? randomUUID() };
+  const owner: ActiveManagedServiceUpdateHandoff = {
+    handoffId: params.handoffId ?? randomUUID(),
+    ...(params.beforePark ? { beforePark: params.beforePark } : {}),
+  };
   activeManagedServiceUpdateHandoffs.set(root, owner);
   const flight = spawnManagedServiceUpdateHandoff(
     {
@@ -586,8 +591,21 @@ function sendManagedServiceUpdateHandoffCommand(
 export async function requestManagedServiceUpdateHandoffPark(
   identity: NonNullable<GatewayRestartIntent["successorOwner"]>,
 ): Promise<boolean> {
+  if (!claimManagedServiceUpdateHandoff(identity)) {
+    return false;
+  }
+  const root = resolveUpdateInstallRoot(identity.installRoot);
+  const owner = activeManagedServiceUpdateHandoffs.get(root);
+  await owner?.beforePark?.();
+  // A notice can await transport recovery. Only the same live helper may
+  // receive park after that await; a replacement never inherits this effect.
+  if (
+    activeManagedServiceUpdateHandoffs.get(root) !== owner ||
+    !claimManagedServiceUpdateHandoff(identity)
+  ) {
+    return false;
+  }
   return (
-    claimManagedServiceUpdateHandoff(identity) &&
     (await sendManagedServiceUpdateHandoffCommand(identity, "park")) === "parked" &&
     claimManagedServiceUpdateHandoff(identity)
   );

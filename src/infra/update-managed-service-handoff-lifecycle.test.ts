@@ -20,7 +20,10 @@ import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths
 import { executeSqliteQueryTakeFirstSync, getNodeSqliteKysely } from "./kysely-sync.js";
 import { writeRestartSentinel } from "./restart-sentinel.js";
 import { SUPERVISOR_HINT_ENV_VARS } from "./supervisor-markers.js";
-import { CONTROL_PLANE_UPDATE_SENTINEL_META_ENV } from "./update-control-plane-sentinel.js";
+import {
+  CONTROL_PLANE_UPDATE_SENTINEL_META_ENV,
+  UPDATE_RUN_ID_ENV,
+} from "./update-control-plane-sentinel.js";
 import {
   cleanupStaleManagedServiceUpdateHandoffs,
   MANAGED_SERVICE_UPDATE_HANDOFF_TEMP_PREFIX,
@@ -205,13 +208,16 @@ async function runManagedServiceManagerBoundary(
       mode: 0o755,
     },
   );
-  const env = {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
     OPENCLAW_STATE_DIR: root,
     OPENCLAW_CONFIG_PATH: configPath,
     PATH: `${root}${path.delimiter}${process.env.PATH ?? ""}`,
   };
   const run = options?.ledger ? createUpdateRun({ trigger: "api" }, { env }) : undefined;
+  if (run) {
+    env[UPDATE_RUN_ID_ENV] = run.runId;
+  }
   let helper: import("node:child_process").ChildProcess | undefined;
   try {
     await startManagedServiceUpdateHandoff({

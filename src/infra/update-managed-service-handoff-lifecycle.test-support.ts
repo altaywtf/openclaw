@@ -2,6 +2,9 @@ import fs from "node:fs/promises";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import type { TriageUpdateFailure } from "../commands/triage-update.js";
+import { resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
+import { triageTestRuntimeEntrypoints } from "./triage-runtime.test-support.js";
+import { UPDATE_RUN_ID_ENV } from "./update-control-plane-sentinel.js";
 import { buildUpdateRestartSentinelPayload } from "./update-restart-sentinel-payload.js";
 import type { UpdateRunRecord } from "./update-run-record.js";
 import type { UpdateRunResult } from "./update-runner-types.js";
@@ -347,7 +350,19 @@ export function createManagedServiceUpdaterFixtureScript(params: {
         })
       : null;
   return [
+    ...(options?.ledger ? ["(async () => {"] : []),
     `const fs = require("node:fs");`,
+    ...(options?.ledger
+      ? [
+          `{ const ledger = await import(${JSON.stringify(resolveRuntimeWorkerUrl(triageTestRuntimeEntrypoints.updateRunLedger).href)});`,
+          `const runId = process.env[${JSON.stringify(UPDATE_RUN_ID_ENV)}]; if (!runId) throw new Error("expected inherited update run identity");`,
+          `const state = JSON.parse(fs.readFileSync(${JSON.stringify(statePath)}, "utf8"));`,
+          `state.updaterObservedRunPhase = ledger.getUpdateRun(runId)?.phase;`,
+          `ledger.createUpdateRun({ runId, trigger: "cli" });`,
+          `ledger.recordUpdateRunPhase(runId, "staging"); ledger.recordUpdateRunPhase(runId, "validating");`,
+          `fs.writeFileSync(${JSON.stringify(statePath)}, JSON.stringify(state)); }`,
+        ]
+      : []),
     ...(kind === "launchd"
       ? [
           `const state = JSON.parse(fs.readFileSync(${JSON.stringify(statePath)}, "utf8"));`,
@@ -397,6 +412,9 @@ export function createManagedServiceUpdaterFixtureScript(params: {
         ]
       : []),
     `process.stdout.write(remaining, () => { ${options?.updaterSignal ? 'process.kill(process.pid, "SIGTERM");' : `process.exit(${options?.updaterExitCode ?? 7});`} });`,
+    ...(options?.ledger
+      ? ["})().catch((error) => { console.error(error); process.exitCode = 1; });"]
+      : []),
   ].join("");
 }
 
@@ -484,7 +502,7 @@ export async function prepareManagedHandoffRecoveryFixture(params: {
       const { register } = await import(${JSON.stringify(pathToFileURL(createRequire(import.meta.url).resolve("tsx/esm/api")).href)});
       register();
       const ledger = await import(${JSON.stringify(new URL("./update-run-ledger.ts", import.meta.url).href)});
-      export const { finishUpdateRun, recordUpdateRunPhase, recordUpdateRunVerification } = ledger;
+      export const { finishUpdateRun, recordUpdateRunPhase, recordUpdateRunStep, recordUpdateRunVerification } = ledger;
     `,
     );
   }
@@ -515,12 +533,34 @@ export async function prepareManagedHandoffRecoveryFixture(params: {
 
 export function registerManagedHandoffOwnerTests(
   runManagedServiceManagerBoundary: (
-    kind: "systemd",
+    kind: "systemd" | "launchd",
     options?: ManagedServiceManagerBoundaryOptions,
   ) => Promise<ManagedServiceManagerBoundaryResult>,
   itUnix: ReturnType<typeof import("vitest").it.runIf>,
   expect: typeof import("vitest").expect,
 ): void {
+  itUnix.each(["systemd", "launchd"] as const)(
+    "preserves updater phases after the %s helper records service stop",
+    async (kind) => {
+      const { state, run, log } = await runManagedServiceManagerBoundary(kind, {
+        ledger: true,
+        updaterExitCode: 0,
+        updaterResult: { status: "ok", mode: "npm", steps: [], durationMs: 1 },
+      });
+      expect(state.updaterObservedRunPhase, log).toBe("requested");
+      expect(run).toMatchObject({ status: "succeeded", phase: "finished" });
+      expect(
+        run?.steps
+          .filter(({ step }) => ["requested", "staging", "validating"].includes(step))
+          .map(({ step }) => step),
+      ).toEqual(["requested", "staging", "validating"]);
+      expect(run?.steps.find(({ step }) => step === "service-stop")).toMatchObject({
+        status: "completed",
+        startedAtMs: expect.any(Number),
+        endedAtMs: expect.any(Number),
+      });
+    },
+  );
   itUnix.each(["revoked", "unchanged", "internal", "channel-less"] as const)(
     "rechecks the %s requester after helper readiness and parent exit",
     async (owner) => {

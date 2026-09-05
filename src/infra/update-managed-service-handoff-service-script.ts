@@ -234,8 +234,8 @@ function recordServiceStop() {
     const metaFile = JSON.parse(fs.readFileSync(params.metaPath, "utf-8"));
     metaFile.meta.serviceStoppedAtMs ??= serviceStoppedAtMs;
     fs.writeFileSync(params.metaPath, JSON.stringify(metaFile), { mode: 0o600 });
-    runLedger?.recordUpdateRunPhase(params.runId, "activating", {
-      step: { step: "service-stop", status: "in_progress", startedAtMs: metaFile.meta.serviceStoppedAtMs },
+    runLedger?.recordUpdateRunStep(params.runId, {
+      step: "service-stop", status: "in_progress", startedAtMs: metaFile.meta.serviceStoppedAtMs,
     });
   } catch (error) {
     appendLog("could not record service stop time: " + String(error));

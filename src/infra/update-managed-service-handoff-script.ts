@@ -439,7 +439,7 @@ let automaticRequested = false;
     if (params.action === "update" && params.runId) {
       // Load the ledger writer before READY and package replacement can remove its chunks.
       runLedger = await import(pathToFileURL(params.recoveryModulePath).href);
-      for (const name of ["finishUpdateRun", "recordUpdateRunPhase", "recordUpdateRunVerification"]) {
+      for (const name of ["finishUpdateRun", "recordUpdateRunStep", "recordUpdateRunVerification"]) {
         if (typeof runLedger[name] !== "function") throw new Error("managed update ledger writer is unavailable");
       }
     }
@@ -549,8 +549,8 @@ let automaticRequested = false;
     }
     clearTimeout(parentExitDeadline);
     const stopped = pendingServiceStop ? await pendingServiceStop : null;
-    if (stopped) runLedger?.recordUpdateRunPhase(params.runId, "activating", {
-      step: { step: "service-stop", status: stopped.code === 0 || (params.serviceRecovery?.kind === "launchd" && isLaunchdNotLoaded(stopped)) ? "completed" : "failed", endedAtMs: Date.now() },
+    if (stopped) runLedger?.recordUpdateRunStep(params.runId, {
+      step: "service-stop", status: stopped.code === 0 || (params.serviceRecovery?.kind === "launchd" && isLaunchdNotLoaded(stopped)) ? "completed" : "failed", endedAtMs: Date.now(),
     });
     if (
       stopped &&

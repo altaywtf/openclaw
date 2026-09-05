@@ -6,7 +6,7 @@ import { createApplicationOverlays } from "./overlays.ts";
 export type RequestFn = (
   method: string,
   params?: unknown,
-  options?: { timeoutMs?: number | null },
+  options?: Parameters<GatewayBrowserClient["request"]>[2],
 ) => Promise<unknown>;
 
 const SYSTEM_APPROVAL_TITLE = "OpenClaw change";
