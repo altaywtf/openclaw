@@ -29,6 +29,7 @@ export function projectProgressCardChannelUpdate(
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     return undefined;
   }
+  // SAFETY: object/array guards above establish the record shape; fields remain unknown.
   const record = input as { markdown?: unknown; plan?: unknown };
   try {
     const normalized = normalizeProgressCardInput({
