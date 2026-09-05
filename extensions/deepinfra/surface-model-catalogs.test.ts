@@ -1,4 +1,5 @@
 import { clearLiveCatalogCacheForTests } from "openclaw/plugin-sdk/provider-catalog-live-runtime";
+import * as ssrfRuntime from "openclaw/plugin-sdk/ssrf-runtime";
 // Deepinfra tests cover surface model catalogs plugin behavior.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -59,23 +60,11 @@ function jsonResponse(payload: unknown, init: ResponseInit = {}): Response {
 
 async function withLiveFetch(mockFetch: ReturnType<typeof vi.fn>, run: () => Promise<void>) {
   const env = { ...process.env };
-  delete process.env.NODE_ENV;
-  delete process.env.VITEST;
   process.env.DEEPINFRA_API_KEY = "sk-test";
   vi.stubGlobal("fetch", mockFetch);
   try {
     await run();
   } finally {
-    if (env.NODE_ENV !== undefined) {
-      process.env.NODE_ENV = env.NODE_ENV;
-    } else {
-      delete process.env.NODE_ENV;
-    }
-    if (env.VITEST !== undefined) {
-      process.env.VITEST = env.VITEST;
-    } else {
-      delete process.env.VITEST;
-    }
     if (env.DEEPINFRA_API_KEY !== undefined) {
       process.env.DEEPINFRA_API_KEY = env.DEEPINFRA_API_KEY;
     } else {
@@ -112,12 +101,40 @@ describe("listDeepInfraImageGenCatalog", () => {
     });
   });
 
-  it("returns null under VITEST even with a key (static fallback owns offline)", async () => {
-    // The default VITEST env path makes discoverDeepInfraSurfaces emit the
-    // manifest fallback (live=false), and the catalog provider rejects
-    // non-live results so it cannot serve stale offline data as "live".
-    const result = await listDeepInfraImageGenCatalog(withKeyCtx());
-    expect(result).toBeNull();
+  it.each([
+    { label: "without test flags", env: {} },
+    { label: "with VITEST", env: { VITEST: "true" } },
+    { label: "with NODE_ENV=test", env: { NODE_ENV: "test" } },
+  ])("uses the same public catalog $label", async ({ env }) => {
+    const release = vi.fn(async () => undefined);
+    const fetchGuard = vi
+      .spyOn(ssrfRuntime, "fetchWithSsrFGuard")
+      .mockImplementation(async ({ url }) => ({
+        response: jsonResponse({ data: [surfaceEntry("fixture/image-model", "image-gen")] }),
+        finalUrl: url,
+        release,
+      }));
+    try {
+      const result = await listDeepInfraImageGenCatalog({ ...withKeyCtx(), env });
+      expect(result).toEqual([
+        {
+          kind: "image_generation",
+          provider: "deepinfra",
+          model: "fixture/image-model",
+          label: "fixture/image-model",
+          source: "live",
+        },
+      ]);
+      expect(fetchGuard).toHaveBeenCalledOnce();
+      const request = fetchGuard.mock.calls[0]?.[0];
+      expect(request?.url).toBe(
+        "https://api.deepinfra.com/v1/openai/models?sort_by=openclaw&filter=with_meta",
+      );
+      expect(new Headers(request?.init?.headers).has("authorization")).toBe(false);
+      expect(release).toHaveBeenCalledOnce();
+    } finally {
+      fetchGuard.mockRestore();
+    }
   });
 
   it("projects discovered image-gen entries when a key is configured and discovery is live", async () => {

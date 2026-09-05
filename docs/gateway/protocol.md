@@ -1253,36 +1253,55 @@ context.
 
 ### `models.list` views
 
-`models.list` accepts an optional `view` parameter
-(`src/agents/model-catalog-visibility.ts`):
+`models.list` reads the Gateway's published catalog. Every ordinary view is
+published-only: omitting `refresh` or setting it to `false` does not start provider
+discovery. The optional `view` parameter changes the returned rows, not how they
+are discovered:
 
-- Omitted or `"default"`: if `agents.defaults.modelPolicy.allow` is configured, the
-  response is the allowed catalog, including dynamically discovered models
-  for `provider/*` entries. Otherwise the response is the full gateway
-  catalog.
-- `"configured"`: picker-sized behavior. If `agents.defaults.modelPolicy.allow` is
-  configured, it still wins, including provider-scoped discovery for
-  `provider/*` entries. Without an allowlist, the response uses explicit
-  `models.providers.<provider>.models` entries, falling back to the full
-  catalog only when no configured model rows exist.
+- Omitted, `"default"`, or `"configured"`: picker views that apply the effective
+  `modelPolicy.allow`, including any per-agent override. Without a restriction,
+  they show configured and auth-backed choices. Provider wildcards select from
+  published rows; they do not trigger discovery. Deprecated or disabled rows stay
+  hidden unless explicitly configured.
 - `"provider-config"`: source-authored `models.providers.*.models` inventory,
-  independent of picker allowlists. Rows include public model capabilities and
-  route-aware availability, but omit provider endpoints, auth material, and
-  runtime request configuration.
-- `"all"`: full gateway catalog, bypassing `agents.defaults.modelPolicy.allow`. Use for
-  diagnostics/discovery UIs, not normal model pickers.
+  independent of picker allowlists. Configured dynamic providers without an
+  explicit model list can also contribute already published discovery rows.
+  Rows include public capabilities and route-aware availability, but omit
+  provider endpoints, auth material, and runtime request configuration.
+- `"all"`: the full published catalog, without picker allowlist filtering or
+  deprecated-row hiding. This is a browse view, not permission to select a model
+  outside the effective policy.
 
-Two optional controls separate automatic reads from operator-requested discovery:
+Provider inventory defines model rows and metadata; it does not create a
+`modelPolicy.allow` restriction.
 
-- `preparedOnly: true` reuses the current prepared catalog or a completed catalog for that
-  runtime generation without starting provider discovery. Control UI startup and polling use
-  this mode.
-- `refresh: true` replaces a completed full catalog when the selected view requires discovery.
-  Concurrent refreshes share one build; a failed refresh leaves the previous completed catalog
-  available and returns the failure to the caller.
+Optional controls:
 
-`preparedOnly: true` and `refresh: true` are mutually exclusive because one forbids discovery
-while the other requests it.
+- `provider` filters by provider ID or a provider alias from the same published
+  metadata. An unknown provider returns `INVALID_REQUEST`.
+- `includeDetails: true` includes public route details for CLI and diagnostic
+  readers: input types, effective `contextTokens` when known, and the `local` flag.
+  Unknown availability remains omitted. Endpoints and credentials stay private.
+- `refresh: true` explicitly requests provider discovery before applying the
+  selected view. It works independently of `view`, including `"provider-config"`.
+- `preparedOnly` remains an accepted compatibility hint. It has no independent
+  catalog-read logic: ordinary reads are already published-only without it.
+  New clients can omit it.
+- `sessionKey` applies that session's selected auth profile only to its selected
+  provider. Other providers are evaluated without that session profile preference
+  or lock. The catalog is not restricted to the session's provider.
+
+The `session-scoped-model-catalog` capability in
+`hello-ok.features.capabilities` advertises support for `sessionKey`.
+The `published-model-catalog` capability advertises published-only reads,
+provider filtering, and public route details.
+
+Concurrent refreshes share one discovery operation. A failed provider refresh
+retains compatible last-good inventory with current authentication facts and sets
+`refreshFailed`; successful providers can still publish their new rows.
+
+The request schema still rejects `preparedOnly: true` together with
+`refresh: true`. Omit the compatibility hint when requesting discovery.
 
 ## Exec approvals
 

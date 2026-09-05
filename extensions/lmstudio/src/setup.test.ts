@@ -5,6 +5,7 @@ import {
 } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { CUSTOM_LOCAL_AUTH_MARKER } from "openclaw/plugin-sdk/provider-auth";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/provider-auth";
+import { LiveModelCatalogHttpError } from "openclaw/plugin-sdk/provider-catalog-live-runtime";
 import type {
   ModelDefinitionConfig,
   ModelProviderConfig,
@@ -18,7 +19,7 @@ import {
 import type { WizardPrompter } from "openclaw/plugin-sdk/setup";
 // Lmstudio tests cover setup plugin behavior.
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   LMSTUDIO_DEFAULT_API_KEY_ENV_VAR,
   LMSTUDIO_DEFAULT_INFERENCE_BASE_URL,
@@ -126,6 +127,7 @@ function buildDiscoveryContext(params?: {
   config?: OpenClawConfig;
   apiKey?: string;
   discoveryApiKey?: string;
+  profileId?: string;
   env?: NodeJS.ProcessEnv;
 }): ProviderCatalogContext {
   return {
@@ -134,6 +136,7 @@ function buildDiscoveryContext(params?: {
     resolveProviderApiKey: () => ({
       apiKey: params?.apiKey,
       discoveryApiKey: params?.discoveryApiKey,
+      profileId: params?.profileId,
     }),
     resolveProviderAuth: () => ({
       apiKey: params?.apiKey,
@@ -1192,7 +1195,9 @@ describe("lmstudio setup", () => {
       },
       quiet: false,
     });
-    expect(result?.provider.models?.map((model) => model.id)).toEqual(["qwen3-8b-instruct"]);
+    assert(result && "provider" in result);
+    expect(result.provider.models?.map((model) => model.id)).toEqual(["qwen3-8b-instruct"]);
+    expect(result.outcomes).toEqual([{ provider: "lmstudio", status: "ready" }]);
   });
 
   it.each<{ name: string; providerPatch: Partial<ModelProviderConfig> }>([
@@ -1265,6 +1270,7 @@ describe("lmstudio setup", () => {
   it("discoverLmstudioProvider rewrites stale api-key auth without a persisted key", async () => {
     const result = await runDiscovery({ auth: "api-key" });
 
+    assert(result && "provider" in result);
     const provider = requireRecord(result?.provider, "discovered LM Studio provider");
     expectApiKeyProvider(provider);
     const models = requireProviderModels(provider);
@@ -1279,6 +1285,7 @@ describe("lmstudio setup", () => {
       headers: { Authorization: "Bearer custom-token" },
     });
 
+    assert(result && "provider" in result);
     const provider = requireRecord(result?.provider, "discovered LM Studio provider");
     expectRecordFields(provider, {
       baseUrl: "http://localhost:1234/v1",
@@ -1306,6 +1313,53 @@ describe("lmstudio setup", () => {
       headers: undefined,
     });
     expect(result).toBeNull();
+  });
+
+  it.each([
+    { owner: "profile", headers: undefined, discoveryApiKey: "profile-key", attributed: true },
+    {
+      owner: "header",
+      headers: { Authorization: "Bearer header-key" },
+      discoveryApiKey: "profile-key",
+      attributed: false,
+    },
+    { owner: "config", headers: undefined, discoveryApiKey: undefined, attributed: false },
+  ])("attributes failed catalog acquisition to the actual $owner credential", async (testCase) => {
+    discoverLmstudioModelsMock.mockRejectedValueOnce(
+      new LiveModelCatalogHttpError("lmstudio", 403),
+    );
+    const result = await runDiscovery(
+      { apiKey: "configured-key", headers: testCase.headers },
+      { discoveryApiKey: testCase.discoveryApiKey, profileId: "lmstudio:profile" },
+    );
+    expect(result).toEqual({
+      providers: {},
+      outcomes: [
+        {
+          provider: "lmstudio",
+          status: "auth-rejected",
+          rejectionScope: "catalog",
+          ...(testCase.attributed ? { profileId: "lmstudio:profile" } : {}),
+        },
+      ],
+    });
+    expect(discoverLmstudioModelsMock).toHaveBeenCalledOnce();
+  });
+
+  it("keeps configured empty discovery distinct from failed and optional discovery", async () => {
+    discoverLmstudioModelsMock
+      .mockResolvedValueOnce([])
+      .mockRejectedValueOnce(new Error("server offline"))
+      .mockRejectedValueOnce(new Error("optional server offline"));
+    await expect(runDiscovery({})).resolves.toMatchObject({
+      provider: { models: [] },
+      outcomes: [{ provider: "lmstudio", status: "ready" }],
+    });
+    await expect(runDiscovery({})).resolves.toEqual({
+      providers: {},
+      outcomes: [{ provider: "lmstudio", status: "unavailable" }],
+    });
+    await expect(discoverLmstudioProvider(buildDiscoveryContext())).resolves.toBeNull();
   });
 
   it("non-interactive setup replaces local auth markers when enabling api-key auth", async () => {

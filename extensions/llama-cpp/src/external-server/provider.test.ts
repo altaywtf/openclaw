@@ -83,6 +83,44 @@ describe("llama-server provider discovery", () => {
     runtimeApiKeyMock.mockResolvedValue(undefined);
   });
 
+  it.each([
+    {
+      failure: { kind: "unreachable", error: new Error("server offline") },
+      outcome: { status: "unavailable" },
+    },
+    {
+      failure: { kind: "invalid-response", path: "/models", error: new Error("invalid JSON") },
+      outcome: { status: "unavailable" },
+    },
+    {
+      failure: { kind: "http-error", path: "/models", status: 503 },
+      outcome: { status: "unavailable" },
+    },
+    {
+      failure: { kind: "http-error", path: "/models", status: 401 },
+      outcome: { status: "auth-rejected", rejectionScope: "catalog" },
+    },
+  ])(
+    "catalog cutover: reports configured llama-server $failure.kind",
+    async ({ failure, outcome }) => {
+      discoverMock.mockResolvedValue({
+        ...failure,
+        endpoint: { origin: "http://localhost:8080", inferenceBaseUrl: "http://localhost:8080/v1" },
+      });
+      const ctx = catalogContext();
+      ctx.config.models = {
+        providers: {
+          "llama-cpp": { baseUrl: "http://localhost:8080/v1", models: [] },
+        },
+      };
+      await expect(discoverLlamaServerProvider(ctx)).resolves.toMatchObject({
+        providers: {},
+        outcomes: [{ provider: "llama-cpp", ...outcome }],
+      });
+      expect(discoverMock).toHaveBeenCalledOnce();
+    },
+  );
+
   it("builds the legacy runtime provider from live discovery", async () => {
     discoverMock.mockResolvedValue(success());
 
@@ -96,7 +134,12 @@ describe("llama-server provider discovery", () => {
   });
 
   it("prefers configured Authorization over ambient API-key discovery auth", async () => {
-    discoverMock.mockResolvedValue(success());
+    discoverMock.mockResolvedValue({
+      kind: "http-error",
+      endpoint: success().endpoint,
+      path: "/models",
+      status: 403,
+    });
     const ctx = catalogContext();
     ctx.config.models = {
       providers: {
@@ -110,10 +153,15 @@ describe("llama-server provider discovery", () => {
     ctx.resolveProviderApiKey = vi.fn(() => ({
       apiKey: "LLAMA_SERVER_API_KEY",
       discoveryApiKey: "ambient-key",
+      profileId: "llama-cpp:unused-profile",
     }));
 
-    await discoverLlamaServerProvider(ctx);
+    const result = await discoverLlamaServerProvider(ctx);
 
+    expect(result).toEqual({
+      providers: {},
+      outcomes: [{ provider: "llama-cpp", status: "auth-rejected", rejectionScope: "catalog" }],
+    });
     expect(discoverMock).toHaveBeenCalledWith(
       expect.objectContaining({
         apiKey: undefined,
@@ -122,7 +170,7 @@ describe("llama-server provider discovery", () => {
     );
   });
 
-  it("preserves explicit models when the server is unavailable", async () => {
+  it("leaves last-good inventory to the catalog owner when the server is unavailable", async () => {
     discoverMock.mockResolvedValue({
       kind: "unreachable",
       endpoint: { origin: "http://localhost:8080", inferenceBaseUrl: "http://localhost:8080/v1" },
@@ -138,9 +186,43 @@ describe("llama-server provider discovery", () => {
       },
     };
 
-    await expect(discoverLlamaServerProvider(ctx)).resolves.toMatchObject({
-      provider: { models: [expect.objectContaining({ id: "org/model:Q4" })] },
+    await expect(discoverLlamaServerProvider(ctx)).resolves.toEqual({
+      providers: {},
+      outcomes: [{ provider: "llama-cpp", status: "unavailable" }],
     });
+  });
+
+  it("uses the acquired profile once and disables cached catalog success", async () => {
+    discoverMock.mockResolvedValueOnce(success()).mockResolvedValueOnce({
+      kind: "http-error",
+      endpoint: success().endpoint,
+      path: "/models",
+      status: 401,
+    });
+    const ctx = catalogContext();
+    ctx.resolveProviderApiKey = vi.fn(() => ({
+      apiKey: "profile-key",
+      discoveryApiKey: "profile-key",
+      profileId: "llama-cpp:profile",
+    }));
+    await expect(discoverLlamaServerProvider(ctx)).resolves.toMatchObject({
+      outcomes: [{ provider: "llama-cpp", profileId: "llama-cpp:profile", status: "ready" }],
+    });
+    await expect(discoverLlamaServerProvider(ctx)).resolves.toEqual({
+      providers: {},
+      outcomes: [
+        {
+          provider: "llama-cpp",
+          profileId: "llama-cpp:profile",
+          status: "auth-rejected",
+          rejectionScope: "catalog",
+        },
+      ],
+    });
+    expect(ctx.resolveProviderApiKey).toHaveBeenCalledTimes(2);
+    expect(discoverMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ apiKey: "profile-key", cacheTtlMs: 0 }),
+    );
   });
 
   it("returns only the requested discovered model directly to its preparation owner", async () => {

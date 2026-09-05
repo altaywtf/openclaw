@@ -647,13 +647,30 @@ public struct OpenClawChatMetadataCapabilities: Codable, Sendable, Equatable {
 public struct OpenClawChatModelCatalogSnapshot: Sendable, Equatable {
     public let choices: [OpenClawChatModelChoice]
     public let availabilityIsSessionScoped: Bool
+    public let refreshFailed: Bool
 
     public init(
         choices: [OpenClawChatModelChoice],
-        availabilityIsSessionScoped: Bool)
+        availabilityIsSessionScoped: Bool,
+        refreshFailed: Bool = false)
     {
         self.choices = choices
         self.availabilityIsSessionScoped = availabilityIsSessionScoped
+        self.refreshFailed = refreshFailed
+    }
+
+    public func requireChoices() throws -> [OpenClawChatModelChoice] {
+        guard !self.refreshFailed else {
+            throw NSError(
+                domain: "OpenClawChatModelCatalog",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: Self.refreshFailureMessage])
+        }
+        return self.choices
+    }
+
+    public static var refreshFailureMessage: String {
+        String(localized: "Could not refresh models. Previous choices are unchanged. Reopen the chat to retry.")
     }
 }
 

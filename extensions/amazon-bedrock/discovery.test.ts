@@ -1,5 +1,5 @@
 // Amazon Bedrock tests cover discovery plugin behavior.
-import type { BedrockClient } from "@aws-sdk/client-bedrock";
+import { AccessDeniedException, type BedrockClient } from "@aws-sdk/client-bedrock";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   discoverBedrockModels,
@@ -93,6 +93,32 @@ describe("bedrock discovery", () => {
     sendMock.mockClear();
     destroyMock.mockClear();
   });
+
+  it.each(["foundation", "profiles"])(
+    "catalog cutover: does not hide failed Bedrock %s discovery",
+    async (operation) => {
+      const failure = new Error(`${operation} catalog unavailable`);
+      if (operation === "foundation") {
+        sendMock.mockRejectedValueOnce(failure).mockResolvedValueOnce({
+          inferenceProfileSummaries: [],
+        });
+      } else {
+        sendMock
+          .mockResolvedValueOnce({
+            modelSummaries: [baseActiveAnthropicSummary],
+          })
+          .mockRejectedValueOnce(failure);
+      }
+      const params = { region: `failed-${operation}`, clientFactory };
+      await expect(discoverBedrockModels(params)).rejects.toBe(failure);
+      expect(destroyMock).toHaveBeenCalledOnce();
+      mockSingleActiveSummary();
+      await expect(discoverBedrockModels(params)).resolves.toMatchObject([
+        { id: baseActiveAnthropicSummary.modelId },
+      ]);
+      expect(sendMock).toHaveBeenCalledTimes(4);
+    },
+  );
 
   it("filters to active streaming text models and maps modalities", async () => {
     mockBedrockDiscovery([
@@ -440,9 +466,10 @@ describe("bedrock discovery", () => {
       });
 
       const discovery = discoverFreshBedrockModels({ region: "abort-timeout", clientFactory });
+      const rejected = expect(discovery).rejects.toThrow();
       await vi.advanceTimersByTimeAsync(30_000);
 
-      await expect(discovery).resolves.toEqual([]);
+      await rejected;
       expect(sendMock).toHaveBeenCalledTimes(2);
       expect(abortSignals).toHaveLength(2);
       expect(abortSignals.every((signal) => signal.aborted)).toBe(true);
@@ -539,18 +566,21 @@ describe("bedrock discovery", () => {
     expect(models.find((m) => m.id === "ap.anthropic.claude-sonnet-4-6")).toBeUndefined();
   });
 
-  it("gracefully handles ListInferenceProfiles permission errors", async () => {
+  it("propagates ListInferenceProfiles permission errors with the AWS HTTP status", async () => {
     sendMock
       .mockResolvedValueOnce({
         modelSummaries: [baseActiveAnthropicSummary],
       })
-      // Simulate AccessDeniedException for ListInferenceProfiles.
-      .mockRejectedValueOnce(new Error("AccessDeniedException"));
+      .mockRejectedValueOnce(
+        new AccessDeniedException({
+          message: "Catalog permission denied",
+          $metadata: { httpStatusCode: 403 },
+        }),
+      );
 
-    const models = await discoverFreshBedrockModels({ region: "us-east-1", clientFactory });
-    // Foundation model should still be discovered despite profile discovery failure.
-    expect(models).toHaveLength(1);
-    expect(models[0]?.id).toBe("anthropic.claude-3-7-sonnet-20250219-v1:0");
+    await expect(
+      discoverFreshBedrockModels({ region: "us-east-1", clientFactory }),
+    ).rejects.toMatchObject({ status: 403 });
   });
 
   it("keeps matching inference profiles when provider filters are enabled", async () => {

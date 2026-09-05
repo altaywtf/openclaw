@@ -1,5 +1,5 @@
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
-import { fetchLmstudioModels } from "./models.fetch.js";
+import { discoverLmstudioModels, fetchLmstudioModels } from "./models.fetch.js";
 
 const fetchWithSsrFGuardMock = vi.hoisted(() => vi.fn());
 
@@ -21,6 +21,21 @@ afterEach(() => {
 });
 
 describe("LM Studio model response release", () => {
+  it("catalog cutover: propagates configured LM Studio discovery failure after release", async () => {
+    const tracked = cancelTrackedResponse("unavailable", { status: 503 });
+    const fetchImpl = vi.fn(async () => tracked.response);
+    await expect(
+      discoverLmstudioModels({
+        baseUrl: "http://localhost:1234/v1",
+        apiKey: "test-key",
+        quiet: false,
+        fetchImpl,
+      }),
+    ).rejects.toThrow();
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(tracked.wasCanceled()).toBe(true);
+  });
+
   const cancelTrackedResponse = (
     text: string,
     init: ResponseInit,

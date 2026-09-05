@@ -163,6 +163,7 @@ export async function runProviderCatalog(params: {
   resolveProviderApiKey: (providerId?: string) => {
     apiKey: string | undefined;
     discoveryApiKey?: string;
+    profileId?: string;
   };
   resolveProviderAuth: (
     providerId?: string,

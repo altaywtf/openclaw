@@ -13,10 +13,7 @@ import {
   resolveConfiguredModelCatalogOverrides,
 } from "./model-catalog-route.js";
 import type { ModelCatalogEntry } from "./model-catalog.js";
-import {
-  buildConfiguredModelCatalog,
-  dedupeModelCatalogEntries,
-} from "./model-selection-shared.js";
+import { dedupeModelCatalogEntries } from "./model-selection-shared.js";
 import {
   RUNTIME_MODEL_VISIBILITY_NORMALIZATION,
   createModelVisibilityPolicy,
@@ -144,9 +141,7 @@ export async function prepareLogicalVisibleModelCatalog(
   const retainedKeys = new Set([...policy.retainedKeys].map(normalizePolicyKey));
   const retained = params.catalog.filter((entry) => retainedKeys.has(keyOf(entry)));
   const wildcard = policy.allowAny || policy.hasProviderWildcards;
-  const configuredCatalog = wildcard
-    ? sortModelCatalogEntries(buildConfiguredModelCatalog({ cfg: params.cfg }))
-    : [];
+  const configuredCatalog = wildcard ? sortModelCatalogEntries([...policy.configuredCatalog]) : [];
   const candidates =
     params.view === "all"
       ? params.catalog

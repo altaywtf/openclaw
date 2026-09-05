@@ -9,7 +9,6 @@ import type {
 import type { Block, KnownBlock } from "@slack/web-api";
 import {
   loadPreparedModelCatalog,
-  resolveAgentDir,
   resolveDefaultModelForAgent,
 } from "openclaw/plugin-sdk/agent-runtime";
 import {
@@ -693,12 +692,7 @@ export function createSlackCommandHandler(params: {
           commandDefinition.key === "think" && menuNeedsModelContext
             ? await loadPreparedModelCatalog({
                 config: cfg,
-                ...(menuRoute
-                  ? {
-                      agentId: menuRoute.agentId,
-                      agentDir: resolveAgentDir(cfg, menuRoute.agentId),
-                    }
-                  : {}),
+                agentId: menuRoute?.agentId,
                 readOnly: true,
               })
             : undefined;
@@ -707,7 +701,7 @@ export function createSlackCommandHandler(params: {
           args: commandArgs,
           cfg,
           ...menuModelContext,
-          ...(menuModelCatalog?.length ? { catalog: menuModelCatalog } : {}),
+          catalog: menuModelCatalog,
         });
         if (menu) {
           const commandLabel = commandDefinition.nativeName ?? commandDefinition.key;

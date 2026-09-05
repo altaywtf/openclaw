@@ -19,7 +19,7 @@ import ai.openclaw.app.i18n.NativeText
 import ai.openclaw.app.i18n.nativeText
 import ai.openclaw.app.i18n.resolveOptionalNativeText
 import ai.openclaw.app.i18n.verbatimText
-import ai.openclaw.app.parseGatewayModels
+import ai.openclaw.app.parseGatewayModelCatalog
 import ai.openclaw.app.resolveAgentIdFromMainSessionKey
 import ai.openclaw.app.ui.chat.chatModelSendBlocked
 import ai.openclaw.app.ui.chat.thinkingSupportedForSelection
@@ -31,6 +31,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -64,6 +65,7 @@ import java.util.concurrent.atomic.AtomicLong
 internal const val SESSION_LIST_FETCH_LIMIT = 200
 internal const val SESSION_UNREAD_ACK_CAPABILITY = "session-unread-ack-contract"
 private const val SESSION_SCOPED_CHAT_METADATA_CAPABILITY = "session-scoped-chat-metadata"
+private const val SESSION_SCOPED_MODEL_CATALOG_CAPABILITY = "session-scoped-model-catalog"
 private val QUESTION_REFRESH_RETRY_DELAYS_MS = longArrayOf(1_000L, 2_000L, 4_000L)
 private val SWARM_REFRESH_RETRY_DELAYS_MS = longArrayOf(1_000L, 2_000L, 4_000L)
 private const val WEAR_AGENT_PULSE_SWARM_MAX_ROWS = 1_000
@@ -783,6 +785,7 @@ class ChatController internal constructor(
   private val chatMetadataRequestSequence = AtomicLong(0)
   private var chatMetadataScope: ChatMetadataScope? = null
   private var chatMetadataLoadState = ChatMetadataLoadState.Unloaded
+  private val modelCatalogRefreshError = nativeText("Could not refresh models. Previous choices are unchanged. Reopen the chat to retry.")
   private var sessionsListArchived = false
 
   // Retained selection and event rows must not enlarge the next requested page.
@@ -4019,7 +4022,7 @@ class ChatController internal constructor(
         handleChatEvent(payloadJson)
       }
 
-      "chat.metadata.changed" -> {
+      "config.changed", "chat.metadata.changed" -> {
         refreshCommands()
       }
 
@@ -5078,9 +5081,10 @@ class ChatController internal constructor(
   private fun currentChatMetadataScope(): ChatMetadataScope? {
     val sessionKey = _sessionKey.value
     val agentId = resolveAgentIdForSessionKey(sessionKey) ?: return null
-    // Stable v2026.7.1-2 accepts only agentId. Retire this negotiation only when the
-    // minimum supported Gateway contract guarantees session-scoped chat.metadata.
-    return ChatMetadataScope(agentId, sessionKey.takeIf { gatewayAdvertisesCapability(SESSION_SCOPED_CHAT_METADATA_CAPABILITY) == true })
+    val sessionScoped =
+      gatewayAdvertisesCapability(SESSION_SCOPED_MODEL_CATALOG_CAPABILITY) == true ||
+        gatewayAdvertisesCapability(SESSION_SCOPED_CHAT_METADATA_CAPABILITY) == true
+    return ChatMetadataScope(agentId, sessionKey.takeIf { sessionScoped })
   }
 
   private fun clearChatMetadata(nextScope: ChatMetadataScope? = null) {
@@ -5100,40 +5104,74 @@ class ChatController internal constructor(
         disableSwarmProgress()
       }
     }
-    var shouldRefreshSwarm = false
-    var shouldDisableSwarm = false
-    try {
-      val res = requestGatewayBound(requestCacheScope?.gatewayId, "chat.metadata", metadataScope.params().toString())
-      val root = json.parseToJsonElement(res).asObjectOrNull()
-      val metadataSwarmEnabled = root?.get("swarmEnabled").asBooleanOrNull() == true
-      synchronized(gatewayScopeApplyLock) {
-        if (
-          requestSequence == chatMetadataRequestSequence.get() &&
-          requestCacheScope == currentCacheScope() &&
-          metadataScope == currentChatMetadataScope()
-        ) {
-          _commands.value = parseChatCommands(json, res)
-          val models = parseGatewayModels(root?.get("models") as? JsonArray)
-          _modelCatalog.value = models
-          // chat.metadata cannot distinguish a valid empty catalog from its timeout fallback.
-          // Retry one empty response, then accept empty so health events cannot poll forever.
-          chatMetadataLoadState =
-            when {
-              models.isNotEmpty() -> ChatMetadataLoadState.Loaded
-              chatMetadataLoadState == ChatMetadataLoadState.RetryEmptyCatalog -> ChatMetadataLoadState.Loaded
-              else -> ChatMetadataLoadState.RetryEmptyCatalog
+    fun isCurrent(): Boolean =
+      requestSequence == chatMetadataRequestSequence.get() &&
+        requestCacheScope == currentCacheScope() &&
+        metadataScope == currentChatMetadataScope()
+    val catalogScoped = gatewayAdvertisesCapability(SESSION_SCOPED_MODEL_CATALOG_CAPABILITY) == true
+    val metadataParams =
+      if (gatewayAdvertisesCapability(SESSION_SCOPED_CHAT_METADATA_CAPABILITY) == true) {
+        metadataScope.params()
+      } else {
+        metadataScope.copy(sessionKey = null).params()
+      }
+    coroutineScope {
+      val metadataResponse = async {
+        try {
+          val response = requestGatewayBound(requestCacheScope?.gatewayId, "chat.metadata", metadataParams.toString())
+          val root = json.parseToJsonElement(response).asObjectOrNull()
+          val metadataSwarmEnabled = root?.get("swarmEnabled").asBooleanOrNull() == true
+          synchronized(gatewayScopeApplyLock) {
+            if (isCurrent()) {
+              _commands.value = parseChatCommands(json, response)
+              if (catalogScoped) chatMetadataLoadState = ChatMetadataLoadState.Loaded
+              synchronized(swarmLock) { swarmEnabled = metadataSwarmEnabled }
+              if (metadataSwarmEnabled) refreshSwarmSessions() else resetSwarmProgress()
             }
-          synchronized(swarmLock) { swarmEnabled = metadataSwarmEnabled }
-          shouldRefreshSwarm = metadataSwarmEnabled
-          shouldDisableSwarm = !metadataSwarmEnabled
+          }
+          response
+        } catch (err: CancellationException) {
+          throw err
+        } catch (_: Throwable) {
+          null
         }
       }
-    } catch (_: Throwable) {
-      // A transport failure is not a replacement availability or capability snapshot.
-    }
-    when {
-      shouldRefreshSwarm -> refreshSwarmSessions()
-      shouldDisableSwarm -> resetSwarmProgress()
+      launch {
+        try {
+          val response =
+            if (catalogScoped) {
+              val params = JsonObject(metadataScope.params() + ("view" to JsonPrimitive("configured")))
+              requestGatewayBound(requestCacheScope?.gatewayId, "models.list", params.toString())
+            } else {
+              metadataResponse.await() ?: throw IllegalStateException("Model metadata unavailable")
+            }
+          val catalog = parseGatewayModelCatalog(json.parseToJsonElement(response).asObjectOrNull())
+          synchronized(gatewayScopeApplyLock) {
+            if (isCurrent()) {
+              if (!catalog.refreshFailed || catalog.models.isNotEmpty()) _modelCatalog.value = catalog.models
+              if (!catalogScoped) {
+                chatMetadataLoadState =
+                  when {
+                    catalog.models.isNotEmpty() -> ChatMetadataLoadState.Loaded
+                    chatMetadataLoadState == ChatMetadataLoadState.RetryEmptyCatalog -> ChatMetadataLoadState.Loaded
+                    else -> ChatMetadataLoadState.RetryEmptyCatalog
+                  }
+              }
+              if (catalog.refreshFailed) {
+                updateLocalizedErrorText(modelCatalogRefreshError)
+              } else if (_errorText.value == modelCatalogRefreshError) {
+                updateErrorText(null)
+              }
+            }
+          }
+        } catch (err: CancellationException) {
+          throw err
+        } catch (_: Throwable) {
+          synchronized(gatewayScopeApplyLock) {
+            if (isCurrent()) updateLocalizedErrorText(modelCatalogRefreshError)
+          }
+        }
+      }
     }
   }
 

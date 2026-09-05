@@ -260,6 +260,7 @@ class WearSessionScopeTest {
         selectedSession = previousSession,
         selectedModelRef = "openai/old",
         models = listOf(WearModel("openai/old", "Old")),
+        modelCatalogRefreshFailed = true,
         messages = listOf(WearChatMessage("m1", "assistant", "old reply", 1)),
         streamText = "old stream",
         activeRunId = "run-old",
@@ -274,6 +275,7 @@ class WearSessionScopeTest {
     assertNull(switched.activeRunId)
     assertEquals(emptyList<WearSession>(), switched.sessions)
     assertEquals(emptyList<WearModel>(), switched.models)
+    assertFalse(switched.modelCatalogRefreshFailed)
     assertEquals(emptyList<WearChatMessage>(), switched.messages)
   }
 
@@ -293,6 +295,7 @@ class WearSessionScopeTest {
         activeAgentId = "main",
         selectedModelRef = "openai/old",
         models = listOf(WearModel("openai/new", "New")),
+        modelCatalogRefreshFailed = true,
         messages = listOf(WearChatMessage("m1", "assistant", "old reply", 1)),
         streamText = "old stream",
         activeRunId = "run-old",
@@ -304,6 +307,7 @@ class WearSessionScopeTest {
     assertEquals("openai/new", switched.selectedModelRef)
     assertEquals("main", switched.activeAgentId)
     assertEquals(emptyList<WearModel>(), switched.models)
+    assertFalse(switched.modelCatalogRefreshFailed)
     assertEquals(emptyList<WearChatMessage>(), switched.messages)
     assertNull(switched.streamText)
     assertNull(switched.activeRunId)
@@ -325,6 +329,7 @@ class WearSessionScopeTest {
         sessions = listOf(selectedSession),
         selectedSession = selectedSession,
         selectedModelRef = "openai/model-59",
+        modelCatalogRefreshFailed = true,
         models =
           listOf(
             WearModel("openai/model-0", "Model 0"),
@@ -338,6 +343,7 @@ class WearSessionScopeTest {
     assertEquals("openai/model-0", switched.selectedSession?.modelRef)
     assertEquals("openai/model-0", switched.sessions.single().modelRef)
     assertEquals(emptyList<WearModel>(), switched.models)
+    assertFalse(switched.modelCatalogRefreshFailed)
   }
 
   @Test

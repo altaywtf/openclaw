@@ -12,21 +12,25 @@ const COHERE_COMMAND_A_VISION_MODEL_ID = "command-a-vision-07-2025";
 const COHERE_NORTH_MINI_CODE_MODEL_ID = "north-mini-code-1-0";
 
 describe("Cohere onboarding", () => {
-  it("registers the manifest catalog through the onboarding preset", () => {
-    const result = applyCohereConfig({});
+  it.each(["merge", "replace"] as const)("seeds catalog rows only in replace mode: %s", (mode) => {
+    const result = applyCohereConfig({ models: { mode } });
     const provider = result.models?.providers?.cohere;
 
     expect(provider).toMatchObject({
       baseUrl: COHERE_BASE_URL,
       api: "openai-completions",
     });
-    expect(provider?.models?.map((model) => model.id)).toEqual([
-      COHERE_DEFAULT_MODEL_ID,
-      "command-a-03-2025",
-      COHERE_COMMAND_A_REASONING_MODEL_ID,
-      COHERE_COMMAND_A_VISION_MODEL_ID,
-      COHERE_NORTH_MINI_CODE_MODEL_ID,
-    ]);
+    expect(provider?.models?.map((model) => model.id)).toEqual(
+      mode === "replace"
+        ? [
+            COHERE_DEFAULT_MODEL_ID,
+            "command-a-03-2025",
+            COHERE_COMMAND_A_REASONING_MODEL_ID,
+            COHERE_COMMAND_A_VISION_MODEL_ID,
+            COHERE_NORTH_MINI_CODE_MODEL_ID,
+          ]
+        : [],
+    );
     expect(buildCohereCatalogModels()).toHaveLength(
       manifest.modelCatalog.providers.cohere.models.length,
     );

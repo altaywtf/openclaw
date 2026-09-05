@@ -12,6 +12,17 @@ const mocks = vi.hoisted(() => ({
     >(),
   loadModelsConfigWithSource: vi.fn(),
   resolveModelsTargetAgent: vi.fn(),
+  readGatewayOwner: vi.fn(),
+  callGateway: vi.fn(),
+}));
+
+vi.mock("../../infra/gateway-lock.js", () => ({
+  readActiveGatewayLockIdentity: mocks.readGatewayOwner,
+}));
+
+vi.mock("../../gateway/call.js", () => ({
+  callGateway: mocks.callGateway,
+  isImplicitLocalGatewayTarget: async () => true,
 }));
 
 vi.mock("./load-config.js", () => ({
@@ -94,6 +105,8 @@ beforeEach(() => {
     agentDir: owner.agentDir,
   });
   mocks.loadOwner.mockImplementation(async () => owner);
+  mocks.readGatewayOwner.mockResolvedValue(undefined);
+  mocks.callGateway.mockReset();
 });
 
 afterEach(() => {
@@ -101,12 +114,82 @@ afterEach(() => {
 });
 
 describe("models list prepared catalog boundary", () => {
-  it("discovers and filters provider inventory without requiring --all", async () => {
-    await modelsListCommand({ provider: "catalog-provider", json: true }, runtime);
+  it.each([false, true])("uses the running Gateway inventory with refresh=%s", async (refresh) => {
+    mocks.readGatewayOwner.mockResolvedValue({ pid: 123, port: 19001, createdAt: "fixture" });
+    mocks.callGateway.mockResolvedValue({
+      models: [
+        {
+          provider: "catalog-provider",
+          id: "account-only",
+          name: "Account-only model",
+          input: ["text", "image"],
+          contextWindow: 128_000,
+          contextTokens: 64_000,
+          local: true,
+          available: true,
+          tags: ["default"],
+        },
+      ],
+    });
+    await modelsListCommand(
+      { agent: "main", provider: "catalog-provider", local: true, json: true, refresh },
+      runtime,
+    );
+    expect(mocks.loadOwner).not.toHaveBeenCalled();
+    expect(mocks.resolveModelsTargetAgent).not.toHaveBeenCalled();
+    expect(mocks.callGateway).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "models.list",
+        params: {
+          agentId: "main",
+          view: "all",
+          provider: "catalog-provider",
+          includeDetails: true,
+          ...(refresh ? { refresh: true } : {}),
+        },
+      }),
+    );
+    expect(runtime.writeJson).toHaveBeenCalledWith(
+      {
+        count: 1,
+        models: [
+          {
+            key: "catalog-provider/account-only",
+            name: "Account-only model",
+            input: "text+image",
+            contextWindow: 128_000,
+            contextTokens: 64_000,
+            local: true,
+            available: true,
+            tags: ["default"],
+          },
+        ],
+      },
+      2,
+    );
+  });
 
+  it("runs standalone discovery only for an explicit refresh", async () => {
+    await modelsListCommand({ all: true, refresh: true, json: true }, runtime);
     expect(mocks.loadOwner).toHaveBeenCalledWith(
       expect.objectContaining({ readOnly: false, refreshFullCatalog: true }),
     );
+    expect(mocks.callGateway).not.toHaveBeenCalled();
+  });
+
+  it("does not fall back to local inference when the running Gateway rejects a list", async () => {
+    mocks.readGatewayOwner.mockResolvedValue({ pid: 123, port: 19001, createdAt: "fixture" });
+    const failure = new Error("Gateway rejected catalog access");
+    mocks.callGateway.mockRejectedValue(failure);
+    await expect(modelsListCommand({ all: true, json: true }, runtime)).rejects.toBe(failure);
+    expect(mocks.loadOwner).not.toHaveBeenCalled();
+    expect(runtime.writeJson).not.toHaveBeenCalled();
+  });
+
+  it("filters published provider inventory without requiring --all", async () => {
+    await modelsListCommand({ provider: "catalog-provider", json: true }, runtime);
+
+    expect(mocks.loadOwner).toHaveBeenCalledWith(expect.objectContaining({ readOnly: true }));
     expect(runtime.writeJson).toHaveBeenCalledWith(
       {
         count: 2,
@@ -248,72 +331,13 @@ describe("models list prepared catalog boundary", () => {
         runtime,
       );
 
-      expect(mocks.loadOwner).toHaveBeenLastCalledWith(
-        expect.objectContaining({ readOnly: false, refreshFullCatalog: true }),
-      );
+      expect(mocks.loadOwner).toHaveBeenLastCalledWith(expect.objectContaining({ readOnly: true }));
       expect(runtime.writeJson).toHaveBeenLastCalledWith(
         expect.objectContaining({ models: expect.arrayContaining([expectedRow]) }),
         2,
       );
     },
   );
-
-  it("keeps replace-mode default output limited to authored provider models", async () => {
-    const pinned = owner.modelCatalog.entries[0]!;
-    const outside: ModelCatalogEntry = {
-      provider: "catalog-provider",
-      id: "outside-replacement",
-      name: "Outside Replacement",
-      api: "anthropic-messages",
-      baseUrl: "https://catalog.example.test",
-      input: ["text"],
-      contextWindow: 32_000,
-    };
-    owner.config = {
-      agents: {
-        defaults: {
-          model: {
-            primary: "catalog-provider/pinned",
-            fallbacks: ["catalog-provider/outside-replacement"],
-          },
-        },
-        entries: { main: {} },
-      },
-      models: {
-        mode: "replace",
-        providers: {
-          "catalog-provider": {
-            api: "anthropic-messages",
-            baseUrl: "https://catalog.example.test",
-            models: [
-              {
-                id: "pinned",
-                name: pinned.name,
-                reasoning: false,
-                input: ["text"],
-                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-                contextWindow: 200_000,
-                maxTokens: 4096,
-              },
-            ],
-          },
-        },
-      },
-    };
-    owner.modelCatalog = markPreparedModelCatalogFull({
-      entries: [pinned],
-      routeVariants: [pinned, outside],
-      staticEntries: [outside],
-    });
-
-    await modelsListCommand({ json: true }, runtime);
-
-    expect(runtime.writeJson).toHaveBeenLastCalledWith(
-      { count: 1, models: [expect.objectContaining({ key: "catalog-provider/pinned" })] },
-      2,
-    );
-    expect(mocks.loadOwner).toHaveBeenCalledWith(expect.objectContaining({ readOnly: true }));
-  });
 
   it.each([
     { credential: "unknown", available: null },
@@ -331,9 +355,7 @@ describe("models list prepared catalog boundary", () => {
       }
       await modelsListCommand({ all: true, json: true }, runtime);
 
-      expect(mocks.loadOwner).toHaveBeenCalledWith(
-        expect.objectContaining({ readOnly: false, refreshFullCatalog: true }),
-      );
+      expect(mocks.loadOwner).toHaveBeenCalledWith(expect.objectContaining({ readOnly: true }));
       expect(runtime.writeJson).toHaveBeenCalledWith(
         {
           count: 3,

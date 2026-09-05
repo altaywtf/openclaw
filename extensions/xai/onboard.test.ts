@@ -21,6 +21,7 @@ describe("xai onboard", () => {
     const cfg = applyXaiConfig({});
     expect(cfg.models?.providers?.xai?.baseUrl).toBe("https://api.x.ai/v1");
     expect(cfg.models?.providers?.xai?.api).toBe("openai-responses");
+    expect(cfg.models?.providers?.xai?.models).toEqual([]);
     expect(XAI_DEFAULT_MODEL_REF).toBe("xai/grok-4.6");
     expect(resolveAgentModelPrimaryValue(cfg.agents?.defaults?.model)).toBe(XAI_DEFAULT_MODEL_REF);
   });
@@ -76,12 +77,6 @@ describe("xai onboard", () => {
       "grok-3",
       "grok-code-fast-1",
       "grok-4.20-beta-latest-reasoning",
-      "grok-4.6",
-      "grok-4.5",
-      "grok-build-0.1",
-      "grok-4.3",
-      "grok-4.20-0309-reasoning",
-      "grok-4.20-0309-non-reasoning",
     ]);
     expect(
       cfg.models?.providers?.xai?.models.find(
@@ -90,8 +85,8 @@ describe("xai onboard", () => {
     ).toBe("Custom Moving Grok 4.20");
   });
 
-  it("publishes current xAI models newest first for fresh setup", () => {
-    const cfg = applyXaiProviderConfig({});
+  it("seeds current xAI models newest first in replace mode", () => {
+    const cfg = applyXaiProviderConfig({ models: { mode: "replace" } });
 
     expect(cfg.models?.providers?.xai?.baseUrl).toBe("https://api.x.ai/v1");
     expect(cfg.models?.providers?.xai?.api).toBe("openai-responses");

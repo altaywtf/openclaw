@@ -12,14 +12,6 @@ import { DEEPINFRA_MODEL_CATALOG } from "./provider-models.js";
 const DEEPINFRA_MODELS_URL =
   "https://api.deepinfra.com/v1/openai/models?sort_by=openclaw&filter=with_meta";
 
-function buildSyntheticDeepInfraEntries(count: number) {
-  return Array.from({ length: count }, (_unused, index) => ({
-    provider: "deepinfra",
-    id: `synthetic/model-${index}`,
-    name: `synthetic/model-${index}`,
-  }));
-}
-
 function buildDeepInfraCatalogContext(): ProviderCatalogContext {
   return {
     config: {},
@@ -85,157 +77,33 @@ async function withLiveDiscoveryTestEnv(
   mockFetch: ReturnType<typeof vi.fn>,
   runAssertions: () => Promise<void>,
 ) {
-  const env = { ...process.env };
-  delete process.env.NODE_ENV;
-  delete process.env.VITEST;
-  delete process.env.DEEPINFRA_API_KEY;
   vi.stubGlobal("fetch", mockFetch);
 
   try {
     await runAssertions();
   } finally {
-    for (const key of ["NODE_ENV", "VITEST", "DEEPINFRA_API_KEY"]) {
-      if (env[key] === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = env[key];
-      }
-    }
     vi.unstubAllGlobals();
   }
 }
 
-describe("deepinfra augmentModelCatalog", () => {
-  it("returns the discovered (static under VITEST) catalog when nothing is configured", async () => {
-    clearLiveCatalogCacheForTests();
+describe("deepinfra catalog ownership", () => {
+  it("keeps static inventory separate from missing-credential discovery", async () => {
+    const fetchMock = vi.fn();
     const provider = await registerSingleProviderPlugin(deepinfraPlugin);
-
-    const entries = (await provider.augmentModelCatalog?.({ entries: [] } as never)) ?? [];
-
-    expect(entries.map((entry) => entry.id)).toEqual(
-      DEEPINFRA_MODEL_CATALOG.map((model) => model.id),
-    );
-    for (const entry of entries) {
-      expect(entry.provider).toBe("deepinfra");
-    }
-  });
-
-  it("preserves configured entries and appends discovered entries that are not already configured", async () => {
-    clearLiveCatalogCacheForTests();
-    const provider = await registerSingleProviderPlugin(deepinfraPlugin);
-
-    const entries =
-      (await provider.augmentModelCatalog?.({
-        entries: [],
-        config: {
-          models: {
-            providers: {
-              deepinfra: {
-                models: [
-                  {
-                    id: "zai-org/GLM-5.1",
-                    name: "GLM-5.1 custom",
-                    input: ["text"],
-                    reasoning: true,
-                    contextWindow: 202752,
-                  },
-                ],
-              },
-            },
-          },
-        },
-      } as never)) ?? [];
-
-    const glmEntry = entries.find((entry) => entry.id === "zai-org/GLM-5.1");
-    expect(glmEntry?.name).toBe("GLM-5.1 custom");
-    expect(entries.filter((entry) => entry.id === "zai-org/GLM-5.1")).toHaveLength(1);
-    expect(entries.length).toBe(DEEPINFRA_MODEL_CATALOG.length);
-  });
-
-  it("uses config-backed API keys to enable live model catalog augmentation", async () => {
-    clearLiveCatalogCacheForTests();
-    const mockFetch = mockDiscoveryFetch("config/live-model");
-    const provider = await registerSingleProviderPlugin(deepinfraPlugin);
-
-    await withLiveDiscoveryTestEnv(mockFetch, async () => {
-      const entries =
-        (await provider.augmentModelCatalog?.({
-          entries: [],
-          env: {},
-          config: {
-            models: {
-              providers: {
-                deepinfra: {
-                  apiKey: { source: "env", provider: "default", id: "CUSTOM_DEEPINFRA_KEY" },
-                },
-              },
-            },
-          },
-        } as never)) ?? [];
-
-      expect(mockFetch).toHaveBeenCalledTimes(2);
-      expect(entries.map((entry) => entry.id)).toContain("config/live-model");
+    await withLiveDiscoveryTestEnv(fetchMock, async () => {
+      const context = buildDeepInfraCatalogContext();
+      const result = await provider.staticCatalog?.run(context);
+      expect(
+        result && "provider" in result ? result.provider.models.map((model) => model.id) : [],
+      ).toEqual(DEEPINFRA_MODEL_CATALOG.map((model) => model.id));
+      await expect(
+        provider.catalog?.run({
+          ...context,
+          resolveProviderApiKey: () => ({ apiKey: undefined }),
+        }),
+      ).resolves.toBeNull();
+      expect(fetchMock).not.toHaveBeenCalled();
     });
-  });
-
-  it("still runs live discovery when ctx.entries includes custom DeepInfra rows", async () => {
-    clearLiveCatalogCacheForTests();
-    const mockFetch = mockDiscoveryFetch("custom/live-model");
-    const provider = await registerSingleProviderPlugin(deepinfraPlugin);
-
-    const seededDeepInfraCount = DEEPINFRA_MODEL_CATALOG.length + 5;
-    await withLiveDiscoveryTestEnv(mockFetch, async () => {
-      const entries =
-        (await provider.augmentModelCatalog?.({
-          entries: [
-            ...buildSyntheticDeepInfraEntries(seededDeepInfraCount),
-            { provider: "openai", id: "noise", name: "noise" },
-          ],
-          config: {
-            models: {
-              providers: {
-                deepinfra: {
-                  apiKey: "sk-test",
-                  models: [
-                    {
-                      id: "zai-org/GLM-5.1",
-                      name: "configured override",
-                      input: ["text"],
-                      reasoning: true,
-                      contextWindow: 202752,
-                    },
-                  ],
-                },
-              },
-            },
-          },
-        } as never)) ?? [];
-
-      expect(mockFetch).toHaveBeenCalledTimes(2);
-      expect(entries[0]).toEqual({
-        provider: "deepinfra",
-        id: "zai-org/GLM-5.1",
-        name: "configured override",
-        input: ["text"],
-        reasoning: true,
-        contextWindow: 202752,
-      });
-      expect(entries.map((entry) => entry.id)).toContain("custom/live-model");
-    });
-  });
-
-  it("still fetches when ctx.entries has exactly the static catalog length (static-fallback case)", async () => {
-    clearLiveCatalogCacheForTests();
-    const provider = await registerSingleProviderPlugin(deepinfraPlugin);
-
-    const entries =
-      (await provider.augmentModelCatalog?.({
-        entries: buildSyntheticDeepInfraEntries(DEEPINFRA_MODEL_CATALOG.length),
-      } as never)) ?? [];
-
-    expect(entries.map((entry) => entry.id)).toEqual(
-      DEEPINFRA_MODEL_CATALOG.map((model) => model.id),
-    );
   });
 });
 
@@ -286,6 +154,9 @@ describe("deepinfra capability registration", () => {
         "profile/live-model",
         ...DEEPINFRA_MODEL_CATALOG.map((model) => model.id),
       ]);
+      expect(result.outcomes).toEqual([{ provider: "deepinfra", status: "ready" }]);
+      await provider.augmentModelCatalog?.({ entries: [] } as never);
+      expect(mockFetch).toHaveBeenCalledTimes(2);
     });
   });
 });

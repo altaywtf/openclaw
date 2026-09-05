@@ -75,7 +75,22 @@ For OpenAI ChatGPT/Codex OAuth troubleshooting, `openclaw models status`, `openc
 
 ### List
 
-`openclaw models list` is read-only: it reads config, auth profiles, existing catalog state, and provider-owned catalog rows, but never rewrites `models.json`.
+`openclaw models list` is read-only: it reads config, auth profiles, and published
+catalog rows without starting provider discovery or rewriting `models.json`.
+This also applies to `--all` and `--provider <id>`.
+Use `openclaw models list --refresh` to explicitly refresh provider discovery
+before listing. You can combine it with `--agent` and `--provider`.
+
+When a local Gateway is running, or you select a remote Gateway, the command reads
+that Gateway's published catalog. The Gateway owns provider filtering, agent scope,
+and availability. Connection or authorization errors do not fall back to a
+different local list.
+
+Without a running local Gateway or an explicit Gateway target, the command uses
+the local cached catalog and prints a notice identifying that source. It still
+does not contact model providers unless you pass `--refresh`. A running Gateway must advertise the
+`published-model-catalog` capability; restart it after upgrading if the CLI reports
+that capability is missing.
 
 `openclaw models refresh [--json]` forces an immediate hosted catalog check. Like `scan`, it rejects `--agent` because the hosted catalog is global, not agent-scoped.
 The Gateway downloads compatible rows and pricing at startup and at the existing
@@ -88,24 +103,34 @@ The catalog's public change history lives in
 [`openclaw/catalog`](https://github.com/openclaw/catalog), where each content
 update is committed by the scheduled publisher.
 
-Options: `--all` (full catalog), `--local` (filter to local models), `--provider <id>`, `--agent <id>`, `--json`, `--plain`. `--agent` selects that agent's auth store, workspace, and provider catalog context; explicit multi-agent fleets do not need a default owner when it is present.
+Options: `--all` (full catalog), `--refresh` (refresh provider discovery), `--local` (filter to local models), `--provider <id>`, `--agent <id>`, `--json`, `--plain`. `--agent` selects that agent's auth store, workspace, and provider catalog context; explicit multi-agent fleets do not need a default owner when it is present.
 
-`--provider <id>` loads the full catalog before filtering, so runtime-discovered
-models do not require a separate `--all` flag. These explicit catalog requests
-can contact providers through the discovery worker. An ordinary list or picker
-read does not start discovery.
+`--provider <id>` filters the full published catalog, so already published
+runtime-discovered models do not require a separate `--all` flag. Neither option
+requests discovery.
+
+Gateway clients request provider discovery through `models.list` with
+`refresh: true`, independently of the view. The CLI uses this for
+`models list --refresh`. That request is separate from
+`openclaw models refresh`, which checks the hosted metadata and pricing bundle
+described above. See [`models.list` views](/gateway/protocol#modelslist-views).
 
 Notes:
 
 - The `Auth` column uses the prepared catalog's authentication facts. For OpenAI routes, it matches each API and base URL to eligible profiles and credentials. Native sign-in facts come from the owning runtime; a separate API key does not prove a native CLI login. Unknown authentication remains unknown. These facts do not prove that every model can complete a turn.
 - `models list --all --provider <id>` can include provider-owned static catalog rows from plugin manifests or bundled provider catalog metadata even when you have not authenticated with that provider yet. Those rows still show as unavailable until matching auth is configured.
-- Default and configured views read published rows without waiting for discovery. The Gateway publishes static rows first and updates the catalog when its worker finishes. Use `--all` or `--provider <id>` when you want full discovery and are willing to wait.
+- Every ordinary catalog view reads published rows. `--all` broadens the displayed inventory; `--provider <id>` filters it. Neither changes `modelPolicy.allow` or grants permission to select a restricted model.
 - `models list` keeps native model metadata and runtime caps distinct. In table output, `Ctx` shows `contextTokens/contextWindow` when an effective runtime cap differs from the native context window; JSON rows include `contextTokens` when a provider exposes that cap.
 - For provider-owned routes, `models list` projects one logical provider/model row onto the selected route. `Input` and `Ctx` come only from an exact physical-route catalog row, with explicit configured logical overrides applied last; unresolved route selection shows unknown capability fields instead of borrowing sibling-route metadata.
 - `models list --provider <id>` filters by provider id, such as `moonshot` or `openai`. It does not accept display labels from interactive provider pickers, such as `Moonshot AI`.
 - Model refs are parsed by splitting on the **first** `/`. If the model ID includes `/` (OpenRouter-style), include the provider prefix (example: `openrouter/moonshotai/kimi-k2`).
 - If you omit the provider, OpenClaw resolves the input as an alias first, then as a unique configured-provider match for that exact model id, and only then falls back to the configured default provider with a deprecation warning. If that provider no longer exposes the configured default model, OpenClaw falls back to the first configured provider/model instead of surfacing a stale removed-provider default.
 - `models status` may show `marker(<value>)` in auth output for non-secret placeholders (for example `OPENAI_API_KEY`, `secretref-managed`, `minimax-oauth`, `oauth:chutes`, `ollama-local`) instead of masking them as secrets.
+
+Hosted-provider setup in merge mode does not save generated catalog snapshots
+into `models.providers.*.models`. It preserves manually authored definitions and
+replace-mode inventories. These inventory rows do not create a model-selection
+allowlist; use `modelPolicy.allow` for that restriction.
 
 ### Set default / image model
 

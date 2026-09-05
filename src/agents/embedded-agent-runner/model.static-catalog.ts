@@ -16,6 +16,7 @@ import { loadPluginManifestRegistryCore } from "../../plugins/manifest-registry.
 import { loadPluginManifest } from "../../plugins/manifest.js";
 import { getPluginCache, getPluginMetadataSnapshotCache } from "../../plugins/plugin-cache.js";
 import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
+import { isProviderCatalogSourceAllowed } from "../../plugins/provider-config-owner.js";
 import {
   normalizePluginDiscoveryResult,
   resolveRuntimePluginDiscoveryProviders,
@@ -405,6 +406,14 @@ async function loadBundledProviderStaticCatalogModels(params: {
     : undefined;
   const modelsByProvider = new Map<string, ProviderRuntimeModel[]>();
   for (const catalogProvider of providers) {
+    const plugin = params.pluginMetadataSnapshot?.plugins.find(
+      (candidate) => candidate.id === catalogProvider.pluginId,
+    );
+    const allowsSource = (provider: string) =>
+      isProviderCatalogSourceAllowed({ provider, plugin, config: params.cfg });
+    if (!(plugin?.providers ?? [catalogProvider.id]).some(allowsSource)) {
+      continue;
+    }
     const preparedResultKey = `${catalogProvider.pluginId ?? ""}\0${normalizeProviderId(catalogProvider.id)}`;
     const result = preparedResults?.has(preparedResultKey)
       ? preparedResults.get(preparedResultKey)
@@ -418,6 +427,7 @@ async function loadBundledProviderStaticCatalogModels(params: {
       // Empty catalogs never resolve request secrets or transport settings.
       if (
         !provider ||
+        !allowsSource(provider) ||
         !Array.isArray(providerConfig.models) ||
         providerConfig.models.length === 0
       ) {

@@ -1,4 +1,5 @@
 import type { ModelCatalogRef } from "@openclaw/model-catalog-core/model-catalog-refs";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { InlineModelEntry } from "./embedded-agent-runner/model.inline-provider.js";
 import type { ModelCatalogEntry } from "./model-catalog.js";
 import type { ModelCatalogSnapshot } from "./model-catalog.types.js";
@@ -10,6 +11,7 @@ import {
 import type { ModelRegistry } from "./sessions/model-registry.js";
 
 type ConfiguredCatalogAgentFacts = {
+  input: { config: OpenClawConfig };
   configuredModelRefs: readonly ModelCatalogRef[];
 };
 
@@ -38,8 +40,19 @@ function createConfiguredModelCatalogSnapshot(params: {
       entries.set(key, entry);
     }
   };
+  // The registry has merged current settings with cached discovery. Raw configured rows must
+  // not replace those routes with an inherited provider preset during cold startup.
+  if (params.agentFacts.input.config.models?.mode !== "replace") {
+    for (const model of params.templateModelRegistry.getAll()) {
+      addEntry(toStaticCatalogEntry(model));
+    }
+  }
   for (const entry of params.workspaceFacts.configuredCatalogEntries) {
     addEntry(entry);
+  }
+  if (params.agentFacts.input.config.models?.mode === "replace") {
+    const configuredEntries = [...entries.values()];
+    return { entries: configuredEntries, routeVariants: configuredEntries };
   }
   for (const configured of params.configuredRuntimeModels) {
     addEntry(toStaticCatalogEntry(configured.model));
@@ -49,11 +62,6 @@ function createConfiguredModelCatalogSnapshot(params: {
     if (model) {
       addEntry(toStaticCatalogEntry(model));
     }
-  }
-  // Curated first: every registry row (manifest and static hooks for credentialed providers) is
-  // visible at publication. Live discovery refines later; auth projection hides what cannot run.
-  for (const model of params.templateModelRegistry.getAll()) {
-    addEntry(toStaticCatalogEntry(model));
   }
   const configuredEntries = [...entries.values()];
   const staticEntries = params.configuredRuntimeModels.map(({ model }) =>

@@ -113,6 +113,7 @@ function gateway(current: ApplicationGatewaySnapshot): ApplicationContext["gatew
   return {
     snapshot: current,
     subscribe: vi.fn(() => () => undefined),
+    subscribeEvents: vi.fn(() => () => undefined),
   } as unknown as ApplicationContext["gateway"];
 }
 

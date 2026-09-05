@@ -1,6 +1,8 @@
 package ai.openclaw.app.wear
 
+import ai.openclaw.app.parseGatewayModelCatalog
 import ai.openclaw.app.resolveAgentIdFromMainSessionKey
+import ai.openclaw.app.ui.chat.providerQualifiedRef
 import ai.openclaw.wear.shared.WearMessage
 import ai.openclaw.wear.shared.WearProxyCapability
 import ai.openclaw.wear.shared.WearRealtimeTalkCodec
@@ -35,6 +37,7 @@ internal data class WearProxyAgent(
 internal data class WearProxyModel(
   val ref: String,
   val name: String,
+  val available: Boolean? = null,
 )
 
 internal class WearProxyController(
@@ -42,6 +45,7 @@ internal class WearProxyController(
   private val isGatewayConnected: () -> Boolean,
   private val gatewayStatusText: () -> String,
   private val hasOperatorAdminScope: () -> Boolean = { false },
+  private val supportsSessionModelCatalog: () -> Boolean = { false },
   private val activeAgentId: () -> String? = { null },
   private val activeSessionKey: () -> String? = { null },
   private val selectedModelRef: () -> String? = { null },
@@ -142,6 +146,8 @@ internal class WearProxyController(
           WearProxyCapability.entries
             .filter { capability ->
               when (capability) {
+                WearProxyCapability.SessionScopedModelCatalog -> hasOperatorAdminScope() && supportsSessionModelCatalog()
+
                 WearProxyCapability.ModelControls,
                 WearProxyCapability.ModelCatalogSearch,
                 -> hasOperatorAdminScope()
@@ -206,13 +212,41 @@ internal class WearProxyController(
     return buildJsonObject { put("activeAgentId", agentId) }
   }
 
-  private fun listModels(params: JsonObject): JsonObject {
-    params.requireOnly("selectedModelRef", "query")
+  private suspend fun listModels(params: JsonObject): JsonObject {
+    params.requireOnly("selectedModelRef", "query", "sessionKey")
+    val sessionKey = params.optionalStringParam("sessionKey", MAX_SESSION_KEY_CHARS)?.trim()
     val query = params.optionalStringParam("query", MAX_SEARCH_QUERY_CHARS)?.trim().orEmpty()
     val selected =
       canonicalModelRef(params.optionalStringParam("selectedModelRef", MAX_MODEL_REF_CHARS))
-        ?: canonicalModelRef(selectedModelRef())
-    val availableModels = availableModels()
+        ?: if (sessionKey == null) canonicalModelRef(selectedModelRef()) else null
+    val catalog =
+      sessionKey?.let {
+        if (!supportsSessionModelCatalog()) {
+          throw WearProxyGatewayException("unsupported_peer", "Update the phone app and Gateway to choose models for this chat")
+        }
+        val result =
+          requestGateway(
+            "models.list",
+            buildJsonObject {
+              put("sessionKey", sessionKey)
+              put("view", "configured")
+            },
+          ).asObject("models.list")
+        parseGatewayModelCatalog(result)
+      }
+    val catalogModels =
+      if (catalog == null) {
+        models()
+      } else {
+        catalog.models.map { model ->
+          WearProxyModel(ref = model.providerQualifiedRef(), name = model.name, available = model.available)
+        }
+      }
+    val availableModels =
+      catalogModels
+        .filter { it.available != false }
+        .mapNotNull { model -> canonicalModelRef(model.ref)?.let { ref -> ref to model } }
+        .distinctBy { (ref) -> ref }
     val matchingModels =
       availableModels.filter { (ref, model) ->
         query.isBlank() || model.name.contains(query, ignoreCase = true) || ref.contains(query, ignoreCase = true)
@@ -233,6 +267,7 @@ internal class WearProxyController(
         availableModels.subList(start, start + MAX_MODEL_COUNT)
       }
     return buildJsonObject {
+      catalog?.let { put("refreshFailed", it.refreshFailed) }
       put(
         "models",
         buildJsonArray {
@@ -255,9 +290,6 @@ internal class WearProxyController(
     val modelRef =
       canonicalModelRef(params.stringParam("modelRef", MAX_MODEL_REF_CHARS))
         ?: throw WearProxyInvalidRequest("Invalid modelRef")
-    if (availableModels().none { (ref) -> ref == modelRef }) {
-      throw WearProxyGatewayException("not_found", "Model is no longer available")
-    }
     if (!selectSessionModel(sessionKey, modelRef)) {
       throw WearProxyGatewayException("action_rejected", "Model could not be changed")
     }
@@ -266,11 +298,6 @@ internal class WearProxyController(
       put("selectedModelRef", modelRef)
     }
   }
-
-  private fun availableModels(): List<Pair<String, WearProxyModel>> =
-    models()
-      .mapNotNull { model -> canonicalModelRef(model.ref)?.let { ref -> ref to model } }
-      .distinctBy { (ref) -> ref }
 
   private fun canonicalModelRef(value: String?): String? =
     value

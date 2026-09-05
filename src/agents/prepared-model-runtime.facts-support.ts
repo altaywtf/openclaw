@@ -63,12 +63,10 @@ export function groupConfiguredRegistrySources(
       ? null
       : captureModelsJsonContents(facts.input.agentDir);
     const oauthProviders = facts.templateAuthStorage.getOAuthProviders();
-    const pluginCatalogs = staticCatalogPrepared
-      ? []
-      : loadPersistedPluginCatalogs(
-          facts.input.agentDir,
-          facts.configuredGeneratedCatalogPluginIds,
-        );
+    const pluginCatalogs = loadPersistedPluginCatalogs(
+      facts.input.agentDir,
+      facts.configuredGeneratedCatalogPluginIds,
+    );
     const key = fingerprintPreparedRuntimeFacts({
       credentials: facts.credentials,
       modelsJsonContents,

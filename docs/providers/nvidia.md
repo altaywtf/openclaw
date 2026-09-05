@@ -82,10 +82,11 @@ from model names. Unknown IDs can still be configured explicitly; listing alone
 does not prove chat compatibility. This is not a complete automatic catalog of
 every NVIDIA model.
 
-Both public fetches use fixed HTTPS hosts and send no credentials. If the
-featured feed fails, available bundled chat models still appear. If the
-inventory is unavailable or malformed, browse and setup retain the bundled
-fallback, while the fresh-live catalog stays empty. A successful empty inventory
+Both public fetches use fixed HTTPS hosts and send no credentials. If either
+request fails, or the inventory is malformed, discovery reports an unavailable
+refresh. Featured metadata classifies live models outside the bundled catalog,
+so its failure must not publish a reduced list as complete. The shared catalog
+lifecycle owns retention of the last good catalog. A successful empty inventory
 does not restore stale bundled entries. Without NVIDIA auth, browsing uses the
 bundled catalog without fetching.
 

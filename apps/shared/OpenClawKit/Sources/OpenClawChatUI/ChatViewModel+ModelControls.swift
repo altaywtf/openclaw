@@ -14,8 +14,15 @@ extension OpenClawChatViewModel {
             guard self.isCurrentSession(session), requestID == self.nextModelCatalogRequestID else {
                 return
             }
-            self.modelChoices = catalog.choices
-            self.modelAvailabilityIsSessionScoped = catalog.availabilityIsSessionScoped
+            if !catalog.refreshFailed || !catalog.choices.isEmpty {
+                self.modelChoices = catalog.choices
+                self.modelAvailabilityIsSessionScoped = catalog.availabilityIsSessionScoped
+            }
+            if catalog.refreshFailed {
+                self.errorText = OpenClawChatModelCatalogSnapshot.refreshFailureMessage
+            } else if self.errorText == OpenClawChatModelCatalogSnapshot.refreshFailureMessage {
+                self.errorText = nil
+            }
             if target == self.currentModelPatchTarget(),
                settingsRevision == self.settingsPatchRevisionsByTarget[target, default: 0],
                self.inFlightSettingsPatchCountsByTarget[target] == nil
@@ -24,7 +31,10 @@ extension OpenClawChatViewModel {
             }
             syncThinkingLevelOptions()
         } catch {
-            // Best-effort.
+            guard self.isCurrentSession(session), requestID == self.nextModelCatalogRequestID else {
+                return
+            }
+            self.errorText = OpenClawChatModelCatalogSnapshot.refreshFailureMessage
         }
     }
 
@@ -268,10 +278,12 @@ extension OpenClawChatViewModel {
         return -120 + fraction * 240
     }
 
-    /// `models.list` currently has no fast-support capability field. Keep the
-    /// control available and let the gateway validate the session patch.
     public var selectedModelSupportsFastMode: Bool {
-        true
+        if self.currentSessionEntry()?.fastMode != nil { return true }
+        guard let selectedKey = self.selectedModelAvailabilityKey() else { return false }
+        return self.modelChoices.first {
+            Self.modelAvailabilityKey(modelID: $0.modelID, provider: $0.provider) == selectedKey
+        }?.supportsFastMode == true
     }
 
     public var isUpdatingSessionSettings: Bool {

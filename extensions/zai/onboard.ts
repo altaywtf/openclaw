@@ -1,6 +1,6 @@
 // Zai setup module handles plugin onboarding behavior.
 import {
-  applyProviderConfigWithModelCatalogPreset,
+  applyProviderConnectionConfig,
   type OpenClawConfig,
 } from "openclaw/plugin-sdk/provider-onboard";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
@@ -46,11 +46,11 @@ function applyZaiPreset(
   const baseUrl = resolveZaiPresetBaseUrl(cfg, params?.endpoint);
   const modelId = resolveZaiModelId({ ...params, baseUrl });
   const modelRef = `zai/${modelId}`;
-  return applyProviderConfigWithModelCatalogPreset(cfg, {
+  return applyProviderConnectionConfig(cfg, {
     providerId: "zai",
     api: "openai-completions",
     baseUrl,
-    catalogModels: buildZaiCatalogModels(),
+    catalogModels: buildZaiCatalogModels,
     aliases: [{ modelRef, alias: "GLM" }],
     primaryModelRef,
   });

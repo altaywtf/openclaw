@@ -31,7 +31,7 @@ describe("fetchOllamaModels preflight timeout", () => {
     await vi.advanceTimersByTimeAsync(TAGS_TIMEOUT_MS);
     const { result, elapsedMs } = await pending;
 
-    expect(result).toEqual({ reachable: false, models: [] });
+    expect(result).toEqual({ reachable: false, models: [], error: expect.any(Error) });
     // Preflight ran and never handed off to the socket.
     expect(fetchSpy).not.toHaveBeenCalled();
     // Bounded by the guard-owned deadline, not left to hang.

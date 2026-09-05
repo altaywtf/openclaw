@@ -42,6 +42,27 @@ export function normalizePluginProviderBaseUrl(value: string): string | undefine
   return normalizeOptionalLowercaseString(url.toString().replace(/\/+$/, ""));
 }
 
+export function matchesPluginProviderEndpoint(
+  endpoint: PluginManifestProviderEndpoint,
+  params: { host: string; normalizedBaseUrl?: string },
+): boolean {
+  return (
+    normalizeProviderHosts(endpoint.hosts).includes(params.host) ||
+    normalizeProviderHosts(endpoint.hostSuffixes).some((suffix) => {
+      if (!suffix) {
+        return false;
+      }
+      return suffix.startsWith(".") || suffix.startsWith("-")
+        ? params.host.endsWith(suffix)
+        : params.host === suffix || params.host.endsWith(`.${suffix}`);
+    }) ||
+    (params.normalizedBaseUrl !== undefined &&
+      (endpoint.baseUrls ?? []).some(
+        (baseUrl) => normalizePluginProviderBaseUrl(baseUrl) === params.normalizedBaseUrl,
+      ))
+  );
+}
+
 function prepareProviderEndpoints(value: unknown): PluginManifestProviderEndpoint[] {
   if (!Array.isArray(value)) {
     return [];

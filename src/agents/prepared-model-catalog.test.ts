@@ -9,8 +9,6 @@ const mocks = vi.hoisted(() => ({
   getSnapshot: vi.fn(),
   loadSnapshot: vi.fn(),
   prepareSnapshot: vi.fn(),
-  prepareScopedCatalog: vi.fn(),
-  isFullCatalog: vi.fn(),
   releaseSnapshot: vi.fn(),
 }));
 
@@ -55,14 +53,6 @@ vi.mock("./prepared-model-runtime.js", () => {
   };
 });
 
-vi.mock("./prepared-model-runtime.full-catalog.js", () => ({
-  isPreparedModelCatalogFull: (...args: unknown[]) => mocks.isFullCatalog(...args),
-}));
-
-vi.mock("./prepared-model-runtime.scoped-catalog.js", () => ({
-  prepareScopedReadOnlyModelCatalog: (...args: unknown[]) => mocks.prepareScopedCatalog(...args),
-}));
-
 import { PreparedModelCatalogConfigReplacedError } from "./prepared-model-catalog.errors.js";
 import {
   getPublishedPreparedModelCatalogOwnerSnapshot,
@@ -95,6 +85,10 @@ const readOnlySnapshot = {
     routeVariants: [],
   },
 };
+const ordinaryReadCases = [
+  { name: "readOnly omitted", params: {} },
+  { name: "readOnly true", params: { readOnly: true } },
+];
 
 describe("prepared model catalog access", () => {
   beforeEach(() => {
@@ -105,8 +99,6 @@ describe("prepared model catalog access", () => {
     mocks.getSnapshot.mockReset();
     mocks.loadSnapshot.mockReset();
     mocks.prepareSnapshot.mockReset();
-    mocks.prepareScopedCatalog.mockReset();
-    mocks.isFullCatalog.mockReset();
     mocks.releaseSnapshot.mockReset();
   });
 
@@ -177,45 +169,57 @@ describe("prepared model catalog access", () => {
     expect(mocks.releaseSnapshot).not.toHaveBeenCalled();
   });
 
-  it("reads the completed catalog with its paired auth without starting discovery", async () => {
-    const discovered = { entries: [{ provider: "openai", id: "discovered", name: "Discovered" }] };
-    const discoveredAuth = {
-      authStore: fullSnapshot.authStore,
-      providerAuth: { openai: { mode: "oauth" as const } },
-    };
-    setPreparedModelFullCatalogAuth(discovered, discoveredAuth);
-    const snapshot = {
-      ...fullSnapshot,
-      loadFullModelCatalog: vi.fn(),
-      readFullModelCatalog: vi.fn(() => discovered),
-    };
-    mocks.getSnapshot.mockReturnValue(snapshot);
-    mocks.prepareSnapshot.mockResolvedValue(snapshot);
+  it.each(ordinaryReadCases)(
+    "reads the completed catalog with its paired auth without starting discovery ($name)",
+    async ({ params }) => {
+      const discovered = {
+        entries: [{ provider: "openai", id: "discovered", name: "Discovered" }],
+      };
+      const discoveredAuth = {
+        authStore: fullSnapshot.authStore,
+        providerAuth: { openai: { mode: "oauth" as const } },
+      };
+      setPreparedModelFullCatalogAuth(discovered, discoveredAuth);
+      const snapshot = {
+        ...fullSnapshot,
+        loadFullModelCatalog: vi.fn(async () => discovered),
+        readFullModelCatalog: vi.fn(() => discovered),
+      };
+      mocks.getSnapshot.mockReturnValue(snapshot);
+      mocks.prepareSnapshot.mockResolvedValue(snapshot);
 
-    await expect(
-      loadPreparedModelCatalogOwnerSnapshot({ readOnly: true, refreshFullCatalog: true }),
-    ).resolves.toMatchObject({
-      modelCatalog: discovered,
-      providerAuth: discoveredAuth.providerAuth,
-    });
-    expect(snapshot.loadFullModelCatalog).not.toHaveBeenCalled();
-    expect(snapshot.readFullModelCatalog).toHaveBeenCalledOnce();
-  });
+      await expect(
+        loadPreparedModelCatalogOwnerSnapshot({ ...params, refreshFullCatalog: true }),
+      ).resolves.toMatchObject({
+        modelCatalog: discovered,
+        providerAuth: discoveredAuth.providerAuth,
+      });
+      expect(snapshot.loadFullModelCatalog).not.toHaveBeenCalled();
+      expect(snapshot.readFullModelCatalog).toHaveBeenCalledOnce();
+    },
+  );
 
-  it("keeps read-only loads on the configured facts until discovery lands", async () => {
-    const snapshot = {
-      ...fullSnapshot,
-      loadFullModelCatalog: vi.fn(),
-      readFullModelCatalog: vi.fn(() => undefined),
-    };
-    mocks.getSnapshot.mockReturnValue(snapshot);
-    mocks.prepareSnapshot.mockResolvedValue(snapshot);
+  it.each(ordinaryReadCases)(
+    "keeps ordinary loads on the configured facts until discovery lands ($name)",
+    async ({ params }) => {
+      setPreparedModelFullCatalogAuth(fullSnapshot.modelCatalog, {
+        authStore: fullSnapshot.authStore,
+        providerAuth: fullSnapshot.providerAuth,
+      });
+      const snapshot = {
+        ...fullSnapshot,
+        loadFullModelCatalog: vi.fn(async () => fullSnapshot.modelCatalog),
+        readFullModelCatalog: vi.fn(() => undefined),
+      };
+      mocks.getSnapshot.mockReturnValue(snapshot);
+      mocks.prepareSnapshot.mockResolvedValue(snapshot);
 
-    await expect(
-      loadPreparedModelCatalogOwnerSnapshot({ readOnly: true, refreshFullCatalog: false }),
-    ).resolves.toMatchObject({ modelCatalog: fullSnapshot.modelCatalog });
-    expect(snapshot.loadFullModelCatalog).not.toHaveBeenCalled();
-  });
+      await expect(
+        loadPreparedModelCatalogOwnerSnapshot({ ...params, refreshFullCatalog: false }),
+      ).resolves.toMatchObject({ modelCatalog: fullSnapshot.modelCatalog });
+      expect(snapshot.loadFullModelCatalog).not.toHaveBeenCalled();
+    },
+  );
 
   it("does not await a stale full catalog for read-only request paths", async () => {
     const snapshot = {
@@ -235,100 +239,64 @@ describe("prepared model catalog access", () => {
     );
   });
 
-  it("reuses a published full generation for a provider-scoped read-only load", async () => {
-    mocks.prepareSnapshot.mockResolvedValue(fullSnapshot);
-    mocks.isFullCatalog.mockReturnValue(true);
+  it.each(ordinaryReadCases)(
+    "keeps ordinary catalog reads on configured facts and materializes explicit full reads once ($name)",
+    async ({ params }) => {
+      const configuredCatalog = {
+        entries: [{ provider: "test", id: "configured", name: "Configured" }],
+        routeVariants: [],
+      };
+      const discoveredCatalog = {
+        entries: [{ provider: "test", id: "discovered", name: "Discovered" }],
+        routeVariants: [],
+      };
+      const { authStore, ...snapshotFacts } = fullSnapshot;
+      setPreparedModelFullCatalogAuth(discoveredCatalog, { authStore, providerAuth: {} });
+      const loadFullModelCatalog = vi.fn(async () => discoveredCatalog);
+      const snapshot = {
+        ...snapshotFacts,
+        modelCatalog: configuredCatalog,
+        loadFullModelCatalog,
+      };
+      setPreparedModelRuntimeAuthStore(snapshot, authStore);
+      mocks.getSnapshot.mockReturnValue(snapshot);
+      mocks.prepareSnapshot.mockResolvedValue(snapshot);
 
-    await expect(
-      loadPreparedModelCatalogSnapshot({
-        readOnly: true,
-        providerDiscoveryProviderIds: ["anthropic"],
-      }),
-    ).resolves.toBe(fullSnapshot.modelCatalog);
+      await expect(loadPreparedModelCatalogSnapshot(params)).resolves.toBe(configuredCatalog);
+      expect(loadFullModelCatalog).not.toHaveBeenCalled();
 
-    expect(mocks.isFullCatalog).toHaveBeenCalledWith(fullSnapshot.modelCatalog);
-    expect(mocks.prepareScopedCatalog).not.toHaveBeenCalled();
-  });
+      const materialized = await loadPreparedModelCatalogOwnerSnapshot({ readOnly: false });
+      expect(materialized.modelCatalog).toBe(discoveredCatalog);
+      expect(materialized).not.toHaveProperty("authStore");
+      expect(getPreparedModelRuntimeAuthStore(materialized)).toBe(authStore);
+      expect(loadFullModelCatalog).toHaveBeenCalledOnce();
 
-  it("builds a scoped catalog when the published generation is configured-only", async () => {
-    const scopedCatalog = {
-      entries: [{ provider: "anthropic", id: "claude", name: "Claude" }],
-      routeVariants: [],
-    };
-    mocks.prepareSnapshot.mockResolvedValue(readOnlySnapshot);
-    mocks.isFullCatalog.mockReturnValue(false);
-    mocks.prepareScopedCatalog.mockResolvedValue(scopedCatalog);
+      expect(getPreparedModelCatalogSnapshot({ readOnly: true })).toBe(configuredCatalog);
+      expect(getPreparedModelCatalogSnapshot()).toBe(configuredCatalog);
+    },
+  );
 
-    await expect(
-      loadPreparedModelCatalogSnapshot({
-        readOnly: true,
-        providerDiscoveryProviderIds: ["anthropic"],
-      }),
-    ).resolves.toBe(scopedCatalog);
+  it.each(ordinaryReadCases)(
+    "carries an explicit dynamic workspace into the read-only loader ($name)",
+    async ({ params }) => {
+      mocks.prepareSnapshot.mockRejectedValue(new PreparedModelRuntimeOwnerNotPublishedError());
+      mocks.loadSnapshot.mockResolvedValue(readOnlySnapshot);
 
-    expect(mocks.prepareSnapshot).toHaveBeenCalledTimes(2);
-    expect(mocks.prepareScopedCatalog).toHaveBeenCalledOnce();
-    expect(mocks.prepareScopedCatalog).toHaveBeenCalledWith(
-      expect.objectContaining({
-        readOnly: true,
-        workspaceDir: "/tmp/prepared-model-catalog-workspace",
-      }),
-      ["anthropic"],
-    );
-  });
+      await expect(
+        loadPreparedModelCatalogSnapshot({
+          ...params,
+          workspaceDir: "/tmp/dynamic-workspace",
+        }),
+      ).resolves.toBe(readOnlySnapshot.modelCatalog);
 
-  it("keeps read-only catalog reads on configured facts and materializes full reads once", async () => {
-    const configuredCatalog = {
-      entries: [{ provider: "test", id: "configured", name: "Configured" }],
-      routeVariants: [],
-    };
-    const discoveredCatalog = {
-      entries: [{ provider: "test", id: "discovered", name: "Discovered" }],
-      routeVariants: [],
-    };
-    const { authStore, ...snapshotFacts } = fullSnapshot;
-    setPreparedModelFullCatalogAuth(discoveredCatalog, { authStore, providerAuth: {} });
-    const loadFullModelCatalog = vi.fn(async () => discoveredCatalog);
-    const snapshot = {
-      ...snapshotFacts,
-      modelCatalog: configuredCatalog,
-      loadFullModelCatalog,
-    };
-    setPreparedModelRuntimeAuthStore(snapshot, authStore);
-    mocks.prepareSnapshot.mockResolvedValue(snapshot);
-
-    await expect(loadPreparedModelCatalogSnapshot({ readOnly: true })).resolves.toBe(
-      configuredCatalog,
-    );
-    expect(loadFullModelCatalog).not.toHaveBeenCalled();
-
-    const materialized = await loadPreparedModelCatalogOwnerSnapshot({ readOnly: false });
-    expect(materialized.modelCatalog).toBe(discoveredCatalog);
-    expect(materialized).not.toHaveProperty("authStore");
-    expect(getPreparedModelRuntimeAuthStore(materialized)).toBe(authStore);
-    expect(loadFullModelCatalog).toHaveBeenCalledOnce();
-
-    mocks.getSnapshot.mockReturnValue(snapshot);
-    expect(getPreparedModelCatalogSnapshot({ readOnly: true })).toBe(configuredCatalog);
-    expect(getPreparedModelCatalogSnapshot()).toBe(configuredCatalog);
-  });
-
-  it("carries an explicit dynamic workspace into the read-only loader", async () => {
-    mocks.prepareSnapshot.mockRejectedValue(new PreparedModelRuntimeOwnerNotPublishedError());
-    mocks.loadSnapshot.mockResolvedValue(readOnlySnapshot);
-
-    await expect(
-      loadPreparedModelCatalogSnapshot({
-        workspaceDir: "/tmp/dynamic-workspace",
-        readOnly: true,
-      }),
-    ).resolves.toBe(readOnlySnapshot.modelCatalog);
-
-    expect(mocks.loadSnapshot).toHaveBeenCalledWith(
-      expect.objectContaining({ readOnly: true, workspaceDir: "/tmp/dynamic-workspace" }),
-    );
-    expect(mocks.releaseSnapshot).toHaveBeenCalledOnce();
-  });
+      expect(mocks.loadSnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({ readOnly: true, workspaceDir: "/tmp/dynamic-workspace" }),
+      );
+      expect(mocks.activateSnapshot).not.toHaveBeenCalled();
+      expect(mocks.acquireSnapshot).not.toHaveBeenCalled();
+      expect(mocks.releaseSnapshot).toHaveBeenCalledOnce();
+    },
+  );
 
   it("rejects a full generation replaced with another config", async () => {
     const committedConfig = { agents: { defaults: { model: "openai/committed" } } };
@@ -451,7 +419,9 @@ describe("prepared model catalog access", () => {
     mocks.prepareSnapshot.mockRejectedValue(new PreparedModelRuntimeOwnerNotPublishedError());
     mocks.activateSnapshot.mockResolvedValue(fullSnapshot);
 
-    await expect(loadPreparedModelCatalogSnapshot()).resolves.toBe(fullSnapshot.modelCatalog);
+    await expect(loadPreparedModelCatalogSnapshot({ readOnly: false })).resolves.toBe(
+      fullSnapshot.modelCatalog,
+    );
 
     expect(mocks.activateSnapshot).toHaveBeenCalledWith(
       expect.not.objectContaining({ readOnly: true }),
@@ -467,7 +437,9 @@ describe("prepared model catalog access", () => {
       config: { agents: { defaults: { model: "openai/old" } } },
     });
 
-    await expect(loadPreparedModelCatalogSnapshot()).rejects.toThrow("requested config");
+    await expect(loadPreparedModelCatalogSnapshot({ readOnly: false })).rejects.toThrow(
+      "requested config",
+    );
   });
 
   it("leases a full generation for a gateway preflight in a dynamic workspace", async () => {
@@ -476,7 +448,10 @@ describe("prepared model catalog access", () => {
     mocks.acquireSnapshot.mockResolvedValue(fullSnapshot);
 
     await expect(
-      loadPreparedModelCatalogSnapshot({ workspaceDir: "/tmp/spawned-workspace" }),
+      loadPreparedModelCatalogSnapshot({
+        workspaceDir: "/tmp/spawned-workspace",
+        readOnly: false,
+      }),
     ).resolves.toBe(fullSnapshot.modelCatalog);
 
     expect(mocks.acquireSnapshot).toHaveBeenCalledWith(
@@ -494,7 +469,9 @@ describe("prepared model catalog access", () => {
       config: { agents: { defaults: { model: "openai/old" } } },
     });
 
-    await expect(loadPreparedModelCatalogSnapshot()).rejects.toThrow("requested config");
+    await expect(loadPreparedModelCatalogSnapshot({ readOnly: false })).rejects.toThrow(
+      "requested config",
+    );
     expect(mocks.releaseSnapshot).toHaveBeenCalledOnce();
   });
 });

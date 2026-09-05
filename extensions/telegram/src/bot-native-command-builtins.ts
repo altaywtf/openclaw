@@ -2,7 +2,6 @@
 import {
   loadPreparedModelCatalog,
   resolveAgentConfig,
-  resolveAgentDir,
   resolveDefaultModelForAgent,
   resolveThinkingDefaultWithRuntimeCatalog,
 } from "openclaw/plugin-sdk/agent-runtime";
@@ -322,7 +321,6 @@ export async function executeTelegramBuiltinCommand(
       ? await loadPreparedModelCatalog({
           config: dispatch.runtimeCfg,
           agentId: dispatch.route.agentId,
-          agentDir: resolveAgentDir(dispatch.runtimeCfg, dispatch.route.agentId),
           readOnly: true,
         })
       : undefined;
@@ -332,7 +330,7 @@ export async function executeTelegramBuiltinCommand(
         args: commandArgs,
         cfg: dispatch.runtimeCfg,
         ...menuModelContext,
-        ...(menuModelCatalog?.length ? { catalog: menuModelCatalog } : {}),
+        catalog: menuModelCatalog,
       })
     : null;
   if (menu && commandDefinition) {

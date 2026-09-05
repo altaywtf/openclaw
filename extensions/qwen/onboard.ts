@@ -1,6 +1,6 @@
 // Qwen setup module handles plugin onboarding behavior.
 import {
-  createModelCatalogPresetAppliers,
+  createProviderConnectionPresetAppliers,
   type OpenClawConfig,
 } from "openclaw/plugin-sdk/provider-onboard";
 import {
@@ -16,7 +16,7 @@ import {
 } from "./models.js";
 import { buildQwenProvider, buildQwenTokenPlanProvider } from "./provider-catalog.js";
 
-const qwenPresetAppliers = createModelCatalogPresetAppliers<[string]>({
+const qwenPresetAppliers = createProviderConnectionPresetAppliers<[string]>({
   primaryModelRef: QWEN_DEFAULT_MODEL_REF,
   resolveParams: (_cfg: OpenClawConfig, baseUrl: string) => {
     const provider = buildQwenProvider({ baseUrl });
@@ -24,19 +24,13 @@ const qwenPresetAppliers = createModelCatalogPresetAppliers<[string]>({
       providerId: "qwen",
       api: provider.api ?? "openai-completions",
       baseUrl,
-      catalogModels: provider.models ?? [],
-      aliases: [
-        ...(provider.models ?? []).flatMap((model) => [
-          `qwen/${model.id}`,
-          `modelstudio/${model.id}`,
-        ]),
-        { modelRef: QWEN_DEFAULT_MODEL_REF, alias: "Qwen" },
-      ],
+      catalogModels: () => provider.models,
+      aliases: [{ modelRef: QWEN_DEFAULT_MODEL_REF, alias: "Qwen" }],
     };
   },
 });
 
-const qwenTokenPlanPresetAppliers = createModelCatalogPresetAppliers<[string]>({
+const qwenTokenPlanPresetAppliers = createProviderConnectionPresetAppliers<[string]>({
   primaryModelRef: QWEN_TOKEN_PLAN_DEFAULT_MODEL_REF,
   resolveParams: (_cfg: OpenClawConfig, baseUrl: string) => {
     const provider = buildQwenTokenPlanProvider({ baseUrl });
@@ -44,11 +38,8 @@ const qwenTokenPlanPresetAppliers = createModelCatalogPresetAppliers<[string]>({
       providerId: QWEN_TOKEN_PLAN_PROVIDER_ID,
       api: provider.api ?? "openai-completions",
       baseUrl,
-      catalogModels: provider.models ?? [],
-      aliases: [
-        ...(provider.models ?? []).map((model) => `${QWEN_TOKEN_PLAN_PROVIDER_ID}/${model.id}`),
-        { modelRef: QWEN_TOKEN_PLAN_DEFAULT_MODEL_REF, alias: "Qwen Token Plan" },
-      ],
+      catalogModels: () => provider.models,
+      aliases: [{ modelRef: QWEN_TOKEN_PLAN_DEFAULT_MODEL_REF, alias: "Qwen Token Plan" }],
     };
   },
 });

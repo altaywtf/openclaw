@@ -76,8 +76,6 @@ async function withFetchPathTest(
   envOverrides: Record<string, string | undefined>,
   runAssertions: () => Promise<void>,
 ) {
-  vi.stubEnv("NODE_ENV", undefined);
-  vi.stubEnv("VITEST", undefined);
   for (const [key, value] of Object.entries(envOverrides)) {
     vi.stubEnv(key, value);
   }
@@ -220,9 +218,9 @@ describe("hasDeepInfraApiKey", () => {
   });
 });
 
-describe("discoverDeepInfraModels (chat-only shim)", () => {
-  it("returns static catalog in test environment", async () => {
-    const models = await discoverDeepInfraModels({ env: { VITEST: "true" } });
+describe("discoverDeepInfraModels", () => {
+  it("returns offline metadata without configured credentials", async () => {
+    const models = await discoverDeepInfraModels({ hasApiKey: false, env: {} });
     const modelIds = models.map((m) => m.id);
     const streamingUsageIncompatibleModelIds = models
       .filter((m) => !m.compat?.supportsUsageInStreaming)
@@ -395,28 +393,30 @@ describe("discoverDeepInfraModels (chat-only shim)", () => {
     });
   });
 
-  it("falls back to the complete static catalog when both sources fail", async () => {
+  it("reports failure when both discovery sources fail", async () => {
     const mockFetch = vi.fn().mockRejectedValue(new Error("network error"));
 
     await withFetchPathTest(mockFetch, { DEEPINFRA_API_KEY: "sk-test" }, async () => {
-      const models = await discoverDeepInfraModels();
-      expect(models).toEqual(expectedStaticChatCatalog());
+      await expect(discoverDeepInfraModels()).rejects.toThrow(
+        "model metadata discovery unavailable",
+      );
       expect(mockFetch).toHaveBeenCalledTimes(2);
     });
   });
 
-  it("falls back to the static catalog on non-2xx HTTP responses", async () => {
+  it("reports non-2xx metadata responses instead of static rows", async () => {
     const mockFetch = mockProjectionFetch(
       vi.fn().mockResolvedValue(new Response("", { status: 503 })),
     );
 
     await withFetchPathTest(mockFetch, { DEEPINFRA_API_KEY: "sk-test" }, async () => {
-      const models = await discoverDeepInfraModels();
-      expect(models.map((m) => m.id)).toEqual(expectedStaticChatCatalog().map((model) => model.id));
+      await expect(discoverDeepInfraModels()).rejects.toThrow(
+        "model metadata discovery unavailable",
+      );
     });
   });
 
-  it("falls back without caching malformed successful model list payloads", async () => {
+  it("reports malformed model lists without caching their failure", async () => {
     const mockFetch = mockProjectionFetch(
       vi
         .fn()
@@ -427,8 +427,8 @@ describe("discoverDeepInfraModels (chat-only shim)", () => {
     );
 
     await withFetchPathTest(mockFetch, { DEEPINFRA_API_KEY: "sk-test" }, async () => {
-      expect((await discoverDeepInfraModels()).map((m) => m.id)).toEqual(
-        expectedStaticChatCatalog().map((model) => model.id),
+      await expect(discoverDeepInfraModels()).rejects.toThrow(
+        "model metadata discovery unavailable",
       );
       expect((await discoverDeepInfraModels()).map((m) => m.id)).toEqual(
         expectedLiveChatCatalog([
@@ -488,9 +488,7 @@ describe("discoverDeepInfraModels (chat-only shim)", () => {
     );
 
     await withFetchPathTest(mockFetch, { DEEPINFRA_API_KEY: "sk-test" }, async () => {
-      expect((await discoverDeepInfraModels()).map((m) => m.id)).toEqual(
-        expectedStaticChatCatalog().map((model) => model.id),
-      );
+      await expect(discoverDeepInfraModels()).resolves.toEqual([]);
       expect((await discoverDeepInfraModels()).map((m) => m.id)).toEqual(
         expectedLiveChatCatalog([
           {

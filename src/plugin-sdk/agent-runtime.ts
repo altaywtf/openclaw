@@ -1,7 +1,8 @@
 import { resolveThinkingDefaultWithRuntimeCatalogCore } from "../agents/model-thinking-default.js";
 import {
   getPreparedModelCatalogSnapshot,
-  loadPreparedModelCatalog,
+  discoverProviderModelCatalog,
+  loadPreparedModelCatalog as readPreparedModelCatalog,
   type LoadPreparedModelCatalogParams,
 } from "../agents/prepared-model-catalog.js";
 /**
@@ -34,9 +35,23 @@ export {
 export { resolveApiKeyForProviderCore as resolveApiKeyForProvider } from "../agents/model-auth.js";
 export { findModelInCatalog, modelSupportsVision } from "../agents/model-catalog.js";
 export type { ModelCatalogEntry } from "../agents/model-catalog.js";
-export { getPreparedModelCatalogSnapshot, loadPreparedModelCatalog };
+export { getPreparedModelCatalogSnapshot };
 
-type LoadModelCatalogCompatibilityParams = LoadPreparedModelCatalogParams & {
+type LoadPreparedModelCatalogCompatibilityParams = LoadPreparedModelCatalogParams & {
+  providerDiscoveryProviderIds?: readonly string[];
+  scopedLiveProviderDiscovery?: boolean;
+};
+
+export async function loadPreparedModelCatalog(
+  params: LoadPreparedModelCatalogCompatibilityParams = {},
+) {
+  const { providerDiscoveryProviderIds, scopedLiveProviderDiscovery, ...readParams } = params;
+  return params.readOnly && scopedLiveProviderDiscovery && providerDiscoveryProviderIds
+    ? discoverProviderModelCatalog({ ...readParams, providerIds: providerDiscoveryProviderIds })
+    : readPreparedModelCatalog({ ...readParams, readOnly: params.readOnly ?? false });
+}
+
+type LoadModelCatalogCompatibilityParams = LoadPreparedModelCatalogCompatibilityParams & {
   /** @deprecated Lifecycle publication owns refreshes; retained for source compatibility. */
   useCache?: boolean;
   /** @deprecated Use getPreparedModelCatalogSnapshot for new nonblocking readers. */

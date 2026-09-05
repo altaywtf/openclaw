@@ -1,8 +1,17 @@
 import { render } from "lit";
 import { vi } from "vitest";
+import type { GatewayEventListener } from "../../api/gateway.ts";
 import type { GatewayAgentRow, ModelCatalogEntry } from "../../api/types.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import { NewSessionModelControl } from "./model-control.ts";
+
+const catalogListeners = new WeakMap<ApplicationContext["gateway"], Set<GatewayEventListener>>();
+
+export function publishModelCatalog(context: ApplicationContext) {
+  for (const listener of catalogListeners.get(context.gateway) ?? []) {
+    listener({ type: "event", event: "chat.metadata.changed", payload: {} });
+  }
+}
 
 export function contextWith(
   models: ModelCatalogEntry[],
@@ -13,9 +22,14 @@ export function contextWith(
 ) {
   const request = vi.fn().mockResolvedValue({ models });
   const navigate = vi.fn();
+  const eventListeners = new Set<GatewayEventListener>();
   const context = {
     navigate,
     gateway: {
+      subscribeEvents(listener: GatewayEventListener) {
+        eventListeners.add(listener);
+        return () => eventListeners.delete(listener);
+      },
       snapshot: {
         phase: "connected",
         client: { request },
@@ -40,6 +54,7 @@ export function contextWith(
       },
     },
   } as unknown as ApplicationContext;
+  catalogListeners.set(context.gateway, eventListeners);
   return { context, navigate, request };
 }
 

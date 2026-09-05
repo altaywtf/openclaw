@@ -376,7 +376,7 @@ export async function runPreparedModelCatalogWorkerRequest(
       !value.input.readOnly,
       { authStore },
     );
-    const facts = await prepareFullCatalogFacts(exactAgentFacts, catalogGeneration, "live", source);
+    const facts = await prepareFullCatalogFacts(exactAgentFacts, catalogGeneration, source);
     // Full discovery can publish routes absent from startup config. Pair those exact rows with
     // provider-owned synthetic auth before the catalog and auth facts cross the worker boundary.
     const catalogAuth = resolveSyntheticAuth(

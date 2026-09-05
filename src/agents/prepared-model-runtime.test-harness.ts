@@ -526,6 +526,5 @@ export async function buildPreparedFullCatalogForTest(
     throw new Error("expected prepared agent facts");
   }
   const source = await prepareAgentCatalogSource(facts, prepared.pluginGeneration, "live", false);
-  return (await prepareFullCatalogFacts(facts, prepared.pluginGeneration, "live", source))
-    .modelCatalog;
+  return (await prepareFullCatalogFacts(facts, prepared.pluginGeneration, source)).modelCatalog;
 }

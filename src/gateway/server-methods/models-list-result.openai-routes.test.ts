@@ -63,17 +63,6 @@ const preparedOwnerFacts = (config: OpenClawConfig) =>
     metadataSnapshot: loadManifestMetadataSnapshot({ config, env: process.env }),
   }) as const;
 
-function emptyPreparedOwner(config: OpenClawConfig) {
-  return {
-    agentId: "main",
-    agentDir: "/tmp/models-list-openai-agent",
-    config,
-    entries: [],
-    routeVariants: [],
-    ...preparedOwnerFacts(config),
-  } as never;
-}
-
 describe("models.list OpenAI routes", () => {
   it.each([false, true])("publishes selected route capabilities (empty=%s)", async (empty) => {
     openAIModelRoutesMock.resolution = {
@@ -166,32 +155,8 @@ describe("models.list OpenAI routes", () => {
       ],
     });
     expect(context.loadGatewayModelCatalogSnapshot).toHaveBeenCalledWith(
-      expect.objectContaining({ agentId: "worker", readOnly: false }),
-    );
-  });
-
-  it("activates the prepared owner when no generation is published", async () => {
-    const initialConfig = {
-      agents: { defaults: {}, list: [{ id: "main" }, { id: "worker", default: true }] },
-    } as OpenClawConfig;
-    const loadGatewayModelCatalogSnapshot = vi.fn(() =>
-      Promise.resolve(emptyPreparedOwner(initialConfig)),
-    );
-    const context = {
-      getRuntimeConfig: () => initialConfig,
-      loadGatewayModelCatalogSnapshot,
-      logGateway: { debug: vi.fn() },
-    } as unknown as GatewayRequestContext;
-    registerTestCatalogAccess(context);
-
-    const result = await buildModelsListResult({
-      source: { kind: "gateway", context },
-      params: { view: "configured" },
-    });
-    expect(loadGatewayModelCatalogSnapshot).toHaveBeenCalledWith(
       expect.objectContaining({ agentId: "worker", readOnly: true }),
     );
-    expect(result).toEqual({ models: [] });
   });
 
   it("passes the resolved default agent to catalog loads", async () => {
@@ -223,7 +188,7 @@ describe("models.list OpenAI routes", () => {
       models: [],
     });
     expect(loadGatewayModelCatalogSnapshot).toHaveBeenCalledWith(
-      expect.objectContaining({ agentId: "main", readOnly: false }),
+      expect.objectContaining({ agentId: "main", readOnly: true }),
     );
   });
 

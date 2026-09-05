@@ -5,6 +5,7 @@ import {
   getRuntimeAuthProfileStoreSnapshotRevision,
   type AuthProfileStore,
 } from "../../agents/auth-profiles.js";
+import { prepareModelCatalogView } from "../../agents/model-catalog-view.js";
 import type { ModelCatalogEntry, ModelCatalogSnapshot } from "../../agents/model-catalog.types.js";
 import {
   getPublishedPreparedModelCatalogOwnerSnapshot,
@@ -15,9 +16,9 @@ import {
   getPreparedModelRuntimeAuthMaterializations,
 } from "../../agents/prepared-model-runtime-auth.js";
 import type { PreparedModelRuntimeSnapshot } from "../../agents/prepared-model-runtime.js";
+import { resolveSessionModelProfiles } from "../../agents/session-model-ref.js";
 import { resolveSwarmConfig } from "../../agents/subagents/swarm/swarm-config.js";
 import { resolveRuntimeConfigCacheKey } from "../../config/runtime-snapshot.js";
-import { resolveSessionAuthProfileOverrideSource } from "../../config/sessions/auth-profile-override-provenance.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { pruneMapToMaxSize } from "../../infra/map-size.js";
@@ -101,6 +102,7 @@ type ChatMetadataRuntimeDeps = {
   buildProjection: (params: {
     context: GatewayRequestContext;
     facts: PreparedAgentFacts;
+    profileProvider?: string;
     preferredProfileId?: string;
     lockedProfileId?: string;
   }) => Promise<PreparedAgentProjection<Partial<ChatMetadataResult>>>;
@@ -193,27 +195,13 @@ function generationFactsMatch(
   });
 }
 
-function resolveSessionProfiles(sessionEntry: ChatMetadataSessionEntry | undefined): {
-  preferredProfileId?: string;
-  lockedProfileId?: string;
-} {
-  const profileId = sessionEntry?.authProfileOverride?.trim();
-  if (!profileId) {
-    return {};
-  }
-  const profileSource = resolveSessionAuthProfileOverrideSource(sessionEntry);
-  return {
-    preferredProfileId: profileId,
-    ...(profileSource === "user" ? { lockedProfileId: profileId } : {}),
-  };
-}
-
 function sessionProjectionKey(
   agentId: string,
-  profiles: ReturnType<typeof resolveSessionProfiles>,
+  profiles: ReturnType<typeof resolveSessionModelProfiles>,
 ): string {
   return [
     normalizeAgentId(agentId),
+    profiles.profileProvider ?? "",
     profiles.preferredProfileId ?? "",
     profiles.lockedProfileId ?? "",
   ].join("\0");
@@ -232,50 +220,56 @@ async function defaultBuildCommands(params: {
   });
 }
 
-async function defaultBuildProjection(params: {
-  context: GatewayRequestContext;
-  facts: PreparedAgentFacts;
-  preferredProfileId?: string;
-  lockedProfileId?: string;
-}): Promise<PreparedAgentProjection<Partial<ChatMetadataResult>>> {
-  const { prepareModelsListResult, createGatewayAgentModelCatalogProjector } =
-    await import("./models-list-result.js");
+async function defaultBuildProjection(
+  params: Parameters<ChatMetadataRuntimeDeps["buildProjection"]>[0],
+): Promise<PreparedAgentProjection<Partial<ChatMetadataResult>>> {
+  const { prepareModelsListResult } = await import("./models-list-result.js");
   // Chat metadata must stay on process-published facts. Live discovery belongs to explicit
   // models.list control-plane reads so a slow provider cannot delay chat startup.
   const snapshot = params.facts.modelCatalog;
-  const projector = createGatewayAgentModelCatalogProjector({
-    cfg: params.facts.owner.config,
-    agentId: params.facts.agentId,
-    snapshot,
+  const facts = {
     metadataSnapshot: params.facts.owner.metadataSnapshot,
-    preparedAuthStore: params.facts.authStore,
-    // The owner records usable auth at discovery; metadata must share that exact generation fact.
-    preparedProviderAuth: params.facts.providerAuth,
-    preparedRuntimeAuthMaterializations: getPreparedModelRuntimeAuthMaterializations(
-      params.facts.owner,
-    ),
+    authStore: params.facts.authStore,
+    providerAuth: params.facts.providerAuth,
+    authMaterializations: getPreparedModelRuntimeAuthMaterializations(params.facts.owner),
+  };
+  const selection = {
+    profileProvider: params.profileProvider,
     ...(params.preferredProfileId ? { preferredProfileId: params.preferredProfileId } : {}),
     ...(params.lockedProfileId ? { lockedProfileId: params.lockedProfileId } : {}),
-  });
-  const [modelCatalog, readModels] = await Promise.all([
-    projector.projectCatalog(),
+  };
+  const [inventory, readModels] = await Promise.all([
+    prepareModelCatalogView({
+      cfg: params.facts.owner.config,
+      agentId: params.facts.agentId,
+      workspaceDir:
+        params.facts.owner.workspaceDir ??
+        resolveAgentWorkspaceDir(params.facts.owner.config, params.facts.agentId),
+      snapshot,
+      metadataSnapshot: facts.metadataSnapshot,
+      auth: { authStore: facts.authStore, providerAuth: facts.providerAuth },
+      authMaterializations: facts.authMaterializations,
+      ...selection,
+      view: "all",
+    }),
     prepareModelsListResult({
       source: {
         kind: "published",
         context: params.context,
         config: params.facts.owner.config,
         snapshot,
-        projector,
+        facts,
       },
       agentId: params.facts.agentId,
       params: { view: "configured" },
+      selection,
     }),
   ]);
-  // Android ChatController.kt still reads models from chat.metadata; drop once it uses models.list.
+  // Shipped native clients still consume this wire field; it shares the catalog publisher.
   return {
-    modelCatalog,
+    modelCatalog: inventory.runtimeCatalog,
     read: () => ({ models: readModels.read().models }),
-    isCurrent: readModels.isCurrent,
+    isCurrent: () => readModels.isCurrent() && inventory.isCurrent(),
   };
 }
 
@@ -344,7 +338,11 @@ export function createGatewayChatMetadataRuntime(params: {
     sessionEntry?: ChatMetadataSessionEntry,
   ): Promise<PreparedAgentProjection> => {
     assertOpen();
-    const profiles = resolveSessionProfiles(sessionEntry);
+    const profiles = resolveSessionModelProfiles(
+      generation.facts.config,
+      agent.agentId,
+      sessionEntry,
+    );
     const neutral =
       profiles.preferredProfileId === undefined && profiles.lockedProfileId === undefined;
     const projections = neutral
@@ -662,7 +660,11 @@ export function createGatewayChatMetadataRuntime(params: {
         read: () => assemble(readNeutral, readSession),
       };
     };
-    const profiles = resolveSessionProfiles(readParams.sessionEntry);
+    const profiles = resolveSessionModelProfiles(
+      deps.getConfig(),
+      readParams.agentId,
+      readParams.sessionEntry,
+    );
     if (readParams.readPolicy !== "ready" && profiles.preferredProfileId) {
       return readCurrent(projectStartup);
     }

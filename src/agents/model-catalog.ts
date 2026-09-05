@@ -17,6 +17,7 @@ import { createLazyPromise } from "../shared/lazy-promise.js";
 import { modelCatalogRowToEntry } from "./model-catalog-entry.js";
 import { modelSupportsInput as modelCatalogEntrySupportsInput } from "./model-catalog-lookup.js";
 import { assignProviderModelOrder, compareModelCatalogEntries } from "./model-catalog-order.js";
+import { createPreparedModelCatalogProviderNormalizer } from "./model-catalog-provider-normalizer.js";
 import type {
   ModelCatalogEntry,
   ModelCatalogSnapshot,
@@ -87,30 +88,6 @@ const loadProviderApiKeyResolver = createLazyPromise(
 export function resetModelCatalogBuilderStateForTest() {
   manifestModelCatalogCache = new WeakMap();
   hasLoggedModelCatalogError = false;
-}
-
-/** Prepares provider aliases once for one captured catalog metadata generation. */
-export function createPreparedModelCatalogProviderNormalizer(
-  metadataSnapshot: Pick<PluginMetadataSnapshot, "manifestRegistry">,
-): (provider: string) => string {
-  let aliases: Map<string, string> | undefined;
-  return (provider) => {
-    const normalizedProvider = normalizeProviderId(provider);
-    if (!aliases) {
-      aliases = new Map();
-      for (const plugin of metadataSnapshot.manifestRegistry.plugins) {
-        for (const [alias, target] of Object.entries(plugin.modelCatalog?.aliases ?? {})) {
-          const key = normalizeProviderId(alias);
-          const canonicalProvider = normalizeProviderId(target.provider);
-          // Duplicate aliases retain the first nonempty target in manifest order.
-          if (canonicalProvider && !aliases.has(key)) {
-            aliases.set(key, canonicalProvider);
-          }
-        }
-      }
-    }
-    return aliases.get(normalizedProvider) ?? normalizedProvider;
-  };
 }
 
 function mergeCatalogCompat(
@@ -185,9 +162,7 @@ function overlayCatalogMetadata(
   base: ModelCatalogEntry,
   overlay: ModelCatalogEntry,
   options?: {
-    catalogRoute?: ModelCatalogEntry;
     preserveBaseCompat?: boolean;
-    preserveBaseName?: boolean;
   },
 ): ModelCatalogEntry {
   // Catalog rows with one logical provider/id may describe different physical
@@ -196,7 +171,7 @@ function overlayCatalogMetadata(
   const routeChanged = catalogRouteChanges(base, overlay);
   const routeBase = routeChanged ? clearRouteBoundCatalogMetadata(base) : base;
   const params = mergeCatalogParams(routeBase.params, overlay.params);
-  const thinkingLevelMap = overlay.thinkingLevelMap ?? options?.catalogRoute?.thinkingLevelMap;
+  const thinkingLevelMap = overlay.thinkingLevelMap;
   // Options + default are one normalized unit (default ∈ options): an overlay
   // that replaces the options list must also own the default, or a base default
   // absent from the new list would leak through the field-by-field merge.
@@ -227,7 +202,7 @@ function overlayCatalogMetadata(
   return {
     ...selectionNeutralBase,
     ...contextWindowSelection,
-    ...(routeChanged && !options?.preserveBaseName ? { name: overlay.name } : {}),
+    ...(routeChanged ? { name: overlay.name } : {}),
     ...(overlay.api !== undefined ? { api: overlay.api } : {}),
     ...(overlay.baseUrl !== undefined ? { baseUrl: overlay.baseUrl } : {}),
     ...(overlay.contextWindow !== undefined ? { contextWindow: overlay.contextWindow } : {}),
@@ -244,8 +219,8 @@ function overlayCatalogMetadata(
     ...(overlay.replacedBy !== undefined ? { replacedBy: overlay.replacedBy } : {}),
     compat: options?.preserveBaseCompat
       ? resolveCatalogOwnedModelCompat({
-          catalogRoute: options.catalogRoute ?? base,
-          catalogCompat: (options.catalogRoute ?? base).compat,
+          catalogRoute: base,
+          catalogCompat: base.compat,
           configuredRoute: {
             api: overlay.api ?? base.api,
             baseUrl: overlay.baseUrl ?? base.baseUrl,
@@ -269,11 +244,7 @@ function normalizeCatalogEntryContract(entry: ModelCatalogEntry): ModelCatalogEn
 function mergeCatalogEntries(
   models: ModelCatalogEntry[],
   entries: ModelCatalogEntry[],
-  options?: {
-    catalogRoutes?: ModelCatalogRouteVariantCollector;
-    preserveBaseCompat?: boolean;
-    preserveBaseName?: boolean;
-  },
+  catalogRoutes?: readonly ModelCatalogEntry[],
 ): void {
   const indexByKey = new Map(models.map((entry, index) => [modelCatalogLogicalKey(entry), index]));
   for (const entry of entries) {
@@ -286,16 +257,11 @@ function mergeCatalogEntries(
     }
     const existing = models.at(existingIndex);
     if (existing) {
-      // Logical rows can represent a sibling route; capabilities must come
-      // from the exact catalog variant selected by config, not that sibling.
-      const routes = options?.catalogRoutes;
-      const routeIndex = options?.preserveBaseCompat
-        ? routes?.indexByKey.get(catalogRouteVariantKey(entry))
-        : undefined;
-      const catalogRoute = routeIndex === undefined ? undefined : routes?.entries[routeIndex];
-      models[existingIndex] = overlayCatalogMetadata(existing, entry, {
-        ...options,
-        catalogRoute,
+      const catalogRoute = catalogRoutes?.find(
+        (candidate) => modelCatalogLogicalKey(candidate) === key,
+      );
+      models[existingIndex] = overlayCatalogMetadata(catalogRoute ?? existing, entry, {
+        preserveBaseCompat: catalogRoutes !== undefined,
       });
     }
   }
@@ -371,6 +337,9 @@ export function loadManifestModelCatalog(params: {
   fallbackToMetadataScan?: boolean;
   metadataSnapshot?: PluginMetadataSnapshot;
 }): ModelCatalogEntry[] {
+  if (params.config.models?.mode === "replace") {
+    return [];
+  }
   const resolvedSnapshot =
     params.metadataSnapshot ??
     (params.fallbackToMetadataScan === false
@@ -551,21 +520,20 @@ export async function buildPreparedModelCatalogSnapshot(
     mergeCatalogRouteVariants(routeVariants, manifestModels);
     mergeCatalogEntries(models, manifestModels);
     logStage("manifest-models-merged", `entries=${models.length}`);
-    const configuredModels = buildConfiguredModelCatalog({
+    const configuredCatalogParams = {
       cfg,
+      catalog: orderedRegistryModels,
       manifestPlugins: manifestMetadataSnapshot,
-    });
+    };
+    const configuredModels = buildConfiguredModelCatalog(configuredCatalogParams);
+    mergeCatalogEntries(models, configuredModels, orderedRegistryModels);
     logStage("configured-models-prepared", `entries=${models.length}`);
 
-    if (!params.readOnly && params.includeProviderPluginAugmentation !== false) {
-      const augmentEntries = [...models];
-      if (configuredModels.length > 0) {
-        mergeCatalogEntries(augmentEntries, configuredModels, {
-          catalogRoutes: routeVariants,
-          preserveBaseCompat: true,
-          preserveBaseName: true,
-        });
-      }
+    if (
+      cfg.models?.mode !== "replace" &&
+      !params.readOnly &&
+      params.includeProviderPluginAugmentation !== false
+    ) {
       const { createProviderApiKeyResolverFromPreparedCredentials } =
         await loadProviderApiKeyResolver();
       const resolveProviderApiKeyForProvider = createProviderApiKeyResolverFromPreparedCredentials(
@@ -588,7 +556,7 @@ export async function buildPreparedModelCatalogSnapshot(
           workspaceDir,
           env,
           resolveProviderApiKey,
-          entries: augmentEntries,
+          entries: [...models],
         },
       });
       if (supplemental.length > 0) {
@@ -631,21 +599,9 @@ export async function buildPreparedModelCatalogSnapshot(
     logStage("plugin-models-merged", `entries=${models.length}`);
 
     if (configuredModels.length > 0) {
-      mergeCatalogRouteVariants(routeVariants, configuredModels, { preserveBaseCompat: true });
-      // Augmentation may mutate borrowed rows. Reindex after the final merge so
-      // route lookup keeps the first current match, including duplicate keys.
-      routeVariants.indexByKey.clear();
-      routeVariants.entries.forEach((entry, index) => {
-        const key = catalogRouteVariantKey(entry);
-        if (!routeVariants.indexByKey.has(key)) {
-          routeVariants.indexByKey.set(key, index);
-        }
-      });
-      mergeCatalogEntries(models, configuredModels, {
-        catalogRoutes: routeVariants,
-        preserveBaseCompat: true,
-        preserveBaseName: true,
-      });
+      const configuredOverrides = buildConfiguredModelCatalog(configuredCatalogParams);
+      mergeCatalogEntries(models, configuredOverrides, orderedRegistryModels);
+      mergeCatalogRouteVariants(routeVariants, configuredOverrides, { preserveBaseCompat: true });
     }
     logStage("configured-models-finalized", `entries=${models.length}`);
 

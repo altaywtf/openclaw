@@ -20,11 +20,6 @@ afterEach(() => {
 describe("Ollama provider", () => {
   const createAgentDir = () => mkdtempSync(join(tmpdir(), "openclaw-test-"));
 
-  const enableDiscoveryEnv = () => {
-    vi.stubEnv("VITEST", "");
-    vi.stubEnv("NODE_ENV", "development");
-  };
-
   const fetchCallUrls = (fetchMock: ReturnType<typeof vi.fn>): string[] =>
     fetchMock.mock.calls.map(([input]) => String(input));
 
@@ -33,16 +28,6 @@ describe("Ollama provider", () => {
 
   const stubOllamaFetch = (fetchMock: ReturnType<typeof vi.fn>) => {
     vi.stubGlobal("fetch", withFetchPreconnect(fetchMock));
-  };
-
-  const countWarnCallsIncluding = (warnSpy: ReturnType<typeof vi.spyOn>, text: string): number => {
-    let count = 0;
-    for (const [message] of warnSpy.mock.calls) {
-      if (String(message).includes(text)) {
-        count++;
-      }
-    }
-    return count;
   };
 
   const expectDiscoveryCallCounts = (
@@ -70,8 +55,6 @@ describe("Ollama provider", () => {
   }) {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
-      VITEST: "1",
-      NODE_ENV: "test",
       ...params.env,
     };
     const result = await ollamaProviderDiscovery.catalog.run({
@@ -219,7 +202,6 @@ describe("Ollama provider", () => {
   });
 
   it("discovers per-model context windows from /api/show", async () => {
-    enableDiscoveryEnv();
     const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
       const url = String(input);
       if (url.endsWith("/api/tags")) {
@@ -253,7 +235,6 @@ describe("Ollama provider", () => {
 
   it("auto-registers ollama provider when models are discovered locally", async () => {
     await withoutAmbientOllamaEnv(async () => {
-      enableDiscoveryEnv();
       const fetchMock = vi.fn(async (input: unknown) => {
         const url = String(input);
         if (url.endsWith("/api/tags")) {
@@ -283,7 +264,6 @@ describe("Ollama provider", () => {
 
   it("does not warn when Ollama is unreachable and not explicitly configured", async () => {
     await withoutAmbientOllamaEnv(async () => {
-      enableDiscoveryEnv();
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
       const fetchMock = vi
         .fn()
@@ -302,16 +282,14 @@ describe("Ollama provider", () => {
     });
   });
 
-  it("warns when Ollama is unreachable and explicitly configured", async () => {
+  it("publishes unavailable when configured Ollama discovery fails", async () => {
     await withoutAmbientOllamaEnv(async () => {
-      enableDiscoveryEnv();
-      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
       const fetchMock = vi
         .fn()
         .mockRejectedValue(new Error("connect ECONNREFUSED 127.0.0.1:11434"));
       stubOllamaFetch(fetchMock);
 
-      await runOllamaCatalog({
+      const result = await ollamaProviderDiscovery.catalog.run({
         config: {
           models: {
             providers: {
@@ -323,16 +301,24 @@ describe("Ollama provider", () => {
             },
           },
         },
-        env: { VITEST: "", NODE_ENV: "development" },
+        env: {},
+        resolveProviderApiKey: () => ({ apiKey: undefined }),
+        resolveProviderAuth: () => ({
+          apiKey: undefined,
+          mode: "none",
+          source: "none",
+        }),
       });
 
-      expect(countWarnCallsIncluding(warnSpy, "Ollama")).toBeGreaterThan(0);
-      warnSpy.mockRestore();
+      expect(result).toEqual({
+        providers: {},
+        outcomes: [{ provider: "ollama", status: "unavailable" }],
+      });
+      expectDiscoveryCallCounts(fetchMock, { tags: 1, show: 0 });
     });
   });
 
   it("falls back to default context window when /api/show fails", async () => {
-    enableDiscoveryEnv();
     const fetchMock = vi.fn(async (input: unknown) => {
       const url = String(input);
       if (url.endsWith("/api/tags")) {
@@ -356,7 +342,6 @@ describe("Ollama provider", () => {
   });
 
   it("caps /api/show requests when /api/tags returns a very large model list", async () => {
-    enableDiscoveryEnv();
     const manyModels = Array.from({ length: 250 }, (_, idx) => ({
       name: `model-${idx}`,
       modified_at: "",

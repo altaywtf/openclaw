@@ -9,8 +9,10 @@ import { pathForAgentPanel, type RouteId } from "../app-route-paths.ts";
 import { applicationContext, type ApplicationContext } from "../app/context.ts";
 import { hasOperatorAdminAccess } from "../app/operator-access.ts";
 import { t } from "../i18n/index.ts";
+import { formatUiError } from "../lib/format-error.ts";
 import { formatRelativeTimestamp } from "../lib/format.ts";
 import { isGatewayMethodAdvertised } from "../lib/gateway-methods.ts";
+import { subscribeModelCatalogChanges } from "../lib/model-catalog-store.ts";
 import { resolveSessionDisplayName } from "../lib/session-display.ts";
 import { filterVisibleSessionRows, getVisibleSessionRows } from "../lib/sessions/index.ts";
 import {
@@ -60,6 +62,7 @@ type CommandPaletteProps = {
   activeId: string | null;
   sessionItems: readonly PaletteItem[];
   catalogItems: readonly PaletteItem[];
+  catalogError: string | null;
   sessionSearchFailed: boolean;
   sessionSearchPartial: boolean;
   sessionSearchIncomplete: boolean;
@@ -219,6 +222,9 @@ function renderCommandPalette(props: CommandPaletteProps) {
           @input=${(e: Event) => props.onQueryChange((e.target as HTMLInputElement).value)}
         />
         <div id=${paletteListboxId} class="cmd-palette__results" role="listbox">
+          ${props.catalogError
+            ? html`<div class="cmd-palette__empty" role="status">${props.catalogError}</div>`
+            : nothing}
           ${props.sessionSearchPartial || props.sessionSearchIncomplete
             ? html`<div class="cmd-palette__empty" role="status">
                 ${t(
@@ -295,6 +301,7 @@ export class CommandPalette extends OpenClawLightDomContentsElement {
   @state() private activeId: string | null = null;
   @state() private sessionItems: readonly PaletteItem[] = [];
   @state() private catalogItems: readonly PaletteItem[] = [];
+  @state() private catalogError: string | null = null;
   @state() private sessionSearchFailed = false;
   @state() private sessionSearchPartial = false;
   @state() private sessionSearchIncomplete = false;
@@ -316,11 +323,26 @@ export class CommandPalette extends OpenClawLightDomContentsElement {
 
   constructor() {
     super();
-    this.subscriptions.watch(
-      () => this.context?.gateway,
-      (gateway, notify) => gateway.subscribe(notify),
-      (gateway) => this.synchronizeGateway(gateway),
-    );
+    this.subscriptions
+      .watch(
+        () => this.context?.gateway,
+        (gateway, notify) => gateway.subscribe(notify),
+        (gateway) => this.synchronizeGateway(gateway),
+      )
+      .effect(
+        () => this.context?.gateway,
+        (gateway) =>
+          subscribeModelCatalogChanges(gateway, () => {
+            if (this.context?.gateway !== gateway) {
+              return;
+            }
+            if (this.open) {
+              void this.ensureCatalogItems(true);
+            } else {
+              this.clearCatalogSearch();
+            }
+          }),
+      );
   }
 
   override connectedCallback() {
@@ -403,9 +425,10 @@ export class CommandPalette extends OpenClawLightDomContentsElement {
   private clearCatalogSearch() {
     this.catalogLoad = undefined;
     this.catalogItems = [];
+    this.catalogError = null;
   }
 
-  private ensureCatalogItems(): Promise<void> {
+  private ensureCatalogItems(force = false): Promise<void> {
     const context = this.context;
     const gateway = context?.gateway;
     const client = gateway?.snapshot.client;
@@ -414,7 +437,12 @@ export class CommandPalette extends OpenClawLightDomContentsElement {
     }
     const agentId = resolveUiSelectedGlobalAgentId(gateway.snapshot);
     const current = this.catalogLoad;
+    const previousModels =
+      current?.client === client && current.agentId === agentId
+        ? this.catalogItems.filter((item) => item.category === "models")
+        : [];
     if (
+      !force &&
       current?.client === client &&
       current.agentId === agentId &&
       (current.loadedAt === undefined || Date.now() - current.loadedAt < CATALOG_CACHE_TTL_MS)
@@ -427,16 +455,31 @@ export class CommandPalette extends OpenClawLightDomContentsElement {
       agentId,
       agents: () => context.agents?.ensureList?.() ?? Promise.resolve(null),
       methodAvailable: (method) => Boolean(isGatewayMethodAdvertised(snapshot, method)),
-    }).then((items) => {
-      if (
-        this.catalogLoad?.promise === promise &&
-        this.context?.gateway === gateway &&
-        gateway.snapshot.client === client
-      ) {
-        this.catalogItems = toCommandPaletteItems(items);
-        this.catalogLoad.loadedAt = Date.now();
-      }
-    });
+    })
+      .then(({ items, modelError }) => {
+        if (
+          this.catalogLoad?.promise === promise &&
+          this.context?.gateway === gateway &&
+          gateway.snapshot.client === client
+        ) {
+          const nextItems = toCommandPaletteItems(items);
+          this.catalogItems = modelError
+            ? [...nextItems.filter((item) => item.category !== "models"), ...previousModels]
+            : nextItems;
+          this.catalogError = modelError;
+          this.catalogLoad.loadedAt = Date.now();
+        }
+      })
+      .catch((error: unknown) => {
+        if (
+          this.catalogLoad?.promise === promise &&
+          this.context?.gateway === gateway &&
+          gateway.snapshot.client === client
+        ) {
+          this.catalogError = formatUiError(error);
+          this.catalogLoad = undefined;
+        }
+      });
     this.catalogLoad = { client, agentId, promise };
     return promise;
   }
@@ -634,6 +677,7 @@ export class CommandPalette extends OpenClawLightDomContentsElement {
       query: this.query,
       activeId: this.activeId,
       sessionItems: this.sessionItems,
+      catalogError: this.catalogError,
       catalogItems: [
         ...toCommandPaletteItems(
           getStaticCommandPaletteCatalogItems(

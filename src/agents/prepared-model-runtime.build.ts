@@ -8,6 +8,7 @@ import { prepareModelCatalogThinkingPolicies } from "../plugins/provider-thinkin
 import { getPreparedRuntimeAuthMaterializations } from "./auth-profiles/runtime-materializations.js";
 import { fingerprintAuthProfileCatalog } from "./auth-profiles/runtime-snapshot-owner.js";
 import { collectConfiguredAgentHarnessRuntimes } from "./harness-runtimes.js";
+import { compareModelCatalogEntries } from "./model-catalog-order.js";
 import type { ModelCatalogSnapshot } from "./model-catalog.types.js";
 import {
   createPreparedModelCatalogWorker,
@@ -125,6 +126,7 @@ async function createFullModelCatalogAccess(params: {
       catalog,
       params.agentFacts.runtimeCapabilityModels,
     );
+    projected.runtimeBindings = params.pluginGeneration.runtimeBindings;
     Object.defineProperty(projected, "refreshFailed", {
       enumerable: true,
       get: () => params.catalogInventory.refreshFailed,
@@ -241,9 +243,48 @@ async function createFullModelCatalogAccess(params: {
           return catalog;
         });
         pending = build
-          .then((catalog) => {
+          .then((discoveredCatalog) => {
             assertCurrent();
+            let catalog = discoveredCatalog;
             const auth = getPreparedModelFullCatalogAuth(catalog)!;
+            const failedProviders = new Set(
+              catalog.providerOutcomes
+                ?.filter((outcome) => outcome.status !== "ready")
+                .map((outcome) => normalizeProviderId(outcome.provider)),
+            );
+            if (failedProviders.size > 0) {
+              const previous = fullCatalog;
+              const retainedProviders = new Set(
+                previous?.entries
+                  .map((entry) => normalizeProviderId(entry.provider))
+                  .filter((provider) => failedProviders.has(provider)),
+              );
+              const retainProviderRows = (
+                current: ModelCatalogSnapshot["entries"],
+                retained: ModelCatalogSnapshot["entries"],
+              ) =>
+                [
+                  ...current.filter(
+                    (entry) => !retainedProviders.has(normalizeProviderId(entry.provider)),
+                  ),
+                  ...retained.filter((entry) =>
+                    retainedProviders.has(normalizeProviderId(entry.provider)),
+                  ),
+                ].toSorted(compareModelCatalogEntries);
+              catalog = markPreparedModelCatalogFull({
+                ...catalog,
+                entries: retainProviderRows(catalog.entries, previous?.entries ?? []),
+                routeVariants: retainProviderRows(
+                  catalog.routeVariants,
+                  previous?.routeVariants ?? [],
+                ),
+                authoritative: false,
+              });
+              setPreparedModelFullCatalogAuth(catalog, auth);
+              params.catalogInventory.refreshFailed = true;
+            } else {
+              delete params.catalogInventory.refreshFailed;
+            }
             // Native status proves login, not account identity; it cannot key cross-generation reuse.
             const reusable = Object.values(auth.providerAuth).every(
               (fact) => fact.runtime === undefined,
@@ -259,7 +300,6 @@ async function createFullModelCatalogAccess(params: {
             params.catalogInventory.authFingerprint = reusable
               ? fingerprintAuthProfileCatalog(auth.authStore.profiles)
               : undefined;
-            delete params.catalogInventory.refreshFailed;
             fullCatalog = project(catalog);
             notifyPreparedModelRuntimePublication({ phase: "catalog-published" });
             return fullCatalog;

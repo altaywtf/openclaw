@@ -280,12 +280,14 @@ final class QuickChatModel {
         },
         modelControlsProvider: @escaping ModelControlsProvider = { target in
             let transport = MacGatewayChatTransport(defaultGlobalAgentID: target.agentID)
-            async let models = transport.listModels(agentID: target.agentID)
+            async let catalog = transport.loadModelCatalog(
+                sessionKey: target.sessionKey,
+                agentID: target.agentID)
             async let sessions = transport.listSessions(limit: 200, search: target.sessionKey, archived: false)
             async let agents = GatewayConnection.shared.agentsList()
             return try await QuickChatModelControlLogic.snapshot(
                 target: target,
-                models: models,
+                models: catalog.requireChoices(),
                 sessions: sessions,
                 agents: agents)
         },
@@ -1075,6 +1077,19 @@ extension QuickChatModel {
             ?? self.displayedThinkingLevel
             ?? automatic
         return "\(model) · \(thinking)"
+    }
+
+    func handleModelCatalogPush(_ push: GatewayPush, presentationID: UUID) async {
+        guard self.isCurrentPresentation(presentationID), let target = self.routingTarget else { return }
+        switch push {
+        case let .event(event):
+            guard event.event == "config.changed" || event.event == "chat.metadata.changed" else { return }
+        case .snapshot(_), .seqGap(_, _):
+            break
+        }
+        await self.awaitModelPatchSettlement(for: target)
+        guard self.isCurrentPresentation(presentationID), self.routingTarget == target else { return }
+        self.refreshModelControls(for: target)
     }
 
     private func refreshModelControls(for target: QuickChatRoutingTarget) {

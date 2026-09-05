@@ -59,9 +59,14 @@ vi.mock("../../agents/model-auth.js", () => ({
       ? { apiKey: "ollama-local", source: "models.json (local marker)" }
       : null,
 }));
-vi.mock("../../agents/provider-auth-aliases.js", () => ({
-  resolveProviderIdForAuth: (provider: string) => provider,
-}));
+vi.mock("../../agents/provider-auth-aliases.js", async (importOriginal) => {
+  const { PROVIDER_AUTH_ALIAS_MAP } =
+    await importOriginal<typeof import("../../agents/provider-auth-aliases.js")>();
+  return {
+    PROVIDER_AUTH_ALIAS_MAP,
+    resolveProviderIdForAuth: (provider: string) => provider,
+  };
+});
 
 const { buildProbeTargets } = await import("./list.probe.js");
 
@@ -99,7 +104,6 @@ describe("Ollama probe targets", () => {
     expect(loadPreparedModelCatalog).toHaveBeenCalledWith(
       expect.objectContaining({
         readOnly: true,
-        providerDiscoveryProviderIds: ["ollama"],
       }),
     );
     expect(plan.targets).toEqual([

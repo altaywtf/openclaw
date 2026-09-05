@@ -1,10 +1,63 @@
 // Resolves provider config ownership between core and plugins.
+import type { ModelCatalog } from "@openclaw/model-catalog-core/model-catalog-types";
 import {
   findNormalizedProviderValue,
   normalizeProviderId,
 } from "@openclaw/model-catalog-core/provider-id";
 import { normalizeUniqueSingleOrTrimmedStringList } from "@openclaw/normalization-core/string-normalization";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { PluginManifestProviderEndpoint } from "./manifest-types.js";
+import {
+  matchesPluginProviderEndpoint,
+  normalizePluginProviderBaseUrl,
+} from "./plugin-metadata-provider-facts.js";
+
+export function isProviderCatalogSourceAllowed(params: {
+  provider: string;
+  config?: OpenClawConfig;
+  plugin?: {
+    modelCatalog?: Pick<ModelCatalog, "providers" | "aliases">;
+    providerEndpoints?: readonly PluginManifestProviderEndpoint[];
+  };
+}): boolean {
+  const configuredBaseUrl = findNormalizedProviderValue(
+    params.config?.models?.providers,
+    params.provider,
+  )?.baseUrl;
+  if (!configuredBaseUrl || !params.plugin) {
+    return true;
+  }
+  const catalog = params.plugin.modelCatalog;
+  const alias = findNormalizedProviderValue(catalog?.aliases, params.provider);
+  const provider = findNormalizedProviderValue(
+    catalog?.providers,
+    alias?.provider ?? params.provider,
+  );
+  const baseUrls = [
+    alias?.baseUrl,
+    provider?.baseUrl,
+    ...(provider?.models ?? []).map((model) => model.baseUrl),
+  ].filter((baseUrl): baseUrl is string => Boolean(baseUrl));
+  const endpoints = params.plugin.providerEndpoints ?? [];
+  // Adapters without declared native endpoints retain their manual/discovery contract.
+  // A native preset is not an inventory restriction; a different operator endpoint is.
+  if (baseUrls.length === 0 && endpoints.length === 0) {
+    return true;
+  }
+  const normalizedBaseUrl = normalizePluginProviderBaseUrl(configuredBaseUrl);
+  if (!normalizedBaseUrl) {
+    return false;
+  }
+  return (
+    baseUrls.some((baseUrl) => normalizePluginProviderBaseUrl(baseUrl) === normalizedBaseUrl) ||
+    endpoints.some((endpoint) =>
+      matchesPluginProviderEndpoint(endpoint, {
+        host: new URL(normalizedBaseUrl).hostname,
+        normalizedBaseUrl,
+      }),
+    )
+  );
+}
 
 /** Core built-in model API ids that do not imply plugin ownership of a provider config. */
 export const CORE_BUILT_IN_MODEL_APIS = new Set([

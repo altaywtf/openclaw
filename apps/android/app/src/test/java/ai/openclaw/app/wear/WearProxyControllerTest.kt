@@ -38,6 +38,7 @@ class WearProxyControllerTest {
           isGatewayConnected = { false },
           gatewayStatusText = { "Offline" },
           hasOperatorAdminScope = { true },
+          supportsSessionModelCatalog = { true },
         )
 
       val response = controller.handle(request(WearRpcMethod.ProxyStatus))
@@ -70,6 +71,7 @@ class WearProxyControllerTest {
           isGatewayConnected = { true },
           gatewayStatusText = { "Connected" },
           hasOperatorAdminScope = { hasOperatorAdminScope },
+          supportsSessionModelCatalog = { true },
         )
 
       val limitedCapabilities =
@@ -90,7 +92,8 @@ class WearProxyControllerTest {
         WearProxyCapability.entries
           .filter {
             it != WearProxyCapability.ModelControls &&
-              it != WearProxyCapability.ModelCatalogSearch
+              it != WearProxyCapability.ModelCatalogSearch &&
+              it != WearProxyCapability.SessionScopedModelCatalog
           }.map(WearProxyCapability::wireValue),
         limitedCapabilities,
       )
@@ -503,7 +506,7 @@ class WearProxyControllerTest {
     }
 
   @Test
-  fun modelSelectionRejectsAStaleModelBeforePatchingTheSession() =
+  fun modelSelectionReportsTheRequestedSessionAuthorityRejection() =
     runTest {
       var selections = 0
       val controller =
@@ -514,7 +517,7 @@ class WearProxyControllerTest {
           models = { listOf(WearProxyModel(ref = "openai/gpt-a", name = "GPT A")) },
           selectSessionModel = { _, _ ->
             selections += 1
-            true
+            false
           },
         )
 
@@ -530,8 +533,8 @@ class WearProxyControllerTest {
         )
 
       assertFalse(response.ok)
-      assertEquals("not_found", response.error?.code)
-      assertEquals(0, selections)
+      assertEquals("action_rejected", response.error?.code)
+      assertEquals(1, selections)
     }
 
   @Test

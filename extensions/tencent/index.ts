@@ -66,6 +66,7 @@ export default definePluginEntry({
         order: "simple",
         run: (ctx) =>
           buildOpenAICompatibleProviderCatalog({
+            discoveryMode: "strict",
             ctx,
             providerId: TOKENHUB_PROVIDER_ID,
             buildProvider: buildTokenHubProvider,
@@ -111,6 +112,7 @@ export default definePluginEntry({
         order: "simple",
         run: (ctx) =>
           buildOpenAICompatibleProviderCatalog({
+            discoveryMode: "strict",
             ctx,
             providerId: TOKENPLAN_PROVIDER_ID,
             buildProvider: buildTokenPlanProvider,

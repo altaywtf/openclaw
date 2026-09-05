@@ -1,11 +1,6 @@
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import type { GatewayBrowserClient } from "../api/gateway.ts";
-import type {
-  AgentsListResult,
-  CronJobsListResult,
-  ModelCatalogEntry,
-  SkillStatusReport,
-} from "../api/types.ts";
+import type { AgentsListResult, CronJobsListResult, SkillStatusReport } from "../api/types.ts";
 import {
   SETTINGS_SEARCHABLE_SUBPAGE_ROUTES,
   settingsNavigationLabelForRoute,
@@ -14,6 +9,8 @@ import {
 } from "../app-navigation.ts";
 import type { RouteId } from "../app-route-paths.ts";
 import { t } from "../i18n/index.ts";
+import { formatUiError } from "../lib/format-error.ts";
+import { loadModelCatalog, modelCatalogRefreshError } from "../lib/model-catalog-store.ts";
 import type { PluginListResult } from "../lib/plugins/index.ts";
 import type { IconName } from "./icons.ts";
 
@@ -266,7 +263,7 @@ export async function loadCommandPaletteCatalogItems(params: {
   agentId: string;
   agents: () => Promise<AgentsListResult | null>;
   methodAvailable: (method: string) => boolean;
-}): Promise<CommandPaletteCatalogItem[]> {
+}): Promise<{ items: CommandPaletteCatalogItem[]; modelError: string | null }> {
   const requestIfAvailable = async <T>(
     method: string,
     requestParams: unknown,
@@ -286,14 +283,13 @@ export async function loadCommandPaletteCatalogItems(params: {
     }),
     requestIfAvailable<SkillStatusReport>("skills.status", { agentId: params.agentId }),
     requestIfAvailable<PluginListResult>("plugins.list", {}),
-    requestIfAvailable<{ models: ModelCatalogEntry[] }>("models.list", {
-      view: "configured",
-      agentId: params.agentId,
-      preparedOnly: true,
-    }),
+    loadModelCatalog(params.client, { agentId: params.agentId }).then(
+      (result) => ({ models: result.models, modelError: modelCatalogRefreshError(result) }),
+      (error: unknown) => ({ models: undefined, modelError: formatUiError(error) }),
+    ),
   ]);
 
-  return [
+  const items: CommandPaletteCatalogItem[] = [
     ...(agents?.agents ?? []).map((agent) => ({
       id: `agent-${agent.id}`,
       label: agent.identity?.name ?? agent.name ?? agent.id,
@@ -348,4 +344,5 @@ export async function loadCommandPaletteCatalogItems(params: {
         .join(" "),
     })),
   ];
+  return { items, modelError: models.modelError };
 }

@@ -8,6 +8,7 @@ import {
 } from "openclaw/plugin-sdk/command-auth-native";
 import type { ModelsProviderData } from "openclaw/plugin-sdk/models-provider-runtime";
 import { getRuntimeConfigSnapshot } from "openclaw/plugin-sdk/runtime-config-snapshot";
+import { getSessionEntry, resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
   Button,
@@ -23,6 +24,7 @@ import {
   createDiscordModelPickerModelToken,
   findModelBucketId,
   findProviderBucketId,
+  getDiscordModelPickerRuntimeChoices,
   loadDiscordModelPickerData,
   parseDiscordModelPickerData,
   type DiscordModelPickerState,
@@ -266,6 +268,7 @@ function resolveDiscordModelPickerModelSelection(params: {
 function resolveDiscordModelPickerRuntimeForProvider(params: {
   data: Awaited<ReturnType<typeof loadDiscordModelPickerData>>;
   provider: string;
+  modelRef?: string;
   runtime?: string;
   allowResetRuntime?: boolean;
 }): string | undefined {
@@ -276,8 +279,8 @@ function resolveDiscordModelPickerRuntimeForProvider(params: {
   if (runtime === "auto" || runtime === "default") {
     return params.allowResetRuntime ? runtime : undefined;
   }
-  const choices = params.data.runtimeChoicesByProvider?.get(params.provider);
-  if (!choices?.length) {
+  const choices = getDiscordModelPickerRuntimeChoices(params);
+  if (choices === undefined) {
     return runtime === "openclaw" ? runtime : undefined;
   }
   return choices.some((choice) => choice.id === runtime) ? runtime : undefined;
@@ -286,11 +289,13 @@ function resolveDiscordModelPickerRuntimeForProvider(params: {
 function resolveDiscordModelPickerSubmissionRuntime(params: {
   data: Awaited<ReturnType<typeof loadDiscordModelPickerData>>;
   provider: string;
+  modelRef: string;
   parsedRuntime?: string;
 }): string | undefined {
   return resolveDiscordModelPickerRuntimeForProvider({
     data: params.data,
     provider: params.provider,
+    modelRef: params.modelRef,
     runtime: params.parsedRuntime,
     allowResetRuntime: true,
   });
@@ -340,7 +345,12 @@ async function handleDiscordModelPickerInteraction(params: {
     accountId: ctx.accountId,
     threadBindings: ctx.threadBindings,
   });
-  const pickerData = await loadDiscordModelPickerData(cfg, route.agentId);
+  const sessionEntry = getSessionEntry({
+    storePath: resolveStorePath(cfg.session?.store, { agentId: route.agentId }),
+    sessionKey: route.sessionKey,
+    readConsistency: "latest",
+  });
+  const pickerData = await loadDiscordModelPickerData(cfg, route.agentId, { sessionEntry });
   const currentModelRef = resolveDiscordModelPickerCurrentModel({
     cfg,
     route,
@@ -588,15 +598,21 @@ async function handleDiscordModelPickerInteraction(params: {
     }
 
     const resolvedModelRef = `${parsedModelRef.provider}/${parsedModelRef.model}`;
+    const parsedRuntime = resolveParsedRuntimeForSubmission({
+      data: pickerData,
+      parsed,
+      selectedProvider: parsedModelRef.provider,
+    });
     const selectedRuntime = resolveDiscordModelPickerSubmissionRuntime({
       data: pickerData,
       provider: parsedModelRef.provider,
-      parsedRuntime: resolveParsedRuntimeForSubmission({
-        data: pickerData,
-        parsed,
-        selectedProvider: parsedModelRef.provider,
-      }),
+      modelRef: resolvedModelRef,
+      parsedRuntime,
     });
+    if (parsedRuntime && selectedRuntime === undefined) {
+      await showNotice("That runtime is not available for this model. Choose a runtime again.");
+      return;
+    }
     const selectionCommand = buildDiscordModelPickerSelectionCommand({
       modelRef: resolvedModelRef,
       runtime: selectedRuntime,

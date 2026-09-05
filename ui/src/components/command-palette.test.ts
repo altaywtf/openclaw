@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionsSearchResult } from "../../../packages/gateway-protocol/src/index.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import type { GatewayBrowserClient } from "../api/gateway.ts";
+import type { GatewayBrowserClient, GatewayEventListener } from "../api/gateway.ts";
 import type { SessionsListResult } from "../api/types.ts";
 import type { RouteId } from "../app-route-paths.ts";
 import type {
@@ -12,6 +12,7 @@ import type {
   ApplicationGatewaySnapshot,
 } from "../app/context.ts";
 import { createApplicationContextProvider } from "../test-helpers/application-context.ts";
+import { createTestGatewayClient } from "../test-helpers/gateway-client.ts";
 import { installDialogPolyfill } from "../test-helpers/modal-dialog.ts";
 import { CommandPalette } from "./command-palette.ts";
 import {
@@ -25,6 +26,7 @@ type CustodianPanelToggleDetail = { open?: boolean };
 type GatewayHarness = {
   gateway: ApplicationGateway;
   setConnected: (connected: boolean) => void;
+  emitEvent: (event: Parameters<GatewayEventListener>[0]) => void;
 };
 
 function createGateway(
@@ -44,6 +46,7 @@ function createGateway(
     lastErrorCode: null,
   };
   const listeners = new Set<(next: ApplicationGatewaySnapshot) => void>();
+  const eventListeners = new Set<GatewayEventListener>();
   const gateway = {
     get snapshot() {
       return snapshot;
@@ -60,10 +63,18 @@ function createGateway(
       return () => listeners.delete(listener);
     },
     subscribeEventLog: () => () => undefined,
-    subscribeEvents: () => () => undefined,
+    subscribeEvents(listener: GatewayEventListener) {
+      eventListeners.add(listener);
+      return () => eventListeners.delete(listener);
+    },
   } satisfies ApplicationGateway;
   return {
     gateway,
+    emitEvent(event) {
+      for (const listener of eventListeners) {
+        listener(event);
+      }
+    },
     setConnected(nextConnected) {
       snapshot = {
         ...snapshot,
@@ -259,7 +270,9 @@ describe("CommandPalette lifecycle", () => {
         },
       ],
     };
-    const request = vi.fn(async () => searchResult);
+    const request = vi.fn(async (method: string) =>
+      method === "models.list" ? { models: [] } : searchResult,
+    );
     const { gateway } = createGateway(true, {
       methods: ["sessions.search"],
       request: request as GatewayBrowserClient["request"],
@@ -268,7 +281,9 @@ describe("CommandPalette lifecycle", () => {
 
     await enterQuery(palette, "needle");
     await vi.advanceTimersByTimeAsync(50);
-    await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+    await vi.waitFor(() =>
+      expect(request.mock.calls.filter(([method]) => method === "sessions.search")).toHaveLength(1),
+    );
     await palette.updateComplete;
 
     expect(request).toHaveBeenCalledWith("sessions.search", {
@@ -290,19 +305,23 @@ describe("CommandPalette lifecycle", () => {
     const list = vi.fn<ApplicationContext<RouteId>["sessions"]["list"]>(async (options) =>
       options?.search ? { ...roster, count: 0, sessions: [] } : roster,
     );
-    const request = vi.fn(async () => ({
-      results: [
-        {
-          sessionKey: "main",
-          sessionId: "default",
-          messageId: "message-default",
-          role: "assistant" as const,
-          timestamp: 42,
-          snippet: "The needle is in the default chat body.",
-          score: 10,
-        },
-      ],
-    }));
+    const request = vi.fn(async (method: string) =>
+      method === "models.list"
+        ? { models: [] }
+        : {
+            results: [
+              {
+                sessionKey: "main",
+                sessionId: "default",
+                messageId: "message-default",
+                role: "assistant" as const,
+                timestamp: 42,
+                snippet: "The needle is in the default chat body.",
+                score: 10,
+              },
+            ],
+          },
+    );
     const { gateway } = createGateway(true, {
       methods: ["sessions.search"],
       request: request as GatewayBrowserClient["request"],
@@ -311,7 +330,9 @@ describe("CommandPalette lifecycle", () => {
 
     await enterQuery(palette, "needle");
     await vi.advanceTimersByTimeAsync(50);
-    await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+    await vi.waitFor(() =>
+      expect(request.mock.calls.filter(([method]) => method === "sessions.search")).toHaveLength(1),
+    );
     await palette.updateComplete;
 
     expect(request).toHaveBeenCalledWith("sessions.search", {
@@ -327,7 +348,10 @@ describe("CommandPalette lifecycle", () => {
   it("keeps metadata matches selectable when transcript search fails", async () => {
     const metadata = createSessionResult("agent:main:metadata", "Needle planning");
     const list = vi.fn<ApplicationContext<RouteId>["sessions"]["list"]>(async () => metadata);
-    const request = vi.fn(async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === "models.list") {
+        return { models: [] };
+      }
       throw new Error("transcript index unavailable");
     });
     const { gateway } = createGateway(true, {
@@ -338,7 +362,9 @@ describe("CommandPalette lifecycle", () => {
 
     await enterQuery(palette, "needle");
     await vi.advanceTimersByTimeAsync(50);
-    await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+    await vi.waitFor(() =>
+      expect(request.mock.calls.filter(([method]) => method === "sessions.search")).toHaveLength(1),
+    );
     await palette.updateComplete;
 
     const metadataItem = findPaletteOption(palette, "Needle planning");
@@ -366,20 +392,24 @@ describe("CommandPalette lifecycle", () => {
     const list = vi.fn<ApplicationContext<RouteId>["sessions"]["list"]>(async (options) =>
       options?.search ? metadata : roster,
     );
-    const request = vi.fn(async () => ({
-      results: [
-        {
-          sessionKey: "agent:main:context",
-          sessionId: "context",
-          messageId: "message-context",
-          role: "assistant" as const,
-          timestamp: 42,
-          snippet: "The needle also appears in this transcript.",
-          score: 10,
-        },
-      ],
-      ...response,
-    }));
+    const request = vi.fn(async (method: string) =>
+      method === "models.list"
+        ? { models: [] }
+        : {
+            results: [
+              {
+                sessionKey: "agent:main:context",
+                sessionId: "context",
+                messageId: "message-context",
+                role: "assistant" as const,
+                timestamp: 42,
+                snippet: "The needle also appears in this transcript.",
+                score: 10,
+              },
+            ],
+            ...response,
+          },
+    );
     const { gateway } = createGateway(true, {
       methods: ["sessions.search"],
       request: request as GatewayBrowserClient["request"],
@@ -388,7 +418,9 @@ describe("CommandPalette lifecycle", () => {
 
     await enterQuery(palette, "needle");
     await vi.advanceTimersByTimeAsync(50);
-    await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+    await vi.waitFor(() =>
+      expect(request.mock.calls.filter(([method]) => method === "sessions.search")).toHaveLength(1),
+    );
     await palette.updateComplete;
 
     expect(palette.textContent).toContain(
@@ -649,6 +681,86 @@ describe("CommandPalette lifecycle", () => {
     },
   );
 
+  it.each(["config.changed", "chat.metadata.changed"])(
+    "updates open model search after %s before its cache expires",
+    async (event) => {
+      let models = [{ id: "first", name: "Needle First", provider: "synthetic" }];
+      const request = vi.fn(async (_method: string, _params?: unknown) => ({ models }));
+      const { gateway, emitEvent } = createGateway(true, {
+        methods: ["models.list"],
+        request: createTestGatewayClient(request).request,
+      });
+      const { palette } = await mountPalette(
+        createContext(
+          gateway,
+          vi.fn(async () => null),
+        ),
+      );
+      await enterQuery(palette, "needle");
+      await vi.advanceTimersByTimeAsync(50);
+      await palette.updateComplete;
+      expect(findPaletteOption(palette, "Needle First")).toBeDefined();
+
+      models = [{ id: "published", name: "Needle Published", provider: "synthetic" }];
+      emitEvent({ type: "event", event, payload: {} });
+      await vi.advanceTimersByTimeAsync(50);
+      await palette.updateComplete;
+
+      expect(findPaletteOption(palette, "Needle Published")).toBeDefined();
+      expect(findPaletteOption(palette, "Needle First")).toBeUndefined();
+      expect(palette.isOpen).toBe(true);
+      expect(palette.querySelector("input")?.value).toBe("needle");
+      expect(
+        request.mock.calls.every(([, params]) => !(params as { refresh?: boolean }).refresh),
+      ).toBe(true);
+    },
+  );
+
+  it.each(["transport", "refresh"] as const)(
+    "keeps model search choices and shows %s failures until recovery",
+    async (failure) => {
+      let failing = false;
+      let models = [{ id: "first", name: "Needle First", provider: "synthetic" }];
+      const request = vi.fn(async () => {
+        if (failing && failure === "transport") {
+          throw new Error("Catalog unavailable");
+        }
+        return failing ? { models: [], refreshFailed: true } : { models };
+      });
+      const { gateway, emitEvent } = createGateway(true, {
+        methods: ["models.list"],
+        request: createTestGatewayClient(request).request,
+      });
+      const { palette } = await mountPalette(
+        createContext(
+          gateway,
+          vi.fn(async () => null),
+        ),
+      );
+      await enterQuery(palette, "needle");
+      await vi.advanceTimersByTimeAsync(50);
+      await palette.updateComplete;
+      expect(findPaletteOption(palette, "Needle First")).toBeDefined();
+
+      failing = true;
+      emitEvent({ type: "event", event: "chat.metadata.changed", payload: {} });
+      await vi.advanceTimersByTimeAsync(50);
+      await palette.updateComplete;
+      expect(findPaletteOption(palette, "Needle First")).toBeDefined();
+      expect(palette.querySelector('[role="status"]')?.textContent?.trim()).toBeTruthy();
+      expect(palette.querySelector("input")?.value).toBe("needle");
+
+      failing = false;
+      models = [{ id: "recovered", name: "Needle Recovered", provider: "synthetic" }];
+      emitEvent({ type: "event", event: "chat.metadata.changed", payload: {} });
+      await vi.advanceTimersByTimeAsync(50);
+      await palette.updateComplete;
+      expect(findPaletteOption(palette, "Needle Recovered")).toBeDefined();
+      expect(findPaletteOption(palette, "Needle First")).toBeUndefined();
+      expect(palette.querySelector('[role="status"]')).toBeNull();
+    },
+  );
+
   it("distinguishes model choices with hyphenated provider and model IDs", async () => {
     const { gateway } = createGateway(true, {
       methods: ["models.list"],
@@ -745,7 +857,9 @@ describe("CommandPalette lifecycle", () => {
     const list = vi.fn<ApplicationContext<RouteId>["sessions"]["list"]>(async (options) =>
       options?.search ? empty : categorized,
     );
-    const request = vi.fn(async () => ({ results: [] }) satisfies SessionsSearchResult);
+    const request = vi.fn(async (method: string) =>
+      method === "models.list" ? { models: [] } : ({ results: [] } satisfies SessionsSearchResult),
+    );
     const { gateway } = createGateway(true, {
       methods: ["sessions.search"],
       request: request as GatewayBrowserClient["request"],
@@ -754,7 +868,9 @@ describe("CommandPalette lifecycle", () => {
 
     await enterQuery(palette, "tak");
     await vi.advanceTimersByTimeAsync(50);
-    await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+    await vi.waitFor(() =>
+      expect(request.mock.calls.filter(([method]) => method === "sessions.search")).toHaveLength(1),
+    );
     await palette.updateComplete;
 
     expect(palette.textContent).toContain("Unrelated title");

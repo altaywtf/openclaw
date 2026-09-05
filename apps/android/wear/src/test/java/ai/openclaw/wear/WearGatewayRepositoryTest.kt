@@ -251,7 +251,7 @@ class WearGatewayRepositoryTest {
       assertFalse(status.connected)
       assertEquals("main", status.activeAgentId)
       assertEquals("openai/gpt-test", status.selectedModelRef)
-      assertEquals(capabilities, status.capabilities)
+      assertEquals(capabilities - WearProxyCapability.SessionScopedModelCatalog, status.capabilities)
       assertEquals(
         listOf(WearRpcMethod.AgentsList, WearRpcMethod.AgentsSelect, WearRpcMethod.GatewayDisconnect),
         requester.calls.map(Pair<WearRpcMethod, JsonObject>::first),
@@ -298,7 +298,7 @@ class WearGatewayRepositoryTest {
       val requester =
         RecordingRequester { _, _ ->
           json.parseToJsonElement(
-            """{"connected":true,"status":"Connected","capabilities":["agent-controls","future-capability","gateway-controls","model-controls","model-catalog-search","session-selection-lookup","session-search-pagination","agent-pulse","attempt-scoped-realtime-audio"]}""",
+            """{"connected":true,"status":"Connected","capabilities":["agent-controls","future-capability","gateway-controls","model-controls","model-catalog-search","session-scoped-model-catalog","session-selection-lookup","session-search-pagination","agent-pulse","attempt-scoped-realtime-audio"]}""",
           )
         }
 
@@ -311,15 +311,20 @@ class WearGatewayRepositoryTest {
   fun modelSelectionKeepsTheSelectedSessionAndUsesThePreferredPhone() =
     runTest {
       val capabilities =
-        setOf(WearProxyCapability.ModelControls, WearProxyCapability.ModelCatalogSearch)
+        setOf(
+          WearProxyCapability.ModelControls,
+          WearProxyCapability.ModelCatalogSearch,
+          WearProxyCapability.SessionScopedModelCatalog,
+        )
       val requester =
         RecordingRequester { method, params ->
           when (method) {
             WearRpcMethod.ModelsList -> {
+              assertEquals("agent:main:thread-7", params.getValue("sessionKey").jsonPrimitive.content)
               assertEquals("openai/gpt-a", params.getValue("selectedModelRef").jsonPrimitive.content)
               assertEquals("anthropic", params.getValue("query").jsonPrimitive.content)
               json.parseToJsonElement(
-                """{"models":[{"ref":"openai/gpt-a","name":"GPT A"},{"ref":"openai/gpt-b","name":"GPT B"}]}""",
+                """{"models":[{"ref":"openai/gpt-a","name":"GPT A"},{"ref":"openai/gpt-b","name":"GPT B"}],"refreshFailed":true}""",
               )
             }
 
@@ -344,6 +349,7 @@ class WearGatewayRepositoryTest {
           capabilities,
           selectedModelRef = "openai/gpt-a",
           query = "anthropic",
+          sessionKey = "agent:main:thread-7",
         )
       val selected =
         repository.selectModel(
@@ -354,12 +360,34 @@ class WearGatewayRepositoryTest {
         )
 
       assertEquals(listOf("openai/gpt-a", "openai/gpt-b"), models.models.map(WearModel::ref))
+      assertTrue(models.refreshFailed)
       assertEquals("openai/gpt-b", selected.selectedModelRef)
       assertEquals(7L, selected.eventSequence)
       assertEquals("phone-a", selected.phoneNodeId)
       assertEquals(listOf(WearRpcMethod.ModelsList, WearRpcMethod.ModelsSelect), requester.calls.map { it.first })
       assertTrue(requester.expectedNodeIds.all { it == "phone-a" })
       assertTrue(requester.requirePreferredNodes.all { it })
+    }
+
+  @Test
+  fun scopedModelReadRejectsAnOldPhoneWithoutSendingAnUnscopedRetry() =
+    runTest {
+      val requester = RecordingRequester { _, _ -> json.parseToJsonElement("""{"models":[]}""") }
+      val repository = WearGatewayRepository(requester)
+
+      val failure =
+        runCatching {
+          repository.models(
+            expectedNodeId = "phone-a",
+            capabilities = setOf(WearProxyCapability.ModelControls),
+            selectedModelRef = "synthetic/watch-model",
+            sessionKey = "agent:main:watch-a",
+          )
+        }.exceptionOrNull()
+
+      assertEquals("unsupported_peer", (failure as? WearProxyException)?.code)
+      assertTrue(failure?.message.orEmpty().contains("Update"))
+      assertTrue(requester.calls.isEmpty())
     }
 
   @Test
@@ -385,12 +413,14 @@ class WearGatewayRepositoryTest {
         }
       val repository = WearGatewayRepository(requester)
 
-      repository.models(
-        expectedNodeId = "phone-a",
-        capabilities = setOf(WearProxyCapability.ModelControls),
-        selectedModelRef = "openai/gpt-a",
-        query = "anthropic",
-      )
+      val models =
+        repository.models(
+          expectedNodeId = "phone-a",
+          capabilities = setOf(WearProxyCapability.ModelControls),
+          selectedModelRef = "openai/gpt-a",
+          query = "anthropic",
+        )
+      assertFalse(models.refreshFailed)
       repository.sessions(
         expectedNodeId = "phone-a",
         selectedSessionKey = "agent:main",

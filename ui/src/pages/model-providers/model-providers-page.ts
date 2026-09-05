@@ -13,6 +13,7 @@ import { renderLearnMoreLink, renderSettingsPageHeader } from "../../components/
 import { renderSettingsWorkspace } from "../../components/settings-workspace.ts";
 import { t } from "../../i18n/index.ts";
 import { isGatewayMethodAdvertised } from "../../lib/gateway-methods.ts";
+import { subscribeModelCatalogChanges } from "../../lib/model-catalog-store.ts";
 import { normalizeAgentId } from "../../lib/sessions/session-key.ts";
 import { GatewayPageController } from "../../lit/gateway-page-controller.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
@@ -180,11 +181,8 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
     .effect(
       () => this.context?.gateway,
       (gateway) =>
-        gateway.subscribeEvents((event) => {
-          if (
-            this.context?.gateway !== gateway ||
-            (event.event !== "config.changed" && event.event !== "chat.metadata.changed")
-          ) {
+        subscribeModelCatalogChanges(gateway, () => {
+          if (this.context?.gateway !== gateway) {
             return;
           }
           this.revalidateAfterMetadataChange();

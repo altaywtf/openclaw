@@ -69,9 +69,6 @@ const hoisted = vi.hoisted(() => {
   const resolveHooksGmailModel = vi.fn<() => { provider: string; model: string } | null>(
     () => null,
   );
-  const loadFullModelCatalog = vi.fn(async () => {
-    throw new Error("full model catalog should not materialize");
-  });
   const loadModelCatalog = vi.fn(async (_options?: unknown): Promise<unknown> => ({}));
   const getModelRefStatus = vi.fn(() => ({
     key: "openai/gpt-5.4",
@@ -117,7 +114,6 @@ const hoisted = vi.hoisted(() => {
     isCliProvider,
     resolveConfiguredModelRef,
     resolveHooksGmailModel,
-    loadFullModelCatalog,
     loadModelCatalog,
     getModelRefStatus,
     prepareModelRuntimeSnapshot,
@@ -502,7 +498,6 @@ describe("startGatewayPostAttachRuntime", () => {
     hoisted.resolveConfiguredModelRef.mockClear();
     hoisted.resolveHooksGmailModel.mockReset();
     hoisted.resolveHooksGmailModel.mockReturnValue(null);
-    hoisted.loadFullModelCatalog.mockClear();
     hoisted.loadModelCatalog.mockReset();
     hoisted.loadModelCatalog.mockResolvedValue({});
     hoisted.getModelRefStatus.mockReset();
@@ -3262,22 +3257,7 @@ describe("startGatewayPostAttachRuntime", () => {
       provider: "openai",
       model: "gpt-5.4",
     });
-    hoisted.loadModelCatalog.mockImplementationOnce(async (options: unknown) => {
-      const scoped = options as {
-        readOnly?: boolean;
-        providerDiscoveryProviderIds?: string[];
-        scopedLiveProviderDiscovery?: boolean;
-      };
-      if (
-        scoped.readOnly !== true ||
-        scoped.scopedLiveProviderDiscovery !== true ||
-        scoped.providerDiscoveryProviderIds?.[0] !== "openai" ||
-        scoped.providerDiscoveryProviderIds.length !== 1
-      ) {
-        return await hoisted.loadFullModelCatalog();
-      }
-      return [];
-    });
+    hoisted.loadModelCatalog.mockResolvedValueOnce([]);
 
     const result = await startGatewaySidecars({
       cfg: {
@@ -3305,15 +3285,12 @@ describe("startGatewayPostAttachRuntime", () => {
     await waitForGatewayTestState(() => {
       expect(hoisted.loadModelCatalog).toHaveBeenCalledTimes(1);
     });
-    expect(hoisted.loadFullModelCatalog).not.toHaveBeenCalled();
     expect(hoisted.loadModelCatalog).toHaveBeenCalledWith({
       config: expect.any(Object),
       readOnly: true,
-      providerDiscoveryProviderIds: ["openai"],
-      scopedLiveProviderDiscovery: true,
     });
     expect(hoisted.getModelRefStatus).toHaveBeenCalledWith(
-      expect.objectContaining({ ref: { provider: "openai", model: "gpt-5.4" } }),
+      expect.objectContaining({ catalog: [], ref: { provider: "openai", model: "gpt-5.4" } }),
     );
   });
 

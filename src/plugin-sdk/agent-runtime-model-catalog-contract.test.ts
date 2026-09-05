@@ -4,16 +4,19 @@ import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot
 const mocks = vi.hoisted(() => ({
   getSnapshot: vi.fn(),
   loadCatalog: vi.fn(),
+  discoverCatalog: vi.fn(),
 }));
 
 vi.mock("../agents/prepared-model-catalog.js", () => ({
   loadProviderScopedThinkingCatalog: vi.fn(async () => []),
   getPreparedModelCatalogSnapshot: (...args: unknown[]) => mocks.getSnapshot(...args),
   loadPreparedModelCatalog: (...args: unknown[]) => mocks.loadCatalog(...args),
+  discoverProviderModelCatalog: (...args: unknown[]) => mocks.discoverCatalog(...args),
 }));
 
 import {
   loadModelCatalog,
+  loadPreparedModelCatalog,
   resolveThinkingDefaultWithRuntimeCatalog,
 } from "openclaw/plugin-sdk/agent-runtime";
 
@@ -21,6 +24,44 @@ describe("agent-runtime model catalog compatibility", () => {
   beforeEach(() => {
     mocks.getSnapshot.mockReset();
     mocks.loadCatalog.mockReset();
+    mocks.discoverCatalog.mockReset();
+  });
+
+  describe.each([
+    { name: "loadPreparedModelCatalog", load: loadPreparedModelCatalog },
+    { name: "loadModelCatalog", load: loadModelCatalog },
+  ])("$name", ({ load }) => {
+    it.each([
+      { name: "omitted", params: {}, readOnly: false },
+      { name: "read-only", params: { readOnly: true }, readOnly: true },
+      { name: "writable", params: { readOnly: false }, readOnly: false },
+    ])("preserves the shipped $name read mode", async ({ params, readOnly }) => {
+      const entries = [{ provider: "test", id: "prepared", name: "Prepared" }];
+      mocks.loadCatalog.mockResolvedValue(entries);
+
+      await expect(load(params)).resolves.toBe(entries);
+      expect(mocks.loadCatalog).toHaveBeenCalledExactlyOnceWith({ readOnly });
+      expect(mocks.discoverCatalog).not.toHaveBeenCalled();
+    });
+  });
+
+  it("confines the shipped explicit discovery option to the SDK boundary", async () => {
+    const entries = [{ provider: "test", id: "discovered", name: "Discovered" }];
+    mocks.discoverCatalog.mockResolvedValue(entries);
+    await expect(
+      loadPreparedModelCatalog({
+        agentId: "main",
+        readOnly: true,
+        providerDiscoveryProviderIds: ["test"],
+        scopedLiveProviderDiscovery: true,
+      }),
+    ).resolves.toBe(entries);
+    expect(mocks.discoverCatalog).toHaveBeenCalledWith({
+      agentId: "main",
+      readOnly: true,
+      providerIds: ["test"],
+    });
+    expect(mocks.loadCatalog).not.toHaveBeenCalled();
   });
 
   it("uses the shipped thinking catalog callback", async () => {

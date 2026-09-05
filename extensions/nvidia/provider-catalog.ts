@@ -97,101 +97,90 @@ export async function buildLiveNvidiaProvider(): Promise<ModelProviderConfig> {
   const provider = buildNvidiaProvider();
   return {
     ...provider,
-    models:
-      (await loadNvidiaLiveModels(provider.models)) ??
-      filterSelectableNvidiaModels(provider.models),
-  };
-}
-
-export async function buildSelectableLiveNvidiaProvider(): Promise<ModelProviderConfig> {
-  const provider = buildNvidiaProvider();
-  return {
-    ...provider,
-    models: (await loadNvidiaLiveModels(provider.models)) ?? [],
+    models: await loadNvidiaLiveModels(provider.models),
   };
 }
 
 async function loadNvidiaLiveModels(
   bundledModels: ModelDefinitionConfig[],
-): Promise<ModelDefinitionConfig[] | null> {
-  try {
-    const [rows, featured] = await Promise.all([
-      getCachedLiveProviderModelRows({
-        providerId: "nvidia",
-        endpoint: NVIDIA_MODELS_URL,
-        requireHttps: true,
-        readRows: (payload) => {
-          if (!isRecord(payload) || !Array.isArray(payload.data)) {
-            throw new Error("NVIDIA model inventory must contain data[]");
-          }
-          if (payload.data.some((row) => !readLiveModelCatalogStringField(row, "id"))) {
-            throw new Error("NVIDIA model inventory contains a row without an id");
-          }
-          return payload.data;
-        },
-      }),
-      loadNvidiaFeaturedModels(),
-    ]);
-    const available = new Set(rows.map((row) => readLiveModelCatalogStringField(row, "id")));
-    const known = new Map(bundledModels.map((model) => [model.id, model]));
-    // /models includes embeddings and other non-chat endpoints without capabilities.
-    // Only exact known chat metadata or the vendor's featured chat rows are selectable.
-    const ranked = new Map(
-      (featured ?? []).map((model) => {
-        const bundled = known.get(model.id);
-        return [
-          model.id,
-          bundled
-            ? {
-                ...bundled,
-                name: model.name,
-                contextWindow: model.contextWindow,
-                maxTokens: model.maxTokens,
-              }
-            : model,
-        ];
-      }),
-    );
-    for (const [id, model] of known) {
-      if (!ranked.has(id)) {
-        ranked.set(id, model);
-      }
-    }
-    // A fresh inventory can restore a republished legacy id, but a stale featured
-    // recommendation cannot restore an id the inference endpoint no longer lists.
-    return [...ranked.values()].filter((model) => available.has(model.id));
-  } catch {
-    return null;
+): Promise<ModelDefinitionConfig[]> {
+  const [inventoryResult, featuredResult] = await Promise.allSettled([
+    getCachedLiveProviderModelRows({
+      providerId: "nvidia",
+      endpoint: NVIDIA_MODELS_URL,
+      requireHttps: true,
+      readRows: (payload) => {
+        if (!isRecord(payload) || !Array.isArray(payload.data)) {
+          throw new Error("NVIDIA model inventory must contain data[]");
+        }
+        if (payload.data.some((row) => !readLiveModelCatalogStringField(row, "id"))) {
+          throw new Error("NVIDIA model inventory contains a row without an id");
+        }
+        return payload.data;
+      },
+    }),
+    loadNvidiaFeaturedModels(),
+  ]);
+  if (inventoryResult.status === "rejected") {
+    throw inventoryResult.reason;
   }
+  if (featuredResult.status === "rejected") {
+    throw featuredResult.reason;
+  }
+  const rows = inventoryResult.value;
+  const featured = featuredResult.value;
+  const available = new Set(rows.map((row) => readLiveModelCatalogStringField(row, "id")));
+  const known = new Map(bundledModels.map((model) => [model.id, model]));
+  // /models includes embeddings and other non-chat endpoints without capabilities.
+  // Only exact known chat metadata or the vendor's featured chat rows are selectable.
+  const ranked = new Map(
+    (featured ?? []).map((model) => {
+      const bundled = known.get(model.id);
+      return [
+        model.id,
+        bundled
+          ? {
+              ...bundled,
+              name: model.name,
+              contextWindow: model.contextWindow,
+              maxTokens: model.maxTokens,
+            }
+          : model,
+      ];
+    }),
+  );
+  for (const [id, model] of known) {
+    if (!ranked.has(id)) {
+      ranked.set(id, model);
+    }
+  }
+  // A fresh inventory can restore a republished legacy id, but a stale featured
+  // recommendation cannot restore an id the inference endpoint no longer lists.
+  return [...ranked.values()].filter((model) => available.has(model.id));
 }
 
 async function loadNvidiaFeaturedModels(): Promise<ModelDefinitionConfig[] | null> {
-  try {
-    const rows = await getCachedLiveProviderModelRows({
-      providerId: "nvidia",
-      endpoint: NVIDIA_FEATURED_MODELS_URL,
-      timeoutMs: FEATURED_MODEL_FETCH_TIMEOUT_MS,
-      ttlMs: FEATURED_MODEL_CACHE_TTL_MS,
-      requireHttps: true,
-      policy: ssrfPolicyFromHttpBaseUrlAllowedHostname(NVIDIA_FEATURED_MODELS_URL),
-      // The featured catalog is an NVIDIA-owned CloudFront URL. Some resolvers
-      // stall for seconds on the default all-family lookup; IPv4 pinning keeps
-      // the guarded fixed-host fetch on the fast path.
-      lookupFn: lookupNvidiaFeaturedModelHostname,
-      auditContext: "nvidia-featured-model-catalog",
-      shouldCacheRows: (modelRows) => parseNvidiaFeaturedModels(modelRows) !== null,
-      readRows: (payload) => {
-        if (!payload || typeof payload !== "object") {
-          return [];
-        }
-        const featuredRows = (payload as { "featured-models"?: unknown })["featured-models"];
-        return Array.isArray(featuredRows) ? featuredRows : [];
-      },
-    });
-    return parseNvidiaFeaturedModels(rows);
-  } catch {
-    return null;
-  }
+  const rows = await getCachedLiveProviderModelRows({
+    providerId: "nvidia",
+    endpoint: NVIDIA_FEATURED_MODELS_URL,
+    timeoutMs: FEATURED_MODEL_FETCH_TIMEOUT_MS,
+    ttlMs: FEATURED_MODEL_CACHE_TTL_MS,
+    requireHttps: true,
+    policy: ssrfPolicyFromHttpBaseUrlAllowedHostname(NVIDIA_FEATURED_MODELS_URL),
+    // The featured catalog is an NVIDIA-owned CloudFront URL. Some resolvers
+    // stall for seconds on the default all-family lookup; IPv4 pinning keeps
+    // the guarded fixed-host fetch on the fast path.
+    lookupFn: lookupNvidiaFeaturedModelHostname,
+    auditContext: "nvidia-featured-model-catalog",
+    shouldCacheRows: (modelRows) => parseNvidiaFeaturedModels(modelRows) !== null,
+    readRows: (payload) => {
+      if (!isRecord(payload) || !Array.isArray(payload["featured-models"])) {
+        throw new Error("NVIDIA featured catalog must contain featured-models[]");
+      }
+      return payload["featured-models"];
+    },
+  });
+  return parseNvidiaFeaturedModels(rows);
 }
 
 function parseNvidiaFeaturedModels(rows: readonly unknown[]): ModelDefinitionConfig[] | null {

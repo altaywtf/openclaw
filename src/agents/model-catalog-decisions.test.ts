@@ -87,6 +87,64 @@ afterEach(() => {
 });
 
 describe("prepared catalog decision ownership", () => {
+  it("offers the available default and compatible built-in/native alternatives", async () => {
+    const facts = createFacts();
+    facts.cfg = {
+      agents: {
+        defaults: {
+          model: "openai/catalog-model",
+          models: { "openai/catalog-model": { agentRuntime: { id: "fixture-native" } } },
+        },
+      },
+    };
+    openAIModelRoutesMock.resolution = {
+      kind: "routes",
+      routes: [
+        {
+          ...platformRoute,
+          runtimePolicy: { compatibleIds: ["openclaw", "fixture-native"] },
+        },
+      ],
+    };
+    const source = getPreparedModelCatalogDecisions(facts);
+
+    expect(await source.runtimeChoices(platform)).toEqual(["fixture-native", "openclaw"]);
+  });
+
+  it("does not offer a native binding that cannot reproduce the prepared route", async () => {
+    const facts = createFacts();
+    facts.snapshot.runtimeBindings = [{ provider: "openai", runtime: "fixture-native" }];
+    openAIModelRoutesMock.resolution = {
+      kind: "routes",
+      routes: [{ ...platformRoute, runtimePolicy: { compatibleIds: ["openclaw"] } }],
+    };
+
+    expect(await getPreparedModelCatalogDecisions(facts).runtimeChoices(platform)).toEqual([
+      "openclaw",
+    ]);
+  });
+
+  it("does not escape a locked unavailable profile while offering runtime alternatives", async () => {
+    const facts = createFacts();
+    openAIModelRoutesMock.resolution = {
+      kind: "routes",
+      routes: [
+        {
+          ...platformRoute,
+          runtimePolicy: { compatibleIds: ["openclaw", "fixture-native"] },
+        },
+      ],
+    };
+
+    expect(
+      await getPreparedModelCatalogDecisions(facts).runtimeChoices(platform, {
+        profileProvider: "openai",
+        preferredProfileId: "openai:missing",
+        lockedProfileId: "openai:missing",
+      }),
+    ).toEqual([]);
+  });
+
   it("shares one source across wrappers of the same published facts", async () => {
     const facts = createFacts();
     const first = getPreparedModelCatalogDecisions(facts);

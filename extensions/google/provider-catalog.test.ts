@@ -15,6 +15,27 @@ describe("google provider catalog", () => {
     clearLiveCatalogCacheForTests();
   });
 
+  it("catalog cutover: propagates failed Google model acquisition", async () => {
+    const failure = new Error("Google model list unavailable");
+    const fetchGuard = vi.fn<LiveModelCatalogFetchGuard>(async () => {
+      throw failure;
+    });
+    await expect(
+      buildGoogleLiveCatalogProvider({ discoveryApiKey: "test-key", fetchGuard }),
+    ).rejects.toBe(failure);
+  });
+
+  it("catalog cutover: keeps an empty Google account catalog empty", async () => {
+    const fetchGuard = vi.fn<LiveModelCatalogFetchGuard>(async ({ url }) => ({
+      response: Response.json({ models: [] }),
+      finalUrl: url,
+      release: async () => undefined,
+    }));
+    await expect(
+      buildGoogleLiveCatalogProvider({ discoveryApiKey: "test-key", fetchGuard }),
+    ).resolves.toMatchObject({ models: [] });
+  });
+
   it("registers current Gemini rows for the Google Vertex provider", () => {
     const provider = buildGoogleVertexStaticCatalogProvider();
 
@@ -225,7 +246,7 @@ describe("google provider catalog", () => {
     }
   });
 
-  it("falls back to bundled rows when live discovery is unusable", async () => {
+  it("keeps fully filtered live discovery empty instead of restoring bundled rows", async () => {
     const fetchGuard: LiveModelCatalogFetchGuard = vi.fn(async ({ url }) => ({
       response: Response.json({ models: [{ name: "models/gemini-3.6-flash" }] }),
       finalUrl: url,
@@ -238,8 +259,6 @@ describe("google provider catalog", () => {
       fetchGuard,
     });
 
-    expect(provider.models.map((model) => model.id)).toEqual(
-      buildGoogleStaticCatalogProvider().models.map((model) => model.id),
-    );
+    expect(provider.models).toEqual([]);
   });
 });

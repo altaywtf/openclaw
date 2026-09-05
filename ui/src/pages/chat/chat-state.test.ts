@@ -3743,23 +3743,21 @@ describe("refreshChatMetadata", () => {
     expect(state.chatModelCatalogError).toBe("catalog unavailable");
   });
 
-  it("reloads the model catalog when chat metadata is invalidated", async () => {
+  it("keeps command metadata invalidation independent of the model catalog", async () => {
     const request = vi.fn(async (method: string) =>
       method === "chat.metadata"
         ? { commands: [], models: [] }
         : { models: [{ id: "discovered", name: "Discovered", provider: "test" }] },
     );
-    const state = createMetadataState(request);
+    const previous = [{ id: "previous", name: "Previous", provider: "test" }];
+    const state = createMetadataState(request, { chatModelCatalog: previous });
 
     await refreshChatMetadata(state);
     invalidateChatMetadataStore(state.client!, { agentId: "work", sessionKey: state.sessionKey });
 
-    await vi.waitFor(() =>
-      expect(state.chatModelCatalog).toEqual([
-        { id: "discovered", name: "Discovered", provider: "test" },
-      ]),
-    );
-    expect(request.mock.calls.some(([method]) => method === "models.list")).toBe(true);
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+    expect(state.chatModelCatalog).toBe(previous);
+    expect(request.mock.calls.some(([method]) => method === "models.list")).toBe(false);
   });
 
   it("keeps a recorded discovery warning through rereads until snapshot recovery", async () => {
@@ -3828,6 +3826,7 @@ describe("refreshChatMetadata", () => {
         expect(params).toEqual({
           view: "configured",
           agentId: "work",
+          sessionKey: "agent:work:main",
           ...((params as { refresh?: boolean } | undefined)?.refresh ? { refresh: true } : {}),
         });
         return discovery.promise;

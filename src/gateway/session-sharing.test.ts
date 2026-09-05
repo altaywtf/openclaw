@@ -184,6 +184,7 @@ describe("session sharing policy", () => {
           "chat.history",
           "chat.startup",
           "chat.metadata",
+          "models.list",
           "sessions.companion.ask",
           "sessions.companion.state",
         ]) {
@@ -353,6 +354,7 @@ describe("session sharing policy", () => {
       for (const [method, requestParams] of [
         ["chat.history", { sessionKey: foreignKey }],
         ["chat.metadata", { sessionKey: foreignKey }],
+        ["models.list", { sessionKey: foreignKey }],
         ["chat.send", { sessionKey: foreignKey }],
         ["mcp.app.callTool", { sessionKey: foreignKey }],
         ["mcp.app.updateModelContext", { sessionKey: foreignKey }],
@@ -612,6 +614,7 @@ describe("session sharing policy", () => {
       const directRequests = (requestedKey: string) => [
         { method: "chat.history", requestParams: { sessionKey: requestedKey } },
         { method: "chat.metadata", requestParams: { sessionKey: requestedKey } },
+        { method: "models.list", requestParams: { sessionKey: requestedKey } },
         { method: "chat.send", requestParams: { sessionKey: requestedKey } },
         { method: "sessions.get", requestParams: { key: requestedKey } },
         { method: "sessions.preview", requestParams: { keys: [requestedKey] } },

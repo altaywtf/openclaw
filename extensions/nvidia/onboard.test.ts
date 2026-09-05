@@ -7,30 +7,37 @@ import { describe, expect, it } from "vitest";
 import { applyNvidiaConfig, applyNvidiaProviderConfig } from "./onboard.js";
 
 describe("nvidia onboard", () => {
-  it("adds NVIDIA provider with correct settings", () => {
-    const cfg = applyNvidiaConfig({});
-    const provider = cfg.models?.providers?.nvidia;
-    if (!provider) {
-      throw new Error("expected NVIDIA provider config");
-    }
-    expect(provider.baseUrl).toBe("https://integrate.api.nvidia.com/v1");
-    expect(provider.api).toBe("openai-completions");
-    expect(provider.models.map((model) => model.id)).toEqual([
-      "nvidia/nemotron-3-ultra-550b-a55b",
-      "nvidia/nemotron-3.5-lightning-30b-a3b",
-      "nvidia/nemotron-3-super-120b-a12b",
-      "z-ai/glm-5.2",
-      "moonshotai/kimi-k2.6",
-      "minimaxai/minimax-m3",
-      "deepseek-ai/deepseek-v4-pro",
-    ]);
-    // Config stores the canonical form; the picker label shows the literal
-    // form via preserveLiteralProviderPrefix.
-    expectProviderOnboardPrimaryModel({
-      applyConfig: applyNvidiaConfig,
-      modelRef: "nvidia/nemotron-3-ultra-550b-a55b",
-    });
-  });
+  it.each(["merge", "replace"] as const)(
+    "adds NVIDIA provider with correct settings: %s",
+    (mode) => {
+      const cfg = applyNvidiaConfig({ models: { mode } });
+      const provider = cfg.models?.providers?.nvidia;
+      if (!provider) {
+        throw new Error("expected NVIDIA provider config");
+      }
+      expect(provider.baseUrl).toBe("https://integrate.api.nvidia.com/v1");
+      expect(provider.api).toBe("openai-completions");
+      expect(provider.models.map((model) => model.id)).toEqual(
+        mode === "replace"
+          ? [
+              "nvidia/nemotron-3-ultra-550b-a55b",
+              "nvidia/nemotron-3.5-lightning-30b-a3b",
+              "nvidia/nemotron-3-super-120b-a12b",
+              "z-ai/glm-5.2",
+              "moonshotai/kimi-k2.6",
+              "minimaxai/minimax-m3",
+              "deepseek-ai/deepseek-v4-pro",
+            ]
+          : [],
+      );
+      // Config stores the canonical form; the picker label shows the literal
+      // form via preserveLiteralProviderPrefix.
+      expectProviderOnboardPrimaryModel({
+        applyConfig: applyNvidiaConfig,
+        modelRef: "nvidia/nemotron-3-ultra-550b-a55b",
+      });
+    },
+  );
 
   it("merges NVIDIA models and keeps existing provider overrides", () => {
     const provider = expectProviderOnboardMergedLegacyConfig({
@@ -42,16 +49,7 @@ describe("nvidia onboard", () => {
       legacyModelId: "custom-model",
       legacyModelName: "Custom",
     });
-    expect(provider?.models.map((model) => model.id)).toEqual([
-      "nvidia/custom-model",
-      "nvidia/nemotron-3-ultra-550b-a55b",
-      "nvidia/nemotron-3.5-lightning-30b-a3b",
-      "nvidia/nemotron-3-super-120b-a12b",
-      "z-ai/glm-5.2",
-      "moonshotai/kimi-k2.6",
-      "minimaxai/minimax-m3",
-      "deepseek-ai/deepseek-v4-pro",
-    ]);
+    expect(provider?.models.map((model) => model.id)).toEqual(["nvidia/custom-model"]);
   });
 
   it.each([
@@ -68,15 +66,6 @@ describe("nvidia onboard", () => {
       legacyModelName: name,
     });
 
-    expect(provider?.models.map((model) => model.id)).toEqual([
-      id,
-      "nvidia/nemotron-3-ultra-550b-a55b",
-      "nvidia/nemotron-3.5-lightning-30b-a3b",
-      "nvidia/nemotron-3-super-120b-a12b",
-      "z-ai/glm-5.2",
-      "moonshotai/kimi-k2.6",
-      "minimaxai/minimax-m3",
-      "deepseek-ai/deepseek-v4-pro",
-    ]);
+    expect(provider?.models.map((model) => model.id)).toEqual([id]);
   });
 });

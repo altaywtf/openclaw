@@ -19,6 +19,7 @@ import {
 import { updateAuthProfileStoreWithLock } from "../../agents/auth-profiles/store.js";
 import { buildExplicitSessionIdSessionKey } from "../../agents/command/session.js";
 import { DEFAULT_PROVIDER } from "../../agents/defaults.js";
+import { loadPreparedModelCatalogView } from "../../agents/model-catalog-view.js";
 import { canonicalizeCaseOnlyCatalogModelRef } from "../../agents/model-selection.js";
 import { loadPreparedModelCatalog } from "../../agents/prepared-model-catalog.js";
 import {
@@ -31,8 +32,6 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { callGateway, randomIdempotencyKey } from "../../gateway/call.js";
 import { ADMIN_SCOPE } from "../../gateway/operator-scopes.js";
 import { convertHeicToJpeg } from "../../media/media-services.js";
-import { planEffectiveModelCatalogRows } from "../../model-catalog/index.js";
-import { loadManifestMetadataSnapshot } from "../../plugins/manifest-contract-eligibility.js";
 import { defaultRuntime } from "../../runtime.js";
 import { getProviderEnvVars } from "../../secrets/provider-env-vars.js";
 import { runCommandWithRuntime } from "../cli-utils.js";
@@ -61,21 +60,14 @@ const HEIC_MODEL_RUN_MIMES = new Set([
 ]);
 
 async function loadModelCatalogForInspection(cfg: OpenClawConfig, agentId?: string) {
-  const prepared = await loadPreparedModelCatalog({ config: cfg, agentId, readOnly: true });
-  const metadataSnapshot = loadManifestMetadataSnapshot({ config: cfg, env: process.env });
-  const manifest = planEffectiveModelCatalogRows({
-    registry: metadataSnapshot.manifestRegistry,
+  const view = await loadPreparedModelCatalogView({
     config: cfg,
-  }).rows;
-  const entries = new Map<string, (typeof prepared)[number] | (typeof manifest)[number]>();
-  for (const entry of manifest) {
-    entries.set(`${entry.provider}\0${entry.id}`, entry);
-  }
-  for (const entry of prepared) {
-    entries.set(`${entry.provider}\0${entry.id}`, entry);
-  }
-  return [...entries.values()].toSorted(
-    (a, b) => a.provider.localeCompare(b.provider) || a.id.localeCompare(b.id),
+    agentId,
+    readOnly: true,
+    view: "all",
+  });
+  return view.entries.toSorted(
+    (left, right) => left.provider.localeCompare(right.provider) || left.id.localeCompare(right.id),
   );
 }
 

@@ -41,7 +41,13 @@ export function registerTestCatalogAccess(
       (await context.loadGatewayModelCatalogSnapshot(
         params,
       )) as PreparedGatewayModelCatalogSnapshot,
-    readPrepared: readPrepared ?? (async () => undefined),
+    readPrepared:
+      readPrepared ??
+      (async (params) =>
+        (await context.loadGatewayModelCatalogSnapshot({
+          ...params,
+          readOnly: true,
+        })) as PreparedGatewayModelCatalogSnapshot),
   });
 }
 
@@ -100,22 +106,19 @@ async function listModelsWithFacts(params: ListModelsParams, agentId: string) {
       ...(params.staticEntries ? { staticEntries: params.staticEntries } : {}),
       authMaterializations: [],
     }) satisfies PreparedGatewayModelCatalogSnapshot;
-  const loadGatewayModelCatalogSnapshot = async (loadParams?: object) => {
+  let publishedEntries = params.publishedCatalog ?? params.preparedCatalog ?? params.catalog;
+  const loadGatewayModelCatalogSnapshot = async () => {
     if (params.catalogLoadDelayMs !== undefined) {
       await new Promise<void>((resolve) => {
         setTimeout(resolve, params.catalogLoadDelayMs);
       });
     }
-    const readOnly = loadParams && "readOnly" in loadParams && loadParams.readOnly === true;
-    return createCatalogSnapshot(
-      readOnly && params.preparedCatalog ? params.preparedCatalog : params.catalog,
-    );
+    publishedEntries = params.catalog;
+    return createCatalogSnapshot(publishedEntries);
   };
   registerGatewayModelCatalogPrivateAccess(loadGatewayModelCatalogSnapshot, {
     loadDeferred: loadGatewayModelCatalogSnapshot,
-    readPrepared: params.publishedCatalog
-      ? async () => createCatalogSnapshot(params.publishedCatalog ?? [])
-      : loadGatewayModelCatalogSnapshot,
+    readPrepared: async () => createCatalogSnapshot(publishedEntries),
   });
   const context = {
     getRuntimeConfig: () => config,
@@ -140,13 +143,15 @@ async function listModelsWithFacts(params: ListModelsParams, agentId: string) {
       context,
       config,
       snapshot: { entries: params.catalog, routeVariants: params.catalog },
-      projector: {
+      facts: {
         metadataSnapshot: {
           index: { plugins: [] },
           manifestRegistry: { plugins: [] },
           plugins: [{ id: "test-provider", modelCatalog: { discovery: params.discoveryModes } }],
         },
         authStore: { version: 1, profiles: {} },
+        providerAuth: {},
+        authMaterializations: [],
       } as never,
     },
     agentId,

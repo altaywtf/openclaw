@@ -16,11 +16,7 @@ describe("loadGatewayDiagnostics", () => {
 
     await loadGatewayDiagnostics({ request } as unknown as GatewayBrowserClient, "writer");
 
-    expect(request).toHaveBeenCalledWith(
-      "models.list",
-      { agentId: "writer", preparedOnly: true },
-      { signal: undefined },
-    );
+    expect(request).toHaveBeenCalledWith("models.list", { agentId: "writer", view: "default" });
   });
 
   it("keeps diagnostics available without requesting models before agent selection", async () => {

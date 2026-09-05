@@ -433,7 +433,9 @@ describe("resolveCliRuntimeExecutionProvider", () => {
       ],
     });
 
-    const isVisibleProvider = createModelPickerVisibleProviderPredicate();
+    const isVisibleProvider = createModelPickerVisibleProviderPredicate({
+      runtimeBindings: [{ provider: "anthropic", runtime: "claude-cli" }],
+    });
 
     expect(isCliRuntimeProvider("claude-cli")).toBe(true);
     expect(isVisibleProvider("claude-cli")).toBe(false);

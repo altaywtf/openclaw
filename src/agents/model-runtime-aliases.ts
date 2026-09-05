@@ -15,6 +15,7 @@ import {
   resolveCliRuntimeModelBackendBinding,
 } from "./cli-backends.js";
 import { resolveLegacyInheritedAuthDir } from "./legacy-inherited-auth-dir.js";
+import type { ModelCatalogRuntimeBinding } from "./model-catalog.types.js";
 import { resolveModelRuntimePolicy } from "./model-runtime-policy.js";
 import { readPreparedProviderAuthFacts } from "./prepared-provider-auth-facts.js";
 import {
@@ -30,15 +31,13 @@ export function isRetiredModelPickerProvider(provider: string): boolean {
 }
 
 /** Creates a provider visibility predicate for model picker rendering. */
-export function createModelPickerVisibleProviderPredicate(
-  params: { config?: OpenClawConfig; env?: NodeJS.ProcessEnv; includeSetupRegistry?: boolean } = {},
-): (provider: string) => boolean {
+export function createModelPickerVisibleProviderPredicate(params: {
+  runtimeBindings: readonly ModelCatalogRuntimeBinding[];
+}): (provider: string) => boolean {
   const cliRuntimeProviders = new Set(
-    listCliRuntimeProviderIds({
-      config: params.config,
-      env: params.env,
-      includeSetupRegistry: params.includeSetupRegistry ?? false,
-    }),
+    params.runtimeBindings
+      .filter((binding) => binding.provider !== binding.runtime)
+      .map((binding) => normalizeProviderId(binding.runtime)),
   );
   return (provider: string): boolean => {
     const normalized = normalizeProviderId(provider);

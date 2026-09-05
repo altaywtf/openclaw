@@ -272,11 +272,14 @@ catalog, API-key auth, and dynamic model resolution.
         models: [...STATIC_MODELS],
       }),
       liveModelDiscovery: true,
+      discoveryMode: "strict",
     },
     ```
 
-    `liveModelDiscovery: true` is a public Plugin SDK contract with these
-    behaviors:
+    Bundled plugins use `catalog: { liveModelDiscovery: true,
+    discoveryMode: "strict" }`. This is a plugin implementation option, not an
+    operator configuration key or environment variable. The network and
+    projection contracts are:
 
     | Area | Contract |
     | --- | --- |
@@ -286,7 +289,21 @@ catalog, API-key auth, and dynamic model resolution.
     | Cache | Successful, non-empty catalogs are cached for 60 seconds by provider, endpoint, and resolved credential. Empty or unusable results are not cached. |
     | Filtering | Exact live IDs keep their trusted static metadata. New rows are projected conservatively as text/chat models. Disabled, archived, deprecated, explicitly non-chat, embedding, reranking, moderation, speech, image-only, and video-only rows are excluded. Use `readRows` only to select rows from a nonstandard response envelope; provider-specific model semantics still belong in a custom catalog. |
     | Admission | Optional. Set `acceptUnknownModel: ({ id, record }) => boolean` when your request shaping is model-version specific, so discovery cannot publish a model you cannot yet build a valid request for. It is called only for IDs your static catalog does not already publish; known IDs bypass it and keep their published metadata. Return `false` to drop the row. Providers that omit it keep the previous behavior unchanged. Prefer comparing the vendor's advertised capabilities against your own contract checks over a hand-maintained model list, and fail closed when the row carries no capability data. |
-    | Failure | Live discovery is advisory. Auth, network, timeout, pagination, parsing, empty-catalog, and filtering failures return the provider-owned static seed instead of removing the provider. |
+    | Strict result | Discovery errors reach the catalog owner. A successful empty or fully filtered response stays empty; static seed rows are not reported as live results. |
+    | Outcomes | Catalog owners report `ready`, `auth-rejected`, or `unavailable`. Rejections from a model-list endpoint use `rejectionScope: "catalog"` unless the provider has separate evidence of execution failure. The tested profile comes from the same credential resolution that supplied the request. |
+    | No attempt | Missing credentials and fixed vendor endpoints skipped after a custom base URL override do not report a successful live refresh. |
+    | Compatibility | Calls that omit `discoveryMode` retain the advisory behavior shipped in 2026.9.1: errors, empty results, and fully filtered results return the static seed. Existing external callers keep this behavior while migrating to strict discovery. |
+
+    `buildLiveModelProviderConfig` and
+    `buildOpenAICompatibleLiveModelProviderConfig` accept the same
+    `discoveryMode: "strict"` option and propagate the original acquisition
+    error. At a catalog hook, use `runLiveProviderCatalog` to turn that result
+    into scoped outcomes. For an already-built OpenAI-compatible provider
+    config, `buildOpenAICompatibleLiveProviderCatalog` combines discovery and
+    outcome reporting. The family helper reports each provider independently,
+    so one failed sibling does not discard successful siblings.
+    Public metadata builders omit `profileId`: a credential used to enable a
+    provider is not evidence that the metadata request tested that credential.
 
     For a non-Bearer or nonstandard list endpoint, pass options instead of
     `true`:
@@ -313,7 +330,8 @@ catalog, API-key auth, and dynamic model resolution.
     If the provider needs custom model semantics rather than the conservative
     OpenAI-compatible projection, keep only that projection in the plugin. Pass
     it as `projectRows`; the shared runtime still owns guarded fetches,
-    provider-auth headers, cache admission, and static fallback.
+    provider-auth headers and cache admission. Static catalogs remain a
+    separate offline source, not evidence that live discovery succeeded.
 
     Use `buildLiveModelProviderConfig` when the live API only tells you which
     provider-owned static catalog rows are currently available:
@@ -322,6 +340,7 @@ catalog, API-key auth, and dynamic model resolution.
     import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
     import {
       buildLiveModelProviderConfig,
+      runLiveProviderCatalog,
       type LiveModelCatalogFetchGuard,
     } from "openclaw/plugin-sdk/provider-catalog-live-runtime";
 
@@ -352,6 +371,7 @@ catalog, API-key auth, and dynamic model resolution.
       fetchGuard?: LiveModelCatalogFetchGuard;
     }) {
       return await buildLiveModelProviderConfig({
+        discoveryMode: "strict",
         providerId: "acme-ai",
         endpoint: "https://api.acme-ai.com/v1/models",
         providerConfig: {
@@ -382,16 +402,19 @@ catalog, API-key auth, and dynamic model resolution.
           catalog: {
             order: "simple",
             run: async (ctx) => {
-              const auth = ctx.resolveProviderAuth("acme-ai");
-              const apiKey =
-                auth.apiKey ?? ctx.resolveProviderApiKey("acme-ai").apiKey;
+              const auth = ctx.resolveProviderApiKey("acme-ai");
+              const apiKey = auth.apiKey;
               if (!apiKey) return null;
-              return {
-                provider: await buildAcmeLiveProvider({
-                  apiKey,
-                  discoveryApiKey: auth.discoveryApiKey,
+              return await runLiveProviderCatalog({
+                providerId: "acme-ai",
+                profileId: auth.profileId,
+                run: async () => ({
+                  provider: await buildAcmeLiveProvider({
+                    apiKey,
+                    discoveryApiKey: auth.discoveryApiKey,
+                  }),
                 }),
-              };
+              });
             },
           },
           staticCatalog: {
@@ -410,7 +433,7 @@ catalog, API-key auth, and dynamic model resolution.
     ```
 
     `run` should stay auth-gated and return `null` when no usable credential is
-    available. Keep an offline `staticRun` or static fallback so setup, docs,
+    available. Keep an offline `staticRun` or `staticCatalog` so setup, docs,
     tests, and picker surfaces do not depend on live network access. Use a TTL
     appropriate for model-list freshness, avoid request-time filesystem polling,
     and pass a provider-specific `readRows` / `readModelId` only when the

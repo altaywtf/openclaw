@@ -23,6 +23,7 @@ import {
   KEYBOARD_SHORTCUT_COMBOS,
   matchesShortcutCombo,
 } from "../../lib/keyboard-shortcut-catalog.ts";
+import { subscribeModelCatalogChanges } from "../../lib/model-catalog-store.ts";
 import { sessionPullRequestsForGateway } from "../../lib/session-pull-requests.ts";
 import { parseCatalogSessionKey } from "../../lib/sessions/catalog-key.ts";
 import { resolveSessionKey } from "../../lib/sessions/index.ts";
@@ -61,6 +62,7 @@ import { createPageState } from "./chat-state-page.ts";
 import {
   applyChatAgentOwnerTransition,
   applySelectedChatAgent,
+  loadChatModelCatalog,
   refreshPageChat,
   retireChatMetadataRequests,
 } from "./chat-state-refresh.ts";
@@ -434,6 +436,14 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
       }),
     );
     chatState.addCleanup(() => sessionPullRequests.unwatch(this));
+    const catalogGateway = this.context.gateway;
+    chatState.addCleanup(
+      subscribeModelCatalogChanges(catalogGateway, () => {
+        if (this.context.gateway === catalogGateway && this.state === chatState) {
+          void loadChatModelCatalog(chatState);
+        }
+      }),
+    );
     chatState.addCleanup(
       this.context.gateway.subscribeEvents((event) => {
         const state = this.state;

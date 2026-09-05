@@ -14,6 +14,7 @@ import { testing as cliBackendsTesting } from "../../agents/cli-backends.test-su
 import type { PreparedModelRuntimeAuth } from "../../agents/prepared-model-runtime-auth.js";
 import { materializePreparedModelCatalog } from "../../agents/prepared-model-runtime.full-catalog.js";
 import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../../config/config.js";
+import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { loadManifestMetadataSnapshot } from "../../plugins/manifest-contract-eligibility.js";
 import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
@@ -257,6 +258,7 @@ function createDemoOAuthStore(params: { access: string; expires: number }) {
 function requestModelsList(params: {
   view: "default" | "configured" | "provider-config" | "all";
   agentId?: string;
+  sessionKey?: string;
   respond?: ReturnType<typeof vi.fn>;
   runtimeConfig?: OpenClawConfig;
   getRuntimeConfig?: () => OpenClawConfig;
@@ -268,6 +270,8 @@ function requestModelsList(params: {
   }) => Promise<Array<Record<string, unknown>>>;
   reqId?: string;
   includeProviderCapabilities?: boolean;
+  includeDetails?: boolean;
+  provider?: string;
   refresh?: boolean;
   preparedProviderAuth?: PreparedModelRuntimeAuth["providerAuth"];
 }) {
@@ -311,15 +315,17 @@ function requestModelsList(params: {
       const snapshot = await loadSnapshot(loadParams);
       return snapshot;
     },
-    readPrepared: async () =>
-      ({
-        ...resolveOwnerFacts(),
-        catalogComplete: false,
-        entries: [],
-        routeVariants: [],
-        authMaterializations: [],
-      }) as PreparedGatewayModelCatalogSnapshot,
+    readPrepared: async (options) => loadSnapshot({ ...options, readOnly: true }),
   });
+  const requestParams = {
+    view: params.view,
+    ...(params.agentId ? { agentId: params.agentId } : {}),
+    ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
+    ...(params.provider ? { provider: params.provider } : {}),
+    ...(params.includeDetails ? { includeDetails: true } : {}),
+    ...(params.includeProviderCapabilities ? { includeProviderCapabilities: true } : {}),
+    ...(params.refresh ? { refresh: true } : {}),
+  };
   const request = expectDefined(
     modelsHandlers["models.list"],
     'modelsHandlers["models.list"] test invariant',
@@ -328,19 +334,9 @@ function requestModelsList(params: {
       type: "req",
       id: params.reqId ?? `req-models-list-${params.view}`,
       method: "models.list",
-      params: {
-        view: params.view,
-        ...(params.agentId ? { agentId: params.agentId } : {}),
-        ...(params.includeProviderCapabilities ? { includeProviderCapabilities: true } : {}),
-        ...(params.refresh ? { refresh: true } : {}),
-      },
+      params: requestParams,
     },
-    params: {
-      view: params.view,
-      ...(params.agentId ? { agentId: params.agentId } : {}),
-      ...(params.includeProviderCapabilities ? { includeProviderCapabilities: true } : {}),
-      ...(params.refresh ? { refresh: true } : {}),
-    },
+    params: requestParams,
     respond: respond as RespondFn,
     client: null,
     isWebchatConnect: () => false,
@@ -358,6 +354,100 @@ function requestModelsList(params: {
 }
 
 describe("models.list", () => {
+  it.each(["demo-provider", "missing-provider"])(
+    "resolves the %s filter against the Gateway catalog",
+    async (provider) => {
+      const { request, respond } = requestModelsList({
+        view: "all",
+        provider,
+        loadGatewayModelCatalog: async () => [
+          { provider: "demo-provider", id: "chat", name: "Demo Chat" },
+          { provider: "other-provider", id: "chat", name: "Other Chat" },
+        ],
+      });
+      await request;
+      if (provider === "missing-provider") {
+        expect(respond).toHaveBeenCalledWith(
+          false,
+          undefined,
+          expect.objectContaining({ code: "INVALID_REQUEST" }),
+        );
+      } else {
+        expect(respond).toHaveBeenCalledWith(
+          true,
+          { models: [expect.objectContaining({ provider: "demo-provider", id: "chat" })] },
+          undefined,
+        );
+      }
+    },
+  );
+
+  it("uses the persisted session credential selection without changing neutral availability", async () => {
+    const sessionKey = "agent:main:dashboard:scoped-model-catalog";
+    const runtimeConfig: OpenClawConfig = {
+      agents: { defaults: { model: "example/chat" }, entries: { main: {} } },
+    };
+    await modelsTestState.writeAuthProfiles(
+      {
+        version: 1,
+        profiles: {
+          "example:working": { type: "api_key", provider: "example", key: "fixture-key" },
+          "other:working": { type: "api_key", provider: "other", key: "other-fixture-key" },
+        },
+      },
+      "main",
+    );
+    await upsertSessionEntryCore(
+      { agentId: "main", sessionKey },
+      {
+        sessionId: "scoped-model-catalog",
+        updatedAt: 1,
+        authProfileOverride: "example:missing",
+        authProfileOverrideSource: "user",
+      },
+    );
+    const loadGatewayModelCatalog = async () => [
+      { provider: "example", id: "chat", name: "Chat" },
+      { provider: "other", id: "chat", name: "Other chat" },
+    ];
+    const neutral = requestModelsList({
+      runtimeConfig,
+      agentId: "main",
+      view: "configured",
+      loadGatewayModelCatalog,
+    });
+    await neutral.request;
+    expect(neutral.respond).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({
+        models: [
+          expect.objectContaining({ provider: "example", id: "chat", available: true }),
+          expect.objectContaining({ provider: "other", id: "chat", available: true }),
+        ],
+      }),
+      undefined,
+    );
+
+    const scoped = requestModelsList({
+      runtimeConfig,
+      agentId: "main",
+      sessionKey,
+      view: "configured",
+      loadGatewayModelCatalog,
+    });
+    await scoped.request;
+    expect(scoped.respond).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({
+        models: [
+          expect.objectContaining({ provider: "example", id: "chat", available: false }),
+          expect.objectContaining({ provider: "other", id: "chat", available: true }),
+        ],
+      }),
+      undefined,
+    );
+  });
+
   it("returns typed selection-required until an explicit fleet selects an agent", async () => {
     const runtimeConfig = {
       agents: {
@@ -807,9 +897,14 @@ describe("models.list", () => {
         },
         undefined,
       );
-      expect(loadGatewayModelCatalog).toHaveBeenCalledOnce();
-      expect(loadGatewayModelCatalog).toHaveBeenCalledWith(
+      expect(loadGatewayModelCatalog).toHaveBeenCalledTimes(2);
+      expect(loadGatewayModelCatalog).toHaveBeenNthCalledWith(
+        1,
         expect.objectContaining({ readOnly: false, refreshFullCatalog: true }),
+      );
+      expect(loadGatewayModelCatalog).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ readOnly: true }),
       );
     } finally {
       clearRuntimeConfigSnapshot();
@@ -918,7 +1013,7 @@ describe("models.list", () => {
           undefined,
         );
         expect(loadGatewayModelCatalog).toHaveBeenCalledWith(
-          expect.objectContaining({ readOnly: false }),
+          expect.objectContaining({ readOnly: true }),
         );
       } finally {
         vi.useRealTimers();
@@ -1008,6 +1103,7 @@ describe("models.list", () => {
               id: "gpt-5.4",
               name: "GPT-5.4 Codex",
               provider: "openai",
+              supportsFastMode: true,
               agentRuntime: {
                 id: "codex",
                 cloudPlacementSupported: false,
@@ -1020,6 +1116,7 @@ describe("models.list", () => {
               id: "gpt-codex-test",
               name: "GPT Codex Test",
               provider: "openai",
+              supportsFastMode: true,
               agentRuntime: {
                 id: "codex",
                 cloudPlacementSupported: false,
@@ -1061,6 +1158,7 @@ describe("models.list", () => {
               id: "gpt-5.4",
               name: "GPT-5.4 Codex",
               provider: "openai",
+              supportsFastMode: true,
               agentRuntime: {
                 id: "codex",
                 cloudPlacementSupported: false,
@@ -1073,6 +1171,7 @@ describe("models.list", () => {
               id: "gpt-codex-test",
               name: "GPT Codex Test",
               provider: "openai",
+              supportsFastMode: true,
               agentRuntime: {
                 id: "codex",
                 cloudPlacementSupported: false,
@@ -1137,6 +1236,7 @@ describe("models.list", () => {
                   id: "gpt-5.4",
                   name: "GPT-5.4 Codex",
                   provider: "openai",
+                  supportsFastMode: true,
                   agentRuntime: {
                     id: "codex",
                     cloudPlacementSupported: false,
@@ -2072,9 +2172,10 @@ describe("models.list", () => {
     expect(payload.models[0]).toMatchObject({ effectiveFastMode: expected });
   });
 
-  it("does not reinterpret context tokens or expose model input metadata", async () => {
+  it.each([false, true])("projects opt-in public route details: %s", async (includeDetails) => {
     const { request, respond } = requestModelsList({
       view: "all",
+      includeDetails,
       loadGatewayModelCatalog: vi.fn(() =>
         Promise.resolve([
           {
@@ -2083,6 +2184,7 @@ describe("models.list", () => {
             provider: "demo-provider",
             contextWindow: 128_000,
             contextTokens: 96_000,
+            baseUrl: "http://127.0.0.1:1",
             input: ["text", "image", "private-runtime-capability", "image"],
           },
         ]),
@@ -2099,8 +2201,9 @@ describe("models.list", () => {
             id: "vision-model",
             name: "Vision Model",
             provider: "demo-provider",
-            available: false,
-            unavailableReason: "missing-auth",
+            ...(includeDetails
+              ? { contextTokens: 96_000, input: ["text", "image"], local: true }
+              : { available: false, unavailableReason: "missing-auth" }),
             contextWindow: 128_000,
           },
         ],

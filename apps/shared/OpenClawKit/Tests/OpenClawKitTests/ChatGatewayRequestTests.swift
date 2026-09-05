@@ -702,6 +702,22 @@ struct ChatGatewayPayloadCodecTests {
         #expect(identity.contract == "global|primary|work")
     }
 
+    @Test func `model choices distinguish an empty publication from a failed refresh`() throws {
+        let empty = Data(#"{"models":[]}"#.utf8)
+        let failed = Data(#"{"models":[],"refreshFailed":true}"#.utf8)
+
+        #expect(try OpenClawChatGatewayPayloadCodec.decodeModelChoices(empty).isEmpty)
+        #expect(throws: (any Error).self) {
+            _ = try OpenClawChatGatewayPayloadCodec.decodeModelChoices(failed)
+        }
+        let snapshot = try OpenClawChatGatewayPayloadCodec.decodeModelCatalog(
+            failed,
+            availabilityIsSessionScoped: true)
+        #expect(snapshot.refreshFailed)
+        #expect(snapshot.availabilityIsSessionScoped)
+        #expect(snapshot.choices.isEmpty)
+    }
+
     @Test func `model choices preserve metadata and replace blank names`() throws {
         let payload = Data(
             #"{"models":[{"id":"gpt-5","name":"  ","provider":"openai","available":false,"unavailableReason":"missing-auth","unavailableUntil":1234,"contextWindow":200000,"reasoning":true}]}"#

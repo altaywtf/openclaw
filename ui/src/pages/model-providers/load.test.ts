@@ -42,7 +42,6 @@ describe("loadModelProvidersData", () => {
     expect(request).toHaveBeenCalledWith("models.list", {
       view: "configured",
       agentId: "writer",
-      preparedOnly: true,
     });
     expect(
       request.mock.calls.filter(
@@ -335,7 +334,7 @@ describe("loadModelProvidersData", () => {
           if ((params as { refresh?: boolean } | undefined)?.refresh === true) {
             throw new Error("catalog refresh failed: OPENAI_API_KEY=sk-1234567890abcdef");
           }
-          if ((params as { preparedOnly?: boolean } | undefined)?.preparedOnly === true) {
+          if ((params as { refresh?: boolean } | undefined)?.refresh !== true) {
             return {
               models: [{ id: "cached", name: "Cached", provider: "openai" }],
             };
@@ -361,7 +360,7 @@ describe("loadModelProvidersData", () => {
     expect(result.models).toEqual([{ id: "cached", name: "Cached", provider: "openai" }]);
     expect(request.mock.calls.filter(([method]) => method === "models.list")).toEqual([
       ["models.list", { view: "configured", agentId: "writer", refresh: true }],
-      ["models.list", { view: "configured", agentId: "writer", preparedOnly: true }],
+      ["models.list", { view: "configured", agentId: "writer" }],
     ]);
   });
 });

@@ -115,6 +115,7 @@ function stubVeniceModelsFetch(rows: ModelSpecOverride[]) {
 
 async function discoverVeniceModels() {
   const provider = await buildOpenAICompatibleLiveModelProviderConfig({
+    discoveryMode: "strict",
     providerId: "venice",
     providerConfig: {
       baseUrl: VENICE_BASE_URL,
@@ -418,7 +419,7 @@ describe("venice-models", () => {
     },
   );
 
-  it("uses the shared fallback after a transient fetch failure", async () => {
+  it("propagates a transient fetch failure without retrying", async () => {
     let attempts = 0;
     const fetchMock = vi.fn(async () => {
       attempts += 1;
@@ -431,9 +432,10 @@ describe("venice-models", () => {
     });
     vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
 
-    const models = await runWithDiscoveryEnabled(() => discoverVeniceModels());
+    await expect(runWithDiscoveryEnabled(() => discoverVeniceModels())).rejects.toThrow(
+      "fetch failed",
+    );
     expect(attempts).toBe(1);
-    expect(models.map((m) => m.id)).toEqual(VENICE_MODEL_CATALOG.map((m) => m.id));
   });
 
   it("uses API maxCompletionTokens for catalog models when present", async () => {
@@ -569,7 +571,7 @@ describe("venice-models", () => {
     expect(newModel?.maxTokens).toBe(2048);
   });
 
-  it("falls back to static catalog after a discovery failure", async () => {
+  it("propagates a discovery failure without replacing live rows", async () => {
     const fetchMock = vi.fn(async () => {
       throw Object.assign(new TypeError("fetch failed"), {
         cause: { code: "ENOTFOUND", message: "getaddrinfo ENOTFOUND api.venice.ai" },
@@ -577,9 +579,9 @@ describe("venice-models", () => {
     });
     vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
 
-    const models = await runWithDiscoveryEnabled(() => discoverVeniceModels());
+    await expect(runWithDiscoveryEnabled(() => discoverVeniceModels())).rejects.toThrow(
+      "fetch failed",
+    );
     expect(fetchMock).toHaveBeenCalledOnce();
-    expect(models).toHaveLength(VENICE_MODEL_CATALOG.length);
-    expect(models.map((m) => m.id)).toEqual(VENICE_MODEL_CATALOG.map((m) => m.id));
   });
 });

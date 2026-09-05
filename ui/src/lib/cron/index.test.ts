@@ -292,7 +292,6 @@ describe("cron controller", () => {
         { id: "z-model", provider: "zai" },
         { id: "a-model", provider: "anthropic" },
         { id: "z-model", provider: "other" },
-        { provider: "missing-id" },
       ],
     }));
     const state = {
@@ -306,7 +305,6 @@ describe("cron controller", () => {
     expect(request).toHaveBeenCalledWith("models.list", {
       agentId: "writer",
       view: "configured",
-      preparedOnly: true,
     });
     expect(state.cronModelSuggestions).toEqual(["a-model", "z-model"]);
   });

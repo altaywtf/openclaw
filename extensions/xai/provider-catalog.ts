@@ -75,6 +75,7 @@ export async function buildLiveXaiProvider(params: {
       : buildXaiProvider("openai-responses", true);
   }
   return await buildLiveModelProviderConfig({
+    discoveryMode: "strict",
     providerId: PROVIDER_ID,
     endpoint: XAI_MODELS_ENDPOINT,
     providerConfig: {
@@ -170,6 +171,7 @@ export async function buildLiveXaiOAuthProvider(params: {
 }): Promise<ModelProviderConfig> {
   const fallback = buildXaiOAuthFallbackProvider();
   const provider = await buildLiveModelProviderConfig({
+    discoveryMode: "strict",
     providerId: PROVIDER_ID,
     endpoint: XAI_GROK_OAUTH_MODELS_ENDPOINT,
     providerConfig: {

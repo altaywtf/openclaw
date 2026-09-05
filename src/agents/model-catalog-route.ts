@@ -1,5 +1,7 @@
 /** Projects physical catalog rows for browse/presentation; never runtime execution. */
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
+import { isCanonicalDottedDecimalIPv4, isLoopbackIpAddress } from "@openclaw/net-policy/ip";
+import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import {
   resolveMergedModelProviderConfig,
   resolveMergedModelProviderModels,
@@ -12,6 +14,23 @@ import {
 } from "../plugins/provider-thinking-catalog.js";
 import type { ModelCatalogEntry } from "./model-catalog.types.js";
 import { splitTrailingAuthProfile } from "./model-ref-profile.js";
+
+export function isLocalBaseUrl(baseUrl: string): boolean {
+  try {
+    const url = new URL(baseUrl);
+    const host = normalizeLowercaseStringOrEmpty(url.hostname).replace(/^\[|\]$/g, "");
+    return (
+      host === "localhost" ||
+      (isCanonicalDottedDecimalIPv4(host) && isLoopbackIpAddress(host)) ||
+      host === "0.0.0.0" ||
+      host === "::" ||
+      host === "::1" ||
+      host.endsWith(".local")
+    );
+  } catch {
+    return false;
+  }
+}
 
 type ModelCatalogRouteMatcher = (
   entry: ModelCatalogEntry,

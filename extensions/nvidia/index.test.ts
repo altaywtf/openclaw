@@ -94,18 +94,6 @@ function buildCatalogContext(apiKey?: string) {
   };
 }
 
-function buildAugmentCatalogContext(apiKey?: string) {
-  const env = { ...process.env };
-  if (!apiKey) {
-    delete env.NVIDIA_API_KEY;
-  }
-  return {
-    ...buildCatalogContext(apiKey),
-    env,
-    entries: [],
-  };
-}
-
 describe("nvidia provider hooks", () => {
   it("registers the nvidia provider with correct metadata", async () => {
     const provider = await registerNvidiaProvider();
@@ -215,7 +203,8 @@ describe("nvidia provider hooks", () => {
   it("surfaces the bundled NVIDIA models without fetching when no NVIDIA API token is available", async () => {
     const provider = await registerNvidiaProvider();
 
-    const entries = await provider.augmentModelCatalog?.(buildAugmentCatalogContext());
+    const result = await provider.staticCatalog?.run(buildCatalogContext());
+    const entries = result && "provider" in result ? result.provider.models : [];
 
     expect(entries?.map((entry) => entry.id)).toEqual([
       "nvidia/nemotron-3-ultra-550b-a55b",
@@ -226,30 +215,21 @@ describe("nvidia provider hooks", () => {
       "minimaxai/minimax-m3",
       "deepseek-ai/deepseek-v4-pro",
     ]);
-    expect(entries?.every((entry) => entry.provider === "nvidia")).toBe(true);
     expect(ssrfRuntimeMocks.fetchWithSsrFGuard).not.toHaveBeenCalled();
   });
 
-  it("surfaces the bundled NVIDIA models when authenticated live discovery fails", async () => {
+  it("reports failed public inventory without attributing it to the activation credential", async () => {
     mockFeaturedCatalogResponse({ error: "unavailable" }, 503);
     const provider = await registerNvidiaProvider();
 
-    const entries = await provider.augmentModelCatalog?.(buildAugmentCatalogContext("nvapi-test"));
-
-    expect(entries?.map((entry) => entry.id)).toEqual([
-      "nvidia/nemotron-3-ultra-550b-a55b",
-      "nvidia/nemotron-3.5-lightning-30b-a3b",
-      "nvidia/nemotron-3-super-120b-a12b",
-      "z-ai/glm-5.2",
-      "moonshotai/kimi-k2.6",
-      "minimaxai/minimax-m3",
-      "deepseek-ai/deepseek-v4-pro",
-    ]);
-    expect(entries?.every((entry) => entry.provider === "nvidia")).toBe(true);
+    await expect(provider.catalog?.run(buildCatalogContext("nvapi-test"))).resolves.toEqual({
+      providers: {},
+      outcomes: [{ provider: "nvidia", status: "unavailable" }],
+    });
     expect(ssrfRuntimeMocks.fetchWithSsrFGuard).toHaveBeenCalledTimes(2);
   });
 
-  it("surfaces republished NVIDIA featured models via augmentModelCatalog", async () => {
+  it("publishes republished NVIDIA models through one live catalog owner", async () => {
     mockFeaturedCatalogResponse({
       "featured-models": [
         {
@@ -268,12 +248,72 @@ describe("nvidia provider hooks", () => {
     });
     const provider = await registerNvidiaProvider();
 
-    const entries = await provider.augmentModelCatalog?.(buildAugmentCatalogContext("nvapi-test"));
+    const result = await provider.catalog?.run(buildCatalogContext("nvapi-test"));
+    const entries = result && "provider" in result ? result.provider.models : [];
 
     expect(entries?.map((entry) => entry.id)).toEqual([
       "minimaxai/minimax-m3",
       "qwen/qwen3.5-397b-a17b",
     ]);
+    expect(result?.outcomes).toEqual([{ provider: "nvidia", status: "ready" }]);
+    await provider.augmentModelCatalog?.({
+      ...buildCatalogContext("nvapi-test"),
+      entries: [],
+    });
+    expect(ssrfRuntimeMocks.fetchWithSsrFGuard).toHaveBeenCalledTimes(2);
+  });
+
+  it("catalog cutover: reports incomplete refresh when learned NVIDIA chat metadata fails", async () => {
+    const inventoryUrl = "https://integrate.api.nvidia.com/v1/models";
+    const modelId = "fixture/unbundled-chat";
+    const release = vi.fn(async () => undefined);
+    let featuredUnavailable = false;
+    ssrfRuntimeMocks.fetchWithSsrFGuard.mockImplementation(async ({ url }: { url: string }) => {
+      if (url === inventoryUrl) {
+        return {
+          response: Response.json({ data: [{ id: modelId, object: "model" }] }),
+          finalUrl: url,
+          release,
+        };
+      }
+      expect(url).toBe(NVIDIA_FEATURED_MODELS_URL);
+      return {
+        response: featuredUnavailable
+          ? new Response("featured metadata unavailable", { status: 503 })
+          : Response.json({
+              "featured-models": [
+                {
+                  model: modelId,
+                  "model-name": "Unbundled chat",
+                  context: 131072,
+                  "max-output": 8192,
+                },
+              ],
+            }),
+        finalUrl: url,
+        release,
+      };
+    });
+    const provider = await registerNvidiaProvider();
+    const context = buildCatalogContext("activation-key");
+    await expect(provider.catalog?.run(context)).resolves.toMatchObject({
+      provider: { models: [{ id: modelId, contextWindow: 131072, maxTokens: 8192 }] },
+      outcomes: [{ provider: "nvidia", status: "ready" }],
+    });
+
+    clearLiveCatalogCacheForTests();
+    featuredUnavailable = true;
+    const refreshed = await provider.catalog?.run(context);
+
+    expect(refreshed?.outcomes).toEqual([{ provider: "nvidia", status: "unavailable" }]);
+    for (const endpoint of [inventoryUrl, NVIDIA_FEATURED_MODELS_URL]) {
+      expect(
+        ssrfRuntimeMocks.fetchWithSsrFGuard.mock.calls.filter(
+          ([request]) => request.url === endpoint,
+        ),
+      ).toHaveLength(2);
+    }
+    expect(release).toHaveBeenCalledTimes(4);
   });
 
   it("opts into literal provider-prefix preservation", async () => {

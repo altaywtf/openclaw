@@ -54,10 +54,11 @@ class ChatModelPickerTest {
   }
 
   @Test
-  fun fastModeSupportFollowsTheResolvedProviderAndExistingOverrides() {
+  fun fastModeSupportFollowsPublishedCapabilitiesAndExistingOverrides() {
     val catalog =
       listOf(
-        model(id = "gpt-5.6", provider = "openai"),
+        model(id = "gpt-5.6", provider = "openai").copy(supportsFastMode = true),
+        model(id = "plain", provider = "openai").copy(supportsFastMode = false),
         model(id = "claude-opus-4", provider = "anthropic"),
         model(id = "gemini-pro", provider = "google"),
       )
@@ -68,7 +69,7 @@ class ChatModelPickerTest {
         sessionModelProvider = null,
         catalog = catalog,
       )
-    val legacyCodexSupported =
+    val unknownSupported =
       fastModeProviderSupportedForSelection(
         selectedModelRef = "openai-codex/gpt-5.6",
         sessionModelProvider = null,
@@ -82,7 +83,14 @@ class ChatModelPickerTest {
       )
 
     assertTrue(openAiSupported)
-    assertTrue(legacyCodexSupported)
+    assertFalse(unknownSupported)
+    assertFalse(
+      fastModeProviderSupportedForSelection(
+        selectedModelRef = "openai/plain",
+        sessionModelProvider = null,
+        catalog = catalog,
+      ),
+    )
     assertFalse(googleSupported)
     assertTrue(
       fastModeSupportedForSelection(
@@ -92,8 +100,8 @@ class ChatModelPickerTest {
     )
     assertTrue(
       fastModeSupportedForSelection(
-        providerSupported = legacyCodexSupported,
-        hasConfiguredFastModeOverride = false,
+        providerSupported = unknownSupported,
+        hasConfiguredFastModeOverride = true,
       ),
     )
     assertFalse(

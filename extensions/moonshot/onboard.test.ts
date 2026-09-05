@@ -19,7 +19,12 @@ describe("Moonshot onboarding", () => {
 
     expect(MOONSHOT_DEFAULT_MODEL_ID).toBe(manifest.modelCatalog.providers.moonshot.defaultModel);
     expect(provider?.baseUrl).toBe(baseUrl);
-    expect(provider?.models.map((model) => model.id)).toEqual([MOONSHOT_DEFAULT_MODEL_ID]);
+    expect(provider?.models).toEqual([]);
+    expect(
+      applyConfig({ models: { mode: "replace" } }).models?.providers?.moonshot?.models.map(
+        (model) => model.id,
+      ),
+    ).toEqual([MOONSHOT_DEFAULT_MODEL_ID]);
     expect(resolveAgentModelPrimaryValue(config.agents?.defaults?.model)).toBe(
       MOONSHOT_DEFAULT_MODEL_REF,
     );

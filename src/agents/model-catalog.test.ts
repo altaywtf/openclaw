@@ -13,6 +13,7 @@ import {
   modelSupportsVision,
 } from "./model-catalog.js";
 import type { ModelCatalogEntry } from "./model-catalog.types.js";
+import { createModelVisibilityPolicy } from "./model-visibility-policy.js";
 import type { ModelRegistry } from "./sessions/index.js";
 
 type AugmentModelCatalogWithProviderPlugins =
@@ -509,54 +510,117 @@ describe("prepared model catalog builder", () => {
     ]);
   });
 
-  it("overlays configured metadata onto discovered rows", async () => {
-    const config: OpenClawConfig = {
-      plugins: { enabled: false },
-      models: {
-        providers: {
-          custom: {
-            baseUrl: "https://example.test/v1",
-            api: "openai-completions",
-            models: [
-              {
-                id: "demo",
-                name: "Configured Demo",
-                contextWindow: 32_000,
-                maxTokens: 4_096,
-                reasoning: true,
-                thinkingLevelMap: { off: null, xhigh: "xhigh" },
-                input: ["text", "image"],
-                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-              },
-            ],
+  it.each([
+    {
+      name: "provider defaults without an accepted route",
+      expectedName: "Discovered Demo",
+      expectedVariantCount: 2,
+      acceptedRoute: {},
+      modelRoute: {},
+      expectedRoute: {
+        api: "openai-completions",
+        baseUrl: "https://example.test/v1",
+      },
+    },
+    {
+      name: "accepted per-model route over provider defaults",
+      expectedName: "Discovered Demo",
+      expectedVariantCount: 1,
+      acceptedRoute: {
+        api: "openai-responses",
+        baseUrl: "https://account.example.test/v1",
+      },
+      modelRoute: {},
+      expectedRoute: {
+        api: "openai-responses",
+        baseUrl: "https://account.example.test/v1",
+      },
+    },
+    {
+      name: "explicit per-model pins equal to provider defaults",
+      expectedName: "Configured Demo",
+      expectedVariantCount: 2,
+      acceptedRoute: {
+        api: "openai-responses",
+        baseUrl: "https://account.example.test/v1",
+      },
+      modelRoute: {
+        api: "openai-completions",
+        baseUrl: "https://example.test/v1",
+      },
+      expectedRoute: {
+        api: "openai-completions",
+        baseUrl: "https://example.test/v1",
+      },
+    },
+  ] as const)(
+    "overlays configured metadata using $name",
+    async ({ acceptedRoute, modelRoute, expectedRoute, expectedName, expectedVariantCount }) => {
+      const config: OpenClawConfig = {
+        plugins: { enabled: false },
+        models: {
+          providers: {
+            custom: {
+              baseUrl: "https://example.test/v1",
+              api: "openai-completions",
+              models: [
+                {
+                  id: "demo",
+                  name: "Configured Demo",
+                  contextWindow: 32_000,
+                  maxTokens: 4_096,
+                  reasoning: true,
+                  thinkingLevelMap: { off: null, xhigh: "xhigh" },
+                  input: ["text", "image"],
+                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                  ...modelRoute,
+                },
+              ],
+            },
           },
         },
-      },
-    };
-    const snapshot = await build({
-      config,
-      entries: [
-        {
-          id: "demo",
-          name: "Discovered Demo",
-          provider: "custom",
-          input: ["text"],
-        },
-      ],
-    });
+      };
+      const snapshot = await build({
+        config,
+        entries: [
+          {
+            id: "demo",
+            name: "Discovered Demo",
+            provider: "custom",
+            input: ["text"],
+            ...acceptedRoute,
+          },
+        ],
+      });
 
-    expect(
-      findModelCatalogEntry(snapshot.entries, { provider: "custom", modelId: "demo" }),
-    ).toMatchObject({
-      name: "Discovered Demo",
-      api: "openai-completions",
-      contextWindow: 32_000,
-      reasoning: true,
-      thinkingLevelMap: { off: null, xhigh: "xhigh" },
-      input: ["text", "image"],
-    });
-    expect(snapshot.routeVariants).toHaveLength(2);
-  });
+      expect(
+        findModelCatalogEntry(snapshot.entries, { provider: "custom", modelId: "demo" }),
+      ).toMatchObject({
+        ...expectedRoute,
+        name: expectedName,
+        contextWindow: 32_000,
+        reasoning: true,
+        thinkingLevelMap: { off: null, xhigh: "xhigh" },
+        input: ["text", "image"],
+      });
+      expect(snapshot.routeVariants).toContainEqual(
+        expect.objectContaining({ id: "demo", provider: "custom", ...acceptedRoute }),
+      );
+      expect(snapshot.routeVariants).toContainEqual(
+        expect.objectContaining({ id: "demo", provider: "custom", ...expectedRoute }),
+      );
+      expect(snapshot.routeVariants).toHaveLength(expectedVariantCount);
+      const policy = createModelVisibilityPolicy({
+        cfg: config,
+        catalog: snapshot.entries,
+        defaultProvider: "custom",
+        manifestPlugins: metadataSnapshot,
+      });
+      expect(policy.configuredCatalog).toContainEqual(
+        expect.objectContaining({ id: "demo", provider: "custom", ...expectedRoute }),
+      );
+    },
+  );
 
   it.each([false, true])(
     "keeps the first matching catalog route with borrowed-row retargeting %s",

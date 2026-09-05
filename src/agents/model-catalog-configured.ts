@@ -14,10 +14,10 @@ export function mergeStaticModelCatalogEntries(params: {
   snapshot: ModelCatalogSnapshot;
   defaultModel?: string;
   metadataSnapshot: PluginMetadataSnapshot;
-  view: "default" | "configured" | "all";
+  view: "configured" | "all";
 }): ModelCatalogEntry[] {
   const catalog = [...params.snapshot.entries];
-  if (params.view === "default" || !params.snapshot.staticEntries?.length) {
+  if (!params.snapshot.staticEntries?.length) {
     return catalog;
   }
   const configuredKeys = new Set<string>();

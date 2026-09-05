@@ -22,6 +22,7 @@ import {
   createDiscordModelPickerModelToken,
   getDiscordModelPickerModelPage,
   getDiscordModelPickerProviderPage,
+  getDiscordModelPickerRuntimeChoices,
   normalizeModelPickerPage,
   type DiscordModelPickerBucket,
   type DiscordModelPickerCommandContext,
@@ -213,9 +214,10 @@ function buildBucketSelectRow(params: {
 function getRuntimeChoices(params: {
   data: ModelsProviderData;
   provider: string;
+  modelRef?: string;
 }): ModelsRuntimeChoice[] {
-  const choices = params.data.runtimeChoicesByProvider?.get(normalizeProviderId(params.provider));
-  if (choices?.length) {
+  const choices = getDiscordModelPickerRuntimeChoices(params);
+  if (choices !== undefined) {
     return choices;
   }
   return [
@@ -230,10 +232,11 @@ function getRuntimeChoices(params: {
 function resolveSelectedRuntime(params: {
   data: ModelsProviderData;
   provider: string;
+  modelRef?: string;
   currentRuntime?: string;
   pendingRuntime?: string;
 }): string {
-  const choices = getRuntimeChoices({ data: params.data, provider: params.provider });
+  const choices = getRuntimeChoices(params);
   const allowed = new Set(choices.map((choice) => choice.id));
   const pending = params.pendingRuntime?.trim();
   if (pending && allowed.has(pending)) {
@@ -243,7 +246,7 @@ function resolveSelectedRuntime(params: {
   if (current && allowed.has(current)) {
     return current;
   }
-  return choices[0]?.id ?? "openclaw";
+  return choices[0]?.id ?? params.currentRuntime ?? "auto";
 }
 
 function resolveExplicitRuntimeState(params: {
@@ -468,10 +471,12 @@ function buildModelRows(params: {
   const runtimeChoices = getRuntimeChoices({
     data: params.data,
     provider: params.modelPage.provider,
+    modelRef: params.pendingModel ?? params.currentModel,
   });
   const selectedRuntime = resolveSelectedRuntime({
     data: params.data,
     provider: params.modelPage.provider,
+    modelRef: params.pendingModel ?? params.currentModel,
     currentRuntime: params.currentRuntime,
     pendingRuntime: params.pendingRuntime,
   });
@@ -813,6 +818,7 @@ export function renderDiscordModelPickerModelsView(
     ? `Selected: ${params.pendingModel} · runtime ${resolveSelectedRuntime({
         data: params.data,
         provider: modelPage.provider,
+        modelRef: params.pendingModel,
         currentRuntime: params.currentRuntime,
         pendingRuntime: params.pendingRuntime,
       })} (press Submit)`

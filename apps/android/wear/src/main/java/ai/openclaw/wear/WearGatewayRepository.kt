@@ -131,6 +131,7 @@ internal data class WearModelList(
   val eventSequence: Long?,
   val phoneNodeId: String,
   val eventStreamId: String? = null,
+  val refreshFailed: Boolean = false,
 )
 
 internal data class WearModelSelection(
@@ -289,12 +290,17 @@ internal class WearGatewayRepository(
     capabilities: Set<WearProxyCapability>,
     selectedModelRef: String? = null,
     query: String? = null,
+    sessionKey: String? = null,
   ): WearModelList {
     capabilities.require(WearProxyCapability.ModelControls)
+    if (sessionKey != null) {
+      capabilities.require(WearProxyCapability.SessionScopedModelCatalog)
+    }
     val response =
       requester.request(
         WearRpcMethod.ModelsList,
         buildJsonObject {
+          sessionKey?.let { put("sessionKey", it) }
           selectedModelRef?.let { put("selectedModelRef", it) }
           if (WearProxyCapability.ModelCatalogSearch in capabilities) {
             query?.takeIf(String::isNotBlank)?.let { put("query", it) }
@@ -309,6 +315,7 @@ internal class WearGatewayRepository(
         (result["models"] as? JsonArray)
           .orEmpty()
           .mapNotNull(::parseModel),
+      refreshFailed = result.boolean("refreshFailed") ?: false,
       eventStreamId = response.eventStreamId,
       eventSequence = response.eventSequence,
       phoneNodeId = response.sourceNodeId,

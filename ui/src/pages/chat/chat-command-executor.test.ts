@@ -338,6 +338,7 @@ describe("executeSlashCommand directives", () => {
     expect(request).toHaveBeenNthCalledWith(1, "sessions.list", {});
     expect(request).toHaveBeenNthCalledWith(2, "models.list", {
       agentId: "main",
+      sessionKey: "main",
       view: "configured",
     });
   });
@@ -423,6 +424,7 @@ describe("executeSlashCommand directives", () => {
     expect(request).toHaveBeenCalledWith("models.list", {
       agentId: "work",
       view: "configured",
+      sessionKey: "agent:work:main",
     });
   });
 

@@ -342,10 +342,18 @@ struct IOSGatewayChatTransport: OpenClawChatTransport {
         guard let route = await self.currentSessionMutationRoute() else {
             throw CancellationError()
         }
-        let sessionScoped = await self.gateway.supportsServerCapability(
+        let catalogScoped = await self.gateway.supportsServerCapability(
+            .sessionScopedModelCatalog,
+            ifCurrentRoute: route) == true
+        let metadataScoped = await self.gateway.supportsServerCapability(
             .sessionScopedChatMetadata,
             ifCurrentRoute: route) == true
-        let request = if sessionScoped {
+        let request = if catalogScoped {
+            OpenClawChatGatewayRequests.modelsList(
+                agentID: agentID ?? self.globalAgentId,
+                sessionKey: sessionKey,
+                view: "configured")
+        } else if metadataScoped {
             OpenClawChatGatewayRequests.chatMetadata(
                 sessionKey: sessionKey,
                 fallbackAgentID: agentID ?? self.globalAgentId,
@@ -354,12 +362,14 @@ struct IOSGatewayChatTransport: OpenClawChatTransport {
             OpenClawChatGatewayRequests.modelsList(agentID: agentID)
         }
         let response = try await self.gateway.request(request, ifCurrentRoute: route)
-        let choices = try sessionScoped
-            ? OpenClawChatGatewayPayloadCodec.decodeChatMetadataModelChoices(response)
-            : OpenClawChatGatewayPayloadCodec.decodeModelChoices(response)
-        return OpenClawChatModelCatalogSnapshot(
-            choices: choices,
-            availabilityIsSessionScoped: sessionScoped)
+        if !catalogScoped, metadataScoped {
+            return OpenClawChatModelCatalogSnapshot(
+                choices: try OpenClawChatGatewayPayloadCodec.decodeChatMetadataModelChoices(response),
+                availabilityIsSessionScoped: true)
+        }
+        return try OpenClawChatGatewayPayloadCodec.decodeModelCatalog(
+            response,
+            availabilityIsSessionScoped: catalogScoped)
     }
 
     func isSwarmEnabled(sessionKey: String) async throws -> Bool {

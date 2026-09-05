@@ -32,4 +32,27 @@ describe("loadModelCatalog", () => {
       "catalog unavailable",
     );
   });
+
+  it("preserves the requested view and existing-session scope without discovery", async () => {
+    const request = vi.fn().mockResolvedValue({ models: [] });
+    const client = createTestGatewayClient(request);
+
+    await loadModelCatalog(client, {
+      agentId: "worker",
+      sessionKey: "agent:worker:existing",
+    });
+    await loadModelCatalog(client, { agentId: "worker", view: "provider-config" });
+    await loadModelCatalog(client, { agentId: "worker", view: "default" });
+    await loadModelCatalog(client, { sessionKey: "agent:worker:existing" });
+
+    expect(request.mock.calls).toEqual([
+      [
+        "models.list",
+        { agentId: "worker", sessionKey: "agent:worker:existing", view: "configured" },
+      ],
+      ["models.list", { agentId: "worker", view: "provider-config" }],
+      ["models.list", { agentId: "worker", view: "default" }],
+      ["models.list", { sessionKey: "agent:worker:existing", view: "configured" }],
+    ]);
+  });
 });

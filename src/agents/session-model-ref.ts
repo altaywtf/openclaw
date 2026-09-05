@@ -1,8 +1,10 @@
 // Resolves persisted session model metadata without loading Gateway projections.
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { resolveSessionAuthProfileOverrideSource } from "../config/sessions/auth-profile-override-provenance.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults.js";
+import type { ModelCatalogDecisionContext } from "./model-catalog-decisions.js";
 import {
   inferUniqueProviderFromConfiguredModels,
   normalizeStoredOverrideModel,
@@ -22,6 +24,32 @@ type SessionModelEntry =
       | "providerOverride"
       | "modelOverrideRouteResolution"
     >;
+
+export function resolveSessionModelProfiles(
+  config: OpenClawConfig,
+  agentId: string | undefined,
+  sessionEntry:
+    | (SessionModelEntry &
+        Pick<
+          SessionEntry,
+          "authProfileOverride" | "authProfileOverrideSource" | "authProfileOverrideCompactionCount"
+        >)
+    | undefined,
+): Pick<ModelCatalogDecisionContext, "profileProvider" | "preferredProfileId" | "lockedProfileId"> {
+  const profileId = sessionEntry?.authProfileOverride?.trim();
+  if (!profileId) {
+    return {};
+  }
+  return {
+    profileProvider: resolveSessionModelRef(config, sessionEntry, agentId, {
+      allowPluginNormalization: false,
+    }).provider,
+    preferredProfileId: profileId,
+    ...(resolveSessionAuthProfileOverrideSource(sessionEntry) === "user"
+      ? { lockedProfileId: profileId }
+      : {}),
+  };
+}
 
 export function resolveSessionModelRef(
   cfg: OpenClawConfig,

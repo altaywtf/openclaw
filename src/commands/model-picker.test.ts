@@ -208,7 +208,7 @@ describe("prepared picker presentation", () => {
     },
   );
 
-  it("loads only the chosen provider after an explicit browse", async () => {
+  it("reads the published catalog for the chosen agent after an explicit browse", async () => {
     const select = vi
       .fn()
       .mockResolvedValueOnce("__browse__")
@@ -230,8 +230,6 @@ describe("prepared picker presentation", () => {
         agentId: "research",
         agentDir: "/tmp/picker-research",
         readOnly: true,
-        providerDiscoveryProviderIds: ["fixture"],
-        scopedLiveProviderDiscovery: true,
       }),
     );
   });

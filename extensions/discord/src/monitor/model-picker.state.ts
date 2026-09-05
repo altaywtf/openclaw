@@ -194,9 +194,24 @@ function paginateItems<T>(params: {
 export async function loadDiscordModelPickerData(
   cfg: OpenClawConfig,
   agentId?: string,
+  options?: Parameters<
+    typeof import("openclaw/plugin-sdk/models-provider-runtime").buildPreparedModelsProviderData
+  >[2],
 ): Promise<ModelsProviderData> {
   const { buildPreparedModelsProviderData } = await loadModelsProviderRuntime();
-  return buildPreparedModelsProviderData(cfg, agentId);
+  return buildPreparedModelsProviderData(cfg, agentId, options);
+}
+
+export function getDiscordModelPickerRuntimeChoices(params: {
+  data: ModelsProviderData;
+  provider: string;
+  modelRef?: string;
+}) {
+  const provider = normalizeProviderId(params.provider);
+  if (params.modelRef?.startsWith(`${provider}/`) && params.data.runtimeChoicesByModel) {
+    return params.data.runtimeChoicesByModel.get(params.modelRef) ?? [];
+  }
+  return params.data.runtimeChoicesByProvider?.get(provider);
 }
 
 export function buildDiscordModelPickerCustomId(params: {

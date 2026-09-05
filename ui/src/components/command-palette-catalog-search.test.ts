@@ -71,7 +71,7 @@ describe("command palette catalog search", () => {
       }
     });
 
-    const items = await loadCommandPaletteCatalogItems({
+    const { items } = await loadCommandPaletteCatalogItems({
       client: { request } as unknown as GatewayBrowserClient,
       agentId: "main",
       agents: async () => ({
@@ -101,7 +101,6 @@ describe("command palette catalog search", () => {
     expect(request).toHaveBeenCalledWith("models.list", {
       view: "configured",
       agentId: "main",
-      preparedOnly: true,
     });
   });
 });

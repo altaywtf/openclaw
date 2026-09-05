@@ -610,7 +610,8 @@ class ChatControllerModelSelectionTest {
         """{"key":"main","sessionId":"model-session","modelProvider":"synthetic","model":"reasoning",${thinkingFields("high", "off", "high")},"permissionMode":null,"permissionModePending":false}"""
       val (controller, requests) =
         chatControllerTestSetup {
-          respond("chat.metadata") {
+          gatewayAdvertisesCapability = { it == "session-scoped-model-catalog" }
+          respond("models.list") {
             """
             {"commands":[],"models":[
               {"id":"reasoning","provider":"synthetic","available":true,"input":["text"],"reasoning":true},
@@ -1773,6 +1774,7 @@ class ChatControllerModelSelectionTest {
     runTest {
       val (controller, requests) =
         chatControllerTestSetup {
+          gatewayAdvertisesCapability = { it == "session-scoped-model-catalog" }
           respond("chat.history") { paramsJson ->
             """
             {
@@ -1787,7 +1789,7 @@ class ChatControllerModelSelectionTest {
             }
             """.trimIndent()
           }
-          respond("chat.metadata") { paramsJson ->
+          respond("models.list") { paramsJson ->
             """
             {
               "commands": [],
@@ -1866,6 +1868,7 @@ class ChatControllerModelSelectionTest {
         assertEquals(if (advertised == true) 2 else 1, metadata.size)
         assertEquals("ops", (metadata.last()["agentId"] as JsonPrimitive).content)
         assertEquals(if (advertised == true) JsonPrimitive("agent:ops:second") else null, metadata.last()["sessionKey"])
+        assertFalse(requests.any { it.first == "models.list" })
       }
     }
 
@@ -2014,7 +2017,8 @@ class ChatControllerModelSelectionTest {
       var sends = 0
       val controller =
         createScriptedChatController {
-          respond("chat.metadata") { availabilityMetadata(available, unavailableReason) }
+          gatewayAdvertisesCapability = { it == "session-scoped-model-catalog" }
+          respond("models.list") { availabilityMetadata(available, unavailableReason) }
           respond("sessions.patch", "{}")
           respond("chat.send") {
             sends += 1
@@ -2152,47 +2156,43 @@ class ChatControllerModelSelectionTest {
     }
 
   @Test
-  fun emptyModelCatalogIsRetriedOnNextHealthEvent() =
+  fun modelCatalogUsesScopedModelsListWithoutMetadataRows() =
     runTest {
-      var metadataRequests = 0
-      val controller =
-        createScriptedChatController {
-          respond("chat.metadata") { _ ->
-            metadataRequests += 1
-            if (metadataRequests == 1) {
-              """{"commands":[{"name":"new","textAliases":["/new"]}],"models":[]}"""
-            } else {
-              """{"commands":[{"name":"new","textAliases":["/new"]}],"models":[{"id":"gpt-5","provider":"openai","input":["text"]}]}"""
-            }
+      val sessionKey = "agent:worker:existing"
+      val (controller, requests) =
+        chatControllerTestSetup {
+          gatewayAdvertisesCapability = {
+            it == "session-scoped-model-catalog" || it == "session-scoped-chat-metadata"
           }
+          respond("chat.history", historyResponse("existing-session", emptyList()))
+          respond("chat.metadata", """{"commands":[{"name":"new","textAliases":["/new"]}],"swarmEnabled":false}""")
+          respond(
+            "models.list",
+            """{"models":[{"id":"catalog-model","name":"Catalog Model","provider":"synthetic","available":false,"unavailableReason":"auth-failed"}]}""",
+          )
         }
 
-      controller.handleGatewayEvent("health", null)
-      advanceUntilIdle()
-      assertTrue(controller.modelCatalog.value.isEmpty())
-
-      controller.handleGatewayEvent("health", null)
+      controller.load(sessionKey)
       advanceUntilIdle()
 
-      assertEquals(2, metadataRequests)
-      assertEquals(
-        "gpt-5",
-        controller.modelCatalog.value
-          .single()
-          .id,
-      )
+      assertEquals(listOf("new"), controller.commands.value.map { it.name })
+      assertEquals(listOf("catalog-model"), controller.modelCatalog.value.map { it.id })
+      assertEquals(GatewayModelUnavailableReason.AuthFailed, controller.modelCatalog.value.single().unavailableReason)
+      val params = json.parseToJsonElement(requests.single { it.first == "models.list" }.second.orEmpty()) as JsonObject
+      assertEquals(JsonPrimitive("worker"), params["agentId"])
+      assertEquals(JsonPrimitive(sessionKey), params["sessionKey"])
+      assertEquals(JsonPrimitive("configured"), params["view"])
+      assertFalse("refresh" in params)
     }
 
   @Test
-  fun validEmptyModelCatalogStopsAfterOneRetry() =
+  fun emptyPublishedCatalogDoesNotRetryOnHealthEvents() =
     runTest {
-      var metadataRequests = 0
-      val controller =
-        createScriptedChatController {
-          respond("chat.metadata") {
-            metadataRequests += 1
-            """{"commands":[],"models":[]}"""
-          }
+      val (controller, requests) =
+        chatControllerTestSetup {
+          gatewayAdvertisesCapability = { it == "session-scoped-model-catalog" }
+          respond("chat.metadata", """{"commands":[],"models":[]}""")
+          respond("models.list", """{"models":[]}""")
         }
 
       repeat(3) {
@@ -2200,8 +2200,92 @@ class ChatControllerModelSelectionTest {
         advanceUntilIdle()
       }
 
-      assertEquals(2, metadataRequests)
+      assertEquals(1, requests.count { it.first == "chat.metadata" })
+      assertEquals(1, requests.count { it.first == "models.list" })
       assertTrue(controller.modelCatalog.value.isEmpty())
+    }
+
+  @Test
+  fun failedCatalogRefreshRetainsAcceptedModelsUntilSuccessfulEmptyPublication() =
+    runTest {
+      var catalog = """{"models":[{"id":"kept","name":"Kept","provider":"synthetic"}]}"""
+      val controller =
+        createScriptedChatController {
+          gatewayAdvertisesCapability = { it == "session-scoped-model-catalog" }
+          respond("chat.history", historyResponse("catalog-session", emptyList()))
+          respond("chat.metadata") { catalog }
+          respond("models.list") { catalog }
+        }
+      controller.load("agent:main:catalog")
+      advanceUntilIdle()
+      assertEquals(listOf("kept"), controller.modelCatalog.value.map { it.id })
+
+      catalog = """{"models":[],"refreshFailed":true}"""
+      controller.handleGatewayEvent("chat.metadata.changed", "{}")
+      advanceUntilIdle()
+      assertEquals(listOf("kept"), controller.modelCatalog.value.map { it.id })
+
+      catalog = """{"models":[]}"""
+      controller.handleGatewayEvent("chat.metadata.changed", "{}")
+      advanceUntilIdle()
+      assertTrue(controller.modelCatalog.value.isEmpty())
+    }
+
+  @Test
+  fun modernCatalogPublishesBeforeCommandMetadataCompletes() =
+    runTest {
+      val metadata = CompletableDeferred<String>()
+      val (controller, requests) =
+        chatControllerTestSetup {
+          gatewayAdvertisesCapability = { it == "session-scoped-model-catalog" }
+          respond("chat.metadata") { metadata.await() }
+          respond("models.list", """{"models":[{"id":"ready","name":"Ready","provider":"synthetic"}]}""")
+        }
+      controller.refreshCommands()
+      runCurrent()
+
+      assertEquals(listOf("ready"), controller.modelCatalog.value.map { it.id })
+      assertEquals(1, requests.count { it.first == "models.list" })
+      assertTrue(controller.commands.value.isEmpty())
+
+      metadata.complete("""{"commands":[{"name":"new","textAliases":["/new"]}],"swarmEnabled":false}""")
+      advanceUntilIdle()
+      assertEquals(listOf("new"), controller.commands.value.map { it.name })
+    }
+
+  @Test
+  fun lateCatalogReadCannotApplyAnOlderSwarmDecision() =
+    runTest {
+      val oldCatalog = CompletableDeferred<String>()
+      var metadataReads = 0
+      var modelReads = 0
+      val controller =
+        createScriptedChatController {
+          gatewayAdvertisesCapability = { it == "session-scoped-model-catalog" }
+          respond("chat.metadata") {
+            metadataReads += 1
+            """{"commands":[],"swarmEnabled":${metadataReads > 1}}"""
+          }
+          respond("models.list") {
+            modelReads += 1
+            if (modelReads == 1) oldCatalog.await() else """{"models":[]}"""
+          }
+          respond(
+            "sessions.list",
+            """{"sessions":[{"key":"agent:main:subagent:child","parentSessionKey":"main","spawnedBy":"main","status":"running","subagentRunState":"active","hasActiveSubagentRun":true}],"totalCount":1,"hasMore":false}""",
+          )
+        }
+      controller.refreshCommands()
+      runCurrent()
+      controller.refreshCommands()
+      advanceUntilIdle()
+      val currentGroups = controller.swarmGroups.value
+      assertTrue(currentGroups.isNotEmpty())
+
+      oldCatalog.complete("""{"models":[]}""")
+      advanceUntilIdle()
+
+      assertEquals(currentGroups, controller.swarmGroups.value)
     }
 
   @Test
@@ -2211,6 +2295,7 @@ class ChatControllerModelSelectionTest {
       val persistedMessages = mutableListOf<ReplayHistoryMessage>()
       val controller =
         createScriptedChatController {
+          gatewayAdvertisesCapability = { it == "session-scoped-model-catalog" }
           respond("chat.send") { paramsJson ->
             val params = json.parseToJsonElement(paramsJson.orEmpty()) as JsonObject
             sentThinkingLevels += (params["thinking"] as JsonPrimitive).content
@@ -2219,9 +2304,8 @@ class ChatControllerModelSelectionTest {
             """{"runId":"run-${sentThinkingLevels.size}","status":"ok"}"""
           }
           respond("chat.history") { historyResponse("model-session", persistedMessages) }
-          // Gating reads the controller-owned agent-scoped catalog hydrated from chat.metadata.
           respond("sessions.list", """{"sessions":[]}""")
-          respond("chat.metadata") { paramsJson ->
+          respond("models.list") { paramsJson ->
             """
             {
               "commands": [],
@@ -2268,7 +2352,8 @@ class ChatControllerModelSelectionTest {
       val sentThinkingLevels = mutableListOf<String>()
       val controller =
         createScriptedChatController {
-          respond("chat.metadata") { paramsJson ->
+          gatewayAdvertisesCapability = { it == "session-scoped-model-catalog" }
+          respond("models.list") { paramsJson ->
             """
             {
               "commands": [],

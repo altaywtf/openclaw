@@ -144,6 +144,11 @@ class WearProtocolTest {
     assertEquals("gateway-controls", WearProxyCapability.GatewayControls.wireValue)
     assertEquals("model-controls", WearProxyCapability.ModelControls.wireValue)
     assertEquals("model-catalog-search", WearProxyCapability.ModelCatalogSearch.wireValue)
+    assertEquals("session-scoped-model-catalog", WearProxyCapability.SessionScopedModelCatalog.wireValue)
+    assertEquals(
+      WearProxyCapability.SessionScopedModelCatalog,
+      WearProxyCapability.fromWireValue("session-scoped-model-catalog"),
+    )
     assertEquals("session-selection-lookup", WearProxyCapability.SessionSelectionLookup.wireValue)
     assertEquals("session-search-pagination", WearProxyCapability.SessionSearchPagination.wireValue)
     assertEquals("agent-pulse", WearProxyCapability.AgentPulse.wireValue)

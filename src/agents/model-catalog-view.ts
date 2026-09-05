@@ -60,11 +60,10 @@ function preparedAuthLabel(evaluation: ModelAuthAvailabilityEvaluation): string 
 }
 
 export async function prepareModelCatalogView(params: ModelCatalogViewParams) {
-  const view = params.view ?? "default";
+  const view = params.view === "all" ? "all" : "configured";
   const defaultModel = resolveAgentEffectiveModelPrimary(params.cfg, params.agentId);
   const isVisibleProvider = createModelPickerVisibleProviderPredicate({
-    config: params.cfg,
-    includeSetupRegistry: true,
+    runtimeBindings: params.snapshot.runtimeBindings ?? [],
   });
   const catalog = (
     params.inventoryEntries ??
@@ -122,6 +121,7 @@ export async function prepareModelCatalogView(params: ModelCatalogViewParams) {
     manifestPlugins: params.metadataSnapshot,
   });
   const runtimes = new Map<string, GatewayAgentRuntime | undefined>();
+  const runtimeChoices = new Map<string, readonly string[]>();
   const labelsByProvider = new Map<string, Set<string | undefined>>();
   const entries = readCatalog().map((entry) => {
     const configured = configuredEntries.byKey.get(`${entry.provider}/${entry.id}`);
@@ -176,6 +176,7 @@ export async function prepareModelCatalogView(params: ModelCatalogViewParams) {
     labels.add(preparedAuthLabel(evaluation));
     labelsByProvider.set(entry.provider, labels);
     runtimes.set(key, runtime);
+    runtimeChoices.set(key, await decisions.runtimeChoices(entry, params));
     fastModes.set(key, resolveFastMode({ entry, evaluation, runtime }));
   }
   return {
@@ -208,6 +209,8 @@ export async function prepareModelCatalogView(params: ModelCatalogViewParams) {
       }),
     ),
     runtime: (entry: ModelCatalogEntry) => runtimes.get(resolveModelCatalogIdentityKey(entry)),
+    runtimeChoices: (entry: ModelCatalogEntry) =>
+      runtimeChoices.get(resolveModelCatalogIdentityKey(entry)) ?? [],
     supportsFastMode: (entry: ModelCatalogEntry) =>
       fastModes.get(resolveModelCatalogIdentityKey(entry)),
     evaluate(entry: ModelCatalogEntry) {
@@ -224,7 +227,7 @@ export async function loadPreparedModelCatalogView(
   params: LoadPreparedModelCatalogParams &
     Pick<
       ModelCatalogViewParams,
-      "view" | "preferredProfileId" | "lockedProfileId" | "runtimeOverride"
+      "view" | "profileProvider" | "preferredProfileId" | "lockedProfileId" | "runtimeOverride"
     > = {},
 ) {
   const { loadResolvedPublishedModelCatalogOwner } = await import("./prepared-model-catalog.js");
@@ -241,6 +244,7 @@ export async function loadPreparedModelCatalogView(
     auth: { authStore: owner.authStore, providerAuth: owner.providerAuth },
     authMaterializations: getPreparedModelRuntimeAuthMaterializations(owner),
     view: params.view,
+    profileProvider: params.profileProvider,
     preferredProfileId: params.preferredProfileId,
     lockedProfileId: params.lockedProfileId,
     runtimeOverride: params.runtimeOverride,

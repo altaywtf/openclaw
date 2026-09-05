@@ -2,10 +2,7 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
-import {
-  buildConfiguredModelCatalog,
-  resolveConfiguredModelRef,
-} from "../agents/model-selection.js";
+import { resolveConfiguredModelRef } from "../agents/model-selection.js";
 import { getChannelPlugin, getLoadedChannelPlugin } from "../channels/plugins/index.js";
 import type { OpenClawConfig } from "../config/types.js";
 import type { SkillCommandSpec } from "../skills/types.js";
@@ -378,7 +375,7 @@ export function resolveCommandArgChoices(params: {
           provider: params.provider ?? defaults.provider,
           model: params.model ?? defaults.model,
           agentRuntime: params.agentRuntime,
-          catalog: params.catalog ?? (cfg ? buildConfiguredModelCatalog({ cfg }) : undefined),
+          catalog: params.catalog,
           command,
           arg,
         };
@@ -406,7 +403,6 @@ export function resolveCommandArgMenu(params: {
   if (command.argsParsing === "none") {
     return null;
   }
-  const resolvedCatalog = catalog ?? (cfg ? buildConfiguredModelCatalog({ cfg }) : undefined);
   const argSpec = command.argsMenu;
   const argName =
     argSpec === "auto"
@@ -419,7 +415,7 @@ export function resolveCommandArgMenu(params: {
               provider,
               model,
               agentRuntime,
-              catalog: resolvedCatalog,
+              catalog,
             }).length > 0,
         )?.name
       : argSpec.arg;
@@ -443,7 +439,7 @@ export function resolveCommandArgMenu(params: {
     provider,
     model,
     agentRuntime,
-    catalog: resolvedCatalog,
+    catalog,
   });
   if (choices.length === 0) {
     return null;

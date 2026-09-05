@@ -3,24 +3,20 @@
  * this module to merge implicit provider discovery, explicit config, and
  * preserved secrets before touching models.json.
  */
-import { mergeModelCost } from "../config/model-cost.js";
+import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
 import type { ProviderCatalogOutcome } from "../plugins/provider-catalog.types.js";
+import { isProviderCatalogSourceAllowed } from "../plugins/provider-config-owner.js";
 import type { PreparedProviderStaticCatalog } from "../plugins/provider-discovery.js";
 import { isRecord } from "../utils.js";
 import type { AuthProfileStore } from "./auth-profiles/types.js";
 import {
-  modelKey,
-  createConfiguredProviderCatalogModelIdNormalizer,
-  type ModelManifestNormalizationContext,
-} from "./model-ref-shared.js";
-import {
+  buildSourceModelFields,
   mergeProviders,
   mergeWithExistingProviderSecrets,
   normalizeProviderMapKeys,
   type ExistingProviderConfig,
-  type SourceModelFields,
 } from "./models-config.merge.js";
 import {
   enforceSourceManagedProviderSecrets,
@@ -71,7 +67,7 @@ type ResolveImplicitProvidersForModelsJson = (params: {
   providerDiscoveryProviderIds?: readonly string[];
   providerDiscoveryTimeoutMs?: number;
   providerDiscoveryEntriesOnly?: boolean;
-  sourceModelFields?: SourceModelFields;
+  onProviderCatalogOutcome?: (outcome: ProviderCatalogOutcome) => void;
 }) => Promise<Record<string, ProviderConfig>>;
 
 /**
@@ -128,34 +124,13 @@ function buildPluginCatalogWrites(
   );
 }
 
-function buildSourceModelFields(
-  sourceProviders: Record<string, ProviderConfig> | undefined,
-  manifestPlugins: ModelManifestNormalizationContext["manifestPlugins"],
-): SourceModelFields {
-  const normalizeModelId = createConfiguredProviderCatalogModelIdNormalizer({ manifestPlugins });
-  const fields = new Map<
-    string,
-    { inputOmitted: boolean; cost: ReturnType<typeof mergeModelCost> }
-  >();
-  for (const [providerId, provider] of Object.entries(normalizeProviderMapKeys(sourceProviders))) {
-    for (const model of provider.models ?? []) {
-      const key = modelKey(providerId, normalizeModelId(providerId, model.id));
-      const existing = fields.get(key);
-      fields.set(key, {
-        inputOmitted: existing?.inputOmitted || !Object.hasOwn(model, "input"),
-        // Duplicate source rows keep the same first-authored priority as publication.
-        cost: mergeModelCost(model.cost, existing?.cost),
-      });
-    }
-  }
-  return fields;
-}
-
 /** Resolves providers for models.json with injectable implicit-provider discovery. */
 async function resolveProvidersForModelsJsonWithDeps(
   params: {
     context: PreparedModelsConfigContext;
     authStore?: AuthProfileStore;
+    existingProviders?: Record<string, ExistingProviderConfig>;
+    failedProviderIds?: Set<string>;
   },
   deps?: {
     resolveImplicitProviders?: ResolveImplicitProvidersForModelsJson;
@@ -176,6 +151,7 @@ async function resolveProvidersForModelsJsonWithDeps(
     return mergeProviders({ implicit: {}, explicit: explicitProviders });
   }
   const resolveImplicitProvidersImpl = deps?.resolveImplicitProviders ?? resolveImplicitProviders;
+  const failedProviderIds = params.failedProviderIds ?? new Set<string>();
   const implicitProviders = await resolveImplicitProvidersImpl({
     agentDir,
     ...(params.authStore ? { authStore: params.authStore } : {}),
@@ -185,7 +161,6 @@ async function resolveProvidersForModelsJsonWithDeps(
     env,
     ...(context.workspaceDir ? { workspaceDir: context.workspaceDir } : {}),
     explicitProviders,
-    sourceModelFields,
     ...(context.pluginMetadataSnapshot
       ? { pluginMetadataSnapshot: context.pluginMetadataSnapshot }
       : {}),
@@ -201,10 +176,45 @@ async function resolveProvidersForModelsJsonWithDeps(
     ...(context.providerDiscoveryEntriesOnly === true
       ? { providerDiscoveryEntriesOnly: true }
       : {}),
-    ...(context.onProviderCatalogOutcome
-      ? { onProviderCatalogOutcome: context.onProviderCatalogOutcome }
-      : {}),
+    onProviderCatalogOutcome: (outcome) => {
+      if (outcome.status !== "ready") {
+        failedProviderIds.add(normalizeProviderId(outcome.provider));
+      }
+      context.onProviderCatalogOutcome?.(outcome);
+    },
   });
+  for (const providerId of failedProviderIds) {
+    const cached = params.existingProviders?.[providerId];
+    const pluginId = resolvePluginModelCatalogOwnerPluginId({
+      providerId,
+      pluginMetadataSnapshot: context.pluginMetadataSnapshot,
+    });
+    if (
+      !cached ||
+      !Array.isArray(cached.models) ||
+      !isProviderCatalogSourceAllowed({
+        provider: providerId,
+        config: cfg,
+        plugin: context.pluginMetadataSnapshot?.manifestRegistry.plugins.find(
+          (candidate) => candidate.id === pluginId,
+        ),
+      })
+    ) {
+      continue;
+    }
+    // Recover inventory, never cached authentication. Current source config and auth
+    // normalization below own credentials, headers, and explicit model overrides.
+    implicitProviders[providerId] = {
+      baseUrl: cached.baseUrl,
+      api: cached.api,
+      models: cached.models.map(({ headers: _headers, ...model }) =>
+        Object.assign(model, {
+          api: model.api ?? cached.api,
+          baseUrl: model.baseUrl ?? cached.baseUrl,
+        }),
+      ),
+    };
+  }
   return mergeProviders({
     implicit: implicitProviders,
     explicit: explicitProviders,
@@ -232,24 +242,16 @@ function stripBlankProviderBaseUrls(
 
 function resolveProvidersForMode(params: {
   mode: NonNullable<ModelsConfig["mode"]>;
-  existingParsed: unknown;
+  existingProviders: Record<string, ExistingProviderConfig>;
   providers: Record<string, ProviderConfig>;
   secretRefManagedProviders: ReadonlySet<string>;
 }): Record<string, ProviderConfig> {
   if (params.mode !== "merge") {
     return params.providers;
   }
-  const existing = params.existingParsed;
-  if (!isRecord(existing) || !isRecord(existing.providers)) {
-    return params.providers;
-  }
-  const existingProviders = existing.providers as Record<
-    string,
-    NonNullable<ModelsConfig["providers"]>[string]
-  >;
   return mergeWithExistingProviderSecrets({
     nextProviders: params.providers,
-    existingProviders: existingProviders as Record<string, ExistingProviderConfig>,
+    existingProviders: params.existingProviders,
     secretRefManagedProviders: params.secretRefManagedProviders,
   });
 }
@@ -285,9 +287,18 @@ async function planOpenClawModelsJsonWithDeps(
 ): Promise<ModelsJsonPlan> {
   const { context } = params;
   const { cfg, agentDir, env } = context;
+  const existingProviders =
+    isRecord(params.existingParsed) && isRecord(params.existingParsed.providers)
+      ? normalizeProviderMapKeys(
+          params.existingParsed.providers as Record<string, ExistingProviderConfig>,
+        )
+      : {};
+  const failedProviderIds = new Set<string>();
   const providers = await resolveProvidersForModelsJsonWithDeps(
     {
       context,
+      existingProviders,
+      failedProviderIds,
       ...(params.authStore ? { authStore: params.authStore } : {}),
     },
     deps,
@@ -326,7 +337,11 @@ async function planOpenClawModelsJsonWithDeps(
     }) ?? providers;
   const mergedProviders = resolveProvidersForMode({
     mode,
-    existingParsed: params.existingParsed,
+    existingProviders: Object.fromEntries(
+      Object.entries(existingProviders).filter(
+        ([providerId]) => !failedProviderIds.has(providerId),
+      ),
+    ),
     providers: normalizedProviders,
     secretRefManagedProviders,
   });

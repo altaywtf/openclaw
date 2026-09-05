@@ -79,6 +79,54 @@ describe("amazon-bedrock-mantle provider plugin", () => {
     }
     expect(result.provider.baseUrl).toBe("https://bedrock-mantle.us-east-1.api.aws/v1");
     expect(result.provider.models[0]?.input).toEqual(["text", "image"]);
+    expect(result.outcomes).toEqual([{ provider: "amazon-bedrock-mantle", status: "ready" }]);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it.each([401, 403, 503])("reports HTTP %s catalog failure without stale rows", async (status) => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(null, { status }));
+    const provider = await registerSingleProviderPlugin(bedrockMantlePlugin);
+
+    await expect(
+      provider.catalog?.run({
+        config: {},
+        env: {
+          AWS_BEARER_TOKEN_BEDROCK: `rejected-test-token-${status}`,
+          AWS_REGION: "us-east-1",
+        },
+      } as never),
+    ).resolves.toEqual({
+      providers: {},
+      outcomes: [
+        {
+          provider: "amazon-bedrock-mantle",
+          status: status === 503 ? "unavailable" : "auth-rejected",
+          ...(status === 503 ? {} : { rejectionScope: "catalog" }),
+        },
+      ],
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("reports an empty successful catalog without adding static models", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ data: [] }), {
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const provider = await registerSingleProviderPlugin(bedrockMantlePlugin);
+
+    await expect(
+      provider.catalog?.run({
+        config: {},
+        env: { AWS_BEARER_TOKEN_BEDROCK: "empty-catalog-token", AWS_REGION: "us-east-1" },
+      } as never),
+    ).resolves.toMatchObject({
+      provider: { models: [], auth: "api-key", apiKey: "env:AWS_BEARER_TOKEN_BEDROCK" },
+      outcomes: [{ provider: "amazon-bedrock-mantle", status: "ready" }],
+    });
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 

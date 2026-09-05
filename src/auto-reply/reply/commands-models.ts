@@ -4,12 +4,15 @@ import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
-import { resolveAgentDir, resolveSessionAgentId } from "../../agents/agent-scope.js";
-import { listCliRuntimeModelBackendBindings } from "../../agents/cli-backends.js";
-import { resolveAgentHarnessPolicy } from "../../agents/harness/policy.js";
+import {
+  resolveAgentDir,
+  resolveAmbientOwnerAgentId,
+  resolveSessionAgentId,
+} from "../../agents/agent-scope.js";
 import { loadPreparedModelCatalogView } from "../../agents/model-catalog-view.js";
 import type { ModelCatalogEntry } from "../../agents/model-catalog.types.js";
 import { normalizeProviderId } from "../../agents/model-selection.js";
+import { resolveSessionModelProfiles } from "../../agents/session-model-ref.js";
 import { getChannelPlugin } from "../../channels/plugins/index.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -23,9 +26,8 @@ const PAGE_SIZE_MAX = 100;
 const MODELS_ADD_DEPRECATED_TEXT =
   "⚠️ /models add is deprecated. Use /models to browse providers and /model to switch models.";
 
-type ModelsCommandSessionEntry = Partial<
-  Pick<SessionEntry, "authProfileOverride" | "modelProvider" | "model">
->;
+type ModelsCommandSessionEntry = NonNullable<Parameters<typeof resolveSessionModelProfiles>[2]> &
+  Pick<SessionEntry, "spawnedWorkspaceDir">;
 
 export type ModelsProviderData = {
   byProvider: Map<string, Set<string>>;
@@ -34,6 +36,7 @@ export type ModelsProviderData = {
   modelNames: Map<string, string>;
   providerAuthLabels?: ReadonlyMap<string, string>;
   runtimeChoicesByProvider?: Map<string, ModelsRuntimeChoice[]>;
+  runtimeChoicesByModel?: Map<string, ModelsRuntimeChoice[]>;
 };
 
 type PreparedModelsProviderData = ModelsProviderData & {
@@ -61,121 +64,55 @@ type ParsedModelsCommand =
       modelId?: string;
     };
 
-function normalizeRuntimeChoiceId(runtime: string | undefined): string {
-  const normalized = normalizeLowercaseStringOrEmpty(runtime);
-  if (!normalized || normalized === "auto" || normalized === "default") {
-    return "openclaw";
-  }
-  return normalized;
-}
-
-function buildRuntimeChoice(params: {
-  cfg: OpenClawConfig;
-  provider: string;
-  runtime: string;
-  cli?: boolean;
-}): ModelsRuntimeChoice {
-  const id = normalizeRuntimeChoiceId(params.runtime);
-  const label = resolveAgentRuntimeLabel({ config: params.cfg, resolvedHarness: id });
-  return {
-    id,
-    label,
-    description:
-      id === "openclaw"
-        ? "Use the built-in OpenClaw runtime."
-        : params.cli
-          ? `Run ${params.provider} models through ${label}.`
-          : `Use the ${label} runtime selected by the effective harness policy.`,
-  };
-}
-
-function buildDefaultRuntimeChoice(params: {
-  cfg: OpenClawConfig;
-  agentId?: string;
-  provider: string;
-  modelId?: string;
-}): ModelsRuntimeChoice {
-  const harnessPolicy = resolveAgentHarnessPolicy({
-    config: params.cfg,
-    provider: params.provider,
-    modelId: params.modelId,
-    agentId: params.agentId,
-  });
-  return buildRuntimeChoice({
-    cfg: params.cfg,
-    provider: params.provider,
-    runtime: harnessPolicy.runtime,
-  });
-}
-
-function addRuntimeChoice(
-  choices: ModelsRuntimeChoice[],
-  choice: ModelsRuntimeChoice,
-): ModelsRuntimeChoice[] {
-  if (!choices.some((existing) => existing.id === choice.id)) {
-    choices.push(choice);
-  }
-  return choices;
-}
-
 export async function buildPreparedModelsProviderData(
   cfg: OpenClawConfig,
   agentId?: string,
-  options: { view?: "default" | "all"; workspaceDir?: string } = {},
+  options: {
+    view?: "default" | "all";
+    workspaceDir?: string;
+    sessionEntry?: ModelsCommandSessionEntry;
+  } = {},
 ): Promise<PreparedModelsProviderData> {
+  const resolvedAgentId = resolveAmbientOwnerAgentId(cfg, agentId);
   const view = await loadPreparedModelCatalogView({
     config: cfg,
-    agentId,
-    workspaceDir: options.workspaceDir,
-    readOnly: options.view !== "all",
-    ...(options.view === "all" ? { refreshFullCatalog: true } : {}),
+    agentId: resolvedAgentId,
+    workspaceDir: options.workspaceDir ?? options.sessionEntry?.spawnedWorkspaceDir,
+    readOnly: true,
     view: options.view,
+    ...resolveSessionModelProfiles(cfg, resolvedAgentId, options.sessionEntry),
   });
   const { resolvedDefault } = view;
   const byProvider = new Map<string, Set<string>>();
   const modelNames = new Map<string, string>();
+  const runtimeChoicesByProvider = new Map<string, ModelsRuntimeChoice[]>();
+  const runtimeChoicesByModel = new Map<string, ModelsRuntimeChoice[]>();
   for (const entry of view.entries) {
     const models = byProvider.get(entry.provider) ?? new Set<string>();
     models.add(entry.id);
     byProvider.set(entry.provider, models);
     modelNames.set(`${entry.provider}/${entry.id}`, entry.name);
+    const modelChoices = view.runtimeChoices(entry).map((runtimeId) => {
+      const label = resolveAgentRuntimeLabel({ config: cfg, resolvedHarness: runtimeId });
+      return {
+        id: runtimeId,
+        label,
+        description:
+          runtimeId === "openclaw"
+            ? "Use the built-in OpenClaw runtime."
+            : `Use the ${label} runtime.`,
+      };
+    });
+    runtimeChoicesByModel.set(`${entry.provider}/${entry.id}`, modelChoices);
+    const choices = runtimeChoicesByProvider.get(entry.provider) ?? [];
+    for (const choice of modelChoices) {
+      if (!choices.some((existing) => existing.id === choice.id)) {
+        choices.push(choice);
+      }
+    }
+    runtimeChoicesByProvider.set(entry.provider, choices);
   }
   const providers = [...byProvider.keys()].toSorted();
-  const runtimeChoicesByProvider = new Map<string, ModelsRuntimeChoice[]>();
-  const runtimeBindings = [
-    { provider: "openai", runtime: "codex", cli: false },
-    ...listCliRuntimeModelBackendBindings().map((binding) => ({
-      provider: binding.provider,
-      runtime: binding.runtime,
-      cli: true,
-    })),
-  ];
-  for (const binding of runtimeBindings) {
-    const provider = normalizeProviderId(binding.provider);
-    const defaultModelId =
-      provider === normalizeProviderId(resolvedDefault.provider)
-        ? resolvedDefault.model
-        : undefined;
-    const choices = runtimeChoicesByProvider.get(provider) ?? [
-      buildDefaultRuntimeChoice({
-        cfg,
-        agentId,
-        provider,
-        modelId: defaultModelId,
-      }),
-    ];
-    addRuntimeChoice(choices, buildRuntimeChoice({ cfg, provider, runtime: "openclaw" }));
-    addRuntimeChoice(
-      choices,
-      buildRuntimeChoice({
-        cfg,
-        provider,
-        runtime: binding.runtime,
-        cli: binding.cli,
-      }),
-    );
-    runtimeChoicesByProvider.set(provider, choices);
-  }
 
   return {
     byProvider,
@@ -185,6 +122,7 @@ export async function buildPreparedModelsProviderData(
     modelCatalog: view.entries,
     providerAuthLabels: view.providerAuthLabels,
     runtimeChoicesByProvider,
+    runtimeChoicesByModel,
   };
 }
 
@@ -328,6 +266,7 @@ export async function resolveModelsCommandReply(params: {
     await buildPreparedModelsProviderData(params.cfg, params.agentId, {
       ...(parsed.action === "list" && parsed.all ? { view: "all" as const } : {}),
       workspaceDir: params.workspaceDir,
+      sessionEntry: params.sessionEntry,
     });
   const commandPlugin = params.surface ? getChannelPlugin(params.surface) : null;
   const providerInfos = buildProviderInfos({ providers, byProvider });

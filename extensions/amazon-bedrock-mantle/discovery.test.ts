@@ -101,6 +101,41 @@ describe("bedrock mantle discovery", () => {
     vi.restoreAllMocks();
   });
 
+  it.each(["http", "network"])(
+    "catalog cutover: does not report stale Mantle models after %s failure",
+    async (failureKind) => {
+      let now = 1_000_000;
+      const mockFetch = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(
+          modelDiscoveryResponse({ data: [{ id: "test.model", object: "model" }] }),
+        );
+      if (failureKind === "http") {
+        mockFetch.mockResolvedValueOnce(
+          modelDiscoveryResponse({ error: "unavailable" }, { status: 503 }),
+        );
+      } else {
+        mockFetch.mockRejectedValueOnce(new Error("Mantle model list unavailable"));
+      }
+      await discoverMantleModels({
+        region: testRegion,
+        bearerToken: "test-token",
+        fetchFn: mockFetch,
+        now: () => now,
+      });
+      now += 7_200_000;
+      await expect(
+        discoverMantleModels({
+          region: testRegion,
+          bearerToken: "test-token",
+          fetchFn: mockFetch,
+          now: () => now,
+        }),
+      ).rejects.toThrow();
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    },
+  );
+
   // ---------------------------------------------------------------------------
   // Bearer token resolution
   // ---------------------------------------------------------------------------
@@ -539,33 +574,33 @@ describe("bedrock mantle discovery", () => {
     expect(byId["mistral.mistral-large-3-675b-instruct"]?.reasoning).toBe(false);
   });
 
-  it("returns empty array on permission error", async () => {
+  it("propagates permission errors after releasing the response body", async () => {
     const response = modelDiscoveryResponse(
       { error: "forbidden" },
       { status: 403, statusText: "Forbidden" },
     );
-    const mockFetch = vi.fn().mockResolvedValue(response);
+    const mockFetch = vi.fn<typeof fetch>().mockResolvedValue(response);
 
-    const models = await discoverMantleModels({
-      region: testRegion,
-      bearerToken: "test-token",
-      fetchFn: mockFetch as unknown as typeof fetch,
-    });
-
-    expect(models).toStrictEqual([]);
+    await expect(
+      discoverMantleModels({
+        region: testRegion,
+        bearerToken: "test-token",
+        fetchFn: mockFetch,
+      }),
+    ).rejects.toMatchObject({ status: 403 });
     expect(response.bodyUsed).toBe(true);
   });
 
-  it("returns empty array on network error", async () => {
-    const mockFetch = vi.fn().mockRejectedValue(new Error("ECONNREFUSED"));
+  it("propagates network errors", async () => {
+    const mockFetch = vi.fn<typeof fetch>().mockRejectedValue(new Error("ECONNREFUSED"));
 
-    const models = await discoverMantleModels({
-      region: testRegion,
-      bearerToken: "test-token",
-      fetchFn: mockFetch as unknown as typeof fetch,
-    });
-
-    expect(models).toStrictEqual([]);
+    await expect(
+      discoverMantleModels({
+        region: testRegion,
+        bearerToken: "test-token",
+        fetchFn: mockFetch,
+      }),
+    ).rejects.toThrow("ECONNREFUSED");
   });
 
   it("filters out models with empty IDs", async () => {
@@ -617,15 +652,15 @@ describe("bedrock mantle discovery", () => {
       headers: { "Content-Type": "application/json" },
     });
     Object.defineProperty(response, "json", { value: json });
-    const mockFetch = vi.fn().mockResolvedValue(response);
+    const mockFetch = vi.fn<typeof fetch>().mockResolvedValue(response);
 
-    const models = await discoverMantleModels({
-      region: testRegion,
-      bearerToken: "test-token",
-      fetchFn: mockFetch as unknown as typeof fetch,
-    });
-
-    expect(models).toStrictEqual([]);
+    await expect(
+      discoverMantleModels({
+        region: testRegion,
+        bearerToken: "test-token",
+        fetchFn: mockFetch,
+      }),
+    ).rejects.toThrow();
     expect(json).not.toHaveBeenCalled();
   });
 
@@ -637,14 +672,28 @@ describe("bedrock mantle discovery", () => {
       async () => new Response(invalidBody, { headers: { "content-type": "application/json" } }),
     );
 
-    const models = await discoverMantleModels({
-      region: testRegion,
-      bearerToken: "test-token",
-      fetchFn: mockFetch,
-    });
-
-    expect(models).toStrictEqual([]);
+    await expect(
+      discoverMantleModels({
+        region: testRegion,
+        bearerToken: "test-token",
+        fetchFn: mockFetch,
+      }),
+    ).rejects.toThrow();
   });
+
+  it.each([null, {}, { data: "not-an-array" }])(
+    "rejects an incomplete catalog response: %j",
+    async (body) => {
+      const mockFetch = vi.fn<typeof fetch>(async () => modelDiscoveryResponse(body));
+      await expect(
+        discoverMantleModels({
+          region: testRegion,
+          bearerToken: "test-token",
+          fetchFn: mockFetch,
+        }),
+      ).rejects.toThrow("data array");
+    },
+  );
 
   // ---------------------------------------------------------------------------
   // Discovery caching
@@ -652,7 +701,7 @@ describe("bedrock mantle discovery", () => {
 
   it("returns cached models on subsequent calls within refresh interval", async () => {
     let now = 1000000;
-    const mockFetch = vi.fn().mockResolvedValue(
+    const mockFetch = vi.fn(async () =>
       modelDiscoveryResponse({
         data: [{ id: "anthropic.claude-sonnet-4-6", object: "model" }],
       }),
@@ -691,35 +740,36 @@ describe("bedrock mantle discovery", () => {
     expect(mockFetch).toHaveBeenCalledTimes(2); // Re-fetched
   });
 
-  it("returns stale cache on fetch failure", async () => {
-    let now = 1000000;
+  it("does not reuse a fresh catalog across bearer credentials in the same region", async () => {
     const mockFetch = vi
-      .fn()
+      .fn<typeof fetch>()
       .mockResolvedValueOnce(
         modelDiscoveryResponse({
-          data: [{ id: "anthropic.claude-sonnet-4-6", object: "model" }],
+          data: [{ id: "first-account-model", object: "model" }],
         }),
       )
-      .mockRejectedValueOnce(new Error("ECONNREFUSED"));
+      .mockResolvedValueOnce(
+        modelDiscoveryResponse({ data: [{ id: "second-account-model", object: "model" }] }),
+      );
 
-    // First call — succeeds
     await discoverMantleModels({
       region: testRegion,
-      bearerToken: "test-token",
-      fetchFn: mockFetch as unknown as typeof fetch,
-      now: () => now,
+      bearerToken: "first-token",
+      fetchFn: mockFetch,
+      now: () => 1_000_000,
     });
 
-    // Second call after expiry — fails but returns stale cache
-    now += 7200_000;
-    const stale = await discoverMantleModels({
+    const models = await discoverMantleModels({
       region: testRegion,
-      bearerToken: "test-token",
-      fetchFn: mockFetch as unknown as typeof fetch,
-      now: () => now,
+      bearerToken: "second-token",
+      fetchFn: mockFetch,
+      now: () => 1_000_000,
     });
-    expect(stale).toHaveLength(1);
-    expect(stale[0]?.id).toBe("anthropic.claude-sonnet-4-6");
+    expect(models.map((model) => model.id)).toEqual(["second-account-model"]);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(recordField(objectArgAt(mockFetch, 1, 1).headers, "headers").Authorization).toBe(
+      "Bearer second-token",
+    );
   });
 
   // ---------------------------------------------------------------------------

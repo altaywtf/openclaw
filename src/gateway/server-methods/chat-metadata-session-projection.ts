@@ -1,18 +1,17 @@
-import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
+import type { ModelChoice } from "../../../packages/gateway-protocol/src/schema/agents-models-skills.js";
 import { readSessionRuntimeOwnership } from "../../agents/harness/session-runtime-ownership.js";
 import { resolveSessionModelRef } from "../../agents/session-model-ref.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ChatMetadataReadParams, ChatMetadataResult } from "./chat-metadata-contract.js";
 
-// Read session ownership after the shared profile projection; never cache this overlay.
-export function projectChatSessionMetadata(
+export function projectSessionModelCatalog(
   readParams: ChatMetadataReadParams,
-  metadata: ChatMetadataResult,
+  models: ModelChoice[],
   config: OpenClawConfig,
-): ChatMetadataResult {
+): ModelChoice[] {
   const ownership = readSessionRuntimeOwnership({ ...readParams, config });
-  if (ownership?.auth !== "native" || !metadata.models) {
-    return metadata;
+  if (ownership?.auth !== "native") {
+    return models;
   }
   // Pending native branches have no tuple yet. Remove the host-only gate from
   // the rendered placeholder, without calling it a native selection or proving credentials.
@@ -21,20 +20,26 @@ export function projectChatSessionMetadata(
     resolveSessionModelRef(config, readParams.sessionEntry, readParams.agentId, {
       allowPluginNormalization: false,
     });
-  return {
-    ...metadata,
-    models: metadata.models.map((model) => {
-      const row = asOptionalRecord(model);
-      if (row?.provider !== renderedModel.provider || row.id !== renderedModel.model) {
-        return model;
-      }
-      const {
-        available: _available,
-        unavailableReason: _reason,
-        unavailableUntil: _until,
-        ...native
-      } = row;
-      return native;
-    }),
-  };
+  return models.map((model) => {
+    if (model.provider !== renderedModel.provider || model.id !== renderedModel.model) {
+      return model;
+    }
+    const {
+      available: _available,
+      unavailableReason: _reason,
+      unavailableUntil: _until,
+      ...native
+    } = model;
+    return native;
+  });
+}
+
+export function projectChatSessionMetadata(
+  readParams: ChatMetadataReadParams,
+  metadata: ChatMetadataResult,
+  config: OpenClawConfig,
+): ChatMetadataResult {
+  return metadata.models
+    ? { ...metadata, models: projectSessionModelCatalog(readParams, metadata.models, config) }
+    : metadata;
 }

@@ -30,6 +30,27 @@ function createFacts(): ModelCatalogDecisionFacts {
 afterEach(() => vi.useRealTimers());
 
 describe("catalog decision lifetime", () => {
+  it.each(["agent", "utility", "image"] as const)(
+    "limits a session profile lock to its provider for %s decisions",
+    async (purpose) => {
+      const facts = createFacts();
+      const other = { provider: "other", id: "model", name: "Other" };
+      facts.snapshot.entries.push(other);
+      facts.auth.authStore.profiles["other:primary"] = {
+        type: "api_key",
+        provider: "other",
+        key: "other-fixture-key",
+      };
+      const source = getPreparedModelCatalogDecisions(facts);
+      const selection = { purpose, profileProvider: "custom", lockedProfileId: "missing" };
+      const entry = facts.snapshot.entries[0]!;
+      expect((await source.evaluate(entry, selection)).availability).toBe(false);
+      expect((await source.evaluate(other, selection)).availability).toBe(true);
+      expect((await source.evaluate(entry)).availability).toBe(true);
+      expect((await source.evaluate(other, selection)).availability).toBe(true);
+    },
+  );
+
   it("does not lend another runtime's materialized authentication to the implicit runtime", async () => {
     const facts = createFacts();
     const entry: ModelCatalogEntry = {

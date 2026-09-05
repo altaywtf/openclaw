@@ -224,6 +224,56 @@ describe("prepared model runtime reload auth adoption", () => {
     }
   });
 
+  it("retains only failed-provider rows and accepts a later successful empty inventory", async () => {
+    mocks.configuredAgentIds = ["default"];
+    const previous = [
+      { provider: "custom", id: "account-model", name: "Account model" },
+      { provider: "healthy", id: "old-model", name: "Old model" },
+    ];
+    mocks.runPreparedModelCatalogWorker.mockResolvedValueOnce({
+      entries: previous,
+      routeVariants: previous,
+    });
+    await refreshPreparedModelRuntimeSnapshots({}, { gatewayLifecycle: true });
+    const snapshot = await prepareModelRuntimeSnapshot({
+      agentId: "default",
+      agentDir: state.agentDir("default"),
+      inheritedAuthDir: state.agentDir("default"),
+      config: {},
+    });
+    await snapshot.loadFullModelCatalog!();
+    const discovered = [{ provider: "healthy", id: "new-model", name: "New model" }];
+    mocks.runPreparedModelCatalogWorker.mockResolvedValueOnce({
+      entries: discovered,
+      routeVariants: discovered,
+      providerOutcomes: [
+        { provider: "custom", status: "unavailable" },
+        { provider: "healthy", status: "ready" },
+      ],
+    });
+    const partial = await snapshot.loadFullModelCatalog!({ refresh: true });
+    const retained = [previous[0], ...discovered];
+    expect(partial).toMatchObject({
+      entries: retained,
+      routeVariants: retained,
+      authoritative: false,
+      refreshFailed: true,
+    });
+    mocks.runPreparedModelCatalogWorker.mockResolvedValueOnce({
+      entries: discovered,
+      routeVariants: discovered,
+      providerOutcomes: [
+        { provider: "custom", status: "ready" },
+        { provider: "healthy", status: "ready" },
+      ],
+    });
+    const recovered = await snapshot.loadFullModelCatalog!({ refresh: true });
+    expect(recovered.entries).toMatchObject(discovered);
+    expect(recovered.routeVariants).toMatchObject(discovered);
+    expect(recovered.refreshFailed).toBeUndefined();
+    expect(recovered.authoritative).not.toBe(false);
+  });
+
   it("rediscovers the catalog once when an auth mutation changes the profile set", async () => {
     mocks.configuredAgentIds = ["default"];
     const config = { agents: { defaults: { model: "openai/gpt-5.5" } } };

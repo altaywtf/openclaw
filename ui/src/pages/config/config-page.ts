@@ -48,7 +48,11 @@ import { resolveControlUiServerQueueMode } from "../../lib/chat/follow-up-mode.t
 import { formatUiError } from "../../lib/format-error.ts";
 import { isMissingOperatorReadScopeError } from "../../lib/gateway-errors.ts";
 import { canCallGatewayMethod } from "../../lib/gateway-methods.ts";
-import { loadModelCatalog, modelCatalogRefreshError } from "../../lib/model-catalog-store.ts";
+import {
+  loadModelCatalog,
+  modelCatalogRefreshError,
+  subscribeModelCatalogChanges,
+} from "../../lib/model-catalog-store.ts";
 import { resolveScrollBehavior } from "../../lib/scroll-behavior.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 import { PollController } from "../../lit/poll-controller.ts";
@@ -408,6 +412,24 @@ export class ConfigPage extends OpenClawLightDomElement {
   });
   private pendingRouteTargetId: string | null = null;
   private readonly subscriptions = new SubscriptionsController(this)
+    .effect(
+      () => this.context?.gateway,
+      (gateway) =>
+        subscribeModelCatalogChanges(gateway, () => {
+          if (this.context.gateway !== gateway) {
+            return;
+          }
+          this.sessionObserverModelsClient = null;
+          this.sessionObserverModelsRequest = null;
+          const client = this.systemInfoRequestClient();
+          if (client) {
+            void this.ensureSessionObserverModels(
+              client,
+              this.context.agentSelection.state.selectedId,
+            );
+          }
+        }),
+    )
     .watch(
       () => this.context?.runtimeConfig,
       (runtimeConfig, notify) => runtimeConfig.subscribe(notify),
@@ -720,6 +742,8 @@ export class ConfigPage extends OpenClawLightDomElement {
     } else if (snapshot.phase !== "connected") {
       this.invalidateSystemInfoRequest();
       this.systemInfo = null;
+      this.sessionObserverModelsClient = null;
+      this.sessionObserverModelsRequest = null;
     }
     if (snapshot.phase === "connected" && snapshot.hello) {
       this.systemInfoUnavailable = !hasSystemInfo;
@@ -804,12 +828,16 @@ export class ConfigPage extends OpenClawLightDomElement {
       return existing.promise;
     }
     const gatewaySource = this.systemInfoGatewaySource;
+    const hello = gatewaySource?.snapshot.hello;
     const isCurrent = () =>
       this.isConnected &&
+      this.sessionObserverModelsRequest?.promise === promise &&
       this.systemInfoGatewaySource === gatewaySource &&
+      this.context.gateway.snapshot.phase === "connected" &&
+      this.context.gateway.snapshot.hello === hello &&
       this.context.gateway.snapshot.client === client &&
       this.context.agentSelection.state.selectedId === agentId;
-    const promise = loadModelCatalog(client, { agentId, preparedOnly: true })
+    const promise = loadModelCatalog(client, { agentId })
       .then((result) => {
         if (isCurrent()) {
           this.sessionObserverModels = result.models;
@@ -834,6 +862,7 @@ export class ConfigPage extends OpenClawLightDomElement {
   }
 
   private resetSessionObserverModels(unavailable = false) {
+    this.sessionObserverModelsRequest = null;
     this.sessionObserverModels = [];
     this.sessionObserverModelsClient = null;
     this.sessionObserverModelsAgentId = null;

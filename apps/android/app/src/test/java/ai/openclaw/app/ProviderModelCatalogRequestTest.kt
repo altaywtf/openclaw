@@ -12,6 +12,39 @@ import org.junit.Test
 
 class ProviderModelCatalogRequestTest {
   @Test
+  fun modelCatalogDistinguishesEmptyPublicationFromRefreshFailure() {
+    val empty = parseGatewayModelCatalog(Json.parseToJsonElement("""{"models":[]}""") as kotlinx.serialization.json.JsonObject)
+    val failed = parseGatewayModelCatalog(Json.parseToJsonElement("""{"models":[],"refreshFailed":true}""") as kotlinx.serialization.json.JsonObject)
+
+    assertTrue(empty.models.isEmpty())
+    assertEquals(false, empty.refreshFailed)
+    assertTrue(failed.models.isEmpty())
+    assertEquals(true, failed.refreshFailed)
+  }
+
+  @Test
+  fun discoveryRequiresAnExplicitRefreshForTheSelectedAgent() =
+    runBlocking {
+      val requests = mutableListOf<String>()
+      requestProviderModelConfig(agentId = "worker") { params ->
+        requests += params
+        """{"models":[]}"""
+      }
+      requestProviderModelConfig(agentId = "worker", refresh = true) { params ->
+        requests += params
+        """{"models":[]}"""
+      }
+
+      assertEquals(
+        listOf(
+          """{"view":"provider-config","agentId":"worker"}""",
+          """{"view":"provider-config","agentId":"worker","refresh":true}""",
+        ),
+        requests,
+      )
+    }
+
+  @Test
   fun prefersEffectiveContextCapOverNativeWindow() {
     val models =
       parseGatewayModels(

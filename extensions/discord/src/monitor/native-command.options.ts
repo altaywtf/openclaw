@@ -1,9 +1,6 @@
 // Discord plugin module implements native command.options behavior.
 import { ApplicationCommandOptionType } from "discord-api-types/v10";
-import {
-  getPreparedModelCatalogSnapshot,
-  resolveAgentDir,
-} from "openclaw/plugin-sdk/agent-runtime";
+import { getPreparedModelCatalogSnapshot } from "openclaw/plugin-sdk/agent-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
   resolveCommandArgChoices,
@@ -129,12 +126,7 @@ export function buildDiscordCommandOptions(params: {
             command.key === "think"
               ? getPreparedModelCatalogSnapshot({
                   config: currentCfg,
-                  ...(context?.agentId
-                    ? {
-                        agentId: context.agentId,
-                        agentDir: resolveAgentDir(currentCfg, context.agentId),
-                      }
-                    : {}),
+                  agentId: context?.agentId,
                 })?.entries
               : undefined;
           const choices = resolveCommandArgChoices({
@@ -144,7 +136,7 @@ export function buildDiscordCommandOptions(params: {
             provider: context?.provider,
             model: context?.model,
             agentRuntime: context?.agentRuntime,
-            ...(choiceCatalog?.length ? { catalog: choiceCatalog } : {}),
+            catalog: choiceCatalog,
           });
           const filtered = focusValue
             ? choices.filter((choice) =>

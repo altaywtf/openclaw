@@ -141,7 +141,7 @@ function findXaiFetchInit(
   return fetchMock.mock.calls.find(([input]) => input === url)?.[1];
 }
 
-async function runXaiCatalog(options: { auth?: "none"; apiKey?: false } = {}) {
+async function runXaiCatalogHook(options: { auth?: "none"; apiKey?: false } = {}) {
   const provider = await registerSingleProviderPlugin(plugin);
   const result = await provider.catalog?.run({
     config: { models: {} },
@@ -163,6 +163,11 @@ async function runXaiCatalog(options: { auth?: "none"; apiKey?: false } = {}) {
       discoveryApiKey: options.apiKey === false ? undefined : "env-xai-key",
     }),
   });
+  return { provider, result };
+}
+
+async function runXaiCatalog(options: { auth?: "none"; apiKey?: false } = {}) {
+  const { provider, result } = await runXaiCatalogHook(options);
   if (!result || !("provider" in result)) {
     throw new Error("expected xAI catalog provider result");
   }
@@ -172,7 +177,7 @@ async function runXaiCatalog(options: { auth?: "none"; apiKey?: false } = {}) {
 describe("xai provider plugin", () => {
   beforeEach(() => {
     clearLiveCatalogCacheForTests();
-    providerAuthRuntimeMocks.resolveApiKeyForProvider.mockReset();
+    providerAuthRuntimeMocks.resolveApiKeyForProvider.mockReset().mockResolvedValue(undefined);
     vi.stubEnv("XAI_API_KEY", "");
   });
 
@@ -413,17 +418,28 @@ describe("xai provider plugin", () => {
     expect(apiKey.provider.baseUrl).toBe("https://api.x.ai/v1");
   });
 
-  it("keeps the Grok OAuth transport when xAI OAuth discovery is unavailable", async () => {
-    mockXaiRuntimeOAuth();
-    stubXaiFetch(() => new Response("temporarily unavailable", { status: 503 }));
-    const { result } = await runXaiCatalog();
+  it.each([401, 503])(
+    "reports Grok OAuth discovery HTTP %i without retrying other credentials",
+    async (status) => {
+      mockXaiRuntimeOAuth();
+      const fetchMock = stubXaiFetch(() => new Response("unavailable", { status }));
+      const { result } = await runXaiCatalogHook();
 
-    expect(result.baseUrl).toBe("https://cli-chat-proxy.grok.com/v1");
-    expect(result.auth).toBe("oauth");
-    expect(result.apiKey).toBeUndefined();
-    expect(result.models.map((model) => model.id)).toContain("grok-4.6");
-    expect(result.models.map((model) => model.id)).toContain("grok-build-0.1");
-  });
+      expect(result).toEqual({
+        providers: {},
+        outcomes: [
+          {
+            provider: "xai",
+            profileId: "xai-profile",
+            status: status === 401 ? "auth-rejected" : "unavailable",
+            ...(status === 401 ? { rejectionScope: "catalog" } : {}),
+          },
+        ],
+      });
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(providerAuthRuntimeMocks.resolveApiKeyForProvider).toHaveBeenCalledOnce();
+    },
+  );
 
   it("falls back to API-key discovery when xAI OAuth credential resolution fails", async () => {
     providerAuthRuntimeMocks.resolveApiKeyForProvider.mockRejectedValue(

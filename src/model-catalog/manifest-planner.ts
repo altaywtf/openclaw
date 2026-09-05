@@ -85,6 +85,7 @@ export function planManifestModelCatalogRows(params: {
   mergeKeyFilter?: ReadonlySet<string>;
   remoteOverlay?: Readonly<Record<string, ModelCatalogProvider>>;
   resolveRemoteProvider?: (provider: string) => ModelCatalogProvider | undefined;
+  includeProvider?: (pluginId: string, provider: string) => boolean;
   selection?: ManifestModelCatalogRowSelection;
 }): ManifestModelCatalogPlan {
   const hasProviderFilter = Boolean(params.providerFilter) || params.providerFilters !== undefined;
@@ -107,6 +108,7 @@ export function planManifestModelCatalogRows(params: {
       mergeKeyFilter: params.mergeKeyFilter,
       remoteOverlay: params.remoteOverlay,
       resolveRemoteProvider: params.resolveRemoteProvider,
+      includeProvider: params.includeProvider,
     })) {
       entries.push(entry);
     }
@@ -179,6 +181,7 @@ function planManifestModelCatalogPluginEntries(params: {
   mergeKeyFilter: ReadonlySet<string> | undefined;
   remoteOverlay: Readonly<Record<string, ModelCatalogProvider>> | undefined;
   resolveRemoteProvider: ((provider: string) => ModelCatalogProvider | undefined) | undefined;
+  includeProvider?: (pluginId: string, provider: string) => boolean;
 }): ManifestModelCatalogPlanEntry[] {
   const providers = params.plugin.modelCatalog?.providers;
   if (!providers) {
@@ -193,11 +196,15 @@ function planManifestModelCatalogPluginEntries(params: {
       return [];
     }
     const providerAliases = aliasesByTargetProvider.get(normalizedProvider) ?? [];
-    const plannedProviders = params.providerFilters
+    const scopedProviders = params.providerFilters
       ? normalizeUniqueStringEntries([normalizedProvider, ...providerAliases]).filter(
           (candidateProvider) => params.providerFilters?.has(candidateProvider),
         )
       : [normalizedProvider];
+    const plannedProviders = scopedProviders.filter(
+      (candidateProvider) =>
+        params.includeProvider?.(params.plugin.id, candidateProvider) !== false,
+    );
     if (plannedProviders.length === 0) {
       return [];
     }

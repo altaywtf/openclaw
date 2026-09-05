@@ -1,6 +1,6 @@
 // Google provider module implements model/runtime integration.
 import {
-  getCachedLiveProviderModelRows,
+  buildLiveModelProviderConfig,
   type LiveModelCatalogFetchGuard,
 } from "openclaw/plugin-sdk/provider-catalog-live-runtime";
 import type {
@@ -151,40 +151,26 @@ export async function buildGoogleLiveCatalogProvider(params: {
   fetchGuard?: LiveModelCatalogFetchGuard;
   signal?: AbortSignal;
 }): Promise<ModelProviderConfig> {
-  const fallback = {
-    ...buildGoogleStaticCatalogProvider(),
-    ...(params.apiKey ? { apiKey: params.apiKey } : {}),
-  };
-  try {
-    const rows = await getCachedLiveProviderModelRows({
-      providerId: "google",
-      endpoint: GOOGLE_GEMINI_MODELS_ENDPOINT,
-      apiKey: params.apiKey,
-      discoveryApiKey: params.discoveryApiKey,
-      fetchGuard: params.fetchGuard,
-      signal: params.signal,
-      ttlMs: GOOGLE_GEMINI_MODELS_CACHE_TTL_MS,
-      auditContext: "google-model-discovery",
-      readRows: readGoogleLiveModels,
-      buildRequestHeaders: ({ discoveryApiKey, apiKey }) => ({
-        Accept: "application/json",
-        ...((discoveryApiKey ?? apiKey) ? { "x-goog-api-key": discoveryApiKey ?? apiKey } : {}),
-      }),
-      shouldCacheRows: (modelRows) => parseGoogleLiveModels(modelRows).length > 0,
-    });
-    const models = parseGoogleLiveModels(rows);
-    if (models.length === 0) {
-      return fallback;
-    }
-    return {
-      ...fallback,
-      models,
-    };
-  } catch {
-    // Discovery is advisory. Offline setup, expired credentials, and transient
-    // provider failures retain the bundled catalog instead of hiding Google.
-    return fallback;
-  }
+  const { models, ...providerConfig } = buildGoogleStaticCatalogProvider();
+  return await buildLiveModelProviderConfig({
+    discoveryMode: "strict",
+    providerId: "google",
+    endpoint: GOOGLE_GEMINI_MODELS_ENDPOINT,
+    providerConfig,
+    models,
+    apiKey: params.apiKey,
+    discoveryApiKey: params.discoveryApiKey,
+    fetchGuard: params.fetchGuard,
+    signal: params.signal,
+    ttlMs: GOOGLE_GEMINI_MODELS_CACHE_TTL_MS,
+    auditContext: "google-model-discovery",
+    readRows: readGoogleLiveModels,
+    buildRequestHeaders: ({ discoveryApiKey, apiKey }) => ({
+      Accept: "application/json",
+      ...((discoveryApiKey ?? apiKey) ? { "x-goog-api-key": discoveryApiKey ?? apiKey } : {}),
+    }),
+    projectRows: parseGoogleLiveModels,
+  });
 }
 
 export function buildGoogleVertexStaticCatalogProvider(): ModelProviderConfig {

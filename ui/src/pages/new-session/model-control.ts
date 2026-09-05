@@ -5,14 +5,13 @@ import type {
 import type { FastMode, GatewayAgentRow, ModelCatalogEntry } from "../../api/types.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import { t } from "../../i18n/index.ts";
-import { subscribeChatMetadata } from "../../lib/chat/chat-metadata-store.ts";
 import {
   normalizeChatFastModeInput,
   resolveChatModelUnavailableReason,
 } from "../../lib/chat/model-select-state.ts";
 import { resolveThinkingProfileForSession } from "../../lib/chat/thinking.ts";
 import { isGatewayMethodAdvertised } from "../../lib/gateway-methods.ts";
-import { loadModelCatalog } from "../../lib/model-catalog-store.ts";
+import { loadModelCatalog, subscribeModelCatalogChanges } from "../../lib/model-catalog-store.ts";
 import { normalizeAgentId } from "../../lib/sessions/session-key.ts";
 import {
   renderChatModelControls,
@@ -62,6 +61,7 @@ export class NewSessionModelControl {
   private metadataRequest: AbortController | undefined;
   private metadataUnsubscribe: (() => void) | undefined;
   private metadataClient: NewSessionMetadataClient | undefined;
+  private catalogGateway: ApplicationContext["gateway"] | undefined;
   private metadataHello: ApplicationContext["gateway"]["snapshot"]["hello"];
   private restoringPreference = false;
   private pendingPreference: NewSessionPreference | null | undefined;
@@ -314,6 +314,7 @@ export class NewSessionModelControl {
     this.pendingContext = context;
     if (
       this.agentId !== normalizedAgentId ||
+      (this.catalogGateway && this.catalogGateway !== context?.gateway) ||
       (this.metadataClient && this.metadataClient !== client) ||
       (this.metadataHello && this.metadataHello !== snapshot?.hello)
     ) {
@@ -350,19 +351,17 @@ export class NewSessionModelControl {
       return;
     }
     this.metadataClient = client;
-    this.metadataUnsubscribe ??= subscribeChatMetadata(
-      client,
-      { agentId: normalizedAgentId },
-      (update) => {
-        if (
-          update.type === "invalidated" &&
-          this.metadataClient === client &&
-          this.agentId === normalizedAgentId
-        ) {
-          this.startMetadataRequest(client, normalizedAgentId);
-        }
-      },
-    );
+    const gateway = context.gateway;
+    this.catalogGateway = gateway;
+    this.metadataUnsubscribe ??= subscribeModelCatalogChanges(gateway, () => {
+      if (
+        this.pendingContext?.gateway === gateway &&
+        this.metadataClient === client &&
+        this.agentId === normalizedAgentId
+      ) {
+        this.startMetadataRequest(client, normalizedAgentId);
+      }
+    });
     this.pendingPreference = this.selectionGeneration === 0 ? options.preference : undefined;
     this.pendingAgent = options.agent;
     this.pendingSelectionGeneration = selectionGeneration;
@@ -526,7 +525,7 @@ export class NewSessionModelControl {
       loading: false,
       modelCatalog: this.catalog,
       modelCatalogState: {
-        // chat.metadata and agents.list hydrate independently. Do not expose a
+        // Catalog and agents.list hydrate independently. Do not expose a
         // ready catalog until the selected agent can supply its concrete defaults.
         hasSnapshot: agentDefaultsAvailable && this.metadataState.hasSnapshot,
         status:

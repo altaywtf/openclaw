@@ -15,7 +15,7 @@ export function buildStaticChutesProvider(): ModelProviderConfig {
 
 /**
  * Build the Chutes provider with dynamic model discovery.
- * Falls back to the static catalog on failure.
+ * Propagates discovery failures to the catalog owner.
  * Accepts an optional access token (API key or OAuth access token) for authenticated discovery.
  */
 export async function buildChutesProvider(accessToken?: string): Promise<ModelProviderConfig> {

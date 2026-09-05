@@ -13,6 +13,7 @@ import plugin from "./index.js";
 import manifest from "./openclaw.plugin.json" with { type: "json" };
 import {
   buildOpencodeZenLiveProviderConfig,
+  buildStaticOpencodeZenProviderConfig,
   prepareOpencodeZenModel,
   resolveOpencodeZenStarterModel,
 } from "./provider-catalog.js";
@@ -518,22 +519,22 @@ describe("opencode provider plugin", () => {
     ]);
   });
 
-  it("retains the compact offline seed when discovery fails", async () => {
+  it("reports discovery failure without replacing it with the offline seed", async () => {
     const fetchGuard = vi.fn(async () => {
       throw new Error("network unavailable");
     });
-    const fallback = await buildOpencodeZenLiveProviderConfig({
-      apiKey: "runtime-key",
-      discoveryApiKey: "discovery-key",
-      fetchGuard,
-    });
-
-    expect(fallback.apiKey).toBe("runtime-key");
-    expectSeedModels(fallback.models);
+    await expect(
+      buildOpencodeZenLiveProviderConfig({
+        apiKey: "runtime-key",
+        discoveryApiKey: "discovery-key",
+        fetchGuard,
+      }),
+    ).rejects.toThrow("network unavailable");
+    expectSeedModels(buildStaticOpencodeZenProviderConfig().models);
   });
 
   it.each(["failed", "filtered"] as const)(
-    "uses refreshed lifecycle on the first fallback after %s model advertising",
+    "keeps refreshed metadata separate from %s account model advertising",
     async (advertising) => {
       const retiredId = "big-pickle";
       const provider = await registerSingleProviderPlugin(plugin);
@@ -549,14 +550,18 @@ describe("opencode provider plugin", () => {
 
       try {
         expectSeedModels((await buildOpencodeZenLiveProviderConfig()).models);
-        const fallback = await buildOpencodeZenLiveProviderConfig({
+        const discovery = buildOpencodeZenLiveProviderConfig({
           apiKey: "runtime-key",
           discoveryApiKey: "discovery-key",
           fetchGuard,
         });
 
-        expect(fallback.apiKey).toBe("runtime-key");
-        expect(fallback.models.map((model) => model.id)).toEqual(
+        if (advertising === "failed") {
+          await expect(discovery).rejects.toThrow("model advertising unavailable");
+        } else {
+          await expect(discovery).resolves.toMatchObject({ models: [] });
+        }
+        expect(buildStaticOpencodeZenProviderConfig().models.map((model) => model.id)).toEqual(
           OFFLINE_MODEL_IDS.filter((id) => id !== retiredId),
         );
         expect(provider.resolveDynamicModel?.({ modelId: retiredId } as never)).toMatchObject({

@@ -1,5 +1,6 @@
 import type { GatewayBrowserClient } from "../api/gateway.ts";
 import type { HealthSnapshot, StatusSummary } from "../api/types.ts";
+import { loadModelCatalog } from "./model-catalog-store.ts";
 
 type CommandLaneBlockReason = "lane" | "group-budget" | "sibling-reservation" | null;
 
@@ -51,7 +52,7 @@ export async function loadGatewayDiagnostics(
   signal?: AbortSignal,
 ): Promise<GatewayDiagnosticsSnapshot> {
   const modelsRequest = agentId
-    ? client.request("models.list", { agentId, preparedOnly: true }, { signal })
+    ? loadModelCatalog(client, { agentId, view: "default", signal })
     : Promise.resolve({ models: [] });
   const lanesRequest = loadCommandLaneDiagnostics(client, signal);
   const [status, health, models, heartbeat, laneDiagnostics] = await Promise.all([

@@ -53,8 +53,18 @@ public enum OpenClawChatGatewayPayloadCodec {
     }
 
     public static func decodeModelChoices(_ data: Data) throws -> [OpenClawChatModelChoice] {
+        try self.decodeModelCatalog(data, availabilityIsSessionScoped: false).requireChoices()
+    }
+
+    public static func decodeModelCatalog(
+        _ data: Data,
+        availabilityIsSessionScoped: Bool) throws -> OpenClawChatModelCatalogSnapshot
+    {
         let decoded = try JSONDecoder().decode(ModelsListResult.self, from: data)
-        return decoded.models.map(self.modelChoice)
+        return OpenClawChatModelCatalogSnapshot(
+            choices: decoded.models.map(self.modelChoice),
+            availabilityIsSessionScoped: availabilityIsSessionScoped,
+            refreshFailed: decoded.refreshfailed == true)
     }
 
     public static func decodeChatMetadataModelChoices(_ data: Data) throws -> [OpenClawChatModelChoice] {
@@ -85,7 +95,8 @@ public enum OpenClawChatGatewayPayloadCodec {
             unavailableReason: model.unavailablereason?.value as? String,
             unavailableUntil: model.unavailableuntil,
             contextWindow: model.contextwindow,
-            reasoning: model.reasoning)
+            reasoning: model.reasoning,
+            supportsFastMode: model.supportsfastmode)
     }
 
     public static func commandChoice(_ entry: CommandEntry) -> OpenClawChatCommandChoice {
@@ -123,7 +134,7 @@ public enum OpenClawChatGatewayPayloadCodec {
         switch frame.event {
         case "tick":
             return .tick
-        case "chat.metadata.changed":
+        case "config.changed", "chat.metadata.changed":
             return .chatMetadataChanged
         case "sessions.changed":
             guard let payload = frame.payload,

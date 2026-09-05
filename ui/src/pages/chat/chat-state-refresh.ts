@@ -169,7 +169,6 @@ function bindChatMetadata(host: ChatPageHost): ChatMetadataBinding | undefined {
       }
       if (update.type === "invalidated") {
         void refreshChatMetadata(host);
-        void loadChatModelCatalog(host);
         return;
       }
       if (update.type === "result") {
@@ -239,18 +238,20 @@ export async function loadChatModelCatalog(
   }
   const connectionEpoch = host.connectionEpoch;
   const agentId = resolveChatAgentId(host);
+  const sessionKey = host.sessionKey;
   const requestVersion = host.modelCatalogRequestVersion + 1;
   host.modelCatalogRequestVersion = requestVersion;
   const ownsRequest = () =>
     host.client === client &&
     host.connected &&
     host.connectionEpoch === connectionEpoch &&
+    host.sessionKey === sessionKey &&
     host.modelCatalogRequestVersion === requestVersion &&
     resolveChatAgentId(host) === agentId;
   host.chatModelsLoading = host.chatModelCatalog.length === 0;
   host.requestUpdate?.();
   try {
-    const result = await loadModelCatalog(client, { agentId: agentId ?? "" });
+    const result = await loadModelCatalog(client, { agentId: agentId ?? undefined, sessionKey });
     if (ownsRequest()) {
       host.chatModelCatalog = result.models;
       host.chatModelCatalogError = modelCatalogRefreshError(result);

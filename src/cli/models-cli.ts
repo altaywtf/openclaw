@@ -58,6 +58,7 @@ export function registerModelsCli(program: Command) {
     .command("list")
     .description("List models (configured by default)")
     .option("--all", "Show full model catalog", false)
+    .option("--refresh", "Refresh provider discovery before listing models", false)
     .option("--local", "Filter to local models", false)
     .option("--provider <id>", "Filter by provider id")
     .option("--agent <id>", "Agent id to inspect (overrides OPENCLAW_AGENT_DIR)")

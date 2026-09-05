@@ -28,16 +28,19 @@ describe("zai onboard", () => {
   it("adds zai provider with correct settings", () => {
     expect(defaultCfg.models?.providers?.zai?.baseUrl).toBe(ZAI_GLOBAL_BASE_URL);
     expect(defaultCfg.models?.providers?.zai?.api).toBe("openai-completions");
-    const ids = defaultCfg.models?.providers?.zai?.models?.map((m) => m.id);
-    expect(ids).toEqual(manifest.modelCatalog.providers.zai.models.map((model) => model.id));
+    expect(defaultCfg.models?.providers?.zai?.models).toEqual([]);
+    const replaceConfig = applyZaiConfig({ models: { mode: "replace" } });
+    expect(replaceConfig.models?.providers?.zai?.models.map((model) => model.id)).toEqual(
+      manifest.modelCatalog.providers.zai.models.map((model) => model.id),
+    );
     expect(
-      defaultCfg.models?.providers?.zai?.models?.find((model) => model.id === "glm-5.3"),
+      replaceConfig.models?.providers?.zai?.models?.find((model) => model.id === "glm-5.3"),
     ).toMatchObject({
       contextWindow: 1_048_576,
       maxTokens: 131_072,
     });
     expect(
-      defaultCfg.models?.providers?.zai?.models?.find((model) => model.id === "glm-5.3"),
+      replaceConfig.models?.providers?.zai?.models?.find((model) => model.id === "glm-5.3"),
     ).not.toHaveProperty("baseUrl");
   });
 
@@ -50,11 +53,16 @@ describe("zai onboard", () => {
 
   it("resolves GLM-5.3 models through the selected Coding Plan or custom endpoint", async () => {
     for (const [name, cfg, expectedBaseUrl] of [
-      ["coding-cn", applyZaiConfig({}, { endpoint: "coding-cn" }), ZAI_CODING_CN_BASE_URL],
+      [
+        "coding-cn",
+        applyZaiConfig({ models: { mode: "replace" } }, { endpoint: "coding-cn" }),
+        ZAI_CODING_CN_BASE_URL,
+      ],
       [
         "custom",
         applyZaiConfig({
           models: {
+            mode: "replace",
             providers: {
               zai: {
                 baseUrl: "https://proxy.example.test/zai",

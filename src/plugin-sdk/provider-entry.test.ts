@@ -156,6 +156,8 @@ describe("defineSingleProviderPluginEntry", () => {
     const { provider, catalog, staticCatalog, unifiedCatalog, unifiedStaticCatalog } =
       await captureProviderEntry({ entry });
 
+    expect(catalog).not.toHaveProperty("outcomes");
+    expect(staticCatalog).not.toHaveProperty("outcomes");
     expect(provider).toMatchObject({
       id: "demo",
       label: "Demo",

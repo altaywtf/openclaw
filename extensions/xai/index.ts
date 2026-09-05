@@ -1,6 +1,7 @@
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
 // Xai plugin entrypoint registers its OpenClaw integration.
 import type { OpenClawPluginToolContext } from "openclaw/plugin-sdk/plugin-entry";
+import { runLiveProviderCatalog } from "openclaw/plugin-sdk/provider-catalog-live-runtime";
 import { defineSingleProviderPluginEntry } from "openclaw/plugin-sdk/provider-entry";
 import { buildProviderReplayFamilyHooks } from "openclaw/plugin-sdk/provider-model-shared";
 import { defaultToolStreamExtraParams } from "openclaw/plugin-sdk/provider-stream-shared";
@@ -199,56 +200,43 @@ export default defineSingleProviderPluginEntry({
       order: "simple",
       run: async (ctx) => {
         const auth = ctx.resolveProviderAuth(PROVIDER_ID);
-        try {
-          const { resolveApiKeyForProvider } =
-            await import("openclaw/plugin-sdk/provider-auth-runtime");
-          const runtimeAuth = await resolveApiKeyForProvider({
-            provider: PROVIDER_ID,
-            cfg: ctx.config,
-            ...(ctx.agentDir ? { agentDir: ctx.agentDir } : {}),
-            ...(ctx.workspaceDir ? { workspaceDir: ctx.workspaceDir } : {}),
-            ...(auth.profileId
-              ? {
-                  profileId: auth.profileId,
-                  lockedProfile: true,
-                }
-              : {}),
-          });
-          if (runtimeAuth?.apiKey) {
-            return {
-              provider: await buildLiveXaiProvider({
-                oauthLogin: runtimeAuth.mode === "oauth",
-                apiKey: runtimeAuth.apiKey,
-                discoveryApiKey: runtimeAuth.apiKey,
-              }),
-            };
-          }
-        } catch {
-          if (auth.mode === "oauth") {
-            // OAuth discovery is advisory; fall through so configured API-key
-            // auth can still publish the standard xAI catalog.
-          }
-        }
-        if (auth.apiKey) {
-          return {
-            provider: await buildLiveXaiProvider({
-              oauthLogin: auth.mode === "oauth",
-              apiKey: auth.apiKey,
-              discoveryApiKey: auth.discoveryApiKey,
-            }),
-          };
-        }
-
-        const apiKey = ctx.resolveProviderApiKey(PROVIDER_ID);
-        if (!apiKey.apiKey) {
+        const { resolveApiKeyForProvider } =
+          await import("openclaw/plugin-sdk/provider-auth-runtime");
+        const runtimeAuth = await resolveApiKeyForProvider({
+          provider: PROVIDER_ID,
+          cfg: ctx.config,
+          ...(ctx.agentDir ? { agentDir: ctx.agentDir } : {}),
+          ...(ctx.workspaceDir ? { workspaceDir: ctx.workspaceDir } : {}),
+          ...(auth.profileId
+            ? {
+                profileId: auth.profileId,
+                lockedProfile: true,
+              }
+            : {}),
+        }).catch(() => undefined);
+        const selectedAuth = runtimeAuth?.apiKey
+          ? {
+              apiKey: runtimeAuth.apiKey,
+              discoveryApiKey: runtimeAuth.apiKey,
+              profileId: runtimeAuth.profileId,
+              oauthLogin: runtimeAuth.mode === "oauth",
+            }
+          : auth.apiKey
+            ? {
+                oauthLogin: auth.mode === "oauth",
+                apiKey: auth.apiKey,
+                discoveryApiKey: auth.discoveryApiKey,
+                profileId: auth.profileId,
+              }
+            : { ...ctx.resolveProviderApiKey(PROVIDER_ID), oauthLogin: false };
+        if (!selectedAuth.apiKey) {
           return null;
         }
-        return {
-          provider: await buildLiveXaiProvider({
-            apiKey: apiKey.apiKey,
-            discoveryApiKey: apiKey.discoveryApiKey,
-          }),
-        };
+        return await runLiveProviderCatalog({
+          providerId: PROVIDER_ID,
+          profileId: selectedAuth.profileId,
+          run: async () => ({ provider: await buildLiveXaiProvider(selectedAuth) }),
+        });
       },
       // Static builds use the same auth-mode transport selection as discovery.
       staticRun: async (ctx) => ({

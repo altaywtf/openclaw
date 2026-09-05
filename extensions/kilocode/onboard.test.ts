@@ -60,40 +60,32 @@ describe("Kilo Gateway provider config", () => {
       expect(provider.api).toBe("openai-completions");
     });
 
-    it("includes the default model in the provider model list", () => {
+    it("keeps generated inventory out of ordinary setup", () => {
       const result = applyKilocodeConfig(emptyCfg);
       const provider = result.models?.providers?.kilocode;
-      const models = provider?.models;
-      expect(Array.isArray(models)).toBe(true);
-      const modelIds = models?.map((m) => m.id) ?? [];
-      expect(modelIds).toContain(KILOCODE_DEFAULT_MODEL_ID);
+      expect(provider?.models).toEqual([]);
     });
 
-    it("surfaces the full Kilo model catalog", () => {
-      const result = applyKilocodeConfig(emptyCfg);
+    it("seeds the full Kilo model catalog in replace mode", () => {
+      const result = applyKilocodeConfig({ models: { mode: "replace" } });
       const provider = result.models?.providers?.kilocode;
-      const modelIds = provider?.models?.map((m) => m.id) ?? [];
-      for (const modelId of KILOCODE_MODEL_IDS) {
-        expect(modelIds).toContain(modelId);
-      }
+      expect(provider?.models.map((model) => model.id)).toEqual(KILOCODE_MODEL_IDS);
     });
 
-    it("appends missing catalog models to existing Kilo provider config", () => {
+    it("preserves manual Kilo models without appending generated rows", () => {
+      const manualModel = { ...buildKilocodeModelDefinition(), id: "operator-model" };
       const result = applyKilocodeConfig({
         models: {
           providers: {
             kilocode: {
               baseUrl: KILOCODE_BASE_URL,
               api: "openai-completions",
-              models: [buildKilocodeModelDefinition()],
+              models: [manualModel],
             },
           },
         },
       });
-      const modelIds = result.models?.providers?.kilocode?.models?.map((m) => m.id) ?? [];
-      for (const modelId of KILOCODE_MODEL_IDS) {
-        expect(modelIds).toContain(modelId);
-      }
+      expect(result.models?.providers?.kilocode?.models).toEqual([manualModel]);
     });
 
     it("sets Kilo Gateway alias in agent default models", () => {

@@ -862,6 +862,10 @@ describe("github-copilot plugin", () => {
   });
 
   it("uses live plugin config to re-enable discovery after startup disable", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async () => Response.json({ data: [] })),
+    );
     mocks.resolveCopilotRuntimeAuth.mockResolvedValueOnce({
       apiKey: "gh_test_token",
       baseUrl: "https://api.githubcopilot.live",
@@ -895,6 +899,7 @@ describe("github-copilot plugin", () => {
         baseUrl: "https://api.githubcopilot.live",
         models: [],
       },
+      outcomes: [{ provider: "github-copilot", status: "ready" }],
     });
   });
 

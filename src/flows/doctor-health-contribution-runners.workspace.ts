@@ -57,7 +57,6 @@ export async function runHooksModelHealth(ctx: DoctorHealthFlowContext): Promise
   const catalog = await loadPreparedModelCatalog({
     config: ctx.cfg,
     readOnly: true,
-    providerDiscoveryProviderIds: [],
   });
   const status = getModelRefStatus({
     cfg: ctx.cfg,

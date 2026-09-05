@@ -12,18 +12,21 @@ import {
 import { buildXiaomiProvider, buildXiaomiTokenPlanProvider } from "./provider-catalog.js";
 
 describe("xiaomi onboard", () => {
-  it("adds Xiaomi provider with correct settings", () => {
-    const cfg = applyXiaomiConfig({});
-    const provider = cfg.models?.providers?.xiaomi;
-    expect(provider).toEqual(buildXiaomiProvider());
-    expect(provider?.models.map((m) => m.id)).toEqual(["mimo-v2.5", "mimo-v2.5-pro"]);
-    expect(cfg.agents?.defaults?.models?.["xiaomi/mimo-v2.5"]).toEqual({ alias: "Xiaomi" });
-    expect(cfg.agents?.defaults?.model).toEqual({ primary: "xiaomi/mimo-v2.5" });
-    expectProviderOnboardPrimaryModel({
-      applyConfig: applyXiaomiConfig,
-      modelRef: "xiaomi/mimo-v2.5",
-    });
-  });
+  it.each(["merge", "replace"] as const)(
+    "adds Xiaomi provider with correct settings: %s",
+    (mode) => {
+      const cfg = applyXiaomiConfig({ models: { mode } });
+      const provider = cfg.models?.providers?.xiaomi;
+      const catalog = buildXiaomiProvider();
+      expect(provider).toEqual({ ...catalog, models: mode === "replace" ? catalog.models : [] });
+      expect(cfg.agents?.defaults?.models?.["xiaomi/mimo-v2.5"]).toEqual({ alias: "Xiaomi" });
+      expect(cfg.agents?.defaults?.model).toEqual({ primary: "xiaomi/mimo-v2.5" });
+      expectProviderOnboardPrimaryModel({
+        applyConfig: applyXiaomiConfig,
+        modelRef: "xiaomi/mimo-v2.5",
+      });
+    },
+  );
 
   it("merges Xiaomi models and keeps existing provider overrides", () => {
     const provider = expectProviderOnboardMergedLegacyConfig({
@@ -35,30 +38,30 @@ describe("xiaomi onboard", () => {
       legacyModelId: "custom-model",
       legacyModelName: "Custom",
     });
-    expect(provider?.models.map((m) => m.id)).toEqual([
-      "custom-model",
-      "mimo-v2.5",
-      "mimo-v2.5-pro",
-    ]);
+    expect(provider?.models.map((model) => model.id)).toEqual(["custom-model"]);
   });
 
-  it("adds Xiaomi Token Plan provider with a regional endpoint preset", () => {
-    const cfg = applyXiaomiTokenPlanConfig({}, "ams");
-    const provider = cfg.models?.providers?.["xiaomi-token-plan"];
-    expect(provider).toEqual({
-      ...buildXiaomiTokenPlanProvider(),
-      baseUrl: "https://token-plan-ams.xiaomimimo.com/v1",
-    });
-    expect(provider?.models.map((m) => m.id)).toEqual(["mimo-v2.5-pro", "mimo-v2.5"]);
-    expect(cfg.agents?.defaults?.models?.["xiaomi-token-plan/mimo-v2.5-pro"]).toEqual({
-      alias: "Xiaomi MiMo V2.5 Pro",
-    });
-    expect(cfg.agents?.defaults?.model).toEqual({ primary: "xiaomi-token-plan/mimo-v2.5-pro" });
-    expectProviderOnboardPrimaryModel({
-      applyConfig: (config) => applyXiaomiTokenPlanConfig(config, "ams"),
-      modelRef: "xiaomi-token-plan/mimo-v2.5-pro",
-    });
-  });
+  it.each(["merge", "replace"] as const)(
+    "adds the regional Xiaomi Token Plan preset: %s",
+    (mode) => {
+      const cfg = applyXiaomiTokenPlanConfig({ models: { mode } }, "ams");
+      const provider = cfg.models?.providers?.["xiaomi-token-plan"];
+      const catalog = buildXiaomiTokenPlanProvider();
+      expect(provider).toEqual({
+        ...catalog,
+        models: mode === "replace" ? catalog.models : [],
+        baseUrl: "https://token-plan-ams.xiaomimimo.com/v1",
+      });
+      expect(cfg.agents?.defaults?.models?.["xiaomi-token-plan/mimo-v2.5-pro"]).toEqual({
+        alias: "Xiaomi MiMo V2.5 Pro",
+      });
+      expect(cfg.agents?.defaults?.model).toEqual({ primary: "xiaomi-token-plan/mimo-v2.5-pro" });
+      expectProviderOnboardPrimaryModel({
+        applyConfig: (config) => applyXiaomiTokenPlanConfig(config, "ams"),
+        modelRef: "xiaomi-token-plan/mimo-v2.5-pro",
+      });
+    },
+  );
 
   it("merges Xiaomi Token Plan models and rewrites the selected regional base URL", () => {
     const provider = expectProviderOnboardMergedLegacyConfig({
@@ -70,10 +73,6 @@ describe("xiaomi onboard", () => {
       legacyModelId: "custom-token-plan-model",
       legacyModelName: "Custom Token Plan",
     });
-    expect(provider?.models.map((m) => m.id)).toEqual([
-      "custom-token-plan-model",
-      "mimo-v2.5-pro",
-      "mimo-v2.5",
-    ]);
+    expect(provider?.models.map((model) => model.id)).toEqual(["custom-token-plan-model"]);
   });
 });

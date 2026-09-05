@@ -200,6 +200,8 @@ describe("sendGatewayHello update detail scope", () => {
       GATEWAY_SERVER_CAPS.SESSION_UNREAD_ACK_CONTRACT,
     );
     expect(helloPayload(context)?.features.capabilities).toContain("session-scoped-chat-metadata");
+    expect(helloPayload(context)?.features.capabilities).toContain("session-scoped-model-catalog");
+    expect(helloPayload(context)?.features.capabilities).toContain("published-model-catalog");
   });
 
   it("reports Gateway build identity separately from configured UI source", async () => {

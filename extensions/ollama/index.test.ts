@@ -5,6 +5,7 @@ import {
   capturePluginRegistration,
   createPluginRuntimeMock,
 } from "openclaw/plugin-sdk/plugin-test-runtime";
+import { LiveModelCatalogHttpError } from "openclaw/plugin-sdk/provider-catalog-live-runtime";
 import { clearLiveCatalogCacheForTests } from "openclaw/plugin-sdk/provider-catalog-shared";
 // Ollama tests cover index plugin behavior.
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
@@ -995,6 +996,7 @@ describe("ollama plugin", () => {
         models: [{ id: "llama3.2", name: "Llama 3.2" }],
         apiKey: "ollama-local",
       },
+      outcomes: [{ provider: "ollama", status: "ready" }],
     });
   });
 
@@ -1058,7 +1060,15 @@ describe("ollama plugin", () => {
       resolveProviderApiKey: () => ({ apiKey: "" }),
     } as never);
 
-    expect(result).toBeNull();
+    expect(result).toEqual({
+      provider: {
+        baseUrl: "http://remote-ollama:11434",
+        api: "ollama",
+        models: [],
+        apiKey: "ollama-local",
+      },
+      outcomes: [{ provider: "ollama", status: "ready" }],
+    });
     expect(buildOllamaProviderMock).toHaveBeenCalledWith("http://remote-ollama:11434", {
       quiet: false,
     });
@@ -2229,6 +2239,58 @@ describe("ollama plugin", () => {
     expect(result?.provider.models).toEqual(
       expect.arrayContaining([expect.objectContaining({ id: "glm-5.2", name: "glm-5.2" })]),
     );
+  });
+
+  it.each([
+    { status: 401, outcome: { status: "auth-rejected", rejectionScope: "catalog" } },
+    { status: 503, outcome: { status: "unavailable" } },
+  ])(
+    "reports HTTP $status for the acquired cloud profile without default rows",
+    async (testCase) => {
+      const provider = registerOllamaCloudProvider();
+      buildOllamaProviderMock.mockRejectedValueOnce(
+        new LiveModelCatalogHttpError("ollama", testCase.status),
+      );
+      const resolveProviderApiKey = vi.fn(() => ({
+        apiKey: "secretref-managed",
+        discoveryApiKey: "cloud-key",
+        profileId: "ollama-cloud:profile",
+      }));
+      await expect(
+        provider.catalog.run({
+          config: {},
+          env: {},
+          resolveProviderApiKey,
+        }),
+      ).resolves.toEqual({
+        providers: {},
+        outcomes: [
+          {
+            provider: "ollama-cloud",
+            profileId: "ollama-cloud:profile",
+            ...testCase.outcome,
+          },
+        ],
+      });
+      expect(resolveProviderApiKey).toHaveBeenCalledOnce();
+      expect(queryOllamaModelShowInfoMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps an empty cloud acquisition empty instead of substituting default rows", async () => {
+    const provider = registerOllamaCloudProvider();
+    mockDiscoveredOllamaProvider([], { baseUrl: "https://ollama.com", once: true });
+    await expect(
+      provider.catalog.run({
+        config: {},
+        env: {},
+        resolveProviderApiKey: () => ({ apiKey: "cloud-key" }),
+      }),
+    ).resolves.toMatchObject({
+      provider: { models: [] },
+      outcomes: [{ provider: "ollama-cloud", status: "ready" }],
+    });
+    expect(queryOllamaModelShowInfoMock).not.toHaveBeenCalled();
   });
 
   it("confirms GLM-5.2 with authenticated show when cloud tags omit it", async () => {

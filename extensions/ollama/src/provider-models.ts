@@ -1,6 +1,7 @@
 // Ollama provider module implements model/runtime integration.
 import { createHash } from "node:crypto";
 import { toErrorObject } from "openclaw/plugin-sdk/error-runtime";
+import { LiveModelCatalogHttpError } from "openclaw/plugin-sdk/provider-catalog-live-runtime";
 import { readProviderJsonResponse } from "openclaw/plugin-sdk/provider-http";
 import {
   isCloudModelRef,
@@ -45,6 +46,13 @@ type OllamaRunningModel = {
 };
 
 type OllamaModelRow = OllamaTagModel | OllamaRunningModel;
+
+type OllamaModelListResult<Model> = {
+  reachable: boolean;
+  models: Model[];
+  status?: number;
+  error?: unknown;
+};
 
 export type OllamaModelWithContext = OllamaTagModel &
   OllamaModelShowInfo & { capabilitiesFromList?: boolean };
@@ -474,7 +482,7 @@ async function fetchOllamaModelRows(params: {
   endpoint: "ps" | "tags";
   opts?: OllamaModelRequestOptions;
   deps?: OllamaModelsFetchDeps;
-}): Promise<{ reachable: boolean; models: OllamaModelRow[] }> {
+}): Promise<OllamaModelListResult<OllamaModelRow>> {
   try {
     const apiBase = resolveOllamaApiBase(params.baseUrl);
     const auditContext = `ollama-provider-models.${params.endpoint}`;
@@ -498,20 +506,22 @@ async function fetchOllamaModelRows(params: {
         // Capture can retain a cloned tee branch, so cancellation must not delay
         // the guard's bounded dispatcher release.
         void response.body?.cancel().catch(() => undefined);
-        return { reachable: true, models: [] };
+        return { reachable: true, status: response.status, models: [] };
       }
       const data = await readProviderJsonResponse<{ models?: OllamaModelRow[] }>(
         response,
         auditContext,
       );
-      const models = Array.isArray(data.models) ? data.models : [];
-      return { reachable: true, models };
+      if (!Array.isArray(data.models)) {
+        throw new Error("Ollama model discovery response must contain models[]");
+      }
+      return { reachable: true, models: data.models };
     } finally {
       await release();
     }
-  } catch {
+  } catch (error) {
     throwIfOllamaRequestAborted(params.opts?.signal);
-    return { reachable: false, models: [] };
+    return { reachable: false, models: [], error };
   }
 }
 
@@ -519,10 +529,10 @@ export async function fetchOllamaModels(
   baseUrl: string,
   opts?: OllamaModelRequestOptions,
   deps?: OllamaModelsFetchDeps,
-): Promise<{ reachable: boolean; models: OllamaTagModel[] }> {
+): Promise<OllamaModelListResult<OllamaTagModel>> {
   const result = await fetchOllamaModelRows({ baseUrl, endpoint: "tags", opts, deps });
   return {
-    reachable: result.reachable,
+    ...result,
     models: result.models.filter(
       (model): model is OllamaTagModel => typeof model.name === "string" && Boolean(model.name),
     ),
@@ -533,10 +543,10 @@ export async function fetchLoadedOllamaModelNames(
   baseUrl: string,
   opts?: OllamaModelRequestOptions,
   deps?: OllamaModelsFetchDeps,
-): Promise<{ reachable: boolean; models: string[] }> {
+): Promise<OllamaModelListResult<string>> {
   const result = await fetchOllamaModelRows({ baseUrl, endpoint: "ps", opts, deps });
   return {
-    reachable: result.reachable,
+    ...result,
     models: result.models
       .map((model) =>
         typeof model.name === "string"
@@ -555,11 +565,14 @@ export async function buildOllamaProvider(
 ): Promise<ModelProviderConfig> {
   const apiBase = resolveOllamaApiBase(configuredBaseUrl);
   const auth = opts?.apiKey ? { apiKey: opts.apiKey } : undefined;
-  const { reachable, models } = await fetchOllamaModels(apiBase, auth);
-  if (!reachable && !opts?.quiet) {
-    console.warn(`Ollama could not be reached at ${apiBase}.`);
+  const result = await fetchOllamaModels(apiBase, auth);
+  if (!result.reachable) {
+    throw result.error;
   }
-  const discovered = await enrichOllamaCompletionModels(apiBase, models, auth);
+  if (result.status !== undefined && result.status >= 400) {
+    throw new LiveModelCatalogHttpError("ollama", result.status);
+  }
+  const discovered = await enrichOllamaCompletionModels(apiBase, result.models, auth);
   return {
     baseUrl: apiBase,
     api: "ollama",

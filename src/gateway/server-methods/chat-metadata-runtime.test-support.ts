@@ -96,7 +96,7 @@ export function createChatMetadataHarness(
     };
   });
   const readProjection = vi.fn(
-    (projection: { modelCatalog: ModelCatalogEntry[]; models?: unknown[] }) => projection,
+    (projection: { modelCatalog: ModelCatalogEntry[]; models?: ModelCatalogEntry[] }) => projection,
   );
   const context = {
     getRuntimeConfig: () => config,

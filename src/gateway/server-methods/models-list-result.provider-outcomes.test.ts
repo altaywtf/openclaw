@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { getPreparedModelCatalogDecisions } from "../../agents/model-catalog-decisions.js";
 import { markPreparedModelCatalogFull } from "../../agents/prepared-model-runtime.full-catalog.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
@@ -6,14 +7,15 @@ import {
   type PreparedGatewayModelCatalogSnapshot,
   registerGatewayModelCatalogPrivateAccess,
 } from "../server-model-catalog-auth.js";
-import {
-  buildModelsListResult,
-  createGatewayAgentModelCatalogProjector,
-} from "./models-list-result.js";
+import { buildModelsListResult } from "./models-list-result.js";
 import type { GatewayRequestContext } from "./types.js";
 
 const metadataSnapshot = createPluginMetadataSnapshotFixture();
 const emptyAuthStore = { version: 1, profiles: {} } as const;
+type CatalogFacts = Pick<
+  PreparedGatewayModelCatalogSnapshot,
+  "metadataSnapshot" | "authStore" | "providerAuth" | "authMaterializations"
+>;
 
 describe("models.list provider catalog outcomes", () => {
   it.each([
@@ -56,15 +58,14 @@ describe("models.list provider catalog outcomes", () => {
         baseUrl,
       };
       const snapshot = markPreparedModelCatalogFull({ entries: [model], routeVariants: [model] });
-      const projector = createGatewayAgentModelCatalogProjector({
-        cfg: config,
-        agentId: "main",
-        snapshot,
+      const facts: CatalogFacts = {
         metadataSnapshot: createPluginMetadataSnapshotFixture({
           plugins: [{ id: "ollama", providers: ["ollama"], syntheticAuthRefs: ["ollama"] }],
         }),
-        preparedAuthStore: emptyAuthStore,
-      });
+        authStore: emptyAuthStore,
+        providerAuth: {},
+        authMaterializations: [],
+      };
       const context = {
         getRuntimeConfig: () => config,
         loadGatewayModelCatalogSnapshot: vi.fn(),
@@ -73,7 +74,7 @@ describe("models.list provider catalog outcomes", () => {
 
       await expect(
         buildModelsListResult({
-          source: { kind: "published", context, config, snapshot, projector },
+          source: { kind: "published", context, config, snapshot, facts },
           agentId: "main",
           params: { view: "configured" },
         }),
@@ -175,12 +176,9 @@ describe("models.list provider catalog outcomes", () => {
         },
       ],
     });
-    const projector = createGatewayAgentModelCatalogProjector({
-      cfg: config,
-      agentId: "main",
-      snapshot,
+    const facts: CatalogFacts = {
       metadataSnapshot,
-      preparedAuthStore: {
+      authStore: {
         version: 1,
         profiles: {
           "openai:chatgpt": {
@@ -198,8 +196,8 @@ describe("models.list provider catalog outcomes", () => {
         },
         ...(testCase.usageStats ? { usageStats: testCase.usageStats } : {}),
       },
-      preferredProfileId: "openai:chatgpt",
-      preparedRuntimeAuthMaterializations:
+      providerAuth: {},
+      authMaterializations:
         "materialized" in testCase
           ? [
               {
@@ -214,7 +212,7 @@ describe("models.list provider catalog outcomes", () => {
               },
             ]
           : [],
-    });
+    };
     const context = {
       getRuntimeConfig: () => config,
       loadGatewayModelCatalogSnapshot: vi.fn(),
@@ -223,9 +221,10 @@ describe("models.list provider catalog outcomes", () => {
 
     await expect(
       buildModelsListResult({
-        source: { kind: "published", context, config, snapshot, projector },
+        source: { kind: "published", context, config, snapshot, facts },
         agentId: "main",
         params: { view: "configured" },
+        selection: { preferredProfileId: "openai:chatgpt" },
       }),
     ).resolves.toEqual({
       models: [
@@ -268,35 +267,38 @@ describe("models.list provider catalog outcomes", () => {
         },
       ],
     };
-    const projector = createGatewayAgentModelCatalogProjector({
+    const decisions = getPreparedModelCatalogDecisions({
       cfg: config,
       agentId: "main",
+      workspaceDir: "/tmp/models-list-provider-outcomes",
       snapshot,
       metadataSnapshot,
-      preferredProfileId: "openai:accepted",
-      preparedAuthStore: {
-        version: 1,
-        profiles: {
-          "openai:rejected": {
-            type: "oauth",
-            provider: "openai",
-            access: "rejected-access-token",
-            refresh: "rejected-refresh-token",
-            expires: Date.now() + 30 * 60_000,
-          },
-          "openai:accepted": {
-            type: "oauth",
-            provider: "openai",
-            access: "accepted-access-token",
-            refresh: "accepted-refresh-token",
-            expires: Date.now() + 30 * 60_000,
+      auth: {
+        providerAuth: {},
+        authStore: {
+          version: 1,
+          profiles: {
+            "openai:rejected": {
+              type: "oauth",
+              provider: "openai",
+              access: "rejected-access-token",
+              refresh: "rejected-refresh-token",
+              expires: Date.now() + 30 * 60_000,
+            },
+            "openai:accepted": {
+              type: "oauth",
+              provider: "openai",
+              access: "accepted-access-token",
+              refresh: "accepted-refresh-token",
+              expires: Date.now() + 30 * 60_000,
+            },
           },
         },
       },
     });
 
     await expect(
-      projector.decisions.evaluate(model, projector.decisionContext),
+      decisions.evaluate(model, { preferredProfileId: "openai:accepted" }),
     ).resolves.toMatchObject({
       availability: true,
       selectedProfileId: "openai:accepted",

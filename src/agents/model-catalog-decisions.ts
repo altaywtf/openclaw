@@ -1,3 +1,4 @@
+import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import { cloneConfigWithResolutionFacts } from "../config/resolution-facts.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
@@ -6,6 +7,7 @@ import {
   type ThinkingCatalogPolicyCarrier,
 } from "../plugins/provider-thinking-catalog.js";
 import type { GatewayAgentRuntime } from "../shared/session-types.js";
+import { normalizeOptionalAgentRuntimeId, OPENCLAW_AGENT_RUNTIME_ID } from "./agent-runtime-id.js";
 import { cloneAuthProfileStore } from "./auth-profiles/clone.js";
 import type { RuntimeAuthMaterialization } from "./auth-profiles/runtime-materializations.js";
 import type { AuthProfileStore } from "./auth-profiles/types.js";
@@ -15,6 +17,7 @@ import {
   createModelCatalogAuthResolver,
   createModelCatalogEntryEvaluator,
 } from "./model-catalog-auth.js";
+import { createPreparedModelCatalogProviderNormalizer } from "./model-catalog-provider-normalizer.js";
 import type { ModelCatalogEntry, ModelCatalogSnapshot } from "./model-catalog.types.js";
 import { buildConfiguredModelCatalog } from "./model-selection-shared.js";
 import { resolveModelCatalogIdentityKey } from "./openai-model-routes.js";
@@ -36,6 +39,7 @@ export type ModelCatalogDecisionFacts = {
 
 export type ModelCatalogDecisionContext = {
   purpose?: "agent" | "utility" | "image";
+  profileProvider?: string;
   preferredProfileId?: string;
   lockedProfileId?: string;
   runtimeOverride?: GatewayAgentRuntime;
@@ -52,6 +56,10 @@ export type PreparedModelCatalogDecisions = {
     entry: ModelCatalogEntry,
     context?: ModelCatalogDecisionContext,
   ): Promise<GatewayAgentRuntime | undefined>;
+  runtimeChoices(
+    entry: ModelCatalogEntry,
+    context?: ModelCatalogDecisionContext,
+  ): Promise<readonly string[]>;
   isCurrent(): boolean;
 };
 
@@ -91,6 +99,7 @@ function createDecisionSource(
 ): PreparedModelCatalogDecisions {
   const now = Date.now();
   const { agentId, workspaceDir, metadataSnapshot } = params;
+  const normalizeCatalogProvider = createPreparedModelCatalogProviderNormalizer(metadataSnapshot);
   const cfg = freezeCapturedFacts(cloneConfigWithResolutionFacts(params.cfg));
   const authStore = freezeCapturedFacts(cloneAuthProfileStore(params.auth.authStore));
   const deadlines = [
@@ -106,6 +115,9 @@ function createDecisionSource(
   // Time can change auth readiness without a publication; the next read replaces this source.
   const validUntil = Math.min(...deadlines);
   const providerAuth = freezeCapturedFacts(structuredClone(params.auth.providerAuth));
+  const runtimeBindings = freezeCapturedFacts(
+    structuredClone(params.snapshot.runtimeBindings ?? []),
+  );
   const authMaterializations = freezeCapturedFacts(
     structuredClone(params.authMaterializations ?? []),
   );
@@ -115,9 +127,20 @@ function createDecisionSource(
   const routeGroups = new Map<string, readonly ModelCatalogEntry[]>();
   const configuredRows = buildConfiguredModelCatalog({
     cfg,
+    catalog: params.snapshot.entries,
     workspaceDir,
     manifestPlugins: metadataSnapshot,
   });
+  const publishedOrConfiguredKeys = new Set(
+    [...params.snapshot.entries, ...configuredRows].map(resolveModelCatalogIdentityKey),
+  );
+  const liveCatalogProviders = new Set(
+    metadataSnapshot.plugins.flatMap((plugin) =>
+      Object.entries(plugin.modelCatalog?.discovery ?? {}).flatMap(([provider, mode]) =>
+        mode === "runtime" || mode === "refreshable" ? [normalizeProviderId(provider)] : [],
+      ),
+    ),
+  );
   const capturedRows = new Map<ModelCatalogEntry, ModelCatalogEntry>();
   const capture = (row: ModelCatalogEntry) => {
     let captured = capturedRows.get(row);
@@ -192,7 +215,12 @@ function createDecisionSource(
       routeGroups.get(resolveModelCatalogIdentityKey(entry)) ?? EMPTY_CATALOG_ROWS,
     evaluate(entry: ModelCatalogEntry, context: ModelCatalogDecisionContext = {}) {
       const purpose = context.purpose ?? "agent";
-      const { preferredProfileId, lockedProfileId } = context;
+      const { preferredProfileId, lockedProfileId } =
+        context.profileProvider === undefined ||
+        normalizeCatalogProvider(context.profileProvider) ===
+          normalizeCatalogProvider(entry.provider)
+          ? context
+          : {};
       const contextKey = JSON.stringify([
         purpose,
         preferredProfileId ?? null,
@@ -244,9 +272,21 @@ function createDecisionSource(
       }
       const ownedEntry = resolveOwnedEntry(entry);
       const { nativeRuntime: _nativeRuntime, ...directEntry } = ownedEntry;
-      return evaluateEntry(
+      const evaluation = evaluateEntry(
         purpose === "agent" ? ownedEntry : directEntry,
         routeGroups.get(resolveModelCatalogIdentityKey(ownedEntry)) ?? [ownedEntry],
+      );
+      if (
+        !catalogComplete ||
+        !liveCatalogProviders.has(normalizeProviderId(ownedEntry.provider)) ||
+        publishedOrConfiguredKeys.has(resolveModelCatalogIdentityKey(ownedEntry))
+      ) {
+        return evaluation;
+      }
+      return evaluation.then((result) =>
+        result.availability === true && !result.runtimeAuth
+          ? { ...result, availability: undefined }
+          : result,
       );
     },
     async runtime(
@@ -288,6 +328,73 @@ function createDecisionSource(
         ? undefined
         : Object.freeze({ id: policy.runtime, source: policy.runtimeSource ?? "implicit" });
     },
+    async runtimeChoices(
+      entry: ModelCatalogEntry,
+      context: ModelCatalogDecisionContext = {},
+    ): Promise<readonly string[]> {
+      if (context.purpose !== undefined && context.purpose !== "agent") {
+        return [];
+      }
+      const ownedEntry = resolveOwnedEntry(entry);
+      const provider = normalizeProviderId(ownedEntry.provider);
+      const effective = await source.runtime(ownedEntry, context);
+      const evaluation = await source.evaluate(ownedEntry, context);
+      const routes =
+        evaluation.routeResolution?.kind === "routes" ? evaluation.routeResolution.routes : [];
+      const policy = resolveConfiguredAgentHarnessPolicy({
+        config: cfg,
+        agentId,
+        provider,
+        modelId: ownedEntry.id,
+        modelApi: evaluation.selectedRoute?.api ?? ownedEntry.api,
+        modelBaseUrl: evaluation.selectedRoute?.baseUrl ?? ownedEntry.baseUrl,
+        requestTransportOverrides: evaluation.selectedRoute?.requestTransportOverrides,
+        env,
+      });
+      const candidates = [
+        effective?.id,
+        OPENCLAW_AGENT_RUNTIME_ID,
+        providerAuth[provider]?.runtime,
+        ...source.variants(ownedEntry).map((variant) => variant.nativeRuntime),
+        ...runtimeBindings
+          .filter((binding) => binding.provider === provider)
+          .map((binding) => binding.runtime),
+        ...routes.flatMap((route) => route.runtimePolicy?.compatibleIds ?? []),
+      ];
+      const choices: string[] = [];
+      const runtimeIds = new Set(
+        candidates.map(normalizeOptionalAgentRuntimeId).filter((runtime) => runtime !== undefined),
+      );
+      for (const runtimeId of runtimeIds) {
+        if (runtimeId === "auto" || (policy.forcedByEnvironment && runtimeId !== policy.runtime)) {
+          continue;
+        }
+        const candidate = await source.evaluate(ownedEntry, {
+          ...context,
+          runtimeOverride: { id: runtimeId, source: "model" },
+        });
+        if (candidate.availability !== true) {
+          continue;
+        }
+        const compatibleIds = candidate.selectedRoute?.runtimePolicy?.compatibleIds;
+        if (compatibleIds && !compatibleIds.includes(runtimeId)) {
+          continue;
+        }
+        if (candidate.runtimeAuth?.source === "native" && candidate.runtimeAuth.id !== runtimeId) {
+          continue;
+        }
+        if (
+          runtimeId !== OPENCLAW_AGENT_RUNTIME_ID &&
+          runtimeId !== effective?.id &&
+          candidate.runtimeAuth?.id !== runtimeId &&
+          !compatibleIds?.includes(runtimeId)
+        ) {
+          continue;
+        }
+        choices.push(runtimeId);
+      }
+      return Object.freeze(choices);
+    },
     isCurrent: () =>
       getPreparedModelRuntimePublicationRevision() === revision && Date.now() < validUntil,
   });
@@ -312,6 +419,7 @@ export function getPreparedModelCatalogDecisions(
     params.snapshot.routeVariants,
     params.snapshot.staticEntries,
     params.snapshot.providerOutcomes,
+    params.snapshot.runtimeBindings,
     params.auth.providerAuth,
     params.authMaterializations?.length ? params.authMaterializations : undefined,
     catalogComplete,

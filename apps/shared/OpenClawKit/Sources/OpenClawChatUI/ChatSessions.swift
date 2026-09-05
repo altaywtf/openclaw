@@ -100,6 +100,7 @@ public struct OpenClawChatModelChoice: Identifiable, Codable, Sendable, Hashable
     public let unavailableUntil: Int?
     public let contextWindow: Int?
     public let reasoning: Bool?
+    public let supportsFastMode: Bool?
 
     public init(
         modelID: String,
@@ -109,7 +110,8 @@ public struct OpenClawChatModelChoice: Identifiable, Codable, Sendable, Hashable
         unavailableReason: String? = nil,
         unavailableUntil: Int? = nil,
         contextWindow: Int?,
-        reasoning: Bool? = nil)
+        reasoning: Bool? = nil,
+        supportsFastMode: Bool? = nil)
     {
         self.modelID = modelID
         self.name = name
@@ -119,6 +121,7 @@ public struct OpenClawChatModelChoice: Identifiable, Codable, Sendable, Hashable
         self.unavailableUntil = unavailableUntil
         self.contextWindow = contextWindow
         self.reasoning = reasoning
+        self.supportsFastMode = supportsFastMode
     }
 
     /// Provider-qualified model ref used for picker identity and selection tags.

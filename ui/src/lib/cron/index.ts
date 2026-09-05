@@ -31,6 +31,7 @@ import {
   formatMissingOperatorReadScopeMessage,
   isMissingOperatorReadScopeError,
 } from "../gateway-errors.ts";
+import { loadModelCatalog, modelCatalogRefreshError } from "../model-catalog-store.ts";
 import { parseCronDurationMs } from "./decimal.ts";
 
 export { loadCronScopeStats } from "./scope.ts";
@@ -449,33 +450,19 @@ export async function loadCronStatus(state: CronState) {
 export async function loadCronModelSuggestions(
   state: CronModelSuggestionsState,
   agentId: string | null,
-) {
+): Promise<string | null> {
   if (!state.client || !state.connected || !agentId) {
-    return;
+    return null;
   }
   try {
-    const res = await state.client.request("models.list", {
-      agentId,
-      view: "configured",
-      preparedOnly: true,
-    });
-    const models = (res as { models?: unknown[] } | null)?.models;
-    if (!Array.isArray(models)) {
-      state.cronModelSuggestions = [];
-      return;
+    const result = await loadModelCatalog(state.client, { agentId });
+    if (!result.refreshFailed || result.models.length > 0) {
+      const ids = result.models.map((entry) => entry.id.trim()).filter(Boolean);
+      state.cronModelSuggestions = sortUniqueStrings(ids);
     }
-    const ids = models
-      .map((entry) => {
-        if (!entry || typeof entry !== "object") {
-          return "";
-        }
-        const id = (entry as { id?: unknown }).id;
-        return typeof id === "string" ? id.trim() : "";
-      })
-      .filter(Boolean);
-    state.cronModelSuggestions = sortUniqueStrings(ids);
-  } catch {
-    state.cronModelSuggestions = [];
+    return modelCatalogRefreshError(result);
+  } catch (error) {
+    return formatUiError(error);
   }
 }
 

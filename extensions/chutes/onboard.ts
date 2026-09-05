@@ -1,7 +1,7 @@
 import { readManifestProviderDefaultModelRef } from "openclaw/plugin-sdk/provider-catalog-shared";
 import {
   applyAgentDefaultModelPrimary,
-  createModelCatalogPresetAppliers,
+  createProviderConnectionPresetAppliers,
   type OpenClawConfig,
 } from "openclaw/plugin-sdk/provider-onboard";
 import { CHUTES_BASE_URL, CHUTES_MODEL_CATALOG } from "./models.js";
@@ -10,16 +10,14 @@ import manifest from "./openclaw.plugin.json" with { type: "json" };
 export const CHUTES_DEFAULT_MODEL_ID = manifest.modelCatalog.providers.chutes.defaultModel;
 export const CHUTES_DEFAULT_MODEL_REF = readManifestProviderDefaultModelRef(manifest, "chutes")!;
 
-const chutesPresetAppliers = createModelCatalogPresetAppliers({
+const chutesPresetAppliers = createProviderConnectionPresetAppliers({
   primaryModelRef: CHUTES_DEFAULT_MODEL_REF,
-  resolveParams: (cfg: OpenClawConfig) => ({
+  resolveParams: () => ({
     providerId: "chutes",
     api: "openai-completions",
     baseUrl: CHUTES_BASE_URL,
-    // Replace mode skips discovery; merge mode must not persist generated pricing as authored pins.
-    catalogModels: cfg.models?.mode === "replace" ? structuredClone(CHUTES_MODEL_CATALOG) : [],
+    catalogModels: () => structuredClone(CHUTES_MODEL_CATALOG),
     aliases: [
-      ...CHUTES_MODEL_CATALOG.map((model) => `chutes/${model.id}`),
       {
         modelRef: "chutes-vision",
         alias: "chutes/moonshotai/Kimi-K2.6-TEE",

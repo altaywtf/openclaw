@@ -1,9 +1,13 @@
 import { render } from "lit";
 import { expect, it, vi } from "vitest";
 import type { ModelCatalogEntry } from "../../api/types.ts";
-import { invalidateChatMetadataStore } from "../../lib/chat/chat-metadata-store.ts";
 import { waitForFast } from "../../test-helpers/wait-for.ts";
-import { contextWith, deferred, renderControl } from "./model-control.test-support.ts";
+import {
+  contextWith,
+  deferred,
+  publishModelCatalog,
+  renderControl,
+} from "./model-control.test-support.ts";
 import { NewSessionModelControl } from "./model-control.ts";
 
 const starter: ModelCatalogEntry = { id: "starter", name: "Starter", provider: "provider" };
@@ -12,7 +16,6 @@ const added: ModelCatalogEntry = { id: "added", name: "Added", provider: "provid
 
 it("updates an open picker from scoped publications without restoring stale draft preferences", async () => {
   const { context, request } = contextWith([starter, chosen]);
-  const client = context.gateway.snapshot.client!;
   const selectionChanged = vi.fn();
   const control = new NewSessionModelControl(() => undefined, selectionChanged);
   control.load(context, "main", true, { preference: { model: "provider/starter" } });
@@ -29,9 +32,7 @@ it("updates an open picker from scoped publications without restoring stale draf
   selectionChanged.mockClear();
   request.mockResolvedValue({ models: [chosen, added] });
 
-  invalidateChatMetadataStore(client, { agentId: "other" });
-  expect(request).not.toHaveBeenCalled();
-  invalidateChatMetadataStore(client, { agentId: "main" });
+  publishModelCatalog(context);
   await waitForFast(() => expect(request).toHaveBeenCalledOnce());
   await waitForFast(() => {
     render(
@@ -51,7 +52,7 @@ it("updates an open picker from scoped publications without restoring stale draf
     request.mock.calls.every(([method, params]) => method === "models.list" && !params.refresh),
   ).toBe(true);
   control.reset();
-  invalidateChatMetadataStore(client);
+  publishModelCatalog(context);
   expect(request).toHaveBeenCalledOnce();
 });
 
@@ -96,7 +97,7 @@ it("keeps previous choices usable and reports a failed publication reload", asyn
   control.load(context, "main", true);
   await waitForFast(() => expect(renderControl(control, context).textContent).toContain("Chosen"));
   request.mockRejectedValueOnce(new Error("catalog read failed"));
-  invalidateChatMetadataStore(context.gateway.snapshot.client!);
+  publishModelCatalog(context);
   await waitForFast(() =>
     expect(renderControl(control, context).textContent).toContain("showing previous choices"),
   );
@@ -120,7 +121,7 @@ it("reads a fresh snapshot when an inactive picker returns", async () => {
   control.thinkingLevel = "high";
   control.load(context, "main", false);
   request.mockResolvedValue({ models: [chosen, added] });
-  invalidateChatMetadataStore(context.gateway.snapshot.client!);
+  publishModelCatalog(context);
   expect(request).toHaveBeenCalledOnce();
 
   control.load(context, "main", true);
@@ -155,7 +156,7 @@ it.each(["provider/chosen", "provider/remembered"])(
     expect(renderControl(control, context).textContent).toContain("showing previous choices");
 
     request.mockResolvedValue({ models: [chosen, added] });
-    invalidateChatMetadataStore(context.gateway.snapshot.client!);
+    publishModelCatalog(context);
     await waitForFast(() =>
       expect(
         renderControl(control, context).querySelector('[data-chat-model-catalog-state="error"]'),

@@ -83,8 +83,18 @@ Other selection rules:
 
 - Changing `agents.defaults.model.primary` does not rewrite existing session pins. If status reports `This session is pinned to X; config primary Y will apply to new/unpinned sessions.`, run `/model default` to clear the pin.
 - CLI default-model and allowlist pickers respect `models.mode: "replace"` by listing only `models.providers.*.models` instead of the full built-in catalog.
-- The Control UI reads the Gateway's published model catalog. Opening a picker does not start discovery, including for `provider/*` policy entries. Open pickers follow catalog updates without replacing draft messages or model selections. Default and configured picker views hide catalog rows marked `deprecated` or `disabled` unless that exact model is configured as a primary, fallback, utility/tool model, alias/settings key, or exact policy entry. Hidden rows remain selectable by exact `provider/model` ref. Full browse views (`models.list` with `view: "all"`, or `openclaw models list --all`) include those hidden rows.
-- Provider inventory UIs use `models.list` with `view: "provider-config"` to show source-authored `models.providers.*.models` rows without applying picker allowlists.
+- The Control UI and `openclaw models list` read published model rows. Opening a picker, using `--all` or `--provider`, or choosing any ordinary `models.list` view does not start discovery, including for `provider/*` policy entries. Open pickers follow catalog updates without replacing draft messages or model selections. Default and configured picker views hide catalog rows marked `deprecated` or `disabled` unless that exact model is configured as a primary, fallback, utility/tool model, alias/settings key, or exact policy entry. Hidden rows remain selectable by exact `provider/model` ref. Full browse views (`models.list` with `view: "all"`, or `openclaw models list --all`) include those hidden rows.
+- Provider inventory UIs use `models.list` with `view: "provider-config"` to show source-authored `models.providers.*.models` rows and published rows for configured dynamic providers without an explicit list. Inventory does not apply or create a `modelPolicy.allow` restriction.
+
+Gateway clients explicitly request provider discovery with `models.list` and
+`refresh: true`, independently of the selected view. The older `preparedOnly`
+parameter remains accepted as a compatibility hint; it does not select a separate
+read path. See [`models.list` views](/gateway/protocol#modelslist-views).
+
+When the Gateway advertises `session-scoped-model-catalog`, clients can pass
+`sessionKey` to `models.list`. The session's auth-profile preference or lock applies
+only to its selected provider. Other providers remain neutral to that selection;
+their own auth and availability checks still apply.
 
 The Gateway discovers models in a worker at startup and after changes to the
 catalog's configuration, plugin, or account scope. Renewing a token for the same
@@ -173,7 +183,7 @@ To limit providers without listing every model, use trailing prefix wildcard ent
 }
 ```
 
-`/model`, `/models`, and model pickers then show the discovered catalog for those providers only, and new models can appear without editing the allowlist. Mix exact `provider/model` entries with `provider/*` entries to pull in one specific model from another provider.
+`/model`, `/models`, and model pickers then show the published catalog for those providers only, and newly published models can appear without editing the allowlist. The wildcard does not trigger discovery. Mix exact `provider/model` entries with `provider/*` entries to pull in one specific model from another provider.
 
 Example allowlist with aliases and per-model settings:
 
@@ -360,6 +370,12 @@ values. A self-hosted mirror can be selected with an HTTPS
 [configuration reference](/gateway/configuration-reference#models).
 
 Custom providers configured under `models.providers` are written into `models.json` under the agent directory (default `~/.openclaw/agents/<agentId>/agent/models.json`). Provider-plugin catalogs are stored separately as generated plugin-owned catalog shards and load automatically. This file is merged with config by default; set `models.mode: "replace"` to use only your configured providers.
+
+In merge mode, hosted-provider setup saves connection and model-selection settings,
+not generated catalog snapshots in `models.providers.*.models`. Published provider
+catalogs supply those rows. Existing manually authored model definitions remain
+intact, and replace-mode setup retains explicit provider model definitions.
+Inventory rows are separate from the `modelPolicy.allow` selection restriction.
 
 <AccordionGroup>
   <Accordion title="Merge mode precedence">

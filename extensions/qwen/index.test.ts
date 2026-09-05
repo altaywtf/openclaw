@@ -4,9 +4,11 @@ import {
   registerProviderPlugin,
   requireRegisteredProvider,
 } from "openclaw/plugin-sdk/plugin-test-runtime";
+import { clearLiveCatalogCacheForTests } from "openclaw/plugin-sdk/provider-catalog-live-runtime";
 import type { ProviderCatalogResult } from "openclaw/plugin-sdk/provider-catalog-shared";
 import type { ModelProviderConfig } from "openclaw/plugin-sdk/provider-model-shared";
-import { describe, expect, it, vi } from "vitest";
+import * as ssrfRuntime from "openclaw/plugin-sdk/ssrf-runtime";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   QWEN_36_FLASH_MODEL_ID,
   QWEN_36_PLUS_MODEL_ID,
@@ -28,6 +30,32 @@ function requireCatalogProvider(result: ProviderCatalogResult): ModelProviderCon
     throw new Error("single provider catalog result missing");
   }
   return result.provider;
+}
+
+function mockQwenModelCatalog(baseUrl: string) {
+  clearLiveCatalogCacheForTests();
+  const release = vi.fn(async () => undefined);
+  const fetchGuard = vi
+    .spyOn(ssrfRuntime, "fetchWithSsrFGuard")
+    .mockImplementation(async ({ url, init }) => {
+      expect(url).toBe(`${baseUrl.replace(/\/+$/, "")}/models`);
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer canonical-key");
+      return {
+        response: Response.json({
+          data: ["qwen3.7-plus", "qwen3.8-max", "qwen3.8-flash"].map((id) => ({
+            id,
+            object: "model",
+          })),
+        }),
+        finalUrl: url,
+        release,
+      };
+    });
+  onTestFinished(() => {
+    fetchGuard.mockRestore();
+    clearLiveCatalogCacheForTests();
+  });
+  return { fetchGuard, release };
 }
 
 async function registerQwenProvider() {
@@ -130,6 +158,7 @@ describe("qwen provider plugin", () => {
   });
 
   it("does not reinterpret exact legacy Anthropic config as canonical configuration", async () => {
+    const { fetchGuard, release } = mockQwenModelCatalog(QWEN_TOKEN_PLAN_GLOBAL_BASE_URL);
     const { providers } = await registerProviderPlugin({
       plugin: qwenPlugin,
       id: "qwen",
@@ -161,6 +190,8 @@ describe("qwen provider plugin", () => {
       apiKey: "canonical-key",
       baseUrl: QWEN_TOKEN_PLAN_GLOBAL_BASE_URL,
     });
+    expect(fetchGuard).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -179,6 +210,7 @@ describe("qwen provider plugin", () => {
       },
     },
   ])("uses canonical Token Plan config regardless of provider insertion order", async (entries) => {
+    const { fetchGuard, release } = mockQwenModelCatalog(QWEN_TOKEN_PLAN_CN_BASE_URL);
     const { providers } = await registerProviderPlugin({
       plugin: qwenPlugin,
       id: "qwen",
@@ -206,6 +238,8 @@ describe("qwen provider plugin", () => {
     expect(catalogProvider.models?.map((model) => model.id)).not.toContain("legacy-only");
     expect(resolveProviderApiKey).toHaveBeenCalledTimes(1);
     expect(resolveProviderApiKey).toHaveBeenCalledWith(QWEN_TOKEN_PLAN_PROVIDER_ID);
+    expect(fetchGuard).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledOnce();
   });
 
   it("preserves thinking controls for catalog and uncataloged Token Plan refs", async () => {
@@ -254,7 +288,7 @@ describe("qwen provider plugin", () => {
   });
 
   it("switches Token Plan regions without replacing custom catalog rows", () => {
-    const initialGlobal = applyQwenTokenPlanConfig({}, "global");
+    const initialGlobal = applyQwenTokenPlanConfig({ models: { mode: "replace" } }, "global");
     const globalProvider = initialGlobal.models?.providers?.[QWEN_TOKEN_PLAN_PROVIDER_ID];
     if (!globalProvider) {
       throw new Error("Token Plan provider missing after onboarding");
@@ -279,6 +313,7 @@ describe("qwen provider plugin", () => {
       ...initialGlobal,
       models: {
         ...initialGlobal.models,
+        mode: "merge",
         providers: {
           ...initialGlobal.models?.providers,
           [QWEN_TOKEN_PLAN_PROVIDER_ID]: {

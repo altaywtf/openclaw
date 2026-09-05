@@ -9,26 +9,28 @@ describe("kimi coding onboard", () => {
     expect(KIMI_CODING_MODEL_REF).toBe(KIMI_MODEL_REF);
   });
 
-  it("adds the Kimi coding provider defaults", () => {
-    const cfg = applyKimiCodeConfig({});
+  it.each(["merge", "replace"] as const)("adds the Kimi coding provider defaults: %s", (mode) => {
+    const cfg = applyKimiCodeConfig({ models: { mode } });
     const provider = cfg.models?.providers?.kimi;
 
     expect(provider).toEqual({
       api: "anthropic-messages",
       baseUrl: "https://api.kimi.com/coding/",
-      models: [
-        {
-          id: "kimi-for-coding",
-          name: "Kimi Code",
-          reasoning: true,
-          input: ["text", "image"],
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          contextWindow: 262144,
-          maxTokens: 32768,
-        },
-      ],
+      models:
+        mode === "replace"
+          ? [
+              {
+                id: "kimi-for-coding",
+                name: "Kimi Code",
+                reasoning: true,
+                input: ["text", "image"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 262144,
+                maxTokens: 32768,
+              },
+            ]
+          : [],
     });
-    expect(provider?.models?.map((model) => model.id)).toEqual(["kimi-for-coding"]);
     expect(cfg.agents?.defaults?.models?.[KIMI_MODEL_REF]?.alias).toBe("Kimi");
   });
 

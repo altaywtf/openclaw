@@ -206,10 +206,13 @@ describe("stepfun provider registration", () => {
       expect(result?.agents?.defaults?.models?.["anthropic/claude-sonnet-4-6"]).toEqual({
         alias: "Existing",
       });
-      expect(result?.agents?.defaults?.models?.[`${providerId}/step-3.5-flash`]).toEqual(
+      const defaultModelRef =
+        providerId === "stepfun" ? STEPFUN_DEFAULT_MODEL_REF : STEPFUN_PLAN_DEFAULT_MODEL_REF;
+      expect(result?.agents?.defaults?.models?.[defaultModelRef]).toEqual(
         expect.objectContaining({ alias: expect.any(String) }),
       );
       expect(result?.models?.providers?.[providerId]).toBeDefined();
+      expect(result?.models?.providers?.[providerId]?.models).toEqual([]);
     },
   );
 });

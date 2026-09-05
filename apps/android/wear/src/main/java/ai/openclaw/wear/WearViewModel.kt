@@ -31,6 +31,7 @@ internal data class WearUiState(
   val activeAgentId: String? = null,
   val selectedModelRef: String? = null,
   val models: List<WearModel> = emptyList(),
+  val modelCatalogRefreshFailed: Boolean = false,
   val proxyCapabilities: Set<WearProxyCapability> = emptySet(),
   val sessions: List<WearSession> = emptyList(),
   val selectedSession: WearSession? = null,
@@ -67,6 +68,7 @@ internal fun WearUiState.resetForPhoneChange(): WearUiState =
     activeAgentId = null,
     selectedModelRef = null,
     models = emptyList(),
+    modelCatalogRefreshFailed = false,
     proxyCapabilities = emptySet(),
     sessions = emptyList(),
     selectedSession = null,
@@ -111,6 +113,7 @@ internal fun WearUiState.switchAgentContext(agentId: String): WearUiState =
     activeRunId = null,
     selectedModelRef = null,
     models = emptyList(),
+    modelCatalogRefreshFailed = false,
     agentPulse = null,
     agentPulseLoading = false,
     agentPulseFailure = null,
@@ -130,6 +133,7 @@ internal fun WearUiState.switchSessionContext(session: WearSession): WearUiState
     activeRunId = null,
     selectedModelRef = session.modelRef,
     models = emptyList(),
+    modelCatalogRefreshFailed = false,
     realtimeTalk = WearRealtimeTalkSnapshot(),
     realtimeMouthLevel = 0f,
     talkBusy = false,
@@ -148,6 +152,7 @@ internal fun WearUiState.switchModelContext(modelRef: String): WearUiState {
     // The phone preserves the selected model in its bounded catalog slice.
     // A model change therefore invalidates the previous slice.
     models = emptyList(),
+    modelCatalogRefreshFailed = false,
     sessions = sessions.map { session -> if (session.key == updatedSession.key) updatedSession else session },
   )
 }
@@ -735,12 +740,19 @@ internal class WearViewModel(
           val selectedModelRef =
             selectedSession?.modelRef
               ?: wearSelectedModelRef(selectedSession?.key, activeSessionKey, status.selectedModelRef)
+          val modelScopeSupported = WearProxyCapability.SessionScopedModelCatalog in status.capabilities
           val modelList =
-            if (status.connected && WearProxyCapability.ModelControls in status.capabilities) {
+            if (
+              status.connected &&
+              selectedSession != null &&
+              modelScopeSupported &&
+              WearProxyCapability.ModelControls in status.capabilities
+            ) {
               repository.models(
                 expectedNodeId = status.phoneNodeId,
                 capabilities = status.capabilities,
                 selectedModelRef = selectedModelRef,
+                sessionKey = selectedSession.key,
               )
             } else {
               WearModelList(
@@ -784,6 +796,18 @@ internal class WearViewModel(
                   ?: agentList.agents.firstOrNull(WearAgent::selected)?.id,
               selectedModelRef = selectedModelRef,
               models = modelList.models,
+              modelCatalogRefreshFailed = modelList.refreshFailed,
+              failure =
+                if (
+                  status.connected &&
+                  selectedSession != null &&
+                  WearProxyCapability.ModelControls in status.capabilities &&
+                  !modelScopeSupported
+                ) {
+                  WearConversationFailure.INCOMPATIBLE
+                } else {
+                  it.failure
+                },
               proxyCapabilities = status.capabilities,
               sessions = projectedSessions,
               selectedSession = selectedSession,
@@ -822,6 +846,7 @@ internal class WearViewModel(
               activeAgentId = null,
               selectedModelRef = null,
               models = emptyList(),
+              modelCatalogRefreshFailed = false,
               proxyCapabilities = emptySet(),
               sessions = emptyList(),
               selectedSession = null,
@@ -878,6 +903,7 @@ internal class WearViewModel(
               selectedSession = loadedSession,
               selectedModelRef = loadedSession.modelRef,
               models = if (catalogScopeChanged) emptyList() else it.models,
+              modelCatalogRefreshFailed = !catalogScopeChanged && it.modelCatalogRefreshFailed,
               sessions =
                 it.sessions.map { item ->
                   if (item.key == session.key) {
@@ -992,6 +1018,7 @@ internal class WearViewModel(
               capabilities = capabilities,
               selectedModelRef = session.modelRef,
               query = query,
+              sessionKey = session.key,
             )
           val selectedSession = mutableState.value.selectedSession
           if (!wearSessionRequestIsCurrent(session, selectedSession, modelList.phoneNodeId)) return@launch
@@ -1011,9 +1038,18 @@ internal class WearViewModel(
               state
             } else {
               if (query == null) {
-                state.copy(models = modelList.models, modelSearchQuery = null, modelSearchResults = emptyList())
+                state.copy(
+                  models = modelList.models,
+                  modelCatalogRefreshFailed = modelList.refreshFailed,
+                  modelSearchQuery = null,
+                  modelSearchResults = emptyList(),
+                )
               } else {
-                state.copy(modelSearchQuery = query, modelSearchResults = modelList.models)
+                state.copy(
+                  modelCatalogRefreshFailed = modelList.refreshFailed,
+                  modelSearchQuery = query,
+                  modelSearchResults = modelList.models,
+                )
               }
             }
           }

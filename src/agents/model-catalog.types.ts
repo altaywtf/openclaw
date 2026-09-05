@@ -51,10 +51,18 @@ export type ModelCatalogEntry = {
   replacedBy?: string;
 };
 
+/** A CLI backend's explicit canonical modelProvider binding. */
+export type ModelCatalogRuntimeBinding = Readonly<{
+  provider: string;
+  runtime: string;
+}>;
+
 /** Logical catalog rows plus the physical variants used for route selection. */
 export type ModelCatalogSnapshot = {
   entries: ModelCatalogEntry[];
   routeVariants: ModelCatalogEntry[];
+  /** Generation-owned bindings; absent on raw inventory before owner preparation. */
+  runtimeBindings?: readonly ModelCatalogRuntimeBinding[];
   refreshFailed?: boolean;
   /** Provider-owned outcome of each live catalog request in this generation. */
   providerOutcomes?: readonly ProviderCatalogOutcome[];

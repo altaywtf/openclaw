@@ -29,9 +29,6 @@ describe("synthetic onboard", () => {
     const provider = defaultCfg.models?.providers?.synthetic;
     expect(provider?.baseUrl).toBe("https://api.synthetic.new/anthropic");
     expect(provider?.api).toBe("anthropic-messages");
-    expect(provider?.models.map((model) => model.id)).toContain(
-      SYNTHETIC_DEFAULT_MODEL_REF.replace(/^synthetic\//, ""),
-    );
     expect(defaultCfg.agents?.defaults?.models?.[SYNTHETIC_DEFAULT_MODEL_REF]).toEqual({
       alias: "MiniMax M3",
     });
@@ -41,17 +38,15 @@ describe("synthetic onboard", () => {
     expect(provider).toEqual({
       baseUrl: "https://api.synthetic.new/anthropic",
       api: "anthropic-messages",
-      models: SYNTHETIC_MODEL_CATALOG.map(buildSyntheticModelDefinition),
+      models: [],
     });
-    expect(provider?.models.map((model) => model.id)).toEqual([
-      "hf:MiniMaxAI/MiniMax-M3",
-      "hf:moonshotai/Kimi-K2.7-Code",
-      "hf:nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
-      "hf:openai/gpt-oss-120b",
-      "hf:Qwen/Qwen3.6-27B",
-      "hf:zai-org/GLM-4.7-Flash",
-      "hf:zai-org/GLM-5.2",
-    ]);
+  });
+
+  it("seeds the provider catalog when replace mode disables discovery", () => {
+    const config = applySyntheticConfig({ models: { mode: "replace" } });
+    expect(config.models?.providers?.synthetic?.models).toEqual(
+      SYNTHETIC_MODEL_CATALOG.map(buildSyntheticModelDefinition),
+    );
   });
 
   it("keeps the public default model ref aligned", () => {
@@ -62,8 +57,6 @@ describe("synthetic onboard", () => {
   });
 
   it("merges existing synthetic provider models", () => {
-    const ids = mergedProvider?.models.map((m) => m.id);
-    expect(ids).toContain("old-model");
-    expect(ids).toContain(SYNTHETIC_DEFAULT_MODEL_REF.replace(/^synthetic\//, ""));
+    expect(mergedProvider?.models.map((model) => model.id)).toEqual(["old-model"]);
   });
 });

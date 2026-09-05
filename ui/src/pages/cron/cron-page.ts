@@ -35,6 +35,7 @@ import {
   type CronState,
 } from "../../lib/cron/index.ts";
 import { formatUiError } from "../../lib/format-error.ts";
+import { subscribeModelCatalogChanges } from "../../lib/model-catalog-store.ts";
 import {
   resolveSessionNavigationAgentId,
   sessionNavigationTarget,
@@ -54,6 +55,7 @@ class CronPage extends OpenClawLightDomElement {
   @state() private cron = createInitialCronState();
   @state() private agentsList: AgentsListResult | null = null;
   @state() private cronModelSuggestions: string[] = [];
+  @state() private modelSuggestionsError: string | null = null;
   @state() private listTab: CronListTab = "tasks";
   @state() private detailTab: CronDetailTab = "settings";
   @state() private heartbeatScratch = "";
@@ -63,6 +65,7 @@ class CronPage extends OpenClawLightDomElement {
   private highlightedRunId: string | null = null;
   private pendingRunScroll = false;
   private modelSuggestionsState: CronState | null = null;
+  private modelSuggestionsRequest: CronModelSuggestionsState | null = null;
   private heartbeatScratchRequest = 0;
   private readonly gateway = new GatewayPageController(this, {
     getGateway: () => this.context?.gateway,
@@ -92,6 +95,15 @@ class CronPage extends OpenClawLightDomElement {
   }
 
   private readonly subscriptions = new SubscriptionsController(this)
+    .effect(
+      () => this.context?.gateway,
+      (gateway) =>
+        subscribeModelCatalogChanges(gateway, () => {
+          if (this.context.gateway === gateway && this.gateway.connected) {
+            void this.loadModelSuggestions(this.cron);
+          }
+        }),
+    )
     .watch(
       () => this.context?.agents,
       (agents, notify) => agents.subscribe(notify),
@@ -140,6 +152,7 @@ class CronPage extends OpenClawLightDomElement {
     this.cron.cronAgentId = this.context.agentSelection.state.scopeId;
     this.agentsList = connected ? this.context.agents.state.agentsList : null;
     this.cronModelSuggestions = [];
+    this.modelSuggestionsError = null;
     this.modelSuggestionsState = null;
   }
 
@@ -255,15 +268,21 @@ class CronPage extends OpenClawLightDomElement {
       connected: cronState.connected,
       cronModelSuggestions: this.cronModelSuggestions,
     };
-    await loadCronModelSuggestions(suggestionState, this.context.agentSelection.state.selectedId);
+    this.modelSuggestionsRequest = suggestionState;
+    const error = await loadCronModelSuggestions(
+      suggestionState,
+      this.context.agentSelection.state.selectedId,
+    );
     if (
       this.isConnected &&
       this.cron === cronState &&
       this.modelSuggestionsState === cronState &&
+      this.modelSuggestionsRequest === suggestionState &&
       cronState.connected &&
       suggestionState.client === cronState.client
     ) {
       this.cronModelSuggestions = suggestionState.cronModelSuggestions;
+      this.modelSuggestionsError = error;
     }
   }
 
@@ -516,7 +535,7 @@ class CronPage extends OpenClawLightDomElement {
           createOpen: this.cron.cronCreateOpen,
           listTab: this.listTab,
           detailTab: this.detailTab,
-          error: this.cron.cronError,
+          error: this.cron.cronError ?? this.modelSuggestionsError,
           busy: this.cron.cronBusy,
           form: this.cron.cronForm,
           heartbeatScratch: canManage ? this.heartbeatScratch : "",

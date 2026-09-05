@@ -682,6 +682,34 @@ export function createModelCatalogPresetAppliers<TArgs extends unknown[]>(params
   });
 }
 
+export function applyProviderConnectionConfig(
+  cfg: OpenClawConfig,
+  params: Omit<Parameters<typeof applyProviderConfigWithModelCatalogPreset>[1], "catalogModels"> & {
+    catalogModels: () => ModelDefinitionConfig[];
+  },
+): OpenClawConfig {
+  return applyProviderConfigWithModelCatalogPreset(cfg, {
+    ...params,
+    catalogModels: cfg.models?.mode === "replace" ? params.catalogModels() : [],
+  });
+}
+
+export function createProviderConnectionPresetAppliers<TArgs extends unknown[]>(params: {
+  resolveParams: (
+    cfg: OpenClawConfig,
+    ...args: TArgs
+  ) =>
+    | Omit<Parameters<typeof applyProviderConnectionConfig>[1], "primaryModelRef">
+    | null
+    | undefined;
+  primaryModelRef: string;
+}): ProviderOnboardPresetAppliers<TArgs> {
+  return createProviderPresetAppliers({
+    ...params,
+    applyPreset: applyProviderConnectionConfig,
+  });
+}
+
 /** Ensure static per-model config includes a provider model ref after onboarding. */
 export function ensureModelAllowlistEntry(params: {
   cfg: OpenClawConfig;

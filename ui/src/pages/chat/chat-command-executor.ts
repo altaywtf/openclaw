@@ -256,7 +256,7 @@ async function executeModel(
       const [sessions, models] = await Promise.all([
         listSessions(context, selectedAgentListScope(sessionKey, context)),
         modelCatalog ??
-          (agentId ? loadModelCatalog(client, { agentId }).then((r) => r.models) : []),
+          (agentId ? loadModelCatalog(client, { agentId, sessionKey }).then((r) => r.models) : []),
       ]);
       const { session, defaults } = resolveCommandSessionState(context, sessionKey, sessions);
       const model = session?.model || defaults?.model || "default";
@@ -737,7 +737,8 @@ async function loadThinkingCommandState(
   const agentId = resolveSelectedAgentId(sessionKey, context);
   const [sessions, models] = await Promise.all([
     listSessions(context, selectedAgentListScope(sessionKey, context)),
-    modelCatalog ?? (agentId ? loadModelCatalog(client, { agentId }).then((r) => r.models) : []),
+    modelCatalog ??
+      (agentId ? loadModelCatalog(client, { agentId, sessionKey }).then((r) => r.models) : []),
   ]);
   const state = resolveCommandSessionState(context, sessionKey, sessions);
   return {

@@ -57,6 +57,7 @@ export function preparedPluginGenerationReusesBase(
 
 export function createPreparedPluginGeneration(params: {
   catalogMode: PreparedModelRuntimeCatalogMode;
+  runtimeBindings: PreparedModelRuntimePluginGeneration["runtimeBindings"];
   configuredCatalogEntries: PreparedModelRuntimePluginGeneration["configuredCatalogEntries"];
   inboundPluginRegistry: PreparedModelRuntimePluginGeneration["inboundPluginRegistry"];
   inlineProviderModels: PreparedModelRuntimePluginGeneration["inlineProviderModels"];
@@ -73,7 +74,8 @@ export function createPreparedPluginGeneration(params: {
   if (reusable) {
     if (
       params.pluginMetadataSnapshot === reusable.pluginMetadataSnapshot &&
-      params.runtimePluginRegistry === reusable.pluginRegistry
+      params.runtimePluginRegistry === reusable.pluginRegistry &&
+      params.runtimeBindings === reusable.runtimeBindings
     ) {
       return reusable;
     }
@@ -81,6 +83,7 @@ export function createPreparedPluginGeneration(params: {
       ...reusable,
       pluginMetadataSnapshot: params.pluginMetadataSnapshot,
       pluginRegistry: params.runtimePluginRegistry,
+      runtimeBindings: params.runtimeBindings,
       mediaCapabilityProviders: params.mediaCapabilityProviders,
       messageToolCatalog: params.messageToolCatalog,
       preparedStaticProviderCatalog: params.preparedStaticProviderCatalog,
@@ -92,6 +95,7 @@ export function createPreparedPluginGeneration(params: {
   }
   return Object.freeze({
     pluginMetadataSnapshot: params.pluginMetadataSnapshot,
+    runtimeBindings: params.runtimeBindings,
     inlineProviderModels: Object.freeze([...params.inlineProviderModels]),
     configuredCatalogEntries: Object.freeze([...params.configuredCatalogEntries]),
     ...(params.messageToolCatalog ? { messageToolCatalog: params.messageToolCatalog } : {}),
@@ -117,7 +121,6 @@ export async function buildPreparedPluginModelCatalog(params: {
     credentials: Parameters<typeof buildPreparedModelCatalogSnapshot>[0]["authCredentials"];
     input: PreparedModelRuntimeInput;
   };
-  catalogMode: PreparedModelRuntimeCatalogMode;
   modelRegistry: Parameters<typeof buildPreparedModelCatalogSnapshot>[0]["modelRegistry"];
   pluginGeneration: PreparedModelRuntimePluginGeneration;
 }) {
@@ -130,18 +133,15 @@ export async function buildPreparedPluginModelCatalog(params: {
       config: input.config,
       modelRegistry: params.modelRegistry,
       metadataSnapshot,
-      includeProviderPluginAugmentation: params.catalogMode === "live",
       ...(input.env ? { env: input.env } : {}),
       ...(input.readOnly ? { readOnly: true } : {}),
       ...(input.workspaceDir ? { workspaceDir: input.workspaceDir } : {}),
     });
-    return params.catalogMode === "live"
-      ? await augmentPreparedModelCatalogWithAgentHarness({
-          input,
-          snapshot,
-          pluginRegistry,
-          nativeHarnessRuntimes: params.pluginGeneration.nativeHarnessRuntimes,
-        })
-      : snapshot;
+    return await augmentPreparedModelCatalogWithAgentHarness({
+      input,
+      snapshot,
+      pluginRegistry,
+      nativeHarnessRuntimes: params.pluginGeneration.nativeHarnessRuntimes,
+    });
   });
 }

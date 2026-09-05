@@ -1,5 +1,6 @@
 // Ollama plugin module implements discovery shared behavior.
-import { getCachedLiveCatalogValue } from "openclaw/plugin-sdk/provider-catalog-shared";
+import type { ProviderCatalogResult } from "openclaw/plugin-sdk/plugin-entry";
+import { runLiveProviderCatalog } from "openclaw/plugin-sdk/provider-catalog-live-runtime";
 import type {
   ModelProviderConfig,
   ModelDefinitionConfig,
@@ -29,6 +30,7 @@ export type OllamaPluginConfig = {
 };
 
 type OllamaDiscoveryContext = {
+  providerIds?: readonly string[];
   config: {
     models?: {
       providers?: Record<string, OllamaProviderConfigInput | undefined>;
@@ -38,6 +40,7 @@ type OllamaDiscoveryContext = {
   resolveProviderApiKey: (providerId: string) => {
     apiKey?: unknown;
     discoveryApiKey?: unknown;
+    profileId?: string;
   };
 };
 
@@ -71,7 +74,11 @@ function resolveOllamaDiscoveryAuth(params: {
   baseUrl?: string;
   explicitApiKey?: ModelProviderConfig["apiKey"];
   resolvedAuth: ReturnType<OllamaDiscoveryContext["resolveProviderApiKey"]>;
-}): { apiKey?: ModelProviderConfig["apiKey"]; discoveryApiKey?: string } | null {
+}): {
+  apiKey?: ModelProviderConfig["apiKey"];
+  discoveryApiKey?: string;
+  profileId?: string;
+} | null {
   const envValue = normalizeOptionalString(params.env.OLLAMA_API_KEY);
   const resolvedApiKey = normalizeOptionalString(params.resolvedAuth.apiKey);
   const resolvedDiscoveryApiKey = normalizeOptionalString(params.resolvedAuth.discoveryApiKey);
@@ -89,25 +96,33 @@ function resolveOllamaDiscoveryAuth(params: {
   }
   if (!isLocalOllamaBaseUrl(params.baseUrl)) {
     if (resolvedDiscoveryApiKey) {
-      return { apiKey: resolvedApiKey, discoveryApiKey: resolvedDiscoveryApiKey };
+      return {
+        apiKey: resolvedApiKey,
+        discoveryApiKey: resolvedDiscoveryApiKey,
+        profileId: params.resolvedAuth.profileId,
+      };
     }
     if (resolvedApiKey && !isOllamaApiKeyMarker(resolvedApiKey)) {
-      return { apiKey: resolvedApiKey, discoveryApiKey: resolvedApiKey };
+      return {
+        apiKey: resolvedApiKey,
+        discoveryApiKey: resolvedApiKey,
+        profileId: params.resolvedAuth.profileId,
+      };
     }
     return envValue && envValue !== OLLAMA_DEFAULT_API_KEY
       ? { apiKey: "OLLAMA_API_KEY", discoveryApiKey: envValue }
       : {};
   }
   if (resolvedApiKey && resolvedApiKey !== envValue && !isOllamaApiKeyMarker(resolvedApiKey)) {
-    return { apiKey: resolvedApiKey, discoveryApiKey: resolvedDiscoveryApiKey ?? resolvedApiKey };
+    return {
+      apiKey: resolvedApiKey,
+      discoveryApiKey: resolvedDiscoveryApiKey ?? resolvedApiKey,
+      profileId: params.resolvedAuth.profileId,
+    };
   }
   // Ambient cloud credentials must not reach local servers; synthetic local
   // auth belongs only in config, never in HTTP discovery headers.
   return { apiKey: OLLAMA_DEFAULT_API_KEY };
-}
-
-function shouldSkipAmbientOllamaDiscovery(env: NodeJS.ProcessEnv): boolean {
-  return Boolean(env.VITEST) || env.NODE_ENV === "test";
 }
 
 const LOCAL_OLLAMA_HOSTNAMES = new Set([
@@ -280,7 +295,10 @@ export async function resolveOllamaDiscoveryResult(params: {
     configuredBaseUrl?: string,
     opts?: { apiKey?: string; quiet?: boolean },
   ) => Promise<ModelProviderConfig>;
-}): Promise<{ provider: ModelProviderConfig } | null> {
+}): Promise<ProviderCatalogResult> {
+  if (params.ctx.providerIds && !params.ctx.providerIds.includes(OLLAMA_PROVIDER_ID)) {
+    return null;
+  }
   const explicit = params.ctx.config.models?.providers?.ollama;
   const hasExplicitModels = Array.isArray(explicit?.models) && explicit.models.length > 0;
   const hasMeaningfulExplicitConfig = hasMeaningfulExplicitOllamaConfig(explicit);
@@ -315,7 +333,7 @@ export async function resolveOllamaDiscoveryResult(params: {
   if (!auth) {
     return null;
   }
-  const { apiKey, discoveryApiKey } = auth;
+  const { apiKey, discoveryApiKey, profileId } = auth;
   if (hasExplicitModels && explicit) {
     const discoveredBaseUrl = resolveOllamaApiBase(configuredBaseUrl);
     const api = explicit.api ?? "ollama";
@@ -335,43 +353,36 @@ export async function resolveOllamaDiscoveryResult(params: {
   if (!hasOllamaDiscoveryOptIn && !hasMeaningfulExplicitConfig) {
     return null;
   }
-  if (
-    !hasRealOllamaKey &&
-    !hasMeaningfulExplicitConfig &&
-    shouldSkipAmbientOllamaDiscovery(params.ctx.env)
-  ) {
-    return null;
-  }
-
   const quiet = !hasRealOllamaKey && !hasMeaningfulExplicitConfig;
-  const provider = await getCachedLiveCatalogValue({
-    keyParts: [
-      OLLAMA_PROVIDER_ID,
-      "models",
-      resolveOllamaApiBase(configuredBaseUrl),
-      discoveryApiKey,
-      quiet,
-    ],
-    load: async () =>
-      await params.buildProvider(configuredBaseUrl, {
-        quiet,
-        ...(discoveryApiKey ? { apiKey: discoveryApiKey } : {}),
-      }),
-  });
-  if (provider.models?.length === 0 && !ollamaKey && !explicit?.apiKey) {
-    return null;
-  }
-  const api = explicit?.api ?? provider.api;
-  return {
-    provider: {
-      ...provider,
-      baseUrl: resolveOllamaRuntimeBaseUrl({
-        api,
-        configuredBaseUrl,
-        discoveredBaseUrl: provider.baseUrl,
-      }),
-      api,
-      ...(apiKey ? { apiKey } : {}),
+  return await runLiveProviderCatalog({
+    providerId: OLLAMA_PROVIDER_ID,
+    profileId,
+    run: async () => {
+      let provider: ModelProviderConfig;
+      try {
+        provider = await params.buildProvider(configuredBaseUrl, {
+          quiet,
+          ...(discoveryApiKey ? { apiKey: discoveryApiKey } : {}),
+        });
+      } catch (error) {
+        if (quiet) {
+          return null;
+        }
+        throw error;
+      }
+      const api = explicit?.api ?? provider.api;
+      return {
+        provider: {
+          ...provider,
+          baseUrl: resolveOllamaRuntimeBaseUrl({
+            api,
+            configuredBaseUrl,
+            discoveredBaseUrl: provider.baseUrl,
+          }),
+          api,
+          ...(apiKey ? { apiKey } : {}),
+        },
+      };
     },
-  };
+  });
 }

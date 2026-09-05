@@ -1,6 +1,7 @@
 // Lmstudio plugin module implements models.fetch behavior.
 import { createSubsystemLogger, redactToolPayloadText } from "openclaw/plugin-sdk/logging-core";
 import { resolveTimerTimeoutMs } from "openclaw/plugin-sdk/number-runtime";
+import { LiveModelCatalogHttpError } from "openclaw/plugin-sdk/provider-catalog-live-runtime";
 import {
   readProviderJsonArrayFieldResponse,
   readProviderJsonResponse,
@@ -196,16 +197,10 @@ export async function discoverLmstudioModels(
   });
   const quiet = params.quiet;
   if (!fetched.reachable) {
-    if (!quiet) {
-      log.debug(`Failed to discover LM Studio models: ${String(fetched.error)}`);
-    }
-    return [];
+    throw fetched.error;
   }
   if (fetched.status !== undefined && fetched.status >= 400) {
-    if (!quiet) {
-      log.debug(`Failed to discover LM Studio models: ${fetched.status}`);
-    }
-    return [];
+    throw new LiveModelCatalogHttpError("lmstudio", fetched.status);
   }
   const models = fetched.models;
   if (models.length === 0) {

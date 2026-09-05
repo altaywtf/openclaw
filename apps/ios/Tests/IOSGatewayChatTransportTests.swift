@@ -58,6 +58,78 @@ struct IOSGatewayChatTransportTests {
         await gateway.disconnect()
     }
 
+    @Test func `model catalog reads the scoped model endpoint without metadata rows`() async throws {
+        let recorder = RequestRecorder()
+        let socket = GatewayTestWebSocketTask(
+            sendHook: { socket, message, _ in
+                let data: Data
+                switch message {
+                case let .data(value): data = value
+                case let .string(value): data = Data(value.utf8)
+                @unknown default: return
+                }
+                let frame = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+                let method = try #require(frame["method"] as? String)
+                guard method != "connect" else { return }
+                let requestID = try #require(frame["id"] as? String)
+                let params = (frame["params"] as? [String: Any] ?? [:]).mapValues(AnyCodable.init)
+                let payload: [String: Any] = method == "models.list"
+                    ? ["models": [[
+                        "id": "catalog-model",
+                        "name": "Catalog Model",
+                        "provider": "synthetic",
+                        "available": false,
+                        "unavailableReason": "auth-failed",
+                    ]]]
+                    : ["commands": [], "swarmEnabled": false]
+                let response = try JSONSerialization.data(withJSONObject: [
+                    "type": "res", "id": requestID, "ok": true, "payload": payload,
+                ])
+                _ = await recorder.record(
+                    .init(method: method, params: params, timeoutMs: 15000),
+                    response: response)
+                socket.emitReceiveSuccessOnce(.data(response))
+            },
+            receiveHook: { socket, index in
+                if index == 0 {
+                    return .data(GatewayWebSocketTestSupport.connectChallengeData())
+                }
+                return try .data(GatewayWebSocketTestSupport.connectOkData(
+                    id: #require(socket.snapshotConnectRequestID()),
+                    methods: ["models.list", "chat.metadata"],
+                    capabilities: ["session-scoped-model-catalog", "session-scoped-chat-metadata"]))
+            })
+        let gateway = GatewayNodeSession()
+        do {
+            try await gateway.connect(
+                url: #require(URL(string: "ws://model-catalog-test.invalid")),
+                credentials: .init(),
+                connectOptions: GatewayWebSocketTestSupport.identityFreeOperatorConnectOptions,
+                sessionBox: WebSocketSessionBox(session: GatewayTestWebSocketSession(taskFactory: { socket })),
+                onConnected: {},
+                onDisconnected: { _ in },
+                onInvoke: { BridgeInvokeResponse(id: $0.id, ok: true) })
+            let transport = IOSGatewayChatTransport(gateway: gateway, globalAgentId: "main")
+            let catalog = try await transport.loadModelCatalog(
+                sessionKey: "agent:worker:existing",
+                agentID: "worker")
+
+            #expect(catalog.choices.map(\.modelID) == ["catalog-model"])
+            #expect(catalog.choices.first?.available == false)
+            #expect(catalog.availabilityIsSessionScoped)
+            let requests = await recorder.all()
+            #expect(requests.map(\.method) == ["models.list"])
+            #expect(requests.first?.params["agentId"]?.value as? String == "worker")
+            #expect(requests.first?.params["sessionKey"]?.value as? String == "agent:worker:existing")
+            #expect(requests.first?.params["view"]?.value as? String == "configured")
+            #expect(requests.first?.params["refresh"] == nil)
+        } catch {
+            await gateway.disconnect()
+            throw error
+        }
+        await gateway.disconnect()
+    }
+
     @Test func `history compatibility rejects only the old unsupported input run field`() {
         let unsupportedField = "invalid chat.history params: at root: unexpected property 'inputRunIds'"
         let cases: [(String, String, String, Bool)] = [

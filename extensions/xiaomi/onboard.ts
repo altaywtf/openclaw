@@ -1,6 +1,6 @@
 // Xiaomi setup module handles plugin onboarding behavior.
 import {
-  createDefaultModelsPresetAppliers,
+  createProviderConnectionPresetAppliers,
   type OpenClawConfig,
 } from "openclaw/plugin-sdk/provider-onboard";
 import {
@@ -18,7 +18,7 @@ export const XIAOMI_DEFAULT_MODEL_REF = `${XIAOMI_PROVIDER_ID}/${XIAOMI_DEFAULT_
 export const XIAOMI_TOKEN_PLAN_DEFAULT_MODEL_REF = `${XIAOMI_TOKEN_PLAN_PROVIDER_ID}/${XIAOMI_TOKEN_PLAN_DEFAULT_MODEL_ID}`;
 
 export const { applyConfig: applyXiaomiConfig, applyProviderConfig: applyXiaomiProviderConfig } =
-  createDefaultModelsPresetAppliers<[]>({
+  createProviderConnectionPresetAppliers<[]>({
     primaryModelRef: XIAOMI_DEFAULT_MODEL_REF,
     resolveParams: () => {
       const defaultProvider = buildXiaomiProvider();
@@ -26,14 +26,13 @@ export const { applyConfig: applyXiaomiConfig, applyProviderConfig: applyXiaomiP
         providerId: XIAOMI_PROVIDER_ID,
         api: defaultProvider.api ?? "openai-completions",
         baseUrl: defaultProvider.baseUrl,
-        defaultModels: defaultProvider.models ?? [],
-        defaultModelId: XIAOMI_DEFAULT_MODEL_ID,
+        catalogModels: () => defaultProvider.models,
         aliases: [{ modelRef: XIAOMI_DEFAULT_MODEL_REF, alias: "Xiaomi" }],
       };
     },
   });
 
-const xiaomiTokenPlanPresetAppliers = createDefaultModelsPresetAppliers<[]>({
+const xiaomiTokenPlanPresetAppliers = createProviderConnectionPresetAppliers<[]>({
   primaryModelRef: XIAOMI_TOKEN_PLAN_DEFAULT_MODEL_REF,
   resolveParams: () => {
     const defaultProvider = buildXiaomiTokenPlanProvider();
@@ -41,8 +40,7 @@ const xiaomiTokenPlanPresetAppliers = createDefaultModelsPresetAppliers<[]>({
       providerId: XIAOMI_TOKEN_PLAN_PROVIDER_ID,
       api: defaultProvider.api ?? "openai-completions",
       baseUrl: defaultProvider.baseUrl,
-      defaultModels: defaultProvider.models ?? [],
-      defaultModelId: XIAOMI_TOKEN_PLAN_DEFAULT_MODEL_ID,
+      catalogModels: () => defaultProvider.models,
       aliases: (() => {
         const defaultModel = defaultProvider.models?.find(
           (m) => m.id === XIAOMI_TOKEN_PLAN_DEFAULT_MODEL_ID,

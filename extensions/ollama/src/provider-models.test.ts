@@ -45,9 +45,7 @@ function cancelTrackedResponse(
 }
 
 describe("ollama provider models", () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
+  afterEach(vi.unstubAllGlobals);
 
   it("strips /v1 when resolving the Ollama API base", () => {
     expect(resolveOllamaApiBase("http://127.0.0.1:11434/v1")).toBe("http://127.0.0.1:11434");
@@ -804,7 +802,7 @@ describe("ollama provider models", () => {
     expect(info.contextWindow).toBe(expected);
   });
 
-  it("cancels non-OK discovery response bodies before fallback results", async () => {
+  it("cancels non-OK discovery response bodies while retaining HTTP failure status", async () => {
     const tagsResponse = cancelTrackedResponse("ollama unavailable", { status: 503 });
     vi.stubGlobal(
       "fetch",
@@ -813,6 +811,7 @@ describe("ollama provider models", () => {
 
     await expect(fetchOllamaModels("http://127.0.0.1:11434")).resolves.toEqual({
       reachable: true,
+      status: 503,
       models: [],
     });
     expect(tagsResponse.wasCanceled()).toBe(true);
@@ -825,6 +824,7 @@ describe("ollama provider models", () => {
 
     await expect(fetchLoadedOllamaModelNames("http://127.0.0.1:11434")).resolves.toEqual({
       reachable: true,
+      status: 503,
       models: [],
     });
     expect(psResponse.wasCanceled()).toBe(true);
@@ -934,6 +934,7 @@ describe("ollama provider models", () => {
 
       await expect(fetchOllamaModels(baseUrl)).resolves.toEqual({
         reachable: true,
+        status: 503,
         models: [],
       });
       await waitForSocketClose("/api/tags");
@@ -1092,7 +1093,7 @@ describe("ollama provider models", () => {
       vi.fn(async () => makeOversizedJsonResponse()),
     );
     const tags = await fetchOllamaModels("http://127.0.0.1:11434");
-    expect(tags).toEqual({ reachable: false, models: [] });
+    expect(tags).toEqual({ reachable: false, models: [], error: expect.any(Error) });
     expect(canceled).toBe(true);
     // Only the bounded prefix is pulled, never the full advertised 32 MiB stream.
     expect(bytesPulled).toBeLessThan(TOTAL_CHUNKS * ONE_MIB);

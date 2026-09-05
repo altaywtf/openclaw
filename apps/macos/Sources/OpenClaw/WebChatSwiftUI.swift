@@ -218,14 +218,48 @@ struct MacGatewayChatTransport: OpenClawChatTransport {
     }
 
     func listModels(agentID: String?) async throws -> [OpenClawChatModelChoice] {
-        do {
-            let data = try await connection.request(OpenClawChatGatewayRequests.modelsList(agentID: agentID))
-            return try OpenClawChatGatewayPayloadCodec.decodeModelChoices(data)
-        } catch {
-            webChatSwiftLogger.warning(
-                "models.list failed; hiding model picker: \(error.localizedDescription, privacy: .public)")
-            return []
+        let data = try await connection.request(OpenClawChatGatewayRequests.modelsList(agentID: agentID))
+        return try OpenClawChatGatewayPayloadCodec.decodeModelChoices(data)
+    }
+
+    func loadModelCatalog(
+        sessionKey: String,
+        agentID: String?) async throws -> OpenClawChatModelCatalogSnapshot
+    {
+        guard let lease = await self.connection.captureServerLease() else { throw CancellationError() }
+        let catalogScoped = await self.connection.supportsServerCapability(
+            .sessionScopedModelCatalog,
+            ifCurrentServerLease: lease) == true
+        let metadataScoped = await self.connection.supportsServerCapability(
+            .sessionScopedChatMetadata,
+            ifCurrentServerLease: lease) == true
+        let owner = agentID ?? self.routingIdentity.currentAgentID()
+        let request = if catalogScoped {
+            OpenClawChatGatewayRequests.modelsList(
+                agentID: owner,
+                sessionKey: sessionKey,
+                view: "configured")
+        } else if metadataScoped {
+            OpenClawChatGatewayRequests.chatMetadata(
+                sessionKey: sessionKey,
+                fallbackAgentID: owner,
+                includeSessionKey: true)
+        } else {
+            OpenClawChatGatewayRequests.modelsList(agentID: owner)
         }
+        let data = try await self.connection.request(
+            method: request.method,
+            params: request.params,
+            timeoutMs: request.timeoutMs,
+            ifCurrentServerLease: lease)
+        if !catalogScoped, metadataScoped {
+            return OpenClawChatModelCatalogSnapshot(
+                choices: try OpenClawChatGatewayPayloadCodec.decodeChatMetadataModelChoices(data),
+                availabilityIsSessionScoped: true)
+        }
+        return try OpenClawChatGatewayPayloadCodec.decodeModelCatalog(
+            data,
+            availabilityIsSessionScoped: catalogScoped)
     }
 
     func acquireSwarmRouteLease() async -> OpenClawChatSwarmRouteLease? {

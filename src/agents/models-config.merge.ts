@@ -7,6 +7,7 @@ import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import { asPositiveFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { mergeModelCost } from "../config/model-cost.js";
+import type { ModelDefinitionConfig } from "../config/types.models.js";
 import { isNonSecretApiKeyMarker } from "./model-auth-markers.js";
 import { resolveCatalogOwnedModelCompat } from "./model-compat-catalog.js";
 import {
@@ -55,6 +56,50 @@ export type SourceModelFields = ReadonlyMap<
   { inputOmitted: boolean; cost: ProviderConfig["models"][number]["cost"] | undefined }
 >;
 
+/** Sparse SDK definitions and materialized core declarations share one merge policy. */
+export type ProviderModelCatalog = {
+  api?: string;
+  baseUrl?: string;
+  headers?: ProviderConfig["headers"];
+  compat?: ModelDefinitionConfig["compat"];
+  models?: Array<
+    Omit<Partial<ModelDefinitionConfig>, "id" | "api"> & {
+      id: string;
+      api?: string;
+      maxTokensSource?: "configured" | "discovered";
+    }
+  >;
+};
+
+type ProviderModelMergeOptions = {
+  providerId: string;
+  sourceModelFields?: SourceModelFields;
+  manifestPlugins?: ModelManifestNormalizationContext["manifestPlugins"];
+};
+
+export function buildSourceModelFields(
+  sourceProviders: Record<string, ProviderConfig> | undefined,
+  manifestPlugins: ModelManifestNormalizationContext["manifestPlugins"],
+): SourceModelFields {
+  const normalizeModelId = createConfiguredProviderCatalogModelIdNormalizer({ manifestPlugins });
+  const fields = new Map<
+    string,
+    { inputOmitted: boolean; cost: ReturnType<typeof mergeModelCost> }
+  >();
+  for (const [providerId, provider] of Object.entries(normalizeProviderMapKeys(sourceProviders))) {
+    for (const model of provider.models ?? []) {
+      const key = modelKey(providerId, normalizeModelId(providerId, model.id));
+      const existing = fields.get(key);
+      fields.set(key, {
+        inputOmitted: existing?.inputOmitted || !Object.hasOwn(model, "input"),
+        // Duplicate source rows keep the same first-authored priority as publication.
+        cost: mergeModelCost(model.cost, existing?.cost),
+      });
+    }
+  }
+  return fields;
+}
+
 function getProviderModelId(model: unknown): string {
   if (!model || typeof model !== "object") {
     return "";
@@ -64,16 +109,16 @@ function getProviderModelId(model: unknown): string {
 }
 
 /** Merges implicit provider models with explicit config while preserving explicit fields. */
+export function mergeProviderModels<TProvider extends ProviderModelCatalog>(
+  implicit: TProvider,
+  explicit: TProvider,
+  options?: ProviderModelMergeOptions,
+): TProvider;
 export function mergeProviderModels(
-  implicit: ProviderConfig,
-  explicit: ProviderConfig,
-  options?: {
-    providerId: string;
-    sourceModelFields?: SourceModelFields;
-    manifestPlugins?: ModelManifestNormalizationContext["manifestPlugins"];
-    preserveConfiguredModelMembership?: boolean;
-  },
-): ProviderConfig {
+  implicit: ProviderModelCatalog,
+  explicit: ProviderModelCatalog,
+  options?: ProviderModelMergeOptions,
+): ProviderModelCatalog {
   const implicitModels = Array.isArray(implicit.models) ? implicit.models : [];
   const explicitModels = Array.isArray(explicit.models) ? explicit.models : [];
   const implicitHeaders =
@@ -132,24 +177,23 @@ export function mergeProviderModels(
         : "input" in explicitModel
           ? explicitModel.input
           : implicitModel.input;
-    if (options?.preserveConfiguredModelMembership) {
-      return Object.assign(
-        {},
-        explicitModel,
-        { cost },
-        sourceFields?.inputOmitted ? { input } : {},
-      );
-    }
-
     const contextWindow =
       asPositiveFiniteNumber(explicitModel.contextWindow) ??
       asPositiveFiniteNumber(implicitModel.contextWindow);
     const contextTokens =
       asPositiveFiniteNumber(explicitModel.contextTokens) ??
       asPositiveFiniteNumber(implicitModel.contextTokens);
-    const maxTokens =
-      asPositiveFiniteNumber(explicitModel.maxTokens) ??
-      asPositiveFiniteNumber(implicitModel.maxTokens);
+    const explicitMaxTokens = asPositiveFiniteNumber(explicitModel.maxTokens);
+    const maxTokens = explicitMaxTokens ?? asPositiveFiniteNumber(implicitModel.maxTokens);
+    // Runtime provenance follows the selected limit, including inherited catalog values.
+    const maxTokensSource =
+      explicitMaxTokens !== undefined
+        ? explicitModel.maxTokensSource
+        : implicitModel.maxTokensSource;
+    // Accepted model routes override provider defaults, not authored model pins.
+    // Source selection already excludes native catalogs for operator-owned endpoints.
+    const api = explicitModel.api ?? implicitModel.api;
+    const baseUrl = explicitModel.baseUrl ?? implicitModel.baseUrl;
     const compat = resolveCatalogOwnedModelCompat({
       catalogRoute: {
         api: implicitModel.api ?? implicit.api,
@@ -157,9 +201,8 @@ export function mergeProviderModels(
       },
       catalogCompat: implicitModel.compat,
       configuredRoute: {
-        api: explicitModel.api ?? explicit.api ?? implicitModel.api ?? implicit.api,
-        baseUrl:
-          explicitModel.baseUrl ?? explicit.baseUrl ?? implicitModel.baseUrl ?? implicit.baseUrl,
+        api: api ?? explicit.api ?? implicit.api,
+        baseUrl: baseUrl ?? explicit.baseUrl ?? implicit.baseUrl,
       },
       configuredCompat: explicitModel.compat,
     });
@@ -172,22 +215,27 @@ export function mergeProviderModels(
         cost,
         reasoning: `reasoning` in explicitModel ? explicitModel.reasoning : implicitModel.reasoning,
       },
+      api === undefined ? {} : { api },
+      baseUrl === undefined ? {} : { baseUrl },
       contextWindow === undefined ? {} : { contextWindow },
       contextTokens === undefined ? {} : { contextTokens },
       maxTokens === undefined ? {} : { maxTokens },
+      maxTokensSource === undefined ? {} : { maxTokensSource },
       { compat },
     );
   });
 
-  if (!options?.preserveConfiguredModelMembership) {
-    for (const implicitModel of implicitModels) {
-      const id = getProviderModelId(implicitModel);
-      if (!id || seen.has(id)) {
-        continue;
-      }
-      seen.add(id);
-      mergedModels.push(implicitModel);
+  for (const implicitModel of implicitModels) {
+    const id = getProviderModelId(implicitModel);
+    if (!id || seen.has(id)) {
+      continue;
     }
+    seen.add(id);
+    mergedModels.push({
+      ...implicitModel,
+      api: implicitModel.api ?? implicit.api,
+      baseUrl: implicitModel.baseUrl ?? implicit.baseUrl,
+    });
   }
 
   return {

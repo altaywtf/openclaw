@@ -105,6 +105,7 @@ final class QuickChatController: NSObject {
     @ObservationIgnored private var globalMonitor: Any?
     @ObservationIgnored private var localMonitor: Any?
     @ObservationIgnored private var presentationTask: Task<Void, Never>?
+    @ObservationIgnored private var modelCatalogEventsTask: Task<Void, Never>?
     @ObservationIgnored private var visibleFrame = NSRect.zero
     @ObservationIgnored private var contentHeight: CGFloat = 58
     @ObservationIgnored private var transitionID = UUID()
@@ -254,6 +255,14 @@ final class QuickChatController: NSObject {
         // earlier one (e.g. a capture send that raced the previous hide).
         self.replyBinding.clear()
         let presentationID = self.model.beginPresentation()
+        self.modelCatalogEventsTask?.cancel()
+        self.modelCatalogEventsTask = Task { [weak self] in
+            let events = await GatewayConnection.shared.subscribe()
+            for await event in events {
+                guard !Task.isCancelled, let self else { return }
+                await self.model.handleModelCatalogPush(event, presentationID: presentationID)
+            }
+        }
         self.presentationTask?.cancel()
         self.presentationTask = Task { [weak self] in
             guard let self else { return }
@@ -298,6 +307,8 @@ final class QuickChatController: NSObject {
         self.recentSessionsTask = nil
         self.presentationTask?.cancel()
         self.presentationTask = nil
+        self.modelCatalogEventsTask?.cancel()
+        self.modelCatalogEventsTask = nil
         self.model.endPresentation()
         self.replyBinding.clear()
         self.removeDismissMonitors()

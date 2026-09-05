@@ -1,15 +1,13 @@
 // Ollama tests cover discovery shared plugin behavior.
 import { expectDefined } from "@openclaw/normalization-core";
-import { clearLiveCatalogCacheForTests } from "openclaw/plugin-sdk/provider-catalog-shared";
+import { LiveModelCatalogHttpError } from "openclaw/plugin-sdk/provider-catalog-live-runtime";
 import type { ModelProviderConfig } from "openclaw/plugin-sdk/provider-model-shared";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { assert, describe, expect, it, vi } from "vitest";
 import {
   isLocalOllamaBaseUrl,
   resolveOllamaDiscoveryResult,
   shouldUseSyntheticOllamaAuth,
 } from "./discovery-shared.js";
-
-afterEach(clearLiveCatalogCacheForTests);
 
 describe("isLocalOllamaBaseUrl", () => {
   it.each([
@@ -58,6 +56,24 @@ describe("isLocalOllamaBaseUrl", () => {
 });
 
 describe("resolveOllamaDiscoveryResult — hosted Ollama Cloud guard", () => {
+  it("catalog cutover: keeps absent optional local Ollama a non-attempt", async () => {
+    const buildProvider = vi.fn(async () => {
+      throw new Error("Unconfigured local discovery must not start");
+    });
+    await expect(
+      resolveOllamaDiscoveryResult({
+        ctx: {
+          config: {},
+          env: {},
+          resolveProviderApiKey: () => ({ apiKey: undefined }),
+        },
+        pluginConfig: {},
+        buildProvider,
+      }),
+    ).resolves.toBeNull();
+    expect(buildProvider).not.toHaveBeenCalled();
+  });
+
   const discoveredModel = {
     id: "discovered-model",
     name: "discovered-model",
@@ -250,7 +266,8 @@ describe("resolveOllamaDiscoveryResult — hosted Ollama Cloud guard", () => {
         buildProvider: buildMockProvider,
       });
 
-      expect(result?.provider.apiKey).toEqual(apiKey);
+      assert(result && "provider" in result);
+      expect(result.provider.apiKey).toEqual(apiKey);
       expect(result?.provider.models).toEqual([cloudModel]);
     },
   );
@@ -307,6 +324,7 @@ describe("resolveOllamaDiscoveryResult — hosted Ollama Cloud guard", () => {
     });
     expect(result).not.toBeNull();
     const discoveryResult = expectDefined(result, "Ollama Cloud discovery result");
+    assert("provider" in discoveryResult);
     expect(discoveryResult.provider.models).toHaveLength(1);
     expect(expectDefined(discoveryResult.provider.models[0], "Ollama Cloud model")).toEqual(
       cloudModel,
@@ -339,6 +357,7 @@ describe("resolveOllamaDiscoveryResult — hosted Ollama Cloud guard", () => {
     });
 
     expect(providerCalled).toBe(false);
+    assert(result && "provider" in result);
     expect(result?.provider.models).toEqual([cloudModel]);
   });
 
@@ -367,7 +386,8 @@ describe("resolveOllamaDiscoveryResult — hosted Ollama Cloud guard", () => {
       buildProvider: buildMockProvider,
     });
 
-    expect(result?.provider.apiKey).toBe("ollama-local");
+    assert(result && "provider" in result);
+    expect(result.provider.apiKey).toBe("ollama-local");
     expect(shouldUseSyntheticOllamaAuth(provider)).toBe(true);
   });
 
@@ -523,7 +543,8 @@ describe("resolveOllamaDiscoveryResult — hosted Ollama Cloud guard", () => {
         quiet: false,
         apiKey: "resolved-ollama-discovery-token",
       });
-      expect(result?.provider.apiKey).toEqual(owner === "config" ? apiKey : marker);
+      assert(result && "provider" in result);
+      expect(result.provider.apiKey).toEqual(owner === "config" ? apiKey : marker);
       expect(result?.provider.models).toEqual([discoveredModel]);
     },
   );
@@ -580,12 +601,13 @@ describe("resolveOllamaDiscoveryResult — hosted Ollama Cloud guard", () => {
         quiet: false,
         apiKey: secretValue,
       });
-      expect(result?.provider.apiKey).toEqual(owner === "config" ? apiKey : "secretref-managed");
+      assert(result && "provider" in result);
+      expect(result.provider.apiKey).toEqual(owner === "config" ? apiKey : "secretref-managed");
       expect(result?.provider.models).toEqual([discoveredModel]);
     },
   );
 
-  it("isolates discovered catalogs by their effective authentication credential", async () => {
+  it("acquires each catalog using its effective authentication credential", async () => {
     const buildProvider = vi.fn(
       async (
         _configuredBaseUrl?: string,
@@ -626,13 +648,81 @@ describe("resolveOllamaDiscoveryResult — hosted Ollama Cloud guard", () => {
 
     const first = await discoverWithCredential("ollama-cache-token-a");
     const second = await discoverWithCredential("ollama-cache-token-b");
-    const cachedFirst = await discoverWithCredential("ollama-cache-token-a");
+    const refreshedFirst = await discoverWithCredential("ollama-cache-token-a");
 
-    expect(buildProvider).toHaveBeenCalledTimes(2);
-    expect(first?.provider.models[0]?.id).toBe("model-for-ollama-cache-token-a");
-    expect(second?.provider.models[0]?.id).toBe("model-for-ollama-cache-token-b");
-    expect(cachedFirst?.provider.models[0]?.id).toBe("model-for-ollama-cache-token-a");
+    expect(buildProvider).toHaveBeenCalledTimes(3);
+    for (const [result, credential] of [
+      [first, "a"],
+      [second, "b"],
+      [refreshedFirst, "a"],
+    ] as const) {
+      expect(result).toMatchObject({
+        provider: { models: [{ id: `model-for-ollama-cache-token-${credential}` }] },
+        outcomes: [{ provider: "ollama", status: "ready" }],
+      });
+    }
   });
+
+  it.each(["profile", "config", "public"] as const)(
+    "reports only the tested %s credential when refresh fails",
+    async (owner) => {
+      const buildProvider = vi
+        .fn()
+        .mockResolvedValueOnce({ baseUrl: "http://localhost:11439", api: "ollama", models: [] })
+        .mockRejectedValueOnce(new LiveModelCatalogHttpError("ollama", 401));
+      const ctx = {
+        config: {
+          models: {
+            providers: {
+              ollama: {
+                baseUrl: "http://localhost:11439",
+                ...(owner === "config" ? { apiKey: "configured-key" } : {}),
+              },
+            },
+          },
+        },
+        env: {},
+        resolveProviderApiKey: vi.fn(() => ({
+          apiKey: owner === "public" ? "ollama-local" : "profile-key",
+          profileId: "ollama:profile",
+        })),
+      };
+      const outcome = {
+        provider: "ollama",
+        ...(owner === "profile" ? { profileId: "ollama:profile" } : {}),
+      };
+      await expect(
+        resolveOllamaDiscoveryResult({ ctx, pluginConfig: {}, buildProvider }),
+      ).resolves.toMatchObject({ outcomes: [{ ...outcome, status: "ready" }] });
+      await expect(
+        resolveOllamaDiscoveryResult({ ctx, pluginConfig: {}, buildProvider }),
+      ).resolves.toEqual({
+        providers: {},
+        outcomes: [{ ...outcome, status: "auth-rejected", rejectionScope: "catalog" }],
+      });
+      expect(buildProvider).toHaveBeenCalledTimes(2);
+      expect(ctx.resolveProviderApiKey).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each([{}, { VITEST: "1", NODE_ENV: "test" }])(
+    "keeps opted-in optional discovery quiet without environment-specific behavior: %j",
+    async (env) => {
+      const buildProvider = vi.fn().mockRejectedValue(new Error("local server offline"));
+      await expect(
+        resolveOllamaDiscoveryResult({
+          ctx: {
+            config: {},
+            env,
+            resolveProviderApiKey: () => ({ apiKey: "ollama-local" }),
+          },
+          pluginConfig: {},
+          buildProvider,
+        }),
+      ).resolves.toBeNull();
+      expect(buildProvider).toHaveBeenCalledOnce();
+    },
+  );
 });
 
 describe("shouldUseSyntheticOllamaAuth", () => {

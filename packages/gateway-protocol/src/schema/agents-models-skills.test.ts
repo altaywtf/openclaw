@@ -232,6 +232,7 @@ describe("ModelsListParamsSchema", () => {
     expectAccepted(
       ModelsListParamsSchema,
       { view: "provider-config" },
+      { provider: "example", includeDetails: true, view: "all" },
       {
         agentId: "writer",
         view: "all",
@@ -247,11 +248,19 @@ describe("ModelsListParamsSchema", () => {
         refresh: true,
         view: "all",
       },
+      {
+        agentId: "writer",
+        sessionKey: "agent:writer:dashboard:scoped-catalog",
+        view: "configured",
+      },
     );
     expectRejected(
       ModelsListParamsSchema,
       { view: "provider-route" },
       { agentId: "" },
+      { sessionKey: "" },
+      { provider: "" },
+      { includeDetails: "true" },
       { preparedOnly: true, refresh: true },
     );
   });
@@ -295,6 +304,25 @@ describe("Models auth params schemas", () => {
 });
 
 describe("ModelsListResultSchema", () => {
+  it("accepts public route details without exposing the endpoint", () => {
+    const model = {
+      id: "test-model",
+      name: "Test Model",
+      provider: "custom",
+      local: true,
+      contextWindow: 128_000,
+      contextTokens: 64_000,
+      input: ["text", "image"],
+    };
+    expectAccepted(ModelsListResultSchema, { models: [model] });
+    expectRejected(
+      ModelsListResultSchema,
+      { models: [{ ...model, baseUrl: "http://localhost:1234/v1" }] },
+      { models: [{ ...model, contextTokens: 0 }] },
+      { models: [{ ...model, local: "true" }] },
+    );
+  });
+
   it("reports refresh failure without exposing internal error text", () => {
     expectAccepted(ModelsListResultSchema, { models: [], refreshFailed: true });
     expectRejected(ModelsListResultSchema, { models: [], refreshFailed: "internal error" });

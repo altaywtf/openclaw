@@ -1,6 +1,6 @@
 // Xai setup module handles plugin onboarding behavior.
 import {
-  createModelCatalogPresetAppliers,
+  createProviderConnectionPresetAppliers,
   type OpenClawConfig,
 } from "openclaw/plugin-sdk/provider-onboard";
 import {
@@ -12,13 +12,13 @@ import {
 export const XAI_DEFAULT_MODEL_REF = `xai/${XAI_DEFAULT_MODEL_ID}`;
 
 function createXaiPresetAppliers(primaryModelRef: string) {
-  return createModelCatalogPresetAppliers<["openai-completions" | "openai-responses"]>({
+  return createProviderConnectionPresetAppliers<["openai-completions" | "openai-responses"]>({
     primaryModelRef,
     resolveParams: (_cfg: OpenClawConfig, api) => ({
       providerId: "xai",
       api,
       baseUrl: XAI_BASE_URL,
-      catalogModels: buildXaiCatalogModels(),
+      catalogModels: buildXaiCatalogModels,
       aliases: [{ modelRef: primaryModelRef, alias: "Grok" }],
     }),
   });

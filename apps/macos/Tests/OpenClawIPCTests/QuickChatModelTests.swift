@@ -1,6 +1,7 @@
 import Foundation
 import OpenClawChatUI
 import OpenClawIPC
+import OpenClawKit
 import OpenClawProtocol
 import Testing
 @testable import OpenClaw
@@ -622,6 +623,71 @@ struct QuickChatModelTests {
         #expect(!model.shouldShowPermissionStrip)
     }
 
+    @Test(arguments: ["config.changed", "chat.metadata.changed", "reconnect", "gap"])
+    func `catalog publications preserve drafts and expose failures only for the current presentation`(
+        _ event: String) async throws
+    {
+        struct HelloResponse: Decodable {
+            let payload: HelloOk
+        }
+        let hello = try JSONDecoder().decode(
+            HelloResponse.self,
+            from: GatewayWebSocketTestSupport.connectOkData(id: "quick-chat-catalog")).payload
+        let push: GatewayPush = switch event {
+        case "reconnect": .snapshot(hello)
+        case "gap": .seqGap(expected: 1, received: 3)
+        default: .event(EventFrame(type: "event", event: event))
+        }
+        var modelID = "first"
+        var failing = false
+        var reads = 0
+        let model = self.makeModel(modelControlsProvider: { _ in
+            reads += 1
+            if failing {
+                throw NSError(domain: "CatalogFixture", code: 1)
+            }
+            return QuickChatModelControlSnapshot(
+                models: [OpenClawChatModelChoice(
+                    modelID: modelID,
+                    name: modelID,
+                    provider: "synthetic",
+                    contextWindow: nil)],
+                currentModelSelectionID: nil,
+                currentThinkingLevel: nil,
+                thinkingOptions: QuickChatModelControlLogic.baseThinkingOptions,
+                defaultProvider: "synthetic")
+        })
+        await self.prepare(model)
+        let presentationID = try #require(model.activePresentationID)
+        model.text = "Unsent draft"
+        modelID = "published"
+        await model.handleModelCatalogPush(push, presentationID: presentationID)
+        while model.isLoadingModelControls { await Task.yield() }
+        #expect(model.modelChoices.map(\.modelID) == ["published"])
+        #expect(model.text == "Unsent draft")
+
+        failing = true
+        await model.handleModelCatalogPush(push, presentationID: presentationID)
+        while model.isLoadingModelControls { await Task.yield() }
+        #expect(model.modelChoices.map(\.modelID) == ["published"])
+        #expect(model.modelControlStatusMessage != nil)
+        #expect(model.text == "Unsent draft")
+
+        failing = false
+        modelID = "recovered"
+        await model.handleModelCatalogPush(push, presentationID: presentationID)
+        while model.isLoadingModelControls { await Task.yield() }
+        #expect(model.modelChoices.map(\.modelID) == ["recovered"])
+        #expect(model.modelControlStatusMessage == nil)
+
+        model.endPresentation()
+        await self.prepare(model)
+        let currentReads = reads
+        await model.handleModelCatalogPush(push, presentationID: presentationID)
+        #expect(reads == currentReads)
+        model.endPresentation()
+    }
+
     private func prepare(_ model: QuickChatModel) async {
         let id = model.beginPresentation()
         await model.refreshForPresentation(id: id)
@@ -633,7 +699,8 @@ struct QuickChatModelTests {
         sendError: Error? = nil,
         permissionStatus: [Capability: Bool]? = nil,
         agentsProvider: QuickChatModel.AgentsProvider? = nil,
-        sendHandler: QuickChatModel.SendProvider? = nil) -> QuickChatModel
+        sendHandler: QuickChatModel.SendProvider? = nil,
+        modelControlsProvider: QuickChatModel.ModelControlsProvider? = nil) -> QuickChatModel
     {
         QuickChatModel(
             sessionKeyProvider: { "agent:main:main" },
@@ -654,7 +721,7 @@ struct QuickChatModelTests {
                 Dictionary(uniqueKeysWithValues: capabilities.map { ($0, true) })
             },
             connectionGateProvider: { gate },
-            modelControlsProvider: { _ in .testFixture },
+            modelControlsProvider: modelControlsProvider ?? { _ in .testFixture },
             modelPatchProvider: { _, _ in nil })
     }
 

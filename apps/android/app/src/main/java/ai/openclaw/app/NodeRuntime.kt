@@ -171,6 +171,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.put
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -1349,6 +1350,7 @@ class NodeRuntime private constructor(
   private val appearancePreferenceRefreshGuard = LatestGatewayRefreshGuard()
   private val appearancePreferenceWriteMutexes = appearancePreferenceKeys.associateWith { Mutex() }
   private val _modelCatalog = MutableStateFlow<List<GatewayModelSummary>>(emptyList())
+  private val modelCatalogRefreshGuard = LatestGatewayRefreshGuard()
   val modelCatalog: StateFlow<List<GatewayModelSummary>> = _modelCatalog.asStateFlow()
   private val _providerModelCatalog = MutableStateFlow<List<GatewayModelSummary>>(emptyList())
   val providerModelCatalog: StateFlow<List<GatewayModelSummary>> = _providerModelCatalog.asStateFlow()
@@ -1692,6 +1694,7 @@ class NodeRuntime private constructor(
       isGatewayConnected = operatorSession::isReady,
       gatewayStatusText = { synchronized(gatewayStatusLock) { operatorStatusText } },
       hasOperatorAdminScope = { OperatorAdminScope in _operatorScopes.value },
+      supportsSessionModelCatalog = { gatewayAdvertisesCapability("session-scoped-model-catalog") == true },
       activeAgentId = ::currentWearAgentId,
       activeSessionKey = { chatSessionKey.value },
       selectedModelRef = { chatSelectedModelRef.value },
@@ -1715,7 +1718,6 @@ class NodeRuntime private constructor(
       models = {
         chatModelCatalog.value
           .asSequence()
-          .filter { model -> model.available != false }
           .map { model ->
             val provider = model.provider.trim()
             val ref =
@@ -1724,7 +1726,7 @@ class NodeRuntime private constructor(
               } else {
                 "$provider/${model.id}"
               }
-            WearProxyModel(ref = ref, name = model.name)
+            WearProxyModel(ref = ref, name = model.name, available = model.available)
           }.toList()
       },
       selectSessionModel = { sessionKey, modelRef ->
@@ -2427,6 +2429,7 @@ class NodeRuntime private constructor(
     talkMode.setMainSessionKey(resolvedKey)
     if (_mainSessionKey.value == resolvedKey) return
     _mainSessionKey.value = resolvedKey
+    resetModelCatalogsForAgent()
     if (operatorConnected) {
       chat.prepareMainSessionKey(resolvedKey)
       chat.onGatewayConnected(mainSessionBinding(resolvedKey))
@@ -2441,6 +2444,7 @@ class NodeRuntime private constructor(
     talkMode.setMainSessionKey(resolvedKey)
     if (_mainSessionKey.value != resolvedKey) {
       _mainSessionKey.value = resolvedKey
+      resetModelCatalogsForAgent()
     }
     chat.prepareMainSessionKey(resolvedKey)
     return resolvedKey
@@ -2451,6 +2455,7 @@ class NodeRuntime private constructor(
     talkMode.setMainSessionKey(resolvedKey)
     _mainSessionKey.value = resolvedKey
     chat.prepareAndSelectMainSessionKey(resolvedKey)
+    resetModelCatalogsForAgent()
     chat.onGatewayConnected(mainSessionBinding(resolvedKey))
   }
 
@@ -2459,6 +2464,18 @@ class NodeRuntime private constructor(
       key = sessionKey,
       label = buildAndroidAppSessionLabel(prefs.displayName.value, identityStore.loadOrCreate().deviceId),
     )
+
+  private fun resetModelCatalogsForAgent() {
+    modelCatalogRefreshGuard.invalidate()
+    providerModelCatalogRefreshGuard.invalidate()
+    _modelCatalog.value = emptyList()
+    _providerModelCatalog.value = emptyList()
+    _modelAuthProviders.value = emptyList()
+    if (operatorConnected) {
+      refreshModelCatalog()
+      refreshProviderModels()
+    }
+  }
 
   private fun updateStatus(update: () -> Unit = {}) {
     synchronized(gatewayStatusLock) {
@@ -2521,7 +2538,7 @@ class NodeRuntime private constructor(
 
   fun refreshModelCatalog() = launchGatewayRefresh { refreshModelCatalogFromGateway() }
 
-  fun refreshProviderModels() = launchGatewayRefresh { refreshProviderModelsFromGateway() }
+  fun refreshProviderModels(refresh: Boolean = false) = launchGatewayRefresh { refreshProviderModelsFromGateway(refresh) }
 
   fun refreshTalkSetupReadiness() = launchGatewayRefresh { refreshTalkSetupReadinessFromGateway() }
 
@@ -5455,6 +5472,10 @@ class NodeRuntime private constructor(
     event: String,
     payloadJson: String?,
   ) {
+    if (operatorConnected && (event == "config.changed" || event == "chat.metadata.changed")) {
+      refreshModelCatalog()
+      refreshProviderModels()
+    }
     if (event == "update.available") {
       _gatewayUpdateAvailable.value = parseGatewayUpdateAvailable(payloadJson)
     }
@@ -6532,18 +6553,24 @@ class NodeRuntime private constructor(
   }
 
   private suspend fun refreshModelCatalogFromGateway() {
+    val generation = modelCatalogRefreshGuard.begin()
     val gatewayScope = captureGatewayDataScope() ?: return
+    val agentId = resolveActiveAgentId().takeIf(String::isNotEmpty) ?: return
     if (!operatorConnected) {
       _modelCatalog.value = emptyList()
       _modelAuthProviders.value = emptyList()
       return
     }
     try {
-      val modelsRes = requestGatewayData(gatewayScope, "models.list", "{}")
-      val modelsRoot = json.parseToJsonElement(modelsRes).asObjectOrNull()
-      val models = parseGatewayModels(modelsRoot?.get("models") as? JsonArray)
+      val params = buildJsonObject { put("agentId", agentId) }
+      val modelsRes = requestGatewayData(gatewayScope, "models.list", params.toString())
+      val catalog = parseGatewayModelCatalog(json.parseToJsonElement(modelsRes).asObjectOrNull())
       publishGatewayData(gatewayScope) {
-        _modelCatalog.value = models
+        modelCatalogRefreshGuard.publishIfCurrent(generation) {
+          if (resolveActiveAgentId() == agentId && (!catalog.refreshFailed || catalog.models.isNotEmpty())) {
+            _modelCatalog.value = catalog.models
+          }
+        }
       }
     } catch (err: CancellationException) {
       throw err
@@ -6552,9 +6579,10 @@ class NodeRuntime private constructor(
     }
   }
 
-  private suspend fun refreshProviderModelsFromGateway() {
+  private suspend fun refreshProviderModelsFromGateway(refresh: Boolean = false) {
     val refreshGeneration = providerModelCatalogRefreshGuard.begin()
     val gatewayScope = captureGatewayDataScope() ?: return
+    val agentId = resolveActiveAgentId().takeIf(String::isNotEmpty) ?: return
     publishProviderModelRefresh(gatewayScope, refreshGeneration) {
       _providerModelCatalogRefreshing.value = true
       _providerModelCatalogErrorText.value = null
@@ -6569,9 +6597,12 @@ class NodeRuntime private constructor(
     }
     try {
       try {
-        val models = requestProviderModelCatalog(gatewayScope)
+        val catalog = requestProviderModelCatalog(gatewayScope, agentId, refresh)
         publishProviderModelRefresh(gatewayScope, refreshGeneration) {
-          _providerModelCatalog.value = models
+          if (!catalog.refreshFailed || catalog.models.isNotEmpty()) _providerModelCatalog.value = catalog.models
+          if (catalog.refreshFailed) {
+            _providerModelCatalogErrorText.value = nativeText("Could not refresh models. Previous choices are unchanged.")
+          }
         }
       } catch (err: Throwable) {
         publishProviderModelRefresh(gatewayScope, refreshGeneration) {
@@ -6587,7 +6618,7 @@ class NodeRuntime private constructor(
       // Keep readiness independent from the additive provider-config view so
       // older Gateways still populate provider status while prompting an upgrade.
       try {
-        val providers = requestModelAuthProviders(gatewayScope)
+        val providers = requestModelAuthProviders(gatewayScope, agentId)
         publishProviderModelRefresh(gatewayScope, refreshGeneration) {
           _modelAuthProviders.value = providers
         }
@@ -6606,17 +6637,18 @@ class NodeRuntime private constructor(
     }
   }
 
-  private suspend fun requestProviderModelCatalog(gatewayScope: GatewayDataScope): List<GatewayModelSummary> {
+  private suspend fun requestProviderModelCatalog(gatewayScope: GatewayDataScope, agentId: String, refresh: Boolean): GatewayModelCatalogResult {
     val modelsRes =
-      requestProviderModelConfig { paramsJson ->
+      requestProviderModelConfig(agentId = agentId, refresh = refresh) { paramsJson ->
         requestGatewayData(gatewayScope, "models.list", paramsJson)
       }
     val modelsRoot = json.parseToJsonElement(modelsRes).asObjectOrNull()
-    return parseGatewayModels(modelsRoot?.get("models") as? JsonArray)
+    return parseGatewayModelCatalog(modelsRoot)
   }
 
-  private suspend fun requestModelAuthProviders(gatewayScope: GatewayDataScope): List<GatewayModelProviderSummary> {
-    val authRes = requestGatewayData(gatewayScope, "models.authStatus", "{}")
+  private suspend fun requestModelAuthProviders(gatewayScope: GatewayDataScope, agentId: String): List<GatewayModelProviderSummary> {
+    val params = buildJsonObject { put("agentId", agentId) }
+    val authRes = requestGatewayData(gatewayScope, "models.authStatus", params.toString())
     val authRoot = json.parseToJsonElement(authRes).asObjectOrNull()
     return parseGatewayModelProviders(authRoot?.get("providers") as? JsonArray)
   }
@@ -9331,7 +9363,19 @@ data class GatewayModelSummary(
   val supportsDocuments: Boolean,
   val supportsReasoning: Boolean,
   val contextTokens: Long?,
+  val supportsFastMode: Boolean? = null,
 )
+
+internal data class GatewayModelCatalogResult(
+  val models: List<GatewayModelSummary>,
+  val refreshFailed: Boolean,
+)
+
+internal fun parseGatewayModelCatalog(root: JsonObject?): GatewayModelCatalogResult =
+  GatewayModelCatalogResult(
+    models = parseGatewayModels(root?.get("models") as? JsonArray),
+    refreshFailed = root?.get("refreshFailed").asBooleanOrNull() == true,
+  )
 
 enum class GatewayModelUnavailableReason {
   MissingAuth,
@@ -9364,15 +9408,26 @@ internal fun parseGatewayModels(models: JsonArray?): List<GatewayModelSummary> =
         supportsVideo = "video" in inputTypes,
         supportsDocuments = "document" in inputTypes,
         supportsReasoning = obj["reasoning"].toString().trim() == "true",
+        supportsFastMode = obj.optionalBoolean("supportsFastMode"),
         contextTokens = obj["contextTokens"].toString().toLongOrNull() ?: obj["contextWindow"].toString().toLongOrNull(),
       )
     }.orEmpty()
 
 internal class ProviderModelConfigUnsupported : Exception()
 
-internal suspend fun requestProviderModelConfig(request: suspend (String) -> String): String =
+internal suspend fun requestProviderModelConfig(
+  agentId: String? = null,
+  refresh: Boolean = false,
+  request: suspend (String) -> String,
+): String =
   try {
-    request("""{"view":"provider-config"}""")
+    request(
+      buildJsonObject {
+        put("view", "provider-config")
+        agentId?.let { put("agentId", it) }
+        if (refresh) put("refresh", true)
+      }.toString(),
+    )
   } catch (err: GatewayRequestRejected) {
     if (err.gatewayError.code != "INVALID_REQUEST") throw err
     throw ProviderModelConfigUnsupported()

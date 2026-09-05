@@ -58,6 +58,7 @@ internal data class WearConversationSnapshot(
   val sessionSearchHasMore: Boolean = false,
   val sessionSearchSupported: Boolean = false,
   val models: List<WearModelSummary> = emptyList(),
+  val modelCatalogRefreshFailed: Boolean = false,
   val modelSearchQuery: String? = null,
   val modelSearchResults: List<WearModelSummary> = emptyList(),
   val modelControlsSupported: Boolean = false,
@@ -148,6 +149,7 @@ internal fun WearUiState.toConversationSnapshot(): WearConversationSnapshot? {
         )
       },
     modelControlsSupported = WearProxyCapability.ModelControls in proxyCapabilities,
+    modelCatalogRefreshFailed = modelCatalogRefreshFailed,
     modelSearchSupported = WearProxyCapability.ModelCatalogSearch in proxyCapabilities,
     modelSearchQuery = modelSearchQuery,
     modelSearchResults =

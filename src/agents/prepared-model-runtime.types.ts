@@ -18,6 +18,7 @@ export type PreparedModelRuntimeCatalogMode = "live" | "static";
 
 export type PreparedModelRuntimePluginGeneration = Readonly<{
   pluginMetadataSnapshot: PluginMetadataSnapshot;
+  runtimeBindings?: ModelCatalogSnapshot["runtimeBindings"];
   messageToolCatalog?: PreparedMessageToolCatalog;
   mediaCapabilityProviders?: ReturnType<typeof prepareMediaCapabilityProviders>;
   preparedStaticProviderCatalog?: PreparedProviderStaticCatalog;

@@ -1,3 +1,4 @@
+import type { ModelChoice } from "../../../packages/gateway-protocol/src/schema/agents-models-skills.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 
 export type ChatMetadataSessionEntry = Partial<
@@ -23,6 +24,6 @@ export type ChatMetadataReadParams = {
 
 export type ChatMetadataResult = {
   commands?: unknown[];
-  models?: unknown[];
+  models?: ModelChoice[];
   swarmEnabled: boolean;
 };

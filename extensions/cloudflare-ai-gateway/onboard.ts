@@ -4,7 +4,7 @@
  */
 import {
   applyAgentDefaultModelPrimary,
-  applyProviderConfigWithDefaultModel,
+  applyProviderConnectionConfig,
   type OpenClawConfig,
 } from "openclaw/plugin-sdk/provider-onboard";
 import {
@@ -27,7 +27,7 @@ export function buildCloudflareAiGatewayConfigPatch(params: {
         "cloudflare-ai-gateway": {
           baseUrl,
           api: "anthropic-messages" as const,
-          models: [buildCloudflareAiGatewayModelDefinition()],
+          models: [],
         },
       },
     },
@@ -81,12 +81,14 @@ export function applyCloudflareAiGatewayProviderConfig(
     };
   }
 
-  return applyProviderConfigWithDefaultModel(cfg, {
-    agentModels: models,
+  return applyProviderConnectionConfig(cfg, {
     providerId: "cloudflare-ai-gateway",
     api: "anthropic-messages",
     baseUrl,
-    defaultModel: buildCloudflareAiGatewayModelDefinition(),
+    catalogModels: () => [buildCloudflareAiGatewayModelDefinition()],
+    aliases: [
+      { modelRef: CLOUDFLARE_AI_GATEWAY_DEFAULT_MODEL_REF, alias: "Cloudflare AI Gateway" },
+    ],
   });
 }
 

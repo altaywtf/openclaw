@@ -3,18 +3,34 @@ import type {
   ModelCatalogProviderOutcome,
   ModelChoice,
 } from "../../../packages/gateway-protocol/src/schema/agents-models-skills.js";
+import { isLocalBaseUrl } from "../../agents/model-catalog-route.js";
 import type { ModelCatalogEntry } from "../../agents/model-catalog.types.js";
 import type { ProviderCatalogOutcome } from "../../plugins/provider-catalog.types.js";
 
 /** Keeps concrete route, auth, cost, and provider parameters out of public model rows. */
-export function buildPublicModelProjection(entry: ModelCatalogEntry): ModelChoice {
+const PUBLIC_MODEL_INPUTS = new Set(["text", "image", "audio", "video", "document"]);
+
+export function buildPublicModelProjection(
+  entry: ModelCatalogEntry,
+  options: { includeDetails?: boolean; includeInput?: boolean } = {},
+): ModelChoice {
   const contextWindow = resolvePositiveSafeInteger(entry.contextWindow);
+  const contextTokens = options.includeDetails
+    ? resolvePositiveSafeInteger(entry.contextTokens)
+    : undefined;
+  const input =
+    options.includeDetails || options.includeInput
+      ? [...new Set(entry.input?.filter((value) => PUBLIC_MODEL_INPUTS.has(value)))]
+      : [];
   return {
     id: entry.id,
     name: entry.name,
     provider: entry.provider,
     ...(entry.alias ? { alias: entry.alias } : {}),
     ...(contextWindow ? { contextWindow } : {}),
+    ...(contextTokens ? { contextTokens } : {}),
+    ...(options.includeDetails ? { local: isLocalBaseUrl(entry.baseUrl ?? "") } : {}),
+    ...(input.length ? { input } : {}),
     ...(entry.contextWindows ? { contextWindows: entry.contextWindows } : {}),
     ...(entry.contextWindowDefault ? { contextWindowDefault: entry.contextWindowDefault } : {}),
     ...(typeof entry.reasoning === "boolean" ? { reasoning: entry.reasoning } : {}),

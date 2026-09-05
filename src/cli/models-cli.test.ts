@@ -196,6 +196,17 @@ describe("models cli", () => {
     expect(detected).toBe(false);
   });
 
+  it.each([
+    { args: ["models", "--agent", "writer", "list", "--refresh"] },
+    { args: ["models", "list", "--refresh", "--agent", "writer"] },
+  ])("forwards explicit discovery and agent scope: $args", async ({ args }) => {
+    await createProgram().parseAsync(args, { from: "user" });
+    expect(mocks.modelsListCommand).toHaveBeenCalledWith(
+      expect.objectContaining({ refresh: true, agent: "writer" }),
+      expect.anything(),
+    );
+  });
+
   it.each(["--plain", "--json"])(
     "does not treat required provider value %s as a model output flag",
     async (provider) => {

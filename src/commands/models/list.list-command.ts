@@ -1,56 +1,59 @@
 /** Implementation of `openclaw models list`. */
-import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
+import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
+import type {
+  ModelChoice,
+  ModelsListResult,
+} from "../../../packages/gateway-protocol/src/schema/agents-models-skills.js";
+import { GATEWAY_SERVER_CAPS } from "../../../packages/gateway-protocol/src/server-capabilities.js";
 import { sanitizeTerminalText } from "../../../packages/terminal-core/src/safe-text.js";
-import { DEFAULT_PROVIDER } from "../../agents/defaults.js";
-import type { ModelAuthAvailabilityEvaluation } from "../../agents/model-auth-availability.js";
+import { isLocalBaseUrl } from "../../agents/model-catalog-route.js";
 import { loadPreparedModelCatalogView } from "../../agents/model-catalog-view.js";
-import type { ModelCatalogEntry } from "../../agents/model-catalog.types.js";
 import { modelKey } from "../../agents/model-ref-shared.js";
-import { parseModelRef } from "../../agents/model-selection-normalize.js";
 import { formatCliCommand } from "../../cli/command-format.js";
 import { ExpectedCliError } from "../../cli/failure-output.js";
 import { requestExitAfterOneShotOutput } from "../../cli/one-shot-exit.js";
+import { callGateway, isImplicitLocalGatewayTarget } from "../../gateway/call.js";
+import { buildPublicModelProjection } from "../../gateway/server-methods/models-list-public-projection.js";
+import { readActiveGatewayLockIdentity } from "../../infra/gateway-lock.js";
 import type { RuntimeEnv } from "../../runtime.js";
-import { isLocalBaseUrl } from "./list.local-url.js";
 import { printModelTable } from "./list.table.js";
 import type { ModelRow } from "./list.types.js";
 import { loadModelsConfigWithSource } from "./load-config.js";
 import { createModelCatalogProviderAliasCanonicalizer } from "./provider-aliases.js";
 import { ensureFlagCompatibility, resolveModelsTargetAgent } from "./shared.js";
 
-const DISPLAY_MODEL_PARSE_OPTIONS = { allowPluginNormalization: false } as const;
-
-const ROW_INPUT_KINDS = new Set(["text", "image", "document"]);
-
-function toCliModelRow(
-  model: ModelCatalogEntry,
-  evaluation: ModelAuthAvailabilityEvaluation,
-  configuredTags: ReadonlyMap<string, readonly string[]>,
-): ModelRow {
+function toCliModelRow(model: ModelChoice): ModelRow {
   const key = modelKey(model.provider, model.id);
-  const baseUrl = model.baseUrl ?? "";
-  const input = (model.input ?? []).filter((item) => ROW_INPUT_KINDS.has(item));
   return {
     key,
     name: model.name || model.id,
-    input: input.length > 0 ? input.join("+") : "text",
+    input: model.input?.length ? model.input.join("+") : "text",
     contextWindow: model.contextWindow ?? null,
     ...(typeof model.contextTokens === "number" ? { contextTokens: model.contextTokens } : {}),
-    local: isLocalBaseUrl(baseUrl),
-    available: evaluation.availability ?? null,
-    tags: [
-      ...new Set([
-        ...(configuredTags.get(key) ?? []),
-        ...(model.alias ? [`alias:${model.alias}`] : []),
-      ]),
-    ],
+    local: model.local ?? null,
+    available: model.available ?? null,
+    tags: [...new Set([...(model.tags ?? []), ...(model.alias ? [`alias:${model.alias}`] : [])])],
   };
+}
+
+function printModelsList(
+  rows: ModelRow[],
+  runtime: RuntimeEnv,
+  opts: { json?: boolean; plain?: boolean },
+) {
+  if (rows.length === 0 && !opts.json && !opts.plain) {
+    runtime.log("No models found.");
+  } else {
+    printModelTable(rows, runtime, opts);
+  }
+  requestExitAfterOneShotOutput(runtime);
 }
 
 /** Lists configured, catalog, and runtime-discovered models as text, plain, or JSON. */
 export async function modelsListCommand(
   opts: {
     all?: boolean;
+    refresh?: boolean;
     local?: boolean;
     provider?: string;
     agent?: string;
@@ -69,28 +72,58 @@ export async function modelsListCommand(
       const message = `Invalid provider filter "${sanitizeTerminalText(rawProviderFilter)}". Use a provider id such as "moonshot", not a display label.`;
       throw new ExpectedCliError({ message, humanOutput: message, machineOutput: message });
     }
-    const parsed = parseModelRef(
-      `${rawProviderFilter}/_`,
-      DEFAULT_PROVIDER,
-      DISPLAY_MODEL_PARSE_OPTIONS,
-    );
-    return parsed?.provider ?? normalizeLowercaseStringOrEmpty(rawProviderFilter);
+    return normalizeProviderId(rawProviderFilter);
   })();
   const { resolvedConfig: cfg } = await loadModelsConfigWithSource({
     commandName: "models list",
     runtime,
   });
+  const includeFullCatalog = Boolean(opts.all || parsedProviderFilter);
+  const localTarget = await isImplicitLocalGatewayTarget({ config: cfg });
+  const explicitPort = Boolean(process.env.OPENCLAW_GATEWAY_PORT?.trim());
+  const gatewayOwner =
+    localTarget && !explicitPort
+      ? await readActiveGatewayLockIdentity({ requireInspection: true })
+      : undefined;
+  if (!localTarget || explicitPort || gatewayOwner) {
+    const result = await callGateway<ModelsListResult>({
+      config: cfg,
+      method: "models.list",
+      requiredCapabilities: [GATEWAY_SERVER_CAPS.PUBLISHED_MODEL_CATALOG],
+      ...(gatewayOwner ? { localPortOverride: gatewayOwner.port } : {}),
+      params: {
+        ...(opts.agent?.trim() ? { agentId: opts.agent.trim() } : {}),
+        view: includeFullCatalog ? "all" : "default",
+        ...(parsedProviderFilter ? { provider: parsedProviderFilter } : {}),
+        includeDetails: true,
+        ...(opts.refresh ? { refresh: true } : {}),
+      },
+    });
+    if (result.refreshFailed) {
+      runtime.error("Model discovery could not refresh. Showing the published model list.");
+    }
+    printModelsList(
+      result.models.filter((model) => !opts.local || model.local === true).map(toCliModelRow),
+      runtime,
+      opts,
+    );
+    return;
+  }
+  runtime.error(
+    opts.refresh
+      ? "Gateway is not running. Refreshing the local model catalog."
+      : "Gateway is not running. Showing the local cached model catalog.",
+  );
   const { agentId, agentDir } = resolveModelsTargetAgent(cfg, opts.agent, {
     kind: "read",
   });
-  const includeFullCatalog = Boolean(opts.all || parsedProviderFilter);
   const preparedCatalog = await loadPreparedModelCatalogView({
     agentId,
     agentDir,
     config: cfg,
     view: includeFullCatalog ? "all" : "default",
-    readOnly: !includeFullCatalog,
-    ...(includeFullCatalog ? { refreshFullCatalog: true } : {}),
+    readOnly: opts.refresh !== true,
+    ...(opts.refresh ? { refreshFullCatalog: true } : {}),
   });
   const providerAliasCanonicalizer = createModelCatalogProviderAliasCanonicalizer({
     cfg,
@@ -123,12 +156,13 @@ export async function modelsListCommand(
           providerAliasCanonicalizer.provider(model.provider) === providerFilter) &&
         (!opts.local || isLocalBaseUrl(model.baseUrl ?? "")),
     )
-    .map((model) => toCliModelRow(model, preparedCatalog.evaluate(model), configuredTags));
+    .map((model) =>
+      toCliModelRow({
+        ...buildPublicModelProjection(model, { includeDetails: true }),
+        available: preparedCatalog.evaluate(model).availability,
+        tags: [...(configuredTags.get(modelKey(model.provider, model.id)) ?? [])],
+      }),
+    );
 
-  if (rows.length === 0 && !opts.json && !opts.plain) {
-    runtime.log("No models found.");
-  } else {
-    printModelTable(rows, runtime, opts);
-  }
-  requestExitAfterOneShotOutput(runtime);
+  printModelsList(rows, runtime, opts);
 }

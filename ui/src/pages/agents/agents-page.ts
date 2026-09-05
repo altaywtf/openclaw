@@ -43,7 +43,11 @@ import {
   canCallGatewayMethod,
   type GatewayMethodOperatorScope,
 } from "../../lib/gateway-methods.ts";
-import { loadModelCatalog, modelCatalogRefreshError } from "../../lib/model-catalog-store.ts";
+import {
+  loadModelCatalog,
+  modelCatalogRefreshError,
+  subscribeModelCatalogChanges,
+} from "../../lib/model-catalog-store.ts";
 import { parseAgentSessionKey } from "../../lib/sessions/session-key.ts";
 import { GatewayPageController } from "../../lit/gateway-page-controller.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
@@ -150,6 +154,16 @@ class AgentsPage
     ensureInitialData: () => this.ensureInitialData(),
   });
   private readonly subscriptions = new SubscriptionsController(this)
+    .effect(
+      () => this.context?.gateway,
+      (gateway) =>
+        subscribeModelCatalogChanges(gateway, () => {
+          if (this.context.gateway === gateway) {
+            this.chatModelCatalogRequest = null;
+            this.ensureModelCatalog();
+          }
+        }),
+    )
     .effect(
       () => this.context?.agents,
       (agents) => {
@@ -614,14 +628,20 @@ class AgentsPage
     this.chatModelCatalogRequest = request;
     void loadModelCatalog(client, { agentId, ...(options.refresh ? { refresh: true } : {}) })
       .then((result) => {
-        if (this.isCurrentRequest(client, generation, agentId)) {
+        if (
+          this.chatModelCatalogRequest === request &&
+          this.isCurrentRequest(client, generation, agentId)
+        ) {
           this.chatModelCatalog = result.models;
           this.chatModelCatalogAgentId = agentId;
           this.chatModelCatalogError = modelCatalogRefreshError(result);
         }
       })
       .catch((error: unknown) => {
-        if (this.isCurrentRequest(client, generation, agentId)) {
+        if (
+          this.chatModelCatalogRequest === request &&
+          this.isCurrentRequest(client, generation, agentId)
+        ) {
           this.chatModelCatalogAgentId = null;
           this.chatModelCatalogError = formatUiError(error);
         }

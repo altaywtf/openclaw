@@ -76,7 +76,7 @@ export async function loadModelProvidersData(
   client: GatewayBrowserClient,
   opts: { agentId: string; refresh?: boolean; signal?: AbortSignal },
 ): Promise<ModelProvidersData> {
-  const loadConfiguredCatalog = (loadOpts: { preparedOnly?: true; refresh?: true }) =>
+  const loadConfiguredCatalog = (loadOpts: { refresh?: true } = {}) =>
     settleRequest(
       loadModelCatalog(client, {
         agentId: opts.agentId,
@@ -87,9 +87,9 @@ export async function loadModelProvidersData(
   const catalogRefresh = opts.refresh ? loadConfiguredCatalog({ refresh: true }) : undefined;
   const catalogLoad = catalogRefresh
     ? catalogRefresh.then((refreshResult) =>
-        refreshResult.ok ? refreshResult : loadConfiguredCatalog({ preparedOnly: true }),
+        refreshResult.ok ? refreshResult : loadConfiguredCatalog(),
       )
-    : loadConfiguredCatalog({ preparedOnly: true });
+    : loadConfiguredCatalog();
   const [authStatus, catalog, refreshResult, config] = await Promise.all([
     settleRequest(loadModelAuthStatus(client, opts)),
     catalogLoad,

@@ -137,13 +137,10 @@ describe("chutes-models", () => {
       expect(cfg.agents?.defaults?.models?.["chutes-vision"]?.alias).toBe(
         "chutes/moonshotai/Kimi-K2.6-TEE",
       );
-      expect(Object.keys(cfg.agents?.defaults?.models ?? {}).toSorted()).toEqual(
-        [
-          ...EXPECTED_STATIC_MODEL_IDS.map((id) => `chutes/${id}`),
-          "chutes-pro",
-          "chutes-vision",
-        ].toSorted(),
-      );
+      expect(Object.keys(cfg.agents?.defaults?.models ?? {}).toSorted()).toEqual([
+        "chutes-pro",
+        "chutes-vision",
+      ]);
       const catalogBackedTargets = [
         CHUTES_DEFAULT_MODEL_REF,
         "chutes/deepseek-ai/DeepSeek-V3.2-TEE",
@@ -349,14 +346,16 @@ describe("chutes-models", () => {
     });
   });
 
-  it("does not cache fallback static catalog for non-OK responses", async () => {
+  it("propagates uncached discovery failures", async () => {
     const mockFetch = vi.fn().mockResolvedValue(new Response("", { status: 503 }));
 
     await withLiveChutesDiscovery(mockFetch, async () => {
-      const first = await discoverChutesModels("chutes-fallback-token");
-      const second = await discoverChutesModels("chutes-fallback-token");
-      expect(first.map((m) => m.id)).toEqual(CHUTES_MODEL_CATALOG.map((m) => m.id));
-      expect(second.map((m) => m.id)).toEqual(CHUTES_MODEL_CATALOG.map((m) => m.id));
+      await expect(discoverChutesModels("chutes-fallback-token")).rejects.toMatchObject({
+        status: 503,
+      });
+      await expect(discoverChutesModels("chutes-fallback-token")).rejects.toMatchObject({
+        status: 503,
+      });
       expect(mockFetch).toHaveBeenCalledTimes(2);
     });
   });
@@ -395,7 +394,7 @@ describe("chutes-models", () => {
     });
   });
 
-  it("does not cache 401 fallback under the failed token key", async () => {
+  it("does not replace rejected account discovery with an anonymous catalog", async () => {
     const mockFetch = vi.fn().mockImplementation((_url, init?: { headers?: HeadersInit }) => {
       if (readAuthorizationHeader(init) === "Bearer failed-token") {
         return Promise.resolve(new Response("", { status: 401 }));
@@ -407,17 +406,13 @@ describe("chutes-models", () => {
       );
     });
     await withLiveChutesDiscovery(mockFetch, async () => {
-      const first = await discoverChutesModels("failed-token");
-      const second = await discoverChutesModels("failed-token");
-
-      expect(requireChutesModel(first, 0).id).toBe("public/model");
-      expect(requireChutesModel(second, 0).id).toBe("public/model");
+      await expect(discoverChutesModels("failed-token")).rejects.toMatchObject({ status: 401 });
+      await expect(discoverChutesModels("failed-token")).rejects.toMatchObject({ status: 401 });
       expect(mockFetch.mock.calls.map(([, init]) => readAuthorizationHeader(init))).toEqual([
         "Bearer failed-token",
-        "",
         "Bearer failed-token",
       ]);
-      expect(mockFetch).toHaveBeenCalledTimes(3);
+      expect(mockFetch).toHaveBeenCalledTimes(2);
     });
   });
 });

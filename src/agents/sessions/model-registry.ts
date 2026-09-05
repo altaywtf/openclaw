@@ -7,7 +7,9 @@ import { dirname, join } from "node:path";
 import { type Static, Type } from "typebox";
 import { Compile } from "typebox/compile";
 import type { TLocalizedValidationError } from "typebox/error";
+import { projectConfigOntoRuntimeSourceSnapshot } from "../../config/runtime-source-projection.js";
 import type { ModelProviderConfig } from "../../config/types.models.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type {
   AnthropicMessagesCompat,
   Api,
@@ -20,9 +22,17 @@ import type {
 } from "../../llm/types.js";
 import type { OAuthProviderInterface } from "../../llm/utils/oauth/types.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import { normalizeOptionalSecretInput } from "../../utils/normalize-secret-input.js";
 import { getAgentDir } from "../config.js";
+import { sanitizeModelHeaders } from "../embedded-agent-runner/model.inline-provider.js";
 import { parseModelCatalogJson } from "../model-catalog-json.js";
 import { resolveModelPluginMetadataSnapshot } from "../model-discovery-context.js";
+import {
+  buildSourceModelFields,
+  mergeProviderModels,
+  normalizeProviderMapKeys,
+  type ProviderModelCatalog,
+} from "../models-config.merge.js";
 import {
   filterGeneratedPluginModelCatalogProviders,
   isGeneratedPluginModelCatalog,
@@ -215,10 +225,28 @@ const ModelsConfigSchema = Type.Object({
 const validateModelsConfig = Compile(ModelsConfigSchema);
 
 type ModelsConfig = Static<typeof ModelsConfigSchema>;
-type PreparedStaticModelsConfig = {
-  providers: Readonly<Record<string, ModelProviderConfig>>;
-};
-type MaxTokensSource = "configured" | "discovered";
+type RegistryProviderSources = Record<string, ProviderModelCatalog>;
+
+/** Catalog routes and capabilities never grant authority to cached request credentials. */
+function captureInventoryProvider(provider: ProviderModelCatalog): ProviderModelCatalog {
+  return {
+    api: provider.api,
+    baseUrl: provider.baseUrl,
+    compat: provider.compat,
+    models: provider.models?.map(({ headers: _headers, ...model }) =>
+      Object.assign(model, { maxTokensSource: "discovered" as const }),
+    ),
+  };
+}
+
+function captureAuthoredProvider(provider: ProviderModelCatalog): ProviderModelCatalog {
+  return {
+    ...provider,
+    models: provider.models?.map((model) =>
+      Object.assign({}, model, { maxTokensSource: "configured" as const }),
+    ),
+  };
+}
 
 function formatValidationPath(error: TLocalizedValidationError): string {
   if (error.keyword === "required") {
@@ -254,15 +282,16 @@ export type ResolvedRequestAuth =
 
 /** Result of loading custom models from models.json */
 interface CustomModelsResult {
-  models: Model[];
+  providers: RegistryProviderSources;
   error: string | undefined;
 }
 
 function emptyCustomModelsResult(error?: string): CustomModelsResult {
-  return { models: [], error };
+  return { providers: {}, error };
 }
 
 type ModelRegistryOptions = {
+  config?: OpenClawConfig;
   includePluginCatalogs?: boolean;
   modelsJsonContents?: string | null;
   pluginCatalogs?: readonly PersistedPluginModelCatalog[];
@@ -332,6 +361,7 @@ export class ModelRegistry {
   private pluginCatalogs: readonly PersistedPluginModelCatalog[] | undefined;
   private staticProviderConfigs: Readonly<Record<string, ModelProviderConfig>> | undefined;
   private pluginMetadataSnapshot: PluginModelCatalogMetadataSnapshot | undefined;
+  private config: OpenClawConfig | undefined;
   private includePluginCatalogs = true;
   private baseCatalogSnapshot: ModelRegistryCatalogSnapshot | undefined;
   private sourceSnapshot: ModelRegistryCatalogSnapshot | undefined;
@@ -342,6 +372,7 @@ export class ModelRegistry {
     options: ModelRegistryOptions = {},
   ) {
     this.authStorage = authStorage;
+    this.config = options.config;
     this.includePluginCatalogs = options.includePluginCatalogs !== false;
     initializeModelRegistryRuntime(this);
     if (options.sourceSnapshot) {
@@ -463,15 +494,16 @@ export class ModelRegistry {
   private loadModels(): void {
     // Keep authored models.json separate from rebuildable provider catalogs
     // owned by the agent SQLite cache.
+    const replaceCatalog = this.config?.models?.mode === "replace";
     const customResult =
-      this.modelsJsonPath && this.modelsJsonContents !== null
+      !replaceCatalog && this.modelsJsonPath && this.modelsJsonContents !== null
         ? this.loadCustomModels(this.modelsJsonPath, {
             ...(this.modelsJsonContents !== undefined ? { contents: this.modelsJsonContents } : {}),
             includePluginCatalogs: this.includePluginCatalogs && this.pluginCatalogs === undefined,
           })
         : emptyCustomModelsResult();
     const capturedPluginResult =
-      this.includePluginCatalogs && this.pluginCatalogs !== undefined
+      !replaceCatalog && this.includePluginCatalogs && this.pluginCatalogs !== undefined
         ? this.loadCapturedPluginCatalogs(this.pluginCatalogs)
         : emptyCustomModelsResult();
     const errors = [customResult.error, capturedPluginResult.error].filter(
@@ -484,14 +516,48 @@ export class ModelRegistry {
       // Plugin catalog failures can return salvaged models; root failures return empty.
     }
 
-    const staticProviderModels = this.staticProviderConfigs
-      ? this.parseModels({ providers: this.staticProviderConfigs }, "discovered")
-      : [];
-    let combined = [
-      ...customResult.models,
-      ...staticProviderModels,
-      ...capturedPluginResult.models,
-    ];
+    const staticProviders = replaceCatalog
+      ? {}
+      : Object.fromEntries(
+          Object.entries(this.staticProviderConfigs ?? {}).map(([providerId, provider]) => [
+            providerId,
+            captureInventoryProvider(provider),
+          ]),
+        );
+    const providers = this.mergeProviderSources(
+      staticProviders,
+      capturedPluginResult.providers,
+      customResult.providers,
+    );
+    if (this.config?.models?.providers) {
+      const authored = projectConfigOntoRuntimeSourceSnapshot(this.config);
+      const sourceModelFields = buildSourceModelFields(
+        authored.models?.providers,
+        this.pluginMetadataSnapshot,
+      );
+      for (const [providerId, configured] of Object.entries(
+        normalizeProviderMapKeys(this.config.models.providers),
+      )) {
+        const current = captureAuthoredProvider(configured);
+        providers[providerId] = providers[providerId]
+          ? mergeProviderModels(providers[providerId], current, {
+              providerId,
+              sourceModelFields,
+              manifestPlugins: this.pluginMetadataSnapshot,
+            })
+          : current;
+        // Catalogs carry inventory, not request authority. A current declaration
+        // also removes credentials and headers left only in an authored file.
+        this.providerRequestConfigs.delete(providerId);
+        this.storeProviderRequestConfig(providerId, {
+          apiKey: normalizeOptionalSecretInput(configured.apiKey),
+          auth: configured.auth,
+          authHeader: configured.authHeader,
+          headers: sanitizeModelHeaders(configured.headers, { stripSecretRefMarkers: true }),
+        });
+      }
+    }
+    let combined = this.parseModels({ providers });
 
     // Let OAuth providers modify their models (e.g., update baseUrl)
     for (const oauthProvider of this.authStorage.getOAuthProviders()) {
@@ -504,10 +570,27 @@ export class ModelRegistry {
     this.models = combined;
   }
 
+  private mergeProviderSources(
+    ...sources: readonly RegistryProviderSources[]
+  ): RegistryProviderSources {
+    const providers: RegistryProviderSources = {};
+    for (const source of sources) {
+      for (const [providerId, provider] of Object.entries(source)) {
+        providers[providerId] = providers[providerId]
+          ? mergeProviderModels(providers[providerId], provider, {
+              providerId,
+              manifestPlugins: this.pluginMetadataSnapshot,
+            })
+          : provider;
+      }
+    }
+    return providers;
+  }
+
   private loadCapturedPluginCatalogs(
     pluginCatalogs: readonly PersistedPluginModelCatalog[],
   ): CustomModelsResult {
-    const models: Model[] = [];
+    let providers: RegistryProviderSources = {};
     const errors: string[] = [];
     for (const pluginCatalog of pluginCatalogs) {
       const result = this.loadCustomModels(
@@ -520,12 +603,12 @@ export class ModelRegistry {
           requireGeneratedCatalog: true,
         },
       );
-      models.push(...result.models);
+      providers = this.mergeProviderSources(providers, result.providers);
       if (result.error) {
         errors.push(result.error);
       }
     }
-    return { models, error: errors.join("\n\n") || undefined };
+    return { providers, error: errors.join("\n\n") || undefined };
   }
 
   private loadCustomModels(
@@ -566,6 +649,7 @@ export class ModelRegistry {
       const providers =
         options.requireGeneratedCatalog === true
           ? filterGeneratedPluginModelCatalogProviders({
+              config: this.config,
               catalogPluginId: options.catalogPluginId,
               parsedCatalog: parsed,
               pluginMetadataSnapshot: this.pluginMetadataSnapshot,
@@ -581,18 +665,19 @@ export class ModelRegistry {
       // Additional validation
       this.validateConfig(configForUse);
 
+      const sourceProviders: RegistryProviderSources = {};
       for (const [providerName, providerConfig] of Object.entries(configForUse.providers)) {
-        if ((providerConfig.models ?? []).length > 0) {
-          this.storeProviderRequestConfig(providerName, providerConfig);
+        if (options.requireGeneratedCatalog === true) {
+          sourceProviders[providerName] = captureInventoryProvider(providerConfig);
+        } else {
+          sourceProviders[providerName] = captureAuthoredProvider(providerConfig);
+          if ((providerConfig.models ?? []).length > 0) {
+            this.storeProviderRequestConfig(providerName, providerConfig);
+          }
         }
       }
 
-      // Root models.json rows are author-owned; generated plugin shards are
-      // catalog-owned. Preserve that distinction before runtime resolution.
-      const models = this.parseModels(
-        configForUse,
-        options.requireGeneratedCatalog === true ? "discovered" : "configured",
-      );
+      let combinedProviders = sourceProviders;
       const pluginCatalogErrors: string[] = [];
       if (options.includePluginCatalogs !== false) {
         let pluginCatalogs: readonly PersistedPluginModelCatalog[] = [];
@@ -608,13 +693,13 @@ export class ModelRegistry {
           );
         }
         const pluginResult = this.loadCapturedPluginCatalogs(pluginCatalogs);
-        models.push(...pluginResult.models);
+        combinedProviders = this.mergeProviderSources(pluginResult.providers, sourceProviders);
         if (pluginResult.error) {
           pluginCatalogErrors.push(pluginResult.error);
         }
       }
 
-      return { models, error: pluginCatalogErrors.join("\n\n") || undefined };
+      return { providers: combinedProviders, error: pluginCatalogErrors.join("\n\n") || undefined };
     } catch (error) {
       if (error instanceof SyntaxError) {
         if (options.requireGeneratedCatalog === true) {
@@ -668,10 +753,7 @@ export class ModelRegistry {
     }
   }
 
-  private parseModels(
-    config: ModelsConfig | PreparedStaticModelsConfig,
-    maxTokensSource: MaxTokensSource,
-  ): Model[] {
+  private parseModels(config: { providers: RegistryProviderSources }): Model[] {
     const models: Model[] = [];
 
     for (const [providerName, providerConfig] of Object.entries(config.providers)) {
@@ -715,7 +797,9 @@ export class ModelRegistry {
           cost: modelDef.cost ?? defaultCost,
           contextWindow: modelDef.contextWindow ?? 128000,
           maxTokens: modelDef.maxTokens ?? 16384,
-          ...(modelDef.maxTokens !== undefined ? { maxTokensSource } : {}),
+          ...(modelDef.maxTokens !== undefined
+            ? { maxTokensSource: modelDef.maxTokensSource }
+            : {}),
           params: modelDef.params,
           headers: undefined,
           compat,

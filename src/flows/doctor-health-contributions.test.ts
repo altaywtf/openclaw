@@ -1976,7 +1976,6 @@ describe("doctor health contributions", () => {
     expect(mocks.loadModelCatalog).toHaveBeenCalledWith({
       config: cfg,
       readOnly: true,
-      providerDiscoveryProviderIds: [],
     });
   });
 

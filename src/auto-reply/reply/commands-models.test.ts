@@ -139,7 +139,14 @@ function setModelCatalog(entries: ModelCatalogEntry[]): void {
       ? { api: "openai-responses", baseUrl: "https://api.openai.com/v1", ...entry }
       : entry,
   );
-  catalogSnapshot = markPreparedModelCatalogFull({ entries: routeVariants, routeVariants });
+  catalogSnapshot = markPreparedModelCatalogFull({
+    entries: routeVariants,
+    routeVariants,
+    runtimeBindings: [
+      { provider: "anthropic", runtime: "claude-cli" },
+      { provider: "google", runtime: "google-gemini-cli" },
+    ],
+  });
 }
 
 function setAuthProfiles(providers: string[]): void {
@@ -297,17 +304,19 @@ describe("handleModelsCommand", () => {
     expect(result?.reply?.text).toContain("- openai (2)");
   });
 
-  it("keeps explicit all browse on the full catalog path", async () => {
+  it("keeps all browse on the published catalog without requesting refresh", async () => {
     const params = buildParams("/models openai all");
     params.workspaceDir = "/tmp/spawned-workspace";
     await handleModelsCommand(params, true);
 
     expect(modelCatalogMocks.loadOwner).toHaveBeenCalledWith(
       expect.objectContaining({
-        readOnly: false,
-        refreshFullCatalog: true,
+        readOnly: true,
         workspaceDir: "/tmp/spawned-workspace",
       }),
+    );
+    expect(modelCatalogMocks.loadOwner).not.toHaveBeenCalledWith(
+      expect.objectContaining({ refreshFullCatalog: true }),
     );
   });
 
@@ -602,7 +611,7 @@ describe("handleModelsCommand", () => {
     expect(data.runtimeChoicesByProvider?.get("openai")?.[0]).toEqual({
       id: "codex",
       label: "OpenAI Codex",
-      description: "Use the OpenAI Codex runtime selected by the effective harness policy.",
+      description: "Use the OpenAI Codex runtime.",
     });
     expect(data.runtimeChoicesByProvider?.get("openai")?.[1]).toEqual({
       id: "openclaw",
@@ -659,7 +668,7 @@ describe("handleModelsCommand", () => {
     expect(data.runtimeChoicesByProvider?.get("openai")?.[0]).toEqual({
       id: "codex",
       label: "OpenAI Codex",
-      description: "Use the OpenAI Codex runtime selected by the effective harness policy.",
+      description: "Use the OpenAI Codex runtime.",
     });
     expect(data.runtimeChoicesByProvider?.get("openai")?.[1]).toEqual({
       id: "openclaw",
@@ -668,7 +677,7 @@ describe("handleModelsCommand", () => {
     });
   });
 
-  it("does not use another provider's first model override as that provider's default runtime choice", async () => {
+  it("does not apply one model's runtime override to another model's choices", async () => {
     setModelCatalog([
       { provider: "openai", id: "gpt-5.5", name: "GPT-5.5" },
       { provider: "anthropic", id: "claude-opus-4-5", name: "Claude Opus" },
@@ -681,12 +690,18 @@ describe("handleModelsCommand", () => {
           model: { primary: "openai/gpt-5.5" },
           models: {
             "anthropic/claude-opus-4-5": { agentRuntime: { id: "claude-cli" } },
+            "anthropic/claude-sonnet-4-5": {},
           },
         },
       },
     } as OpenClawConfig);
 
-    expect(data.runtimeChoicesByProvider?.get("anthropic")?.[0]).toEqual({
+    expect(data.runtimeChoicesByModel?.get("anthropic/claude-opus-4-5")?.[0]).toEqual({
+      id: "claude-cli",
+      label: "Claude CLI",
+      description: "Use the Claude CLI runtime.",
+    });
+    expect(data.runtimeChoicesByModel?.get("anthropic/claude-sonnet-4-5")?.[0]).toEqual({
       id: "openclaw",
       label: "OpenClaw Default",
       description: "Use the built-in OpenClaw runtime.",
@@ -714,7 +729,7 @@ describe("handleModelsCommand", () => {
     expect(data.runtimeChoicesByProvider?.get("anthropic")?.[0]).toEqual({
       id: "claude-cli",
       label: "Claude CLI",
-      description: "Use the Claude CLI runtime selected by the effective harness policy.",
+      description: "Use the Claude CLI runtime.",
     });
     expect(data.runtimeChoicesByProvider?.get("anthropic")?.[1]).toEqual({
       id: "openclaw",
@@ -864,27 +879,37 @@ describe("handleModelsCommand", () => {
     expect(result?.reply?.text).toContain("- anthropic/claude-opus-4-5");
   });
 
-  it("labels provider pages from prepared auth rather than stale session profile hints", async () => {
-    const params = buildParams("/models anthropic");
-    params.sessionEntry = {
-      sessionId: "wrapper-session",
-      updatedAt: Date.now(),
-      authProfileOverride: "wrapper-auth",
-    };
-    params.sessionStore = {
-      "agent:main:discord:direct:user-1": {
-        sessionId: "target-session",
+  it.each(["auto", "user"] as const)(
+    "uses the target session's %s profile selection instead of wrapper hints",
+    async (source) => {
+      const params = buildParams("/models anthropic");
+      params.sessionEntry = {
+        sessionId: "wrapper-session",
         updatedAt: Date.now(),
-        authProfileOverride: "target-auth",
-      },
-    };
+        authProfileOverride: "wrapper-auth",
+      };
+      params.sessionStore = {
+        "agent:main:discord:direct:user-1": {
+          sessionId: "target-session",
+          updatedAt: Date.now(),
+          authProfileOverride: "target-auth",
+          authProfileOverrideSource: source,
+        },
+      };
 
-    const result = await handleModelsCommand(params, true);
+      const result = await handleModelsCommand(params, true);
 
-    expect(result?.reply?.text).toContain("Models (anthropic · 🔑 API key) — showing 1-2 of 2");
-    expect(result?.reply?.text).not.toContain("target-auth");
-    expect(result?.reply?.text).not.toContain("wrapper-auth");
-  });
+      if (source === "auto") {
+        expect(result?.reply?.text).toContain("Models (anthropic · 🔑 API key) — showing 1-2 of 2");
+      } else {
+        expect(result?.reply?.text).toContain("Models (anthropic) — showing 1-1 of 1");
+        expect(result?.reply?.text).not.toContain("🔑 API key");
+        expect(result?.reply?.text).not.toContain("anthropic/claude-sonnet-4-5");
+      }
+      expect(result?.reply?.text).not.toContain("target-auth");
+      expect(result?.reply?.text).not.toContain("wrapper-auth");
+    },
+  );
 
   it("labels a subscription route from its prepared OAuth credential", async () => {
     authStore = {

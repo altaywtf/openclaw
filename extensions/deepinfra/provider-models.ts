@@ -416,13 +416,10 @@ export function hasDeepInfraApiKey(options?: {
 
 function canDiscoverDeepInfra(options?: DeepInfraDiscoveryOptions): boolean {
   const env = options?.env ?? process.env;
-  if (env.NODE_ENV === "test" || env.VITEST) {
-    return false;
-  }
   return options?.hasApiKey ?? hasDeepInfraApiKey({ env, agentDir: options?.agentDir });
 }
 
-// Keep pre-auth and tests offline; successful discovery shares the five-minute live catalog cache.
+// Keep pre-auth offline; successful discovery shares the five-minute live catalog cache.
 export async function discoverDeepInfraSurfaces(
   options?: DeepInfraDiscoveryOptions,
 ): Promise<DeepInfraDiscoveredCatalog> {
@@ -441,10 +438,6 @@ async function loadDeepInfraSurfaces(): Promise<DeepInfraDiscoveredCatalog> {
       shouldCacheRows: hasDeepInfraSurfaceModelRows,
       fetchGuard: (params) => fetchWithSsrFGuard(withTrustedEnvProxyGuardedFetchMode(params)),
     });
-    if (data.length === 0) {
-      log.warn("No models found from DeepInfra agent-projection endpoint, using static catalog");
-      return manifestFallbackCatalog();
-    }
     const seenIds = new Set<string>();
     const surfaceModels: DeepInfraSurfaceModel[] = [];
     for (const entry of data) {
@@ -455,16 +448,13 @@ async function loadDeepInfraSurfaces(): Promise<DeepInfraDiscoveredCatalog> {
       seenIds.add(model.id);
       surfaceModels.push(model);
     }
-    if (surfaceModels.length === 0) {
-      return manifestFallbackCatalog();
-    }
     return bucketBySurface(surfaceModels);
   } catch (error) {
     if (error instanceof LiveModelCatalogHttpError) {
-      log.warn(`Failed to discover models: HTTP ${error.status}, using static catalog`);
+      log.warn(`Failed to discover model metadata: HTTP ${error.status}`);
       return manifestFallbackCatalog();
     }
-    log.warn(`Discovery failed: ${String(error)}, using static catalog`);
+    log.warn(`Model metadata discovery failed: ${String(error)}`);
     return manifestFallbackCatalog();
   }
 }
@@ -498,7 +488,7 @@ async function discoverDeepInfraPricing() {
     });
   } catch (error) {
     log.warn(
-      `Native pricing unavailable: ${String(error)}. Keeping model metadata with unknown estimates; retry discovery or configure explicit model costs.`,
+      `Native pricing unavailable: ${String(error)}. Chat catalog refresh is unavailable; retry discovery.`,
     );
     return undefined;
   }
@@ -516,13 +506,17 @@ export async function discoverDeepInfraModels(
     loadDeepInfraSurfaces(),
     discoverDeepInfraPricing(),
   ]);
-  if (!catalog.live && !prices) {
-    return DEEPINFRA_MODEL_CATALOG.map(buildDeepInfraModelDefinition);
+  if (!catalog.live) {
+    throw new Error("DeepInfra model metadata discovery unavailable.");
+  }
+  if (!prices) {
+    throw new Error("DeepInfra native pricing discovery unavailable.");
   }
   const chatModels = catalog.chat.length > 0 ? catalog.chat : [...catalog.chat, ...catalog.vlm];
-  // Static surface rows omit chat compatibility metadata; keep the complete
-  // manifest seeds when metadata fails, then attach any available native prices.
-  const liveModels = catalog.live ? chatModels.map(chatSurfaceModelToModelDefinition) : [];
+  if (chatModels.length === 0) {
+    return [];
+  }
+  const liveModels = chatModels.map(chatSurfaceModelToModelDefinition);
   const seen = new Set(liveModels.map((model) => model.id));
   const manifestModels = DEEPINFRA_MODEL_CATALOG.filter((model) => {
     const unseen = !seen.has(model.id);
@@ -530,8 +524,8 @@ export async function discoverDeepInfraModels(
     return unseen;
   });
   const models = [...liveModels, ...manifestModels];
-  const unknownPrices = models.filter((model) => !prices?.has(model.id)).length;
-  if (prices && unknownPrices > 0) {
+  const unknownPrices = models.filter((model) => !prices.has(model.id)).length;
+  if (unknownPrices > 0) {
     log.warn(
       `Native pricing unavailable or qualified for ${unknownPrices} models; keeping metadata with unknown estimates. Configure explicit model costs if needed.`,
     );
@@ -541,7 +535,7 @@ export async function discoverDeepInfraModels(
   return models.map((model) =>
     buildDeepInfraModelDefinition({
       ...model,
-      cost: prices?.get(model.id) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      cost: prices.get(model.id) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     }),
   );
 }

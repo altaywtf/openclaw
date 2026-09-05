@@ -12,6 +12,7 @@ describe("mistral onboard", () => {
     const cfg = applyMistralConfig({});
     expect(cfg.models?.providers?.mistral?.baseUrl).toBe("https://api.mistral.ai/v1");
     expect(cfg.models?.providers?.mistral?.api).toBe("openai-completions");
+    expect(cfg.models?.providers?.mistral?.models).toEqual([]);
     expectProviderOnboardPrimaryAndFallbacks({
       applyConfig: applyMistralConfig,
       modelRef: MISTRAL_DEFAULT_MODEL_REF,
@@ -28,15 +29,12 @@ describe("mistral onboard", () => {
       legacyModelId: "custom-model",
       legacyModelName: "Custom",
     });
-    expect(provider?.models.map((m) => m.id)).toEqual(["custom-model", "mistral-large-latest"]);
-    const mistralDefault = provider?.models.find((model) => model.id === "mistral-large-latest");
-    expect(mistralDefault?.contextWindow).toBe(262144);
-    expect(mistralDefault?.maxTokens).toBe(16384);
+    expect(provider?.models.map((model) => model.id)).toEqual(["custom-model"]);
   });
 
-  it("uses the Mistral default model definition", () => {
+  it("seeds the Mistral default model definition in replace mode", () => {
     const defaultDefinition = buildMistralModelDefinition();
-    const cfg = applyMistralProviderConfig({});
+    const cfg = applyMistralProviderConfig({ models: { mode: "replace" } });
     const defaultModel = cfg.models?.providers?.mistral?.models.find(
       (model) => model.id === defaultDefinition.id,
     );

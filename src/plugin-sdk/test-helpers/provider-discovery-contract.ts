@@ -308,22 +308,28 @@ export function describeGithubCopilotProviderDiscoveryContract(params: {
       ).resolves.toBeNull();
     });
 
-    it("keeps profile-only catalog fallback provider-owned", async () => {
+    it("reports profile-scoped catalog failure instead of a fallback provider", async () => {
       setGithubCopilotProfileSnapshot();
+      resolveCopilotRuntimeAuthMock.mockRejectedValueOnce(new Error("account service unavailable"));
 
       await expect(
         runCatalog(state, {
           provider: state.githubCopilotProvider!,
         }),
       ).resolves.toEqual({
-        provider: {
-          baseUrl: "https://api.individual.githubcopilot.com",
-          models: [],
-        },
+        providers: {},
+        outcomes: [
+          {
+            provider: "github-copilot",
+            profileId: "github-copilot:github",
+            status: "unavailable",
+          },
+        ],
       });
     });
 
     it("keeps env-token base URL resolution provider-owned", async () => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(Response.json({ data: [] }));
       resolveCopilotRuntimeAuthMock.mockResolvedValueOnce({
         apiKey: "copilot-api-token",
         source: "validated:https://api.github.com/copilot_internal/user",
@@ -343,6 +349,7 @@ export function describeGithubCopilotProviderDiscoveryContract(params: {
           baseUrl: "https://copilot-proxy.example.com",
           models: [],
         },
+        outcomes: [{ provider: "github-copilot", status: "ready" }],
       });
       const copilotCall = requireRecord(
         resolveCopilotRuntimeAuthMock.mock.calls.at(0)?.[0],

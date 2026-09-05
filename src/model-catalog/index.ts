@@ -1,6 +1,7 @@
 // Public model-catalog facade. Keep exports here curated so callers use the
 // normalized planning APIs instead of reaching into provider-index internals.
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { isProviderCatalogSourceAllowed } from "../plugins/provider-config-owner.js";
 import {
   planManifestModelCatalogRows,
   type ManifestModelCatalogRowSelection,
@@ -24,6 +25,12 @@ export function planEffectiveModelCatalogRows(params: {
     ...(params.mergeKeyFilter ? { mergeKeyFilter: params.mergeKeyFilter } : {}),
     resolveRemoteProvider: (provider) =>
       getRemoteModelCatalogProviderOverlay(params.config, provider),
+    includeProvider: (pluginId, provider) =>
+      isProviderCatalogSourceAllowed({
+        provider,
+        config: params.config,
+        plugin: params.registry.plugins.find((plugin) => plugin.id === pluginId),
+      }),
     ...(params.selection ? { selection: params.selection } : {}),
   });
 }

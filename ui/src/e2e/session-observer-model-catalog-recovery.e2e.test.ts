@@ -15,6 +15,81 @@ const suite = createControlUiE2eSuite({
 const captureUiProof = process.env.OPENCLAW_CAPTURE_UI_PROOF === "1";
 
 suite.define(() => {
+  it.each(["config.changed", "chat.metadata.changed", "reconnect"])(
+    "updates a mounted observer model picker on %s without changing selection",
+    async (event) => {
+      await suite.withPage(
+        { locale: "en-US", serviceWorkers: "block", viewport: { height: 900, width: 1280 } },
+        async ({ page }) => {
+          await page.clock.install();
+          const first = {
+            id: "first",
+            name: "First Model",
+            provider: "synthetic",
+            available: true,
+          };
+          const published = {
+            id: "published",
+            name: "Published Model",
+            provider: "synthetic",
+            available: true,
+          };
+          const config = { agents: { defaults: { utilityModel: "synthetic/first" } } };
+          const gateway = await installMockGateway(page, {
+            featureMethods: ["config.get", "config.patch", "models.list", "system.info"],
+            methodResponses: {
+              "config.get": {
+                config,
+                hash: "observer-publication",
+                issues: [],
+                raw: JSON.stringify(config),
+                runtimeConfig: config,
+                valid: true,
+              },
+              "models.list": { models: [first] },
+            },
+          });
+          await page.goto(
+            `${suite.server.baseUrl}settings/appearance?section=__appearance__#settings-appearance-sidebar`,
+          );
+          await waitForControlUiSettingsTakeover(page);
+          const picker = page.locator(
+            "#settings-appearance-sidebar wa-select.model-picker__select",
+          );
+          const modelLabels = async () =>
+            (await picker.locator("wa-option").allTextContents()).map((label) => label.trim());
+          await expect.poll(modelLabels).toContain("First Model");
+          await pauseVirtualClock(page);
+          const statusReads = (await gateway.getRequests("system.info")).length;
+          const selection = await picker.evaluate(
+            (element) => (element as HTMLElement & { value: string }).value,
+          );
+
+          await gateway.setMethodResponse("models.list", { models: [first, published] });
+          if (event === "reconnect") {
+            await gateway.closeLatest(1012, "observer catalog reconnect");
+            await page.clock.runFor(5_000);
+          } else {
+            await gateway.emitGatewayEvent(event, {});
+          }
+
+          await expect.poll(modelLabels).toContain("Published Model");
+          expect(
+            await picker.evaluate((element) => (element as HTMLElement & { value: string }).value),
+          ).toBe(selection);
+          if (event !== "reconnect") {
+            expect((await gateway.getRequests("system.info")).length).toBe(statusReads);
+          }
+          expect(
+            (await gateway.getRequests("models.list")).every(
+              (request) => !(request.params as { refresh?: boolean }).refresh,
+            ),
+          ).toBe(true);
+        },
+      );
+    },
+  );
+
   it("retries an initial catalog failure and restores recovered models", async () => {
     await suite.withPage(
       {
@@ -75,7 +150,6 @@ suite.define(() => {
         const initialRequest = (await gateway.getRequests("models.list"))[0];
         expect(initialRequest?.params).toEqual({
           agentId: "main",
-          preparedOnly: true,
           view: "configured",
         });
         const initialWarningVisible = await section

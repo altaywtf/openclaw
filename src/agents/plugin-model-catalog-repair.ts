@@ -1,7 +1,57 @@
 /** Pure repair rules for OpenClaw-generated plugin model catalogs. */
+import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 
 export const PLUGIN_MODEL_CATALOG_GENERATED_BY = "openclaw-plugin-model-catalog-v1";
+
+// The in-memory planning key retains the established owner encoding; generated
+// payloads themselves are persisted only in the agent SQLite cache.
+export const PLUGIN_MODEL_CATALOG_FILE = "catalog.json";
+
+/** Recognizes canonical catalogs and recoverable atomic migration claims. */
+export function isPluginModelCatalogMigrationFile(filename: string): boolean {
+  return (
+    filename === PLUGIN_MODEL_CATALOG_FILE ||
+    filename.startsWith(`${PLUGIN_MODEL_CATALOG_FILE}.doctor-importing-`)
+  );
+}
+
+/** Encodes the profile-relative path for a plugin-owned generated model catalog. */
+export function encodePluginModelCatalogRelativePath(pluginId: string): string {
+  return `plugins/${encodeURIComponent(pluginId)}/${PLUGIN_MODEL_CATALOG_FILE}`;
+}
+
+/** Returns true only for canonical profile-relative generated catalog paths. */
+function isPluginModelCatalogRelativePath(relativePath: string): boolean {
+  const parts = relativePath.split(/[\\/]/);
+  return (
+    !path.isAbsolute(relativePath) &&
+    parts.length === 3 &&
+    parts[0] === "plugins" &&
+    parts[1] !== "" &&
+    parts[1] !== "." &&
+    parts[1] !== ".." &&
+    parts[2] === PLUGIN_MODEL_CATALOG_FILE
+  );
+}
+
+/** Decodes the plugin id from a canonical generated catalog path. */
+export function decodePluginModelCatalogRelativePathPluginId(
+  relativePath: string,
+): string | undefined {
+  if (!isPluginModelCatalogRelativePath(relativePath)) {
+    return undefined;
+  }
+  const encodedPluginId = relativePath.split(/[\\/]/)[1];
+  if (!encodedPluginId) {
+    return undefined;
+  }
+  try {
+    return decodeURIComponent(encodedPluginId);
+  } catch {
+    return undefined;
+  }
+}
 
 type PluginModelCatalogRepair = {
   contents: string;

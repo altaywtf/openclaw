@@ -9,58 +9,136 @@ import { registerGatewayModelCatalogPrivateAccess } from "../server-model-catalo
 import { buildModelsListResult, prepareModelsListResult } from "./models-list-result.js";
 
 describe("models.list completed catalog facts", () => {
-  it("has a credential provider's curated rows in the configured catalog before discovery runs", async () => {
-    const config: OpenClawConfig = {
-      agents: { defaults: { model: "test/curated" } },
-    };
-    const curated = {
-      provider: "test",
-      id: "curated",
-      name: "Curated",
-      api: "openai-completions" as const,
-      baseUrl: "https://test.invalid",
-    };
-    const owner: PreparedGatewayModelCatalogSnapshot = {
-      agentId: "main",
-      agentDir: "/tmp/models-list-agent",
-      workspaceDir: "/tmp/models-list-workspace",
-      config,
-      providerAuth: { test: { mode: "api_key" } },
-      authStore: {
-        version: 1,
-        profiles: {
-          "test:default": { type: "api_key", provider: "test", key: "synthetic-key" },
+  it.each(["default", "configured", "all"] as const)(
+    "reads the published %s catalog without starting discovery",
+    async (view) => {
+      const config: OpenClawConfig = {
+        agents: { defaults: { model: "test/curated" } },
+      };
+      const curated = {
+        provider: "test",
+        id: "curated",
+        name: "Curated",
+        api: "openai-completions" as const,
+        baseUrl: "https://test.invalid",
+      };
+      const owner: PreparedGatewayModelCatalogSnapshot = {
+        agentId: "main",
+        agentDir: "/tmp/models-list-agent",
+        workspaceDir: "/tmp/models-list-workspace",
+        config,
+        providerAuth: { test: { mode: "api_key" } },
+        authStore: {
+          version: 1,
+          profiles: {
+            "test:default": { type: "api_key", provider: "test", key: "synthetic-key" },
+          },
         },
-      },
-      metadataSnapshot: createPluginMetadataSnapshotFixture(),
-      oauthRefreshProviderIds: [],
-      authMaterializations: [],
-      entries: [curated],
-      routeVariants: [curated],
-      catalogComplete: false,
-    };
+        metadataSnapshot: createPluginMetadataSnapshotFixture(),
+        oauthRefreshProviderIds: [],
+        authMaterializations: [],
+        entries: [curated],
+        routeVariants: [curated],
+        catalogComplete: false,
+      };
+      const loadGatewayModelCatalogSnapshot = vi.fn();
+      const loadDeferred = vi.fn(async () => {
+        throw new Error("List reads must not start discovery");
+      });
+      registerGatewayModelCatalogPrivateAccess(loadGatewayModelCatalogSnapshot, {
+        loadDeferred,
+        readPrepared: async () => owner,
+      });
+      const context = {
+        getRuntimeConfig: () => config,
+        loadGatewayModelCatalogSnapshot,
+        logGateway: { debug: vi.fn(), warn: vi.fn() },
+      } as never;
+
+      const result = await buildModelsListResult({
+        source: { kind: "gateway", context },
+        agentId: "main",
+        params: { view },
+      });
+
+      expect(result.models).toEqual([
+        expect.objectContaining({ provider: "test", id: "curated", available: true }),
+      ]);
+      expect(loadGatewayModelCatalogSnapshot).not.toHaveBeenCalled();
+      expect(loadDeferred).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not construct a catalog when the lifecycle owner is unavailable", async () => {
+    const config: OpenClawConfig = {};
     const loadGatewayModelCatalogSnapshot = vi.fn();
+    const loadDeferred = vi.fn(async () => {
+      throw new Error("Unexpected request-time catalog construction");
+    });
     registerGatewayModelCatalogPrivateAccess(loadGatewayModelCatalogSnapshot, {
-      loadDeferred: () => new Promise<never>(() => {}),
-      readPrepared: async () => owner,
+      loadDeferred,
+      readPrepared: async () => undefined,
     });
     const context = {
       getRuntimeConfig: () => config,
       loadGatewayModelCatalogSnapshot,
-      logGateway: { debug: vi.fn(), warn: vi.fn() },
-    } as never;
+    };
 
-    const result = await buildModelsListResult({
-      source: { kind: "gateway", context },
-      agentId: "main",
-      params: { view: "configured" },
-    });
-
-    expect(result.models).toEqual([
-      expect.objectContaining({ provider: "test", id: "curated", available: true }),
-    ]);
-    expect(loadGatewayModelCatalogSnapshot).not.toHaveBeenCalled();
+    await expect(
+      buildModelsListResult({
+        source: { kind: "gateway", context },
+        agentId: "main",
+        params: { view: "configured" },
+      }),
+    ).rejects.toThrow("Model catalog is not ready");
+    expect(loadDeferred).not.toHaveBeenCalled();
   });
+
+  it.each([undefined, "test"])(
+    "does not return an owner replaced while its published snapshot is being read (provider=%s)",
+    async (provider) => {
+      const config: OpenClawConfig = {};
+      const stale = { id: "stale", name: "Stale", provider: "previous" };
+      const current = { id: "current", name: "Current", provider: "test" };
+      const owner: PreparedGatewayModelCatalogSnapshot = {
+        agentId: "main",
+        agentDir: "/tmp/models-list-agent",
+        workspaceDir: "/tmp/models-list-workspace",
+        config,
+        providerAuth: {},
+        authStore: { version: 1, profiles: {} },
+        metadataSnapshot: createPluginMetadataSnapshotFixture(),
+        oauthRefreshProviderIds: [],
+        authMaterializations: [],
+        entries: [current],
+        routeVariants: [current],
+        catalogComplete: true,
+      };
+      const readPrepared = vi
+        .fn(async () => owner)
+        .mockImplementationOnce(async () => {
+          notifyPreparedModelRuntimePublication({ phase: "catalog-published" });
+          return { ...owner, entries: [stale], routeVariants: [stale] };
+        });
+      const loadDeferred = vi.fn();
+      const loadGatewayModelCatalogSnapshot = vi.fn();
+      registerGatewayModelCatalogPrivateAccess(loadGatewayModelCatalogSnapshot, {
+        loadDeferred,
+        readPrepared,
+      });
+      const result = await buildModelsListResult({
+        source: {
+          kind: "gateway",
+          context: { getRuntimeConfig: () => config, loadGatewayModelCatalogSnapshot },
+        },
+        agentId: "main",
+        params: { view: "all", ...(provider ? { provider } : {}) },
+      });
+      expect(result.models).toEqual([expect.objectContaining({ id: "current" })]);
+      expect(readPrepared).toHaveBeenCalledTimes(2);
+      expect(loadDeferred).not.toHaveBeenCalled();
+    },
+  );
 
   it("uses a refreshed generation for the next ordinary read without rediscovery", async () => {
     const config: OpenClawConfig = {
@@ -114,7 +192,7 @@ describe("models.list completed catalog facts", () => {
 
     expect(ordinary.models).toEqual([expect.objectContaining({ id: "discovered" })]);
     expect(loadDeferred).toHaveBeenCalledOnce();
-    expect(readPrepared).toHaveBeenCalledOnce();
+    expect(readPrepared).toHaveBeenCalledTimes(2);
     notifyPreparedModelRuntimePublication({ phase: "invalidated" });
     expect(refreshed.isCurrent()).toBe(false);
   });

@@ -48,7 +48,12 @@ describe("DeepInfra model discovery proxy policy", () => {
           release,
         };
       });
-      await discoverDeepInfraModels({ hasApiKey: true, env: {} });
+      const discovery = discoverDeepInfraModels({ hasApiKey: true, env: {} });
+      if (scenario === "success") {
+        await discovery;
+      } else {
+        await expect(discovery).rejects.toThrow("model metadata discovery unavailable");
+      }
       expect(fetchWithSsrFGuardMock).toHaveBeenCalledTimes(2);
       expect(new Set(fetchWithSsrFGuardMock.mock.calls.map(([request]) => request.url))).toEqual(
         new Set([

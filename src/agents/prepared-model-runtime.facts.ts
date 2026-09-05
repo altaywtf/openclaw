@@ -28,13 +28,13 @@ import {
   loadBundledProviderStaticCatalogContextModels,
 } from "./embedded-agent-runner/model.static-catalog.js";
 import { createStaticModelIdMatcher } from "./embedded-agent-runner/model.static-id.js";
+import { prepareModelCatalogRuntimeBindings } from "./model-catalog-runtime-bindings.js";
 import {
   buildConfiguredModelCatalog,
   parseConfiguredModelVisibilityEntries,
 } from "./model-selection-shared.js";
 import { ensureOpenClawModelsJson, planOpenClawModelsJsonSource } from "./models-config.js";
 import { prepareImplicitProviderStaticCatalog } from "./models-config.providers.implicit.js";
-import { modelCatalogLogicalKey } from "./openai-model-routes.js";
 import {
   loadPersistedPluginModelCatalogsReadOnly,
   resolvePluginModelCatalogOwnerPluginId,
@@ -420,24 +420,17 @@ export async function prepareWorkspaceBuildGroup(
         ],
         resolveRuntimeModel: resolveConfiguredManifestModel,
       });
-      const configuredEntryKeys = new Set(configuredCatalogEntries.map(modelCatalogLogicalKey));
-      for (const configured of configuredRuntimeModels) {
-        configuredEntryKeys.add(
-          modelCatalogLogicalKey({ provider: configured.provider, id: configured.modelId }),
-        );
-      }
       const configuredGeneratedCatalogPluginIds = [
         ...new Set(
-          facts.configuredModelRefs.flatMap(({ provider, modelId }) => {
-            if (configuredEntryKeys.has(modelCatalogLogicalKey({ provider, id: modelId }))) {
-              return [];
-            }
-            const pluginId = resolvePluginModelCatalogOwnerPluginId({
-              providerId: provider,
-              pluginMetadataSnapshot,
-            });
-            return pluginId ? [pluginId] : [];
-          }),
+          (facts.input.config.models?.mode === "replace" ? [] : facts.providerIds).flatMap(
+            (provider) => {
+              const pluginId = resolvePluginModelCatalogOwnerPluginId({
+                providerId: provider,
+                pluginMetadataSnapshot,
+              });
+              return pluginId ? [pluginId] : [];
+            },
+          ),
         ),
       ].toSorted((left, right) => left.localeCompare(right));
       agentFacts.push({
@@ -450,6 +443,17 @@ export async function prepareWorkspaceBuildGroup(
     const configuredProjectionMs = performance.now() - configuredProjectionStartedAt;
     const pluginGeneration = createPreparedPluginGeneration({
       catalogMode,
+      runtimeBindings:
+        reuseRuntimeFacts &&
+        reusablePluginGeneration.pluginMetadataSnapshot === pluginMetadataSnapshot &&
+        reusablePluginGeneration.runtimeBindings
+          ? reusablePluginGeneration.runtimeBindings
+          : prepareModelCatalogRuntimeBindings({
+              config: input.config,
+              metadataSnapshot: pluginMetadataSnapshot,
+              pluginRegistry: runtimePluginRegistry,
+              env,
+            }),
       configuredCatalogEntries,
       inboundPluginRegistry,
       inlineProviderModels,

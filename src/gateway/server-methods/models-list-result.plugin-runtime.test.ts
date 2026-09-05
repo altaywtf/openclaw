@@ -4,10 +4,7 @@ import { testing as cliBackendsTesting } from "../../agents/cli-backends.test-su
 import type { ModelCatalogEntry, ModelCatalogSnapshot } from "../../agents/model-catalog.types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
-import {
-  buildModelsListResult,
-  createGatewayAgentModelCatalogProjector,
-} from "./models-list-result.js";
+import { buildModelsListResult } from "./models-list-result.js";
 import type { GatewayRequestContext } from "./types.js";
 
 const mocks = vi.hoisted(() => ({
@@ -55,15 +52,12 @@ function preparedMetadataSnapshot() {
 }
 
 function publishedSource(cfg: OpenClawConfig, snapshot: ModelCatalogSnapshot) {
-  const projector = createGatewayAgentModelCatalogProjector({
-    cfg,
-    agentId: "main",
-    snapshot,
+  const facts = {
     metadataSnapshot: preparedMetadataSnapshot(),
-    preparedAuthStore: authStore,
-    preparedProviderAuth: {},
-    preparedRuntimeAuthMaterializations: [],
-  });
+    authStore,
+    providerAuth: {},
+    authMaterializations: [],
+  };
   const loadGatewayModelCatalogSnapshot = vi.fn();
   const context = {
     getRuntimeConfig: () => cfg,
@@ -75,7 +69,7 @@ function publishedSource(cfg: OpenClawConfig, snapshot: ModelCatalogSnapshot) {
     context,
     config: cfg,
     snapshot,
-    projector,
+    facts,
   };
 }
 
@@ -116,7 +110,12 @@ describe("models.list plugin metadata handoff", () => {
       routeVariants: [],
     };
     const source = publishedSource(cfg, snapshot);
-    expect((await source.projector.projectCatalog()).map((entry) => entry.id)).toEqual([
+    const inventory = await buildModelsListResult({
+      source,
+      agentId: "main",
+      params: { view: "all" },
+    });
+    expect(inventory.models.map((entry) => entry.id)).toEqual([
       "another",
       "modern",
       "not-configured",
@@ -189,26 +188,29 @@ describe("models.list plugin metadata handoff", () => {
     },
   );
 
-  it("includes only configured static rows without starting harness discovery", async () => {
-    const cfg: OpenClawConfig = {
-      agents: { defaults: { model: "custom/modern" } },
-    };
-    const source = publishedSource(cfg, {
-      entries: [],
-      routeVariants: [],
-      staticEntries: [catalogEntry("modern"), catalogEntry("not-configured")],
-    });
+  it.each(["default", "configured"] as const)(
+    "includes configured static rows in the %s picker without harness discovery",
+    async (view) => {
+      const cfg: OpenClawConfig = {
+        agents: { defaults: { model: "custom/modern" } },
+      };
+      const source = publishedSource(cfg, {
+        entries: [],
+        routeVariants: [],
+        staticEntries: [catalogEntry("modern"), catalogEntry("not-configured")],
+      });
 
-    const result = await buildModelsListResult({
-      source,
-      agentId: "main",
-      params: { view: "configured" },
-    });
+      const result = await buildModelsListResult({
+        source,
+        agentId: "main",
+        params: { view },
+      });
 
-    expect(result.models).toEqual([
-      expect.objectContaining({ provider: "custom", id: "modern", available: true }),
-    ]);
-    expect(source.context.loadGatewayModelCatalogSnapshot).not.toHaveBeenCalled();
-    expect(mocks.augmentModelCatalogWithAgentHarness).not.toHaveBeenCalled();
-  });
+      expect(result.models).toEqual([
+        expect.objectContaining({ provider: "custom", id: "modern", available: true }),
+      ]);
+      expect(source.context.loadGatewayModelCatalogSnapshot).not.toHaveBeenCalled();
+      expect(mocks.augmentModelCatalogWithAgentHarness).not.toHaveBeenCalled();
+    },
+  );
 });

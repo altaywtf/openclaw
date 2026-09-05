@@ -600,10 +600,7 @@ export async function promptDefaultModel(
       agentDir: pickerAgentDir,
       workspaceDir: params.workspaceDir,
       env: params.env,
-      readOnly: Boolean(preferredProvider),
-      ...(preferredProvider
-        ? { providerDiscoveryProviderIds: [preferredProvider], scopedLiveProviderDiscovery: true }
-        : {}),
+      readOnly: true,
       ...(ignoreAllowlist ? { view: "all" as const } : {}),
     });
   } finally {
@@ -784,10 +781,7 @@ export async function promptModelAllowlist(params: {
         workspaceDir: params.workspaceDir,
         env: params.env,
         view: "all",
-        readOnly: Boolean(preferredProvider),
-        ...(preferredProvider
-          ? { providerDiscoveryProviderIds: [preferredProvider], scopedLiveProviderDiscovery: true }
-          : {}),
+        readOnly: true,
       });
     } finally {
       progress.stop();

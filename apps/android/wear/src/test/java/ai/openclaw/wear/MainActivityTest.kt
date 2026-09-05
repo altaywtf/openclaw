@@ -292,14 +292,22 @@ class MainActivityTest {
   fun modelSearchResultsRemainSelectableOutsideTheCompactModelWindow() {
     val state =
       WearUiState(
+        phoneNodeId = "phone-a",
         models = listOf(WearModel(ref = "openai/gpt-a", name = "GPT A")),
+        modelCatalogRefreshFailed = true,
         modelSearchResults =
           listOf(WearModel(ref = "anthropic/claude", name = "Claude")),
       )
 
+    val snapshot = checkNotNull(state.toConversationSnapshot())
+    assertTrue(snapshot.modelCatalogRefreshFailed)
+    assertNull(snapshot.failure)
+    assertEquals(listOf("openai/gpt-a"), snapshot.models.map(WearModelSummary::ref))
+    assertEquals(listOf("anthropic/claude"), snapshot.modelSearchResults.map(WearModelSummary::ref))
     assertTrue(state.containsModelRef("openai/gpt-a"))
     assertTrue(state.containsModelRef("anthropic/claude"))
     assertFalse(state.containsModelRef("google/gemini"))
+    assertFalse(state.resetForPhoneChange().modelCatalogRefreshFailed)
   }
 
   @Test

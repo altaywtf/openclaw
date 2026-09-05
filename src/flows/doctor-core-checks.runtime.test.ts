@@ -388,7 +388,6 @@ describe("doctor runtime tool schema checks", () => {
       expect.objectContaining({
         agentId: "main",
         readOnly: true,
-        providerDiscoveryProviderIds: [],
       }),
     );
     expect(mocks.loadModelCatalog).toHaveBeenNthCalledWith(
@@ -396,7 +395,6 @@ describe("doctor runtime tool schema checks", () => {
       expect.objectContaining({
         agentId: "worker",
         readOnly: true,
-        providerDiscoveryProviderIds: [],
       }),
     );
     expect(mocks.createBundleMcpToolRuntime).toHaveBeenCalledTimes(1);
