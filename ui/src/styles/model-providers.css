@@ -54,6 +54,7 @@
 }
 
 .model-providers__profiles {
+  width: 100%;
   container-name: provider-profiles;
   container-type: inline-size;
   border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);

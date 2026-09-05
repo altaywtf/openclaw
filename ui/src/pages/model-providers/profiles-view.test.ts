@@ -111,6 +111,7 @@ describe("renderProviderProfiles", () => {
     expect(
       document.querySelector('[data-profile-id="openai:codex"] .model-providers__profile-move'),
     ).toBeNull();
+    expect(document.querySelector(".model-providers__profile-logout")).toBeNull();
     expect(document.body.textContent).toContain("Provider config");
     expect(document.body.textContent).toContain("Codex import");
     expect(document.body.textContent).toContain("Saved in OpenClaw");

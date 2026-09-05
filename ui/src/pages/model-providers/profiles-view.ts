@@ -339,28 +339,25 @@ export function renderProviderProfiles(card: ModelProviderCard, props: ProviderP
                         `,
                       )
                     : nothing}
-                  <button
-                    type="button"
-                    class="model-providers__profile-logout"
-                    aria-label=${logoutLabel}
-                    title=${logoutBlocked}
-                    ?disabled=${!props.canMutate ||
-                    profile.logoutSupported !== true ||
-                    !logoutProvider ||
-                    props.busy[`logout:${card.id}`]}
-                    @click=${() => {
-                      if (!logoutProvider) {
-                        return;
-                      }
-                      props.onRequestLogout({
-                        cardId: card.id,
-                        label: identity,
-                        targets: [{ provider: logoutProvider, profileIds: [profile.profileId] }],
-                      });
-                    }}
-                  >
-                    ${logoutIcon}
-                  </button>
+                  ${profile.logoutSupported === true && logoutProvider
+                    ? html`<button
+                        type="button"
+                        class="model-providers__profile-logout"
+                        aria-label=${logoutLabel}
+                        title=${logoutBlocked}
+                        ?disabled=${!props.canMutate || props.busy[`logout:${card.id}`]}
+                        @click=${() =>
+                          props.onRequestLogout({
+                            cardId: card.id,
+                            label: identity,
+                            targets: [
+                              { provider: logoutProvider, profileIds: [profile.profileId] },
+                            ],
+                          })}
+                      >
+                        ${logoutIcon}
+                      </button>`
+                    : nothing}
                 </span>
               </div>
             `;

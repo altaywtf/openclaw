@@ -729,6 +729,7 @@ describe("ModelProvidersPage agent scope", () => {
     snapshot.hello = {
       auth: { role: "operator", scopes: ["operator.admin"] },
     } as typeof snapshot.hello;
+    const toast = document.body.appendChild(document.createElement("openclaw-toast-host"));
     const page = appendPage(context);
     await waitForFast(() => expect(page.data?.config).toEqual({}));
     page.data = {
@@ -760,7 +761,11 @@ describe("ModelProvidersPage agent scope", () => {
       expect(page.messages.openai?.text).toContain("Priority could not be saved"),
     );
     await page.updateComplete;
+    await toast.updateComplete;
 
+    expect(toast.querySelector('[role="status"]')?.textContent).toContain(
+      "Priority could not be saved",
+    );
     expect(page.querySelector('[role="alert"]')?.textContent).toContain(
       "Priority could not be saved",
     );

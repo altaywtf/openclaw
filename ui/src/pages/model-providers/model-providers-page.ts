@@ -16,6 +16,7 @@ import { t } from "../../i18n/index.ts";
 import { normalizeAgentLabel } from "../../lib/agents/display.ts";
 import { isGatewayMethodAdvertised } from "../../lib/gateway-methods.ts";
 import { normalizeAgentId } from "../../lib/sessions/session-key.ts";
+import { showToast } from "../../lib/toast.ts";
 import { GatewayPageController } from "../../lit/gateway-page-controller.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 import { SubscriptionsController } from "../../lit/subscriptions-controller.ts";
@@ -160,8 +161,13 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
     getData: () => this.data,
     getOrders: () => this.profileOrders,
     setData: (data) => (this.data = data),
-    setError: (cardId, error) =>
-      this.setMessage(cardId, { kind: "error", text: modelProviderErrorMessage(error) }),
+    setError: (cardId, error) => {
+      const text = modelProviderErrorMessage(error);
+      this.setMessage(cardId, { kind: "error", text });
+      if (this.pendingLogout?.cardId !== cardId) {
+        showToast({ message: text });
+      }
+    },
     setOrders: (orders) => (this.profileOrders = orders),
     clearMessage: (cardId) => this.setMessage(cardId, null),
     canMutate: () => this.canMutate(),
