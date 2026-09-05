@@ -56,9 +56,13 @@ beforeEach(() => {
   ]) {
     write(file);
   }
-  write("dist/control-ui/index.html", '<script src="./assets/entry.js"></script>');
+  write(
+    "dist/control-ui/index.html",
+    '<script src="./assets/entry.js"></script><link rel="stylesheet" href="./assets/style.css">',
+  );
   write("dist/control-ui/assets/entry.js");
-  write("dist/control-ui/asset-manifest.json", '{"assets":["assets/entry.js"]}');
+  write("dist/control-ui/assets/style.css");
+  write("dist/control-ui/asset-manifest.json", '{"assets":["assets/entry.js","assets/style.css"]}');
   writeBuildStamp({ cwd: root });
   writeRuntimePostBuildStamp({ cwd: root });
 });
@@ -91,6 +95,12 @@ it.each([
     reason: "missing_runtime_postbuild_output",
   },
   { name: "incomplete UI", remove: "dist/control-ui/assets/entry.js", reason: "Control UI assets" },
+  { name: "missing UI index", remove: "dist/control-ui/index.html", reason: "Control UI assets" },
+  {
+    name: "incomplete UI CSS",
+    remove: "dist/control-ui/assets/style.css",
+    reason: "Control UI assets",
+  },
 ])("rejects $name without repairing it", ({ remove, reason }) => {
   const target = path.join(root, remove);
   fs.rmSync(target, { recursive: true, force: true });
