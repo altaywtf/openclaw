@@ -1254,6 +1254,7 @@ process.stdout.write(sessionDir + "\\n");
     const files = phases.map((phase, index) => {
       const file = join(root, `${phase}.json`);
       const scopedNodeSurfaceReapproval = index > 0;
+      const nodeSurfaceReapprovalMode = index === 0 ? "not-applicable" : "required";
       writeJson(file, {
         phase,
         ok: true,
@@ -1265,7 +1266,11 @@ process.stdout.write(sessionDir + "\\n");
         pairedDevicePresent: true,
         pairedNodePresent: true,
         nodeSurfaceReapprovalRequired: scopedNodeSurfaceReapproval,
-        nodeSurfaceReapprovalExpected: scopedNodeSurfaceReapproval,
+        nodeSurfaceReapprovalMode,
+        nodeSurfaceReapprovalReason:
+          nodeSurfaceReapprovalMode === "required"
+            ? "selected-gateway-admits-ios-iphone-watch-relay"
+            : "baseline-before-candidate",
         nodeSurfaceCommandAdditions: scopedNodeSurfaceReapproval
           ? ["watch.notify", "watch.status"]
           : [],
@@ -1317,6 +1322,73 @@ process.stdout.write(sessionDir + "\\n");
       stale.nodeSurfaceReapprovalRequired = false;
       writeJson(finalEvidenceFile, stale);
       expect(verify).toThrow(/known command-surface reapproval/);
+      stale.nodeSurfaceReapprovalMode = "omitted-gateway-unsupported";
+      stale.nodeSurfaceReapprovalReason = "selected-gateway-does-not-admit-ios-iphone-watch-relay";
+      writeJson(finalEvidenceFile, stale);
+      expect(verify).toThrow(/modes changed across reconnects/);
+      stale.nodeSurfaceReapprovalMode = "unknown";
+      stale.nodeSurfaceReapprovalReason = "unknown";
+      writeJson(finalEvidenceFile, stale);
+      expect(verify).toThrow(/mode missing or unknown/);
+      Reflect.deleteProperty(stale, "nodeSurfaceReapprovalMode");
+      writeJson(finalEvidenceFile, stale);
+      expect(verify).toThrow(/mode missing or unknown/);
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
+
+  it("accepts one explicit unsupported-Gateway omission across candidate reconnects", () => {
+    const root = mkdtempSync(join(tmpdir(), "openclaw-mobile-pairing-omission-"));
+    const phases = ["baseline", "candidate-first", "candidate-restart", "final"];
+    const hashes = ["a", "b", "c", "d", "e"].map((value) => value.repeat(64));
+    const files = phases.map((phase, index) => {
+      const file = join(root, `${phase}.json`);
+      const baseline = index === 0;
+      writeJson(file, {
+        phase,
+        ok: true,
+        health: true,
+        connectedDevicePresent: true,
+        pendingPairingCount: 0,
+        pendingDevicePairingCount: 0,
+        pendingNodePairingCount: 0,
+        pairedDevicePresent: true,
+        pairedNodePresent: true,
+        nodeSurfaceReapprovalRequired: false,
+        nodeSurfaceCommandAdditions: [],
+        nodeSurfaceReapprovalMode: baseline ? "not-applicable" : "omitted-gateway-unsupported",
+        nodeSurfaceReapprovalReason: baseline
+          ? "baseline-before-candidate"
+          : "selected-gateway-does-not-admit-ios-iphone-watch-relay",
+        missingPasswordReason: true,
+        missingPasswordClose1008: true,
+        credentials: {
+          node: {
+            usedTokenHash: hashes[index],
+            storedTokenHash: hashes[index + 1],
+            deviceTokenReturned: true,
+            tokenRotated: true,
+          },
+          operator: {
+            usedTokenHash: hashes[0],
+            storedTokenHash: hashes[0],
+            deviceTokenReturned: true,
+            tokenRotated: false,
+          },
+        },
+      });
+      return file;
+    });
+
+    try {
+      expect(() =>
+        execFileSync(
+          process.execPath,
+          [ASSERTIONS_PATH, "assert-mobile-pairing-evidence", ...files],
+          { stdio: "pipe" },
+        ),
+      ).not.toThrow();
     } finally {
       rmSync(root, { force: true, recursive: true });
     }

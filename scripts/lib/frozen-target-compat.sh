@@ -38,6 +38,40 @@ openclaw_frozen_target_session_repair_mode() {
   fi
 }
 
+# The selected Gateway owns pairing admission. Require the declaration, the
+# normalized iPhone guard, and the final allowlist contribution as one contract.
+openclaw_selected_gateway_admits_ios_watch_relay() {
+  local source_root="${1:?missing selected source root}" policy_source relay_declaration relay_guard allowlist
+
+  if ! policy_source="$(
+    git -C "$source_root" show "$OPENCLAW_SELECTED_SHA:src/gateway/node-command-policy.ts"
+  )"; then
+    echo "failed to read selected Gateway node command policy" >&2
+    return 2
+  fi
+
+  relay_declaration="$(
+    printf '%s\n' "$policy_source" |
+      sed -n '/IOS_WATCH_RELAY_COMMANDS[[:space:]]*=/,/];/p'
+  )"
+  relay_guard="$(
+    printf '%s\n' "$policy_source" |
+      sed -n '/const watchRelayCommands[[:space:]]*=/,/:[[:space:]]*\[\];/p'
+  )"
+  allowlist="$(
+    printf '%s\n' "$policy_source" |
+      sed -n '/const allow = new Set(/,/^[[:space:]]*);/p'
+  )"
+
+  printf '%s\n' "$relay_declaration" | grep -Fq '"watch.status"' &&
+    printf '%s\n' "$relay_declaration" | grep -Fq '"watch.notify"' &&
+    printf '%s\n' "$relay_guard" | grep -Eq 'platformId[[:space:]]*===[[:space:]]*"ios"' &&
+    printf '%s\n' "$relay_guard" |
+      grep -Eq 'normalizeDeviceMetadataForPolicy\(node\?\.deviceFamily\)[[:space:]]*===[[:space:]]*"iphone"' &&
+    printf '%s\n' "$relay_guard" | grep -Fq '? IOS_WATCH_RELAY_COMMANDS' &&
+    printf '%s\n' "$allowlist" | grep -Fq '...watchRelayCommands'
+}
+
 openclaw_resolve_frozen_plugin_harness_capabilities() {
   local source_root="${1:?missing selected source root}" authorization_status=0
 
@@ -68,6 +102,7 @@ openclaw_resolve_frozen_upgrade_survivor_capabilities() {
   export OPENCLAW_UPGRADE_SURVIVOR_EXEC_APPROVALS_MODE="required" \
     OPENCLAW_UPGRADE_SURVIVOR_CLAWHUB_REQUEST_DIALECT="current" \
     OPENCLAW_UPGRADE_SURVIVOR_DISCORD_DM_CONFIG_MODE="canonical" \
+    OPENCLAW_UPGRADE_SURVIVOR_MOBILE_WATCH_REAPPROVAL_MODE="required" \
     OPENCLAW_UPGRADE_SURVIVOR_SESSION_REPAIR_MODE="sqlite"
 
   openclaw_frozen_target_omissions_authorized || authorization_status=$?
@@ -101,6 +136,14 @@ openclaw_resolve_frozen_upgrade_survivor_capabilities() {
 
   export OPENCLAW_UPGRADE_SURVIVOR_SESSION_REPAIR_MODE
   OPENCLAW_UPGRADE_SURVIVOR_SESSION_REPAIR_MODE="$(openclaw_frozen_target_session_repair_mode "$source_root")"
+
+  local mobile_watch_status=0
+  openclaw_selected_gateway_admits_ios_watch_relay "$source_root" || mobile_watch_status=$?
+  if [ "$mobile_watch_status" -eq 1 ]; then
+    export OPENCLAW_UPGRADE_SURVIVOR_MOBILE_WATCH_REAPPROVAL_MODE="omitted-gateway-unsupported"
+  elif [ "$mobile_watch_status" -ne 0 ]; then
+    return "$mobile_watch_status"
+  fi
 }
 
 openclaw_resolve_frozen_core_harness_capabilities() {

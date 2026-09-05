@@ -35,6 +35,10 @@ type ConnectAuth = {
 };
 type ConnectRole = "node" | "operator";
 type ConnectMode = "node" | "ui" | "cli" | "backend";
+export type MobileWatchReapprovalMode =
+  | "not-applicable"
+  | "required"
+  | "omitted-gateway-unsupported";
 type StoredRoleCredential = {
   token: string;
   scopes: string[];
@@ -62,6 +66,8 @@ export type MobilePairingAudit = {
   pairedNodePresent: true;
   nodeSurfaceReapprovalRequired: boolean;
   nodeSurfaceCommandAdditions: string[];
+  nodeSurfaceReapprovalMode: MobileWatchReapprovalMode;
+  nodeSurfaceReapprovalReason: string;
 };
 type WebSocketLike = {
   readyState: number;
@@ -168,6 +174,11 @@ const GATEWAY_PROTOCOL_VERSION = 4;
 const GATEWAY_MIN_NODE_PROTOCOL_VERSION = 3;
 const PAIRING_AUDIT_SCOPES = ["operator.pairing"];
 const EXPECTED_UPGRADE_COMMAND_ADDITIONS = ["watch.notify", "watch.status"];
+const MOBILE_WATCH_REAPPROVAL_REASONS: Record<MobileWatchReapprovalMode, string> = {
+  "not-applicable": "baseline-before-candidate",
+  required: "selected-gateway-admits-ios-iphone-watch-relay",
+  "omitted-gateway-unsupported": "selected-gateway-does-not-admit-ios-iphone-watch-relay",
+};
 const BASELINE_PAIRING_POLL_ATTEMPTS = 50;
 const BASELINE_PAIRING_POLL_INTERVAL_MS = 100;
 const RESPONSE_TIMEOUT_MS = 15_000;
@@ -627,7 +638,7 @@ async function auditPairingState(params: {
   WebSocket: WebSocketConstructor;
   credentials: MobilePairingCredentials;
   password: string;
-  expectKnownNodeSurfaceUpgrade: boolean;
+  mobileWatchReapprovalMode: MobileWatchReapprovalMode;
 }): Promise<MobilePairingAudit> {
   // Match the node approval CLI's local backend shared-auth path. Keep this
   // audit device-less so it cannot rotate mobile tokens.
@@ -646,7 +657,7 @@ async function auditPairingState(params: {
       devicePairing: await request(audit.socket, "device.pair.list"),
       nodePairing: await request(audit.socket, "node.pair.list"),
       deviceId: params.credentials.identity.deviceId,
-      expectKnownNodeSurfaceUpgrade: params.expectKnownNodeSurfaceUpgrade,
+      mobileWatchReapprovalMode: params.mobileWatchReapprovalMode,
     });
   } finally {
     await closeSocket(audit.socket, params.WebSocket);
@@ -657,7 +668,7 @@ export function validatePairingAudit(params: {
   devicePairing: unknown;
   nodePairing: unknown;
   deviceId: string;
-  expectKnownNodeSurfaceUpgrade?: boolean;
+  mobileWatchReapprovalMode: MobileWatchReapprovalMode;
 }): MobilePairingAudit {
   if (!isRecord(params.devicePairing) || !Array.isArray(params.devicePairing.pending)) {
     throw new Error("mobile device pairing audit invalid");
@@ -686,7 +697,7 @@ export function validatePairingAudit(params: {
     throw new Error("paired mobile node missing");
   }
   if (params.nodePairing.pending.length === 0) {
-    if (params.expectKnownNodeSurfaceUpgrade) {
+    if (params.mobileWatchReapprovalMode === "required") {
       throw new Error("mobile node pairing omitted the expected command-surface reapproval");
     }
     return {
@@ -696,9 +707,12 @@ export function validatePairingAudit(params: {
       pairedNodePresent: true,
       nodeSurfaceReapprovalRequired: false,
       nodeSurfaceCommandAdditions: [],
+      nodeSurfaceReapprovalMode: params.mobileWatchReapprovalMode,
+      nodeSurfaceReapprovalReason:
+        MOBILE_WATCH_REAPPROVAL_REASONS[params.mobileWatchReapprovalMode],
     };
   }
-  if (!params.expectKnownNodeSurfaceUpgrade || params.nodePairing.pending.length !== 1) {
+  if (params.mobileWatchReapprovalMode !== "required" || params.nodePairing.pending.length !== 1) {
     throw new Error("mobile node pairing left an unexpected pending request");
   }
   const pendingNode = params.nodePairing.pending[0];
@@ -739,6 +753,8 @@ export function validatePairingAudit(params: {
     pairedNodePresent: true,
     nodeSurfaceReapprovalRequired: true,
     nodeSurfaceCommandAdditions: commandAdditions,
+    nodeSurfaceReapprovalMode: params.mobileWatchReapprovalMode,
+    nodeSurfaceReapprovalReason: MOBILE_WATCH_REAPPROVAL_REASONS[params.mobileWatchReapprovalMode],
   };
 }
 
@@ -832,7 +848,6 @@ export function buildRedactedEvidence(params: {
   node: StoredCredentialTransition;
   operator: StoredCredentialTransition;
   pairing: MobilePairingAudit;
-  expectKnownNodeSurfaceUpgrade: boolean;
 }): JsonRecord {
   return {
     phase: params.phase,
@@ -855,7 +870,6 @@ export function buildRedactedEvidence(params: {
     pendingPairingCount:
       params.pairing.pendingDevicePairingCount + params.pairing.pendingNodePairingCount,
     ...params.pairing,
-    nodeSurfaceReapprovalExpected: params.expectKnownNodeSurfaceUpgrade,
     missingPasswordReason: true,
     missingPasswordClose1008: true,
     credentials: {
@@ -924,7 +938,7 @@ async function verifyReconnect(params: {
   password: string;
   phase: string;
   evidenceFile: string;
-  expectKnownNodeSurfaceUpgrade: boolean;
+  mobileWatchReapprovalMode: MobileWatchReapprovalMode;
 }): Promise<void> {
   const WebSocket = loadWebSocket(params.packageRoot);
   await assertMissingPassword({ WebSocket, credentials: params.credentials });
@@ -982,7 +996,7 @@ async function verifyReconnect(params: {
       WebSocket,
       credentials: params.credentials,
       password: params.password,
-      expectKnownNodeSurfaceUpgrade: params.expectKnownNodeSurfaceUpgrade,
+      mobileWatchReapprovalMode: params.mobileWatchReapprovalMode,
     });
     writeRedactedEvidence(
       params.evidenceFile,
@@ -992,7 +1006,6 @@ async function verifyReconnect(params: {
         node: nodeTransition,
         operator: operatorTransition,
         pairing,
-        expectKnownNodeSurfaceUpgrade: params.expectKnownNodeSurfaceUpgrade,
       }),
     );
   } finally {
@@ -1021,13 +1034,17 @@ function option(options: Map<string, string>, name: string): string {
   return requireString(options.get(name), name);
 }
 
-function booleanOption(options: Map<string, string>, name: string): boolean {
+function mobileWatchReapprovalModeOption(
+  options: Map<string, string>,
+  name: string,
+): MobileWatchReapprovalMode {
   const value = option(options, name);
-  if (value === "true") {
-    return true;
-  }
-  if (value === "false") {
-    return false;
+  if (
+    value === "not-applicable" ||
+    value === "required" ||
+    value === "omitted-gateway-unsupported"
+  ) {
+    return value;
   }
   throw new Error(`${name} invalid`);
 }
@@ -1072,7 +1089,7 @@ async function main(): Promise<void> {
       password,
       phase: "baseline",
       evidenceFile,
-      expectKnownNodeSurfaceUpgrade: false,
+      mobileWatchReapprovalMode: "not-applicable",
     });
   } else if (command === "verify") {
     const credentials = validateCredentials(readJson(credentialsFile));
@@ -1083,9 +1100,9 @@ async function main(): Promise<void> {
       password,
       phase: option(options, "--phase"),
       evidenceFile,
-      expectKnownNodeSurfaceUpgrade: booleanOption(
+      mobileWatchReapprovalMode: mobileWatchReapprovalModeOption(
         options,
-        "--expect-known-node-surface-reapproval",
+        "--mobile-watch-reapproval-mode",
       ),
     });
   } else {

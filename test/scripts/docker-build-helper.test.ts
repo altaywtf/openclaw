@@ -118,6 +118,7 @@ const PREPUBLISH_PLUGIN_REGISTRY_HELPER_PATH = "scripts/e2e/lib/prepublish-plugi
 const UPDATE_CHANNEL_SWITCH_DOCKER_E2E_PATH = "scripts/e2e/update-channel-switch-docker.sh";
 const UPDATE_CHANNEL_SWITCH_ASSERTIONS_PATH =
   "scripts/e2e/lib/update-channel-switch/assertions.mjs";
+const FROZEN_TARGET_COMPAT_PATH = "scripts/lib/frozen-target-compat.sh";
 const RELEASE_UPGRADE_USER_JOURNEY_SCENARIO_PATH =
   "scripts/e2e/lib/release-upgrade-user-journey/scenario.sh";
 const RELEASE_TYPED_ONBOARDING_SCENARIO_PATH =
@@ -2948,6 +2949,130 @@ docker_e2e_docker_run_cmd run demo
       encoding: "utf8",
     });
     expect(inner.status, inner.stderr).toBe(0);
+  });
+
+  it.each([
+    [
+      "supported",
+      `
+export const IOS_WATCH_RELAY_COMMANDS = [
+  "watch.status",
+  "watch.notify",
+];
+const watchRelayCommands =
+  platformId === "ios" &&
+  normalizeDeviceMetadataForPolicy(node?.deviceFamily) === "iphone"
+    ? IOS_WATCH_RELAY_COMMANDS
+    : [];
+const allow = new Set(
+  [...base, ...watchRelayCommands, ...extra],
+);
+`,
+      "required",
+    ],
+    [
+      "missing the resolved allowlist contribution",
+      `
+export const IOS_WATCH_RELAY_COMMANDS = ["watch.status", "watch.notify"];
+const watchRelayCommands =
+  platformId === "ios" &&
+  normalizeDeviceMetadataForPolicy(node?.deviceFamily) === "iphone"
+    ? IOS_WATCH_RELAY_COMMANDS
+    : [];
+const allow = new Set([...base, ...extra]);
+`,
+      "omitted-gateway-unsupported",
+    ],
+    ["unsupported", "export const PLATFORM_DEFAULTS = {};\n", "omitted-gateway-unsupported"],
+  ])(
+    "derives mobile watch reapproval from the selected Gateway source: %s",
+    (_label, source, expected) => {
+      const root = tempDirs.make("openclaw-frozen-watch-capability-");
+      const sourceRoot = join(root, "source");
+      const policyPath = join(sourceRoot, "src", "gateway", "node-command-policy.ts");
+      mkdirSync(dirname(policyPath), { recursive: true });
+      writeFileSync(policyPath, source);
+      execFileSync("git", ["init", "-q", sourceRoot]);
+      execFileSync("git", ["-C", sourceRoot, "config", "user.email", "test@example.invalid"]);
+      execFileSync("git", ["-C", sourceRoot, "config", "user.name", "OpenClaw Test"]);
+      execFileSync("git", ["-C", sourceRoot, "add", "-A"]);
+      execFileSync("git", ["-C", sourceRoot, "commit", "-qm", "selected-gateway-policy"]);
+      const selectedSha = execFileSync("git", ["-C", sourceRoot, "rev-parse", "HEAD"], {
+        encoding: "utf8",
+      }).trim();
+
+      const result = spawnSync(
+        "bash",
+        [
+          "-c",
+          `
+set -euo pipefail
+source "$1"
+export OPENCLAW_ALLOW_FROZEN_TARGET_SCENARIO_OMISSIONS=1
+export OPENCLAW_SELECTED_SHA="$2"
+export OPENCLAW_TOOLING_SHA=1111111111111111111111111111111111111111
+openclaw_resolve_frozen_upgrade_survivor_capabilities "$3"
+printf '%s\\n' "$OPENCLAW_UPGRADE_SURVIVOR_MOBILE_WATCH_REAPPROVAL_MODE"
+`,
+          "test",
+          FROZEN_TARGET_COMPAT_PATH,
+          selectedSha,
+          sourceRoot,
+        ],
+        { cwd: process.cwd(), encoding: "utf8" },
+      );
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout.trim()).toBe(expected);
+    },
+  );
+
+  it("fails closed when an authorized selected Gateway policy cannot be read", () => {
+    const root = tempDirs.make("openclaw-frozen-watch-read-failure-");
+    execFileSync("git", ["init", "-q", root]);
+    execFileSync("git", ["-C", root, "config", "user.email", "test@example.invalid"]);
+    execFileSync("git", ["-C", root, "config", "user.name", "OpenClaw Test"]);
+    writeFileSync(join(root, "README.md"), "fixture\n");
+    execFileSync("git", ["-C", root, "add", "-A"]);
+    execFileSync("git", ["-C", root, "commit", "-qm", "selected-without-policy"]);
+    const selectedSha = execFileSync("git", ["-C", root, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+    }).trim();
+    const result = spawnSync(
+      "bash",
+      [
+        "-c",
+        `
+set -u
+source "$1"
+export OPENCLAW_ALLOW_FROZEN_TARGET_SCENARIO_OMISSIONS=1
+export OPENCLAW_SELECTED_SHA="$2"
+export OPENCLAW_TOOLING_SHA=1111111111111111111111111111111111111111
+openclaw_resolve_frozen_upgrade_survivor_capabilities "$3"
+`,
+        "test",
+        FROZEN_TARGET_COMPAT_PATH,
+        selectedSha,
+        root,
+      ],
+      { cwd: process.cwd(), encoding: "utf8" },
+    );
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("failed to read selected Gateway node command policy");
+  });
+
+  it("forwards only the resolved mobile watch mode into upgrade survivor containers", () => {
+    const runner = readFileSync(UPGRADE_SURVIVOR_DOCKER_E2E_PATH, "utf8");
+
+    expect(
+      runner.match(
+        /-e OPENCLAW_UPGRADE_SURVIVOR_MOBILE_WATCH_REAPPROVAL_MODE="\$OPENCLAW_UPGRADE_SURVIVOR_MOBILE_WATCH_REAPPROVAL_MODE"/gu,
+      ),
+    ).toHaveLength(2);
+    expect(runner).not.toContain("-e OPENCLAW_ALLOW_FROZEN_TARGET_SCENARIO_OMISSIONS");
+    expect(runner).not.toContain("-e OPENCLAW_SELECTED_SHA");
+    expect(runner).not.toContain("-e OPENCLAW_TOOLING_SHA");
   });
 
   it("routes staged live suites through the candidate entrypoint resolver", () => {

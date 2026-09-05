@@ -1679,6 +1679,11 @@ function assertUpdateRunSelfUpgrade([file]) {
 function assertMobilePairingEvidence(files) {
   const expectedPhases = ["baseline", "candidate-first", "candidate-restart", "final"];
   const expectedNodeSurfaceAdditions = ["watch.notify", "watch.status"];
+  const expectedReasons = {
+    "not-applicable": "baseline-before-candidate",
+    required: "selected-gateway-admits-ios-iphone-watch-relay",
+    "omitted-gateway-unsupported": "selected-gateway-does-not-admit-ios-iphone-watch-relay",
+  };
   assert(
     files.length === expectedPhases.length,
     "mobile pairing evidence requires all four reconnect phases",
@@ -1708,14 +1713,24 @@ function assertMobilePairingEvidence(files) {
       value?.nodeSurfaceReapprovalRequired === true &&
       JSON.stringify(value?.nodeSurfaceCommandAdditions) ===
         JSON.stringify(expectedNodeSurfaceAdditions);
+    const mode = value?.nodeSurfaceReapprovalMode;
     assert(
-      typeof value?.nodeSurfaceReapprovalExpected === "boolean",
-      "mobile node pairing reapproval expectation missing",
+      Object.hasOwn(expectedReasons, mode),
+      "mobile node pairing reapproval mode missing or unknown",
     );
     assert(
-      value.nodeSurfaceReapprovalExpected ? scopedNodeSurfaceReapproval : cleanPairingState,
+      value?.nodeSurfaceReapprovalReason === expectedReasons[mode],
+      "mobile node pairing reapproval reason changed",
+    );
+    assert(
+      mode === "required" ? scopedNodeSurfaceReapproval : cleanPairingState,
       "mobile node pairing pending state exceeded the known command-surface reapproval",
     );
+    if (index === 0) {
+      assert(mode === "not-applicable", "baseline mobile node pairing mode changed");
+    } else {
+      assert(mode !== "not-applicable", "candidate mobile node pairing mode was not selected");
+    }
     assert(value?.missingPasswordReason === true, "mobile pairing password_missing proof missing");
     assert(
       value?.missingPasswordClose1008 === true,
@@ -1742,6 +1757,12 @@ function assertMobilePairingEvidence(files) {
     }
     return value;
   });
+
+  const candidateMode = evidence[1]?.nodeSurfaceReapprovalMode;
+  assert(
+    evidence.slice(1).every((value) => value?.nodeSurfaceReapprovalMode === candidateMode),
+    "candidate mobile node pairing modes changed across reconnects",
+  );
 
   for (let index = 1; index < evidence.length; index += 1) {
     for (const role of ["node", "operator"]) {
