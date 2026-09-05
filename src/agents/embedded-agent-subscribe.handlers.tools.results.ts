@@ -6,7 +6,6 @@ import {
   normalizeOptionalLowercaseString,
   readStringValue,
 } from "@openclaw/normalization-core/string-coerce";
-import type { AgentPlanStep } from "../channels/streaming.js";
 import { consumeRootOptionToken } from "../infra/cli-root-options.js";
 import type { ExecApprovalDecision } from "../infra/exec-approvals.js";
 import {
@@ -14,11 +13,7 @@ import {
   parseJsonMessageParam,
 } from "../infra/outbound/message-action-params.js";
 import { hasReplyPayloadContent } from "../interactive/payload.js";
-import { formatProgressCardChannelSummary } from "../session-cards/progress-card-channel-summary.js";
-import {
-  normalizeProgressCardInput,
-  ProgressCardInputError,
-} from "../session-cards/progress-card-input.js";
+import { projectProgressCardChannelUpdate } from "../session-cards/progress-card-channel-summary.js";
 import { createLazyImportLoader } from "../shared/lazy-promise.js";
 import { hasTopLevelShellControlOperator, splitShellArgs } from "../utils/shell-argv.js";
 import type { ApplyPatchSummary } from "./apply-patch.js";
@@ -68,23 +63,7 @@ export function readProgressCardPlanInput(
   if (!params) {
     return undefined;
   }
-  try {
-    const normalized = normalizeProgressCardInput({ markdown: params.markdown, plan: params.plan });
-    const steps = normalized.steps ?? [];
-    const explanation = formatProgressCardChannelSummary({
-      hasMarkdown: normalized.markdown !== undefined,
-      steps,
-    });
-    return {
-      steps,
-      ...(explanation ? { explanation } : {}),
-    };
-  } catch (error) {
-    if (error instanceof ProgressCardInputError) {
-      return undefined;
-    }
-    throw error;
-  }
+  return projectProgressCardChannelUpdate(params);
 }
 
 export function isMiddlewareToolResultError(result: unknown): boolean {

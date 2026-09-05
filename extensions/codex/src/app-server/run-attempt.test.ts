@@ -3237,6 +3237,47 @@ describe("runCodexAppServerAttempt", () => {
     expect(closeAndWait).not.toHaveBeenCalled();
   });
 
+  it("projects dynamic progress cards through the shared safe status contract", async () => {
+    const params = createRunParams();
+    const onAgentEvent = vi.fn();
+    params.onAgentEvent = onAgentEvent;
+    const projector = new CodexAppServerEventProjector(params, "thread-1", "turn-1");
+
+    await projector.recordDynamicProgressCardUpdate({
+      markdown: '<progress aria-label="private" value="1" max="2"></progress>',
+      plan: [{ step: "Ship", status: "completed" }],
+    });
+    await projector.recordDynamicProgressCardUpdate({ markdown: "Working" });
+    await projector.recordDynamicProgressCardUpdate({});
+
+    expect(onAgentEvent).toHaveBeenNthCalledWith(1, {
+      stream: "plan",
+      data: {
+        phase: "update",
+        title: "Plan updated",
+        source: "openclaw",
+        explanation: "1/1 complete",
+        steps: [{ step: "Ship", status: "completed" }],
+      },
+    });
+    expect(onAgentEvent).toHaveBeenNthCalledWith(2, {
+      stream: "plan",
+      data: {
+        phase: "update",
+        title: "Plan updated",
+        source: "openclaw",
+        explanation: "Progress updated",
+        steps: [],
+      },
+    });
+    expect(onAgentEvent).toHaveBeenNthCalledWith(3, {
+      stream: "plan",
+      data: { phase: "update", title: "Plan updated", source: "openclaw", steps: [] },
+    });
+    expect(JSON.stringify(onAgentEvent.mock.calls)).not.toContain("<progress");
+    expect(JSON.stringify(onAgentEvent.mock.calls)).not.toContain("private");
+  });
+
   it("keeps searchable Codex dynamic tools canonical in mirrored transcript snapshots", async () => {
     const params = createRunParams();
     const projector = new CodexAppServerEventProjector(params, "thread-1", "turn-1");
