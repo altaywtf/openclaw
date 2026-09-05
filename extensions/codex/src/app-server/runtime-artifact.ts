@@ -9,9 +9,9 @@ import {
   resolveWindowsExecutablePath,
   resolveWindowsSpawnProgram,
 } from "openclaw/plugin-sdk/windows-spawn";
-import type { CodexAppServerClient, CodexAppServerRuntimeIdentity } from "./client.js";
 import type { CodexAppServerStartOptions } from "./config.js";
 import { resolvePackagedCodexNativeCommand } from "./managed-binary.js";
+import type { CodexAppServerRuntimeIdentity } from "./protocol.js";
 import { resolveCodexAppServerSpawnEnv } from "./transport-spawn-env.js";
 
 const ARTIFACT_ID_PREFIX = "codex-app-server:v1:";
@@ -96,12 +96,10 @@ type ArtifactHashBudget = {
   totalBytes: bigint;
 };
 
-function getRuntimeArtifactBindings(): WeakMap<
-  CodexAppServerClient,
-  AgentHarnessRuntimeArtifactBinding
-> {
+/** Bindings use client object identity without depending on the transport client. */
+function getRuntimeArtifactBindings(): WeakMap<object, AgentHarnessRuntimeArtifactBinding> {
   const globalState = globalThis as typeof globalThis & {
-    [ARTIFACT_BINDINGS_SYMBOL]?: WeakMap<CodexAppServerClient, AgentHarnessRuntimeArtifactBinding>;
+    [ARTIFACT_BINDINGS_SYMBOL]?: WeakMap<object, AgentHarnessRuntimeArtifactBinding>;
   };
   globalState[ARTIFACT_BINDINGS_SYMBOL] ??= new WeakMap();
   return globalState[ARTIFACT_BINDINGS_SYMBOL];
@@ -858,7 +856,7 @@ export function validateCodexAppServerRuntimeArtifactCapture(
 
 /** Commits a verified binding only after the client has completed auth setup. */
 export function bindCodexAppServerRuntimeArtifact(
-  client: CodexAppServerClient,
+  client: object,
   binding: AgentHarnessRuntimeArtifactBinding,
 ): void {
   const bindings = getRuntimeArtifactBindings();
@@ -871,7 +869,7 @@ export function bindCodexAppServerRuntimeArtifact(
 
 /** Reads the immutable artifact attached to one successfully initialized client. */
 export function readCodexAppServerClientRuntimeArtifact(
-  client: CodexAppServerClient,
+  client: object,
 ): AgentHarnessRuntimeArtifactBinding | undefined {
   return getRuntimeArtifactBindings().get(client);
 }
