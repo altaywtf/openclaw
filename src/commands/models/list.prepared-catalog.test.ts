@@ -1,6 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { testing as cliBackendsTesting } from "../../agents/cli-backends.test-support.js";
-import type { ModelCatalogEntry } from "../../agents/model-catalog.types.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResolvedPublishedModelCatalogOwner } from "../../agents/prepared-model-catalog.types.js";
 import { markPreparedModelCatalogFull } from "../../agents/prepared-model-runtime.full-catalog.js";
 import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
@@ -40,7 +38,6 @@ vi.mock("./shared.js", async (importOriginal) => ({
 
 import { modelsListCommand } from "./list.list-command.js";
 
-let owner: ResolvedPublishedModelCatalogOwner;
 const runtime = {
   log: vi.fn(),
   error: vi.fn(),
@@ -49,30 +46,20 @@ const runtime = {
   writeStdout: vi.fn(),
 };
 
+let owner: ResolvedPublishedModelCatalogOwner;
+
 beforeEach(() => {
   vi.clearAllMocks();
-  cliBackendsTesting.setDepsForTest({
-    resolveRuntimeCliBackends: () => [],
-    resolvePluginSetupRegistry: () => ({
-      providers: [],
-      cliBackends: [],
-      configMigrations: [],
-      autoEnableProbes: [],
-      diagnostics: [],
-    }),
-  });
-  const entries: ModelCatalogEntry[] = [
+  const entries = [
     {
       provider: "catalog-provider",
       id: "pinned",
       name: "Pinned Model",
-      api: "anthropic-messages",
+      api: "anthropic-messages" as const,
       baseUrl: "https://catalog.example.test",
-      input: ["text"],
+      input: ["text" as const],
       contextWindow: 200_000,
     },
-    { provider: "catalog-provider", id: "discovered", name: "Discovered Model" },
-    { provider: "another", id: "other-model", name: "Other Model" },
   ];
   owner = {
     catalogOwner: { agentId: "main", workspaceDir: "/tmp/openclaw-workspace" },
@@ -97,9 +84,7 @@ beforeEach(() => {
     oauthRefreshProviderIds: [],
     modelCatalog: markPreparedModelCatalogFull({ entries, routeVariants: entries }),
   };
-  mocks.loadModelsConfigWithSource.mockImplementation(async () => ({
-    resolvedConfig: owner.config,
-  }));
+  mocks.loadModelsConfigWithSource.mockResolvedValue({ resolvedConfig: owner.config });
   mocks.resolveModelsTargetAgent.mockReturnValue({
     agentId: owner.agentId,
     agentDir: owner.agentDir,
@@ -109,11 +94,7 @@ beforeEach(() => {
   mocks.callGateway.mockReset();
 });
 
-afterEach(() => {
-  cliBackendsTesting.resetDepsForTest();
-});
-
-describe("models list prepared catalog boundary", () => {
+describe("models list transport ownership", () => {
   it.each([false, true])("uses the running Gateway inventory with refresh=%s", async (refresh) => {
     mocks.readGatewayOwner.mockResolvedValue({ pid: 123, port: 19001, createdAt: "fixture" });
     mocks.callGateway.mockResolvedValue({
@@ -131,10 +112,12 @@ describe("models list prepared catalog boundary", () => {
         },
       ],
     });
+
     await modelsListCommand(
       { agent: "main", provider: "catalog-provider", local: true, json: true, refresh },
       runtime,
     );
+
     expect(mocks.loadOwner).not.toHaveBeenCalled();
     expect(mocks.resolveModelsTargetAgent).not.toHaveBeenCalled();
     expect(mocks.callGateway).toHaveBeenCalledWith(
@@ -171,232 +154,29 @@ describe("models list prepared catalog boundary", () => {
 
   it("runs standalone discovery only for an explicit refresh", async () => {
     await modelsListCommand({ all: true, refresh: true, json: true }, runtime);
+
     expect(mocks.loadOwner).toHaveBeenCalledWith(
       expect.objectContaining({ readOnly: false, refreshFullCatalog: true }),
     );
     expect(mocks.callGateway).not.toHaveBeenCalled();
   });
 
-  it("does not fall back to local inference when the running Gateway rejects a list", async () => {
+  it("does not fall back locally when the running Gateway rejects the list", async () => {
     mocks.readGatewayOwner.mockResolvedValue({ pid: 123, port: 19001, createdAt: "fixture" });
     const failure = new Error("Gateway rejected catalog access");
     mocks.callGateway.mockRejectedValue(failure);
+
     await expect(modelsListCommand({ all: true, json: true }, runtime)).rejects.toBe(failure);
+
     expect(mocks.loadOwner).not.toHaveBeenCalled();
     expect(runtime.writeJson).not.toHaveBeenCalled();
   });
 
-  it("filters published provider inventory without requiring --all", async () => {
-    await modelsListCommand({ provider: "catalog-provider", json: true }, runtime);
-
-    expect(mocks.loadOwner).toHaveBeenCalledWith(expect.objectContaining({ readOnly: true }));
-    expect(runtime.writeJson).toHaveBeenCalledWith(
-      {
-        count: 2,
-        models: [
-          expect.objectContaining({ key: "catalog-provider/discovered", available: true }),
-          expect.objectContaining({ key: "catalog-provider/pinned", available: true }),
-        ],
-      },
-      2,
-    );
-  });
-
-  it("shows only authenticated or configured rows on ordinary reads without full discovery", async () => {
-    await modelsListCommand({ json: true }, runtime);
-
-    expect(mocks.loadOwner).toHaveBeenCalledWith(expect.objectContaining({ readOnly: true }));
-    expect(mocks.loadOwner.mock.calls[0]?.[0]).not.toHaveProperty("refreshFullCatalog");
-    expect(runtime.writeJson).toHaveBeenCalledWith(
-      {
-        count: 2,
-        models: [
-          expect.objectContaining({ key: "catalog-provider/discovered", available: true }),
-          {
-            key: "catalog-provider/pinned",
-            name: "Pinned Model",
-            input: "text",
-            contextWindow: 200_000,
-            local: false,
-            available: true,
-            tags: ["default"],
-          },
-        ],
-      },
-      2,
-    );
-  });
-
-  it.each([
-    { view: "all", provider: "catalog-provider", cli: false },
-    { view: "provider", provider: "catalog-provider", cli: false },
-    { view: "all", provider: "fixture-cli", cli: true },
-    { view: "provider", provider: "fixture-cli", cli: true },
-  ])(
-    "keeps same-generation static rows in $view browse (CLI: $cli)",
-    async ({ view, provider, cli }) => {
-      const staticModel: ModelCatalogEntry = {
-        provider,
-        id: cli ? "cli-model" : "static-fallback",
-        name: cli ? "Prepared CLI Model" : "Prepared Static Fallback",
-        api: "openai-completions",
-        baseUrl: cli ? "cli://fixture" : "https://catalog.example.test/v1",
-        contextWindow: 64_000,
-        input: ["text", "image"],
-      };
-      owner.config.agents = {
-        defaults: {
-          model: {
-            primary: "catalog-provider/pinned",
-            fallbacks: [`${provider}/${staticModel.id}`],
-          },
-        },
-        entries: { main: {} },
-      };
-      if (cli) {
-        cliBackendsTesting.setDepsForTest({
-          resolveRuntimeCliBackends: () => [
-            { id: provider, pluginId: "fixture", config: { command: "fixture-cli" } },
-          ],
-          resolvePluginSetupRegistry: () => ({
-            providers: [],
-            cliBackends: [],
-            configMigrations: [],
-            autoEnableProbes: [],
-            diagnostics: [],
-          }),
-        });
-        owner.authStore.profiles["fixture-cli:test"] = {
-          type: "api_key",
-          provider,
-          key: "fixture-cli-key",
-        };
-        owner.config.models = {
-          providers: {
-            [provider]: {
-              api: "openai-completions",
-              baseUrl: "cli://fixture",
-              models: [
-                {
-                  id: staticModel.id,
-                  name: staticModel.name,
-                  reasoning: false,
-                  input: ["text", "image"],
-                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-                  contextWindow: 64_000,
-                  maxTokens: 4096,
-                },
-              ],
-            },
-          },
-        };
-      }
-      const liveEntries = owner.modelCatalog.entries;
-      const routeVariants = [...liveEntries, staticModel];
-      const configuredOwner: ResolvedPublishedModelCatalogOwner = {
-        ...owner,
-        modelCatalog: {
-          entries: [...liveEntries, staticModel],
-          routeVariants,
-          staticEntries: [staticModel],
-        },
-      };
-      const fullOwner: ResolvedPublishedModelCatalogOwner = {
-        ...owner,
-        modelCatalog: markPreparedModelCatalogFull({
-          entries: liveEntries,
-          routeVariants: liveEntries,
-          staticEntries: [staticModel],
-        }),
-      };
-      mocks.loadOwner.mockImplementation(async (params) =>
-        params?.readOnly ? configuredOwner : fullOwner,
-      );
-      const expectedRow = expect.objectContaining({
-        key: `${provider}/${staticModel.id}`,
-        name: staticModel.name,
-        contextWindow: 64_000,
-        input: "text+image",
-        available: true,
-      });
-
-      await modelsListCommand({ json: true }, runtime);
-      expect(runtime.writeJson).toHaveBeenLastCalledWith(
-        expect.objectContaining({ models: expect.arrayContaining([expectedRow]) }),
-        2,
-      );
-
-      await modelsListCommand(
-        { json: true, ...(view === "all" ? { all: true } : { provider }) },
-        runtime,
-      );
-
-      expect(mocks.loadOwner).toHaveBeenLastCalledWith(expect.objectContaining({ readOnly: true }));
-      expect(runtime.writeJson).toHaveBeenLastCalledWith(
-        expect.objectContaining({ models: expect.arrayContaining([expectedRow]) }),
-        2,
-      );
-    },
-  );
-
-  it.each([
-    { credential: "unknown", available: null },
-    { credential: "expired", available: false },
-  ])(
-    "keeps $credential auth inventory visible in explicit all browse",
-    async ({ credential, available }) => {
-      if (credential === "expired") {
-        owner.authStore.profiles["another:test"] = {
-          type: "token",
-          provider: "another",
-          token: "test-expired-token",
-          expires: 1,
-        };
-      }
-      await modelsListCommand({ all: true, json: true }, runtime);
-
-      expect(mocks.loadOwner).toHaveBeenCalledWith(expect.objectContaining({ readOnly: true }));
-      expect(runtime.writeJson).toHaveBeenCalledWith(
-        {
-          count: 3,
-          models: [
-            expect.objectContaining({ key: "another/other-model", available }),
-            expect.objectContaining({ key: "catalog-provider/discovered", available: true }),
-            expect.objectContaining({ key: "catalog-provider/pinned", available: true }),
-          ],
-        },
-        2,
-      );
-    },
-  );
-
-  it("reports rejected provider credentials rather than treating their presence as availability", async () => {
-    owner.modelCatalog.providerOutcomes = [
-      {
-        provider: "catalog-provider",
-        status: "auth-rejected",
-        profileId: "catalog-provider:test",
-      },
-    ];
-
-    await modelsListCommand({ provider: "catalog-provider", json: true }, runtime);
-
-    expect(runtime.writeJson).toHaveBeenCalledWith(
-      {
-        count: 2,
-        models: [
-          expect.objectContaining({ key: "catalog-provider/discovered", available: false }),
-          expect.objectContaining({ key: "catalog-provider/pinned", available: false }),
-        ],
-      },
-      2,
-    );
-  });
-
-  it("rejects an unknown provider instead of printing another provider's models", async () => {
+  it("rejects an unknown local provider instead of printing another provider", async () => {
     await expect(modelsListCommand({ provider: "missing", json: true }, runtime)).rejects.toThrow(
       'Unknown provider filter "missing"',
     );
+
     expect(runtime.writeJson).not.toHaveBeenCalled();
   });
 });

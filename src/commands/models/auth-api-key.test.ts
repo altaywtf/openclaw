@@ -173,4 +173,28 @@ describe("saveModelProviderApiKey", () => {
     expect(store.profiles).toEqual({});
     expect(mocks.updateConfig).not.toHaveBeenCalled();
   });
+
+  it.each([
+    {
+      label: "JWT token",
+      value: ["eyJhbGciOiJub25l", "eyJzdWIiOiJmaXh0dXJlIn0", "signature123456"].join("."),
+      error: "looks like token or OAuth material",
+    },
+    {
+      label: "structured OAuth credential",
+      value: '{"access_token":"fixture-token"}',
+      error: "looks like token or OAuth material",
+    },
+    {
+      label: "unrecognized value",
+      value: "fixture-not-an-api-key",
+      error: "does not look like an OpenAI API key",
+    },
+  ])("rejects $label before changing credentials or config", async ({ value, error }) => {
+    await expect(
+      saveModelProviderApiKey({ ...request, provider: "openai", apiKey: value }),
+    ).rejects.toThrow(error);
+    expect(store.profiles).toEqual({});
+    expect(mocks.updateConfig).not.toHaveBeenCalled();
+  });
 });

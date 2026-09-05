@@ -4,7 +4,7 @@ const spawn = vi.hoisted(() => vi.fn());
 const spawnSync = vi.hoisted(() => vi.fn());
 vi.mock("node:child_process", () => ({ spawn, spawnSync }));
 
-import { resolveCodexNativeAuth } from "./native-auth.js";
+import provider from "../../provider-discovery.js";
 
 function result(status: string, code = 0) {
   return {
@@ -15,7 +15,7 @@ function result(status: string, code = 0) {
   };
 }
 
-describe("resolveCodexNativeAuth", () => {
+describe("Codex native login discovery", () => {
   beforeEach(() => {
     spawnSync.mockReset();
   });
@@ -27,10 +27,11 @@ describe("resolveCodexNativeAuth", () => {
   ])("accepts Codex status %s", (status, mode) => {
     spawnSync.mockReturnValue(result(status));
 
-    expect(resolveCodexNativeAuth()).toEqual({
+    expect(provider.resolveSyntheticAuth?.({ provider: "openai" })).toEqual({
       apiKey: "codex-app-server",
       source: "Codex CLI native auth",
       mode,
+      runtime: "codex",
     });
     expect(spawnSync).toHaveBeenCalledWith(
       "codex",
@@ -39,9 +40,23 @@ describe("resolveCodexNativeAuth", () => {
     );
   });
 
-  it("does not treat Codex logout as native auth", () => {
+  it("reflects standalone Codex login and logout without caching", () => {
     spawnSync.mockReturnValue(result("Not logged in", 1));
+    expect(provider.resolveSyntheticAuth?.({ provider: "codex" })).toBeUndefined();
 
-    expect(resolveCodexNativeAuth()).toBeUndefined();
+    spawnSync.mockReturnValue(result("Logged in using ChatGPT"));
+    expect(provider.resolveSyntheticAuth?.({ provider: "codex" })).toMatchObject({
+      mode: "oauth",
+      runtime: "codex",
+    });
+
+    spawnSync.mockReturnValue(result("Not logged in", 1));
+    expect(provider.resolveSyntheticAuth?.({ provider: "codex" })).toBeUndefined();
+    expect(spawnSync).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not inspect native login for an unrelated provider", () => {
+    expect(provider.resolveSyntheticAuth?.({ provider: "other" })).toBeUndefined();
+    expect(spawnSync).not.toHaveBeenCalled();
   });
 });

@@ -374,6 +374,33 @@ describe("prepared catalog decision ownership", () => {
     });
   });
 
+  it.each(["agent", "utility", "image"] as const)(
+    "applies a profile lock only to its provider for %s decisions",
+    async (purpose) => {
+      const facts = createFacts();
+      const other = { provider: "acme", id: "model", name: "Acme model" };
+      facts.snapshot = {
+        entries: [platform, other],
+        routeVariants: [platform, subscription, other],
+      };
+      facts.auth.authStore.profiles["acme:primary"] = {
+        provider: "acme",
+        type: "api_key",
+        key: "acme-fixture-key",
+      };
+      const source = getPreparedModelCatalogDecisions(facts);
+      const context = {
+        purpose,
+        profileProvider: "openai",
+        lockedProfileId: "missing",
+      };
+
+      expect((await source.evaluate(platform, context)).availability).toBe(false);
+      expect((await source.evaluate(other, context)).availability).toBe(true);
+      expect((await source.evaluate(platform)).availability).toBe(true);
+    },
+  );
+
   it("isolates native runtime contexts and rejects caller-invented provenance", async () => {
     const facts = createFacts();
     const native: ModelCatalogEntry = {
@@ -404,6 +431,36 @@ describe("prepared catalog decision ownership", () => {
       runtimeAuth: { id: "acme-cli", source: "native" },
     });
   });
+
+  it.each([
+    { lockedProfileId: "acme:primary", available: true },
+    { lockedProfileId: "missing", available: false },
+  ])(
+    "does not borrow native runtime auth for locked profile $lockedProfileId",
+    async ({ lockedProfileId, available }) => {
+      const facts = createFacts();
+      const row = { provider: "acme", id: "model", name: "Acme model" };
+      facts.cfg = { agents: { defaults: { model: "acme/model" } } };
+      facts.snapshot = { entries: [row], routeVariants: [row] };
+      facts.auth = {
+        authStore: {
+          version: 1,
+          profiles: {
+            "acme:primary": {
+              provider: "acme",
+              type: "api_key",
+              key: "acme-fixture-key",
+            },
+          },
+        },
+        providerAuth: { acme: { mode: "oauth", runtime: "acme-cli" } },
+      };
+      const source = getPreparedModelCatalogDecisions(facts);
+
+      expect((await source.evaluate(row, { lockedProfileId })).availability).toBe(available);
+      expect(await source.runtime(row, { lockedProfileId })).toBeUndefined();
+    },
+  );
 
   it("captures environment evidence before a new context is evaluated", async () => {
     const facts = createFacts();
@@ -471,6 +528,50 @@ describe("prepared catalog decision ownership", () => {
       false,
     );
   });
+
+  it.each(["cooldown", "token expiry"] as const)(
+    "replaces a deadline-expired source at %s without a publication",
+    async (kind) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(10_000);
+      const facts = createFacts();
+      const row = { provider: "acme", id: "model", name: "Acme model" };
+      facts.cfg = { agents: { defaults: { model: "acme/model" } } };
+      facts.snapshot = { entries: [row], routeVariants: [row] };
+      facts.auth.authStore.profiles =
+        kind === "token expiry"
+          ? {
+              "acme:primary": {
+                provider: "acme",
+                type: "token",
+                token: "fixture-token",
+                expires: 20_000,
+              },
+            }
+          : {
+              "acme:primary": {
+                provider: "acme",
+                type: "api_key",
+                key: "acme-fixture-key",
+              },
+            };
+      if (kind === "cooldown") {
+        facts.auth.authStore.usageStats = {
+          "acme:primary": { cooldownUntil: 20_000 },
+        };
+      }
+      const first = getPreparedModelCatalogDecisions(facts);
+      expect((await first.evaluate(row)).availability).toBe(kind === "token expiry");
+
+      vi.setSystemTime(20_000);
+      expect(first.isCurrent()).toBe(false);
+      const second = getPreparedModelCatalogDecisions(facts);
+      expect(second).not.toBe(first);
+      expect((await second.evaluate(row)).availability).toBe(kind === "cooldown");
+      expect(second.isCurrent()).toBe(true);
+      expect(getPreparedModelCatalogDecisions(facts)).toBe(second);
+    },
+  );
 
   it("marks an in-flight decision stale before it settles after publication", async () => {
     const facts = createFacts();
@@ -619,22 +720,24 @@ describe("prepared catalog decision ownership", () => {
     },
   );
 
-  it("does not choose a runtime from materialized authentication", async () => {
+  it("does not lend one runtime's materialized auth to the implicit default runtime", async () => {
     const facts = createFacts();
-    const row = { provider: "acme", id: "model", name: "Model" };
-    facts.snapshot = { entries: [row], routeVariants: [] };
+    facts.auth.authStore.profiles = {};
     facts.authMaterializations = [
       {
-        provider: "acme",
-        modelId: row.id,
+        provider: "openai",
+        modelId: platform.id,
         modelApi: platformRoute.api,
         modelBaseUrl: platformRoute.baseUrl,
         requestTransportOverrides: "none",
         authMode: "api_key",
-        runtimeOwnerId: "materialized-runtime",
+        runtimeOwnerId: "openclaw",
       },
     ];
-    expect(await getPreparedModelCatalogDecisions(facts).runtime(row)).toBeUndefined();
+    const source = getPreparedModelCatalogDecisions(facts);
+
+    expect(await source.runtime(platform)).toEqual({ id: "codex", source: "implicit" });
+    expect((await source.evaluate(platform)).availability).not.toBe(true);
   });
 
   it("uses one captured clock across agent and direct resolver construction", async () => {

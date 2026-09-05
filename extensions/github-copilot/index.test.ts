@@ -722,6 +722,51 @@ describe("github-copilot plugin", () => {
     ).toEqual(["gpt-5.4"]);
   });
 
+  it.each(["exchange", "models", "missing credentials"])(
+    "reports catalog acquisition through its owner: %s",
+    async (stage) => {
+      const agentDir = await createAgentDir();
+      const fetchMock = vi.fn(async () => {
+        throw new Error("models unavailable");
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      if (stage !== "missing credentials") {
+        writeExistingCopilotTokenProfile(agentDir);
+        if (stage === "exchange") {
+          mocks.resolveCopilotRuntimeAuth.mockRejectedValueOnce(new Error("exchange unavailable"));
+        } else {
+          mocks.resolveCopilotRuntimeAuth.mockResolvedValueOnce({
+            apiKey: "catalog-regression-token",
+            baseUrl: "https://api.githubcopilot.com",
+          });
+        }
+      }
+      const provider = registerProviderWithPluginConfig({});
+      const result = await provider.catalog.run({ config: {}, agentDir, env: {} });
+
+      if (stage === "missing credentials") {
+        expect(result).toBeNull();
+        expect(mocks.resolveCopilotRuntimeAuth).not.toHaveBeenCalled();
+        expect(fetchMock).not.toHaveBeenCalled();
+      } else {
+        expect(result).toMatchObject({
+          outcomes: [
+            {
+              provider: "github-copilot",
+              profileId: "github-copilot:github",
+              status: "unavailable",
+            },
+          ],
+        });
+        expect(mocks.resolveCopilotRuntimeAuth).toHaveBeenCalledExactlyOnceWith({
+          githubToken: "existing-token",
+          env: {},
+          githubDomain: "github.com",
+        });
+      }
+    },
+  );
+
   it("skips catalog discovery when plugin discovery is disabled", async () => {
     const provider = registerProviderWithPluginConfig({ discovery: { enabled: false } });
 

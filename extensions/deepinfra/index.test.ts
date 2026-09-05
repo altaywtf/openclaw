@@ -71,40 +71,46 @@ function mockDiscoveryFetch(id = "profile/live-model") {
 afterEach(() => {
   clearLiveCatalogCacheForTests();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
-
-async function withLiveDiscoveryTestEnv(
-  mockFetch: ReturnType<typeof vi.fn>,
-  runAssertions: () => Promise<void>,
-) {
-  vi.stubGlobal("fetch", mockFetch);
-
-  try {
-    await runAssertions();
-  } finally {
-    vi.unstubAllGlobals();
-  }
-}
 
 describe("deepinfra catalog ownership", () => {
   it("keeps static inventory separate from missing-credential discovery", async () => {
     const fetchMock = vi.fn();
     const provider = await registerSingleProviderPlugin(deepinfraPlugin);
-    await withLiveDiscoveryTestEnv(fetchMock, async () => {
-      const context = buildDeepInfraCatalogContext();
-      const result = await provider.staticCatalog?.run(context);
-      expect(
-        result && "provider" in result ? result.provider.models.map((model) => model.id) : [],
-      ).toEqual(DEEPINFRA_MODEL_CATALOG.map((model) => model.id));
-      await expect(
-        provider.catalog?.run({
-          ...context,
-          resolveProviderApiKey: () => ({ apiKey: undefined }),
-        }),
-      ).resolves.toBeNull();
-      expect(fetchMock).not.toHaveBeenCalled();
-    });
+    vi.stubGlobal("fetch", fetchMock);
+    const context = buildDeepInfraCatalogContext();
+    const result = await provider.staticCatalog?.run(context);
+    expect(
+      result && "provider" in result ? result.provider.models.map((model) => model.id) : [],
+    ).toEqual(DEEPINFRA_MODEL_CATALOG.map((model) => model.id));
+    await expect(
+      provider.catalog?.run({
+        ...context,
+        resolveProviderApiKey: () => ({ apiKey: undefined }),
+      }),
+    ).resolves.toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it.each(["metadata", "pricing"])(
+    "reports failed %s acquisition despite a successful sibling fact",
+    async (stage) => {
+      const successfulFetch = mockDiscoveryFetch();
+      const fetchMock = vi.fn(async (url: string) =>
+        url ===
+        (stage === "metadata" ? DEEPINFRA_MODELS_URL : "https://api.deepinfra.com/models/list")
+          ? new Response(null, { status: 503 })
+          : successfulFetch(url),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const provider = await registerSingleProviderPlugin(deepinfraPlugin);
+
+      const result = await provider.catalog?.run(buildDeepInfraCatalogContext());
+      expect(result?.outcomes).toEqual([{ provider: "deepinfra", status: "unavailable" }]);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    },
+  );
 });
 
 describe("deepinfra capability registration", () => {
@@ -133,31 +139,30 @@ describe("deepinfra capability registration", () => {
     }
     const catalog = provider.catalog;
 
-    await withLiveDiscoveryTestEnv(mockFetch, async () => {
-      const result = await catalog.run(buildDeepInfraCatalogContext());
-      if (!result || !("provider" in result)) {
-        throw new Error("expected single-provider DeepInfra catalog result");
-      }
+    vi.stubGlobal("fetch", mockFetch);
+    const result = await catalog.run(buildDeepInfraCatalogContext());
+    if (!result || !("provider" in result)) {
+      throw new Error("expected single-provider DeepInfra catalog result");
+    }
 
-      expect(mockFetch).toHaveBeenCalledTimes(2);
-      expect(mockFetch.mock.calls.map(([url]) => url)).toEqual(
-        expect.arrayContaining([DEEPINFRA_MODELS_URL, "https://api.deepinfra.com/models/list"]),
-      );
-      expect(result.provider.models[0]?.cost).toEqual({
-        input: 4,
-        output: 8,
-        cacheRead: 0,
-        cacheWrite: 0,
-      });
-      expect(result?.provider.apiKey).toBe("profile-key");
-      expect(result.provider.models.map((model) => model.id)).toEqual([
-        "profile/live-model",
-        ...DEEPINFRA_MODEL_CATALOG.map((model) => model.id),
-      ]);
-      expect(result.outcomes).toEqual([{ provider: "deepinfra", status: "ready" }]);
-      await provider.augmentModelCatalog?.({ entries: [] } as never);
-      expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(mockFetch.mock.calls.map(([url]) => url)).toEqual(
+      expect.arrayContaining([DEEPINFRA_MODELS_URL, "https://api.deepinfra.com/models/list"]),
+    );
+    expect(result.provider.models[0]?.cost).toEqual({
+      input: 4,
+      output: 8,
+      cacheRead: 0,
+      cacheWrite: 0,
     });
+    expect(result?.provider.apiKey).toBe("profile-key");
+    expect(result.provider.models.map((model) => model.id)).toEqual([
+      "profile/live-model",
+      ...DEEPINFRA_MODEL_CATALOG.map((model) => model.id),
+    ]);
+    expect(result.outcomes).toEqual([{ provider: "deepinfra", status: "ready" }]);
+    await provider.augmentModelCatalog?.({ entries: [] } as never);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 });
 

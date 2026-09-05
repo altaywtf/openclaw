@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelCatalogEntry } from "../agents/model-catalog.types.js";
 import { stampConfigWriteMetadata } from "../config/io.meta.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
 import {
   applyModelAllowlist,
   applyModelFallbacksFromSelection,
@@ -114,6 +115,57 @@ describe("prepared picker presentation", () => {
       expect.objectContaining({
         options: [expect.objectContaining({ value: "fixture/primary" })],
         initialValue: "fixture/primary",
+      }),
+    );
+  });
+
+  it("matches a requested provider through its declared alias", async () => {
+    const { prepareModelCatalogView } = await vi.importActual<
+      typeof import("../agents/model-catalog-view.js")
+    >("../agents/model-catalog-view.js");
+    const entry: ModelCatalogEntry = { provider: "custom", id: "model", name: "Model" };
+    mocks.loadView.mockResolvedValue(
+      await prepareModelCatalogView({
+        cfg: {},
+        agentId: "main",
+        workspaceDir: "/tmp/picker-provider-alias",
+        snapshot: { entries: [entry], routeVariants: [entry] },
+        metadataSnapshot: createPluginMetadataSnapshotFixture({
+          plugins: [
+            {
+              id: "custom",
+              providers: ["custom"],
+              providerAuthAliases: { "custom-alias": "custom" },
+            },
+          ],
+        }),
+        auth: {
+          authStore: {
+            version: 1,
+            profiles: {
+              "custom:primary": { provider: "custom", type: "api_key", key: "fixture-key" },
+            },
+          },
+          providerAuth: {},
+        },
+        env: {},
+        view: "all",
+      }),
+    );
+    const select = vi.fn().mockResolvedValue("custom/model");
+
+    await expect(
+      promptDefaultModel({
+        config: {},
+        prompter: makePrompter({ select }),
+        preferredProvider: "custom-alias",
+        allowKeep: false,
+        includeManual: false,
+      }),
+    ).resolves.toEqual({ model: "custom/model" });
+    expect(select).toHaveBeenCalledWith(
+      expect.objectContaining({
+        options: [expect.objectContaining({ value: "custom/model" })],
       }),
     );
   });

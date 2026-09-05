@@ -13,12 +13,13 @@ import {
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { pluginLoaderCacheState } from "../plugins/registry-lifecycle.js";
 import { resetPluginRuntimeStateForTest } from "../plugins/runtime.js";
+import * as secretStore from "../secrets/store/secret-store.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { getFreePort } from "../test-utils/ports.js";
 import { runModelsAuthLoginFlowCore } from "./models/auth.js";
 
 describe("models auth login --force", () => {
-  it("replaces expired shared and main-local profiles with the gateway stopped", async () => {
+  it("prefers OAuth and validates explicit methods before replacing expired profiles", async () => {
     const state = await createOpenClawTestState({
       label: "auth-force-login",
       env: {
@@ -56,11 +57,23 @@ describe("models auth login --force", () => {
           register(api) {
             api.registerProvider({
               id: ${JSON.stringify(provider)}, label: "Auth store proof",
-              auth: [{ id: "token", label: "Fixture token", kind: "token",
-                async run() {
-                  return ${JSON.stringify({ profiles: [{ profileId: freshId, credential: fresh }] })};
+              auth: [
+                { id: "token", label: "Fixture token", kind: "token",
+                  async run() {
+                    return ${JSON.stringify({ profiles: [{ profileId: freshId, credential: fresh }] })};
+                  }
+                },
+                { id: "oauth", label: "Fixture OAuth", kind: "oauth",
+                  async run() {
+                    throw new Error("fixture OAuth selected");
+                  }
+                },
+                { id: "protected-token", label: "Protected token", kind: "token",
+                  async run() {
+                    return ${JSON.stringify({ profiles: [{ profileId: `${provider}:shared`, credential: fresh, secretStorage: { kind: "store", namePrefix: "FIXTURE_LOGIN_TOKEN" } }] })};
+                  }
                 }
-              }]
+              ]
             });
           }
         };`,
@@ -92,6 +105,94 @@ describe("models auth login --force", () => {
         throw new Error("Unexpected interactive prompt in explicit fixture login");
       };
       const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
+      await expect(
+        runModelsAuthLoginFlowCore({
+          provider,
+          agent: "main",
+          config,
+          runtime,
+          prompter: createWizardPrompter({
+            select: unexpectedPrompt,
+            text: unexpectedPrompt,
+            confirm: unexpectedPrompt,
+          }),
+        }),
+      ).rejects.toThrow("fixture OAuth selected");
+      await expect(
+        runModelsAuthLoginFlowCore({
+          provider,
+          method: "missing-method",
+          agent: "main",
+          force: true,
+          config,
+          runtime,
+          prompter: createWizardPrompter({
+            select: unexpectedPrompt,
+            text: unexpectedPrompt,
+            confirm: unexpectedPrompt,
+          }),
+        }),
+      ).rejects.toThrow("Unknown auth method");
+      expect(loadPersistedAuthProfileStore()?.profiles).toEqual({
+        [`${provider}:shared`]: expired,
+        "other-proof:shared": unrelated,
+      });
+      expect(loadPersistedAuthProfileStore(state.agentDir())?.profiles).toEqual({
+        [`${provider}:local`]: expired,
+        "other-proof:local": unrelated,
+      });
+
+      const protectedLogin = {
+        provider,
+        method: "protected-token",
+        agent: "main",
+        config,
+        runtime,
+        prompter: createWizardPrompter({
+          select: unexpectedPrompt,
+          text: unexpectedPrompt,
+          confirm: unexpectedPrompt,
+        }),
+      };
+      const sharedBeforeFailure = loadPersistedAuthProfileStore();
+      const localBeforeFailure = loadPersistedAuthProfileStore(state.agentDir());
+      const writeFailure = new Error("fixture protected store is read-only");
+      const protectedWrite = vi
+        .spyOn(secretStore, "writeSecretStoreEntry")
+        .mockImplementationOnce(() => {
+          throw writeFailure;
+        });
+      try {
+        await expect(runModelsAuthLoginFlowCore(protectedLogin)).rejects.toMatchObject({
+          message: expect.stringContaining("Could not write the protected secret store"),
+          cause: writeFailure,
+        });
+        expect(protectedWrite).toHaveBeenCalledOnce();
+        expect(loadPersistedAuthProfileStore()).toEqual(sharedBeforeFailure);
+        expect(loadPersistedAuthProfileStore(state.agentDir())).toEqual(localBeforeFailure);
+      } finally {
+        protectedWrite.mockRestore();
+      }
+
+      await runModelsAuthLoginFlowCore(protectedLogin);
+      const protectedProfile = loadPersistedAuthProfileStore()?.profiles[`${provider}:shared`];
+      expect(protectedProfile).not.toHaveProperty("token");
+      expect(protectedProfile).toMatchObject({
+        type: "token",
+        provider,
+        tokenRef: { source: "store", provider: "default", id: expect.any(String) },
+      });
+      if (!protectedProfile || protectedProfile.type !== "token" || !protectedProfile.tokenRef) {
+        throw new Error("Expected a persisted protected login token reference");
+      }
+      expect(
+        secretStore.readSecretStoreValue({
+          scope: { kind: "team" },
+          name: protectedProfile.tokenRef.id,
+          database: { env: process.env },
+        }),
+      ).toEqual({ ok: true, value: fresh.token });
+
       await runModelsAuthLoginFlowCore({
         provider,
         method: "token",

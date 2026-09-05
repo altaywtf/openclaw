@@ -12,7 +12,9 @@ import {
 } from "../../agents/auth-profiles.js";
 import { testing as cliBackendsTesting } from "../../agents/cli-backends.test-support.js";
 import type { PreparedModelRuntimeAuth } from "../../agents/prepared-model-runtime-auth.js";
+import { PreparedModelRuntimeOwnerNotPublishedError } from "../../agents/prepared-model-runtime.errors.js";
 import { materializePreparedModelCatalog } from "../../agents/prepared-model-runtime.full-catalog.js";
+import { notifyPreparedModelRuntimePublication } from "../../agents/prepared-model-runtime.publication-events.js";
 import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../../config/config.js";
 import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -274,6 +276,12 @@ function requestModelsList(params: {
   provider?: string;
   refresh?: boolean;
   preparedProviderAuth?: PreparedModelRuntimeAuth["providerAuth"];
+  catalogState?: Partial<
+    Pick<
+      PreparedGatewayModelCatalogSnapshot,
+      "providerOutcomes" | "refreshFailed" | "runtimeBindings"
+    >
+  >;
 }) {
   const respond = params.respond ?? vi.fn();
   const runtimeConfig = params.runtimeConfig ?? ({} as OpenClawConfig);
@@ -300,6 +308,7 @@ function requestModelsList(params: {
     const owner = resolveOwnerFacts();
     return {
       ...owner,
+      ...params.catalogState,
       ...(loadParams?.agentId ? { agentId: loadParams.agentId } : {}),
       catalogComplete: loadParams?.readOnly === false,
       entries,
@@ -379,6 +388,191 @@ describe("models.list", () => {
           undefined,
         );
       }
+    },
+  );
+
+  it("hides execution aliases while retaining the canonical provider", async () => {
+    const { request, respond } = requestModelsList({
+      view: "all",
+      catalogState: { runtimeBindings: [{ provider: "anthropic", runtime: "claude-cli" }] },
+      loadGatewayModelCatalog: async () => [
+        { provider: "claude-cli", id: "claude-opus-5", name: "Alias" },
+        { provider: "anthropic", id: "claude-opus-5", name: "Canonical" },
+      ],
+    });
+    await request;
+
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      {
+        models: [expect.objectContaining({ provider: "anthropic", id: "claude-opus-5" })],
+      },
+      undefined,
+    );
+  });
+
+  it.each([undefined, "current-provider"])(
+    "retries an owner replaced during its published read (provider=%s)",
+    async (provider) => {
+      const load = vi
+        .fn(async () => [{ provider: "current-provider", id: "current", name: "Current" }])
+        .mockImplementationOnce(async () => {
+          notifyPreparedModelRuntimePublication({ phase: "catalog-published" });
+          return [{ provider: "previous-provider", id: "stale", name: "Stale" }];
+        });
+      const { request, respond } = requestModelsList({
+        view: "all",
+        provider,
+        loadGatewayModelCatalog: load,
+      });
+      await request;
+
+      expect(respond).toHaveBeenCalledWith(
+        true,
+        {
+          models: [expect.objectContaining({ provider: "current-provider", id: "current" })],
+        },
+        undefined,
+      );
+      expect(load).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("returns unavailable when the prepared catalog owner is not published", async () => {
+    const { request, respond } = requestModelsList({
+      view: "all",
+      loadGatewayModelCatalog: async () => {
+        throw new PreparedModelRuntimeOwnerNotPublishedError("Model catalog is not ready.");
+      },
+    });
+
+    await request;
+
+    expect(respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({ code: "UNAVAILABLE" }),
+    );
+  });
+
+  it("projects public provider outcomes from the published catalog", async () => {
+    const { request, respond } = requestModelsList({
+      view: "all",
+      loadGatewayModelCatalog: async () => [],
+      catalogState: {
+        refreshFailed: true,
+        providerOutcomes: [
+          {
+            provider: "openai",
+            profileId: "openai:fixture",
+            rejectionScope: "catalog",
+            status: "auth-rejected",
+          },
+        ],
+      },
+    });
+
+    await request;
+
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      {
+        models: [],
+        refreshFailed: true,
+        providerOutcomes: [
+          { provider: "openai", profileId: "openai:fixture", status: "auth-rejected" },
+        ],
+      },
+      undefined,
+    );
+  });
+
+  it.each([
+    { selectedProfileId: "openai:rejected", available: false },
+    { selectedProfileId: "openai:accepted", available: true },
+  ])(
+    "applies provider rejection only to the selected profile $selectedProfileId",
+    async ({ selectedProfileId, available }) => {
+      await withoutOpenAIEnvAuth(async () => {
+        await withModelsTestState(
+          {
+            layout: "state-only",
+            prefix: "openclaw-models-list-selected-profile-",
+            agentEnv: "main",
+          },
+          async (state) => {
+            await state.writeAuthProfiles({
+              version: 1,
+              profiles: {
+                "openai:rejected": {
+                  type: "api_key",
+                  provider: "openai",
+                  key: "rejected-key",
+                },
+                "openai:accepted": {
+                  type: "api_key",
+                  provider: "openai",
+                  key: "accepted-key",
+                },
+              },
+            });
+            const runtimeConfig = {
+              auth: { order: { openai: [selectedProfileId] } },
+              agents: {
+                defaults: {
+                  model: "openai/gpt-5.6-sol",
+                  models: { "openai/gpt-5.6-sol": {} },
+                },
+              },
+            } satisfies OpenClawConfig;
+            const { request, respond } = requestModelsList({
+              view: "configured",
+              runtimeConfig,
+              catalogState: {
+                providerOutcomes: [
+                  {
+                    provider: "openai",
+                    profileId: "openai:rejected",
+                    status: "auth-rejected",
+                  },
+                ],
+              },
+              loadGatewayModelCatalog: async () => [
+                {
+                  id: "gpt-5.6-sol",
+                  name: "GPT-5.6 Sol",
+                  provider: "openai",
+                  api: "openai-responses",
+                  baseUrl: "https://api.openai.com/v1",
+                },
+              ],
+            });
+
+            await request;
+
+            expect(respond).toHaveBeenCalledWith(
+              true,
+              {
+                models: [
+                  expect.objectContaining({
+                    id: "gpt-5.6-sol",
+                    available,
+                    ...(available ? {} : { unavailableReason: "auth-failed" }),
+                  }),
+                ],
+                providerOutcomes: [
+                  {
+                    provider: "openai",
+                    profileId: "openai:rejected",
+                    status: "auth-rejected",
+                  },
+                ],
+              },
+              undefined,
+            );
+          },
+        );
+      });
     },
   );
 
@@ -1333,6 +1527,61 @@ describe("models.list", () => {
       });
     },
   );
+
+  it("keeps native runtime auth unavailable when its plugin is disabled", async () => {
+    await withoutAnthropicEnvAuth(async () => {
+      await withModelsTestState(
+        {
+          layout: "state-only",
+          prefix: "openclaw-models-list-disabled-cli-runtime-",
+          agentEnv: "main",
+        },
+        async () => {
+          cliBackendsTesting.setDepsForTest({
+            resolveRuntimeCliBackends: () =>
+              [{ id: "claude-cli", modelProvider: "anthropic", pluginId: "anthropic" }] as never,
+          });
+          try {
+            const runtimeConfig = {
+              agents: { defaults: { model: "anthropic/claude-opus-4-8" } },
+              plugins: { entries: { anthropic: { enabled: false } } },
+            } satisfies OpenClawConfig;
+            const { request, respond } = requestModelsList({
+              view: "configured",
+              runtimeConfig,
+              loadGatewayModelCatalog: async () => [
+                {
+                  id: "claude-opus-4-8",
+                  name: "Claude Opus 4.8",
+                  provider: "anthropic",
+                  api: "anthropic-messages",
+                  baseUrl: "https://api.anthropic.com",
+                },
+              ],
+            });
+
+            await request;
+
+            expect(respond).toHaveBeenCalledWith(
+              true,
+              {
+                models: [
+                  expect.objectContaining({
+                    id: "claude-opus-4-8",
+                    available: false,
+                    unavailableReason: "missing-auth",
+                  }),
+                ],
+              },
+              undefined,
+            );
+          } finally {
+            cliBackendsTesting.resetDepsForTest();
+          }
+        },
+      );
+    });
+  });
 
   it("keeps configured available providers aligned with native auth status", async () => {
     await withoutAnthropicEnvAuth(async () => {

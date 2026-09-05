@@ -10,6 +10,7 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { resolveAgentDir } from "../agents/agent-scope.js";
 import { upsertAuthProfile } from "../agents/auth-profiles/profiles.js";
 import { loadAuthProfileStoreWithoutExternalProfiles } from "../agents/auth-profiles/store.js";
+import { getActivePluginRegistry } from "../plugins/runtime.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
@@ -34,6 +35,7 @@ const IMPORT_PROBE_KEY = Symbol.for("openclaw.test.providerLoginImportPromotion"
 
 type CollisionProbe = {
   selectedAuthRuns: number;
+  selectedAuthWaits: number;
   selectedAuthRelease: Promise<void>;
   workspaceAuthRuns: number;
   workspaceModuleLoads: number;
@@ -157,10 +159,10 @@ export default {
         async run({ prompter, oauth }) {
           probe.${counter} += 1;
           ${authentication}
-          ${params.selected ? "await probe.selectedAuthRelease;" : ""}
+          ${params.selected ? "probe.selectedAuthWaits += 1; await probe.selectedAuthRelease;" : ""}
           return {
             defaultModel: "collision-provider/default",
-            ${params.selected ? 'configPatch: { agents: { defaults: { model: "collision-provider/default" } }, messages: { responsePrefix: "provider-stale" } },' : ""}
+            ${params.selected ? 'configPatch: { models: { providers: { "collision-provider": { baseUrl: "https://selected-provider.example.invalid/v1", models: [] } } }, agents: { defaults: { model: "collision-provider/default" } }, messages: { responsePrefix: "provider-stale" } },' : ""}
             profiles: [{
               profileId: ${JSON.stringify(`${COLLISION_PROVIDER}:${profile}`)},
               credential: {
@@ -329,10 +331,14 @@ afterEach(() => {
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 describe("openclaw.setup.auth.start owner binding", () => {
-  it.each(["device", "hosted-browser"] as const)(
-    "persists the bundled %s login without loading a colliding workspace provider",
+  it.each([
+    { authFlow: "device", outcome: "complete" },
+    { authFlow: "hosted-browser", outcome: "complete" },
+    { authFlow: "device", outcome: "cancel" },
+  ] as const)(
+    "keeps the selected owner bound during $authFlow login ($outcome)",
     { timeout: 90_000 },
-    async (authFlow) => {
+    async ({ authFlow, outcome }) => {
       const envSnapshot = captureEnv([...envKeys]);
       const tempHome = tempDirs.make("openclaw-provider-login-owner-");
       const stateDir = path.join(tempHome, ".openclaw");
@@ -347,6 +353,7 @@ describe("openclaw.setup.auth.start owner binding", () => {
       });
       const probe: CollisionProbe = {
         selectedAuthRuns: 0,
+        selectedAuthWaits: 0,
         selectedAuthRelease,
         workspaceAuthRuns: 0,
         workspaceModuleLoads: 0,
@@ -397,6 +404,8 @@ describe("openclaw.setup.auth.start owner binding", () => {
           token,
           clientDisplayName: "provider-login-owner-proof",
         });
+        const activeRegistry = getActivePluginRegistry();
+        expect(activeRegistry).toBeDefined();
         if (authFlow === "hosted-browser") {
           clearBrowserOrigin = prepareGatewayBrowserOrigin({
             origin: "https://gateway.example",
@@ -449,6 +458,7 @@ describe("openclaw.setup.auth.start owner binding", () => {
           workspaceAuthRuns: 0,
           workspaceModuleLoads: 0,
         });
+        expect(getActivePluginRegistry()).toBe(activeRegistry);
         otherClient = await connectGatewayClient({
           url: `ws://127.0.0.1:${gateway.port}`,
           token,
@@ -468,6 +478,25 @@ describe("openclaw.setup.auth.start owner binding", () => {
             loadAuthProfileStoreWithoutExternalProfiles(resolveAgentDir(cfg, "main")).profiles,
           ).filter((profileId) => profileId.startsWith(`${COLLISION_PROVIDER}:`)),
         ).toEqual([]);
+        if (outcome === "cancel") {
+          const finishing = gateway.client.request<WizardNextResult>("wizard.next", {
+            sessionId: started.sessionId,
+            answer: { stepId: signIn.step.id, value: null },
+          });
+          await vi.waitFor(() => expect(probe.selectedAuthWaits).toBe(1));
+          expect(getActivePluginRegistry()).toBe(activeRegistry);
+          await expect(
+            gateway.client.request<WizardStatusResult>("wizard.cancel", {
+              sessionId: started.sessionId,
+            }),
+          ).resolves.toMatchObject({ status: "cancelled" });
+          releaseSelectedAuth();
+          await expect(finishing).resolves.toMatchObject({ done: true, status: "cancelled" });
+          expect(
+            loadAuthProfileStoreWithoutExternalProfiles(resolveAgentDir(cfg, "main")).profiles,
+          ).not.toHaveProperty("collision-provider:selected");
+          return;
+        }
         const liveConfig = await gateway.client.request<{ hash: string }>("config.get", {});
         await gateway.client.request("config.patch", {
           raw: JSON.stringify({ messages: { responsePrefix: "concurrent-edit" } }),
@@ -532,6 +561,9 @@ describe("openclaw.setup.auth.start owner binding", () => {
             : ["fixture/kept-model"],
         );
         expect(configAfterLogin.agents?.defaults?.workspace).toBe(workspaceDir);
+        expect(configAfterLogin.models?.providers?.[COLLISION_PROVIDER]?.baseUrl).toBe(
+          "https://selected-provider.example.invalid/v1",
+        );
         expect(configAfterLogin.messages?.responsePrefix).toBe("concurrent-edit");
       } finally {
         clearBrowserOrigin?.();
@@ -542,6 +574,94 @@ describe("openclaw.setup.auth.start owner binding", () => {
         if (gateway) {
           await disconnectGatewayClient(gateway.client);
           await gateway.server.close({ reason: "provider login owner proof complete" });
+        }
+        envSnapshot.restore();
+      }
+    },
+  );
+});
+
+describe("openclaw.setup.auth.start unavailable owner", () => {
+  it(
+    "fails visibly when the selected manifest owner has no loadable runtime",
+    { timeout: 90_000 },
+    async () => {
+      const envSnapshot = captureEnv([...envKeys]);
+      const tempHome = tempDirs.make("openclaw-provider-login-unavailable-");
+      const stateDir = path.join(tempHome, ".openclaw");
+      const workspaceDir = path.join(tempHome, "workspace");
+      const bundledPluginsDir = path.join(tempHome, "bundled-plugins");
+      const configPath = path.join(stateDir, "openclaw.json");
+      const token = "provider-login-unavailable-proof";
+      let gateway: Awaited<ReturnType<typeof startGatewayWithClient>> | undefined;
+
+      try {
+        await Promise.all([
+          fs.mkdir(stateDir, { recursive: true }),
+          fs.mkdir(workspaceDir, { recursive: true }),
+          writePlugin(bundledPluginsDir, {
+            id: SELECTED_OWNER,
+            selected: true,
+            authFlow: "device",
+          }),
+        ]);
+        await fs.rm(path.join(bundledPluginsDir, SELECTED_OWNER, "index.mjs"));
+        configureGatewayFixtureEnvironment({
+          tempHome,
+          stateDir,
+          configPath,
+          token,
+          bundledPluginsDir,
+        });
+        const cfg = {
+          plugins: {
+            enabled: true,
+            allow: [SELECTED_OWNER],
+            entries: { [SELECTED_OWNER]: { enabled: true } },
+          },
+          agents: {
+            defaults: { workspace: workspaceDir, skipBootstrap: true },
+            list: [{ id: "main", default: true }],
+          },
+          gateway: { auth: { mode: "token" as const, token } },
+        };
+        await fs.writeFile(configPath, `${JSON.stringify(cfg, null, 2)}\n`);
+        gateway = await startGatewayWithClient({
+          cfg,
+          configPath,
+          token,
+          clientDisplayName: "provider-login-unavailable-proof",
+        });
+        const activeRegistry = getActivePluginRegistry();
+
+        const started = await gateway.client.request<WizardStartResult>(
+          "openclaw.setup.auth.start",
+          {
+            sessionId: "unavailable-owner-session",
+            agentId: "main",
+            authChoice: "collision-oauth",
+          },
+        );
+        expect(started).toMatchObject({ done: false, status: "running" });
+        await expect(
+          gateway.client.request<WizardNextResult>("wizard.next", {
+            sessionId: started.sessionId,
+          }),
+        ).resolves.toMatchObject({
+          done: true,
+          status: "error",
+          error: expect.stringContaining(
+            `Provider login plugin "${SELECTED_OWNER}" is unavailable`,
+          ),
+        });
+        expect(getActivePluginRegistry()).toBe(activeRegistry);
+        expect(
+          loadAuthProfileStoreWithoutExternalProfiles(resolveAgentDir(cfg, "main")).profiles,
+        ).not.toHaveProperty("collision-provider:selected");
+      } finally {
+        if (gateway) {
+          await disconnectGatewayClient(gateway.client);
+          await gateway.server.close({ reason: "provider login unavailable proof complete" });
         }
         envSnapshot.restore();
       }
