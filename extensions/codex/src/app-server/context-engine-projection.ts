@@ -364,7 +364,8 @@ function renderMessagesForCodexContext(
       retainedChars += retained.length;
     }
   }
-  return truncateOlderContext(tail.reverse().join(""), options.maxRenderedContextChars, totalChars);
+  const retainedContext = tail.toReversed().join("");
+  return truncateOlderContext(retainedContext, options.maxRenderedContextChars, totalChars);
 }
 
 function renderMessageBody(
