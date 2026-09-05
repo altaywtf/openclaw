@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { resolveCodexAppServerRuntimeOptions } from "./config.js";
+import type { JsonObject } from "./protocol.js";
 import {
   assertCodexManagedRequirementsDoNotOverrideToolPolicy,
   buildCodexThreadConfiguration,
@@ -91,7 +92,7 @@ describe("configured app-server managed requirements", () => {
   );
 
   it("keeps hook admission after ring-zero restriction patches without restoring native extras", () => {
-    const { config } = buildCodexThreadConfiguration(
+    const { config }: { config: JsonObject } = buildCodexThreadConfiguration(
       { toolsAllow: ["openclaw"], modelId: "test-model" } as never,
       {
         appServer: resolveCodexAppServerRuntimeOptions({}),
