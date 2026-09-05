@@ -2900,6 +2900,7 @@ jobs:
         if: inputs.shared_image_policy == 'no-push-artifact' && steps.plan.outputs.needs_functional_image == '1' && inputs.shared_image_artifact_id == ''
         shell: bash
         env:
+          OPENCLAW_ALLOW_PRE_NATIVE_FS_SAFE_CONTRACT: ${{ inputs.allow_frozen_target_scenario_omissions && needs.validate_selected_ref.outputs.selected_sha != needs.validate_selected_ref.outputs.workflow_sha && '1' || '0' }}
           IMAGE_REF: ${{ steps.image.outputs.functional_image }}
           BARE_IMAGE_REF: ${{ steps.image.outputs.bare_image }}
           OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR: ${{ steps.prepublish_plugin_registry.outputs.manifest_sha256 != '' && format('{0}/.artifacts/prepublish-plugin-registry', github.workspace) || '' }}
@@ -2919,6 +2920,7 @@ jobs:
             --file .release-harness/scripts/e2e/Dockerfile \
             --target functional \
             --build-context "openclaw_package=$package_context" \
+            --build-arg "OPENCLAW_ALLOW_PRE_NATIVE_FS_SAFE_CONTRACT=$OPENCLAW_ALLOW_PRE_NATIVE_FS_SAFE_CONTRACT" \
             --platform linux/amd64 \
             --tag "$IMAGE_REF" \
             "${cache[@]}" \

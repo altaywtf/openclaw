@@ -1495,8 +1495,17 @@ describe("release validation no-push transport", () => {
       'docker_e2e_prepare_package_context "$GITHUB_WORKSPACE/.artifacts/docker-e2e-package/openclaw-current.tgz"',
     );
     expect(functionalBuild.run).toContain('--build-context "openclaw_package=$package_context"');
+    expect(functionalBuild.run).toContain(
+      '--build-arg "OPENCLAW_ALLOW_PRE_NATIVE_FS_SAFE_CONTRACT=$OPENCLAW_ALLOW_PRE_NATIVE_FS_SAFE_CONTRACT"',
+    );
     expect(functionalBuild.run).toContain("--file .release-harness/scripts/e2e/Dockerfile");
     expect(functionalBuild.run).toContain('--tag "$IMAGE_REF"');
+    expect(functionalBuild.env?.OPENCLAW_ALLOW_PRE_NATIVE_FS_SAFE_CONTRACT).toBe(
+      "${{ inputs.allow_frozen_target_scenario_omissions && needs.validate_selected_ref.outputs.selected_sha != needs.validate_selected_ref.outputs.workflow_sha && '1' || '0' }}",
+    );
+    expect(functionalBuild.env).not.toHaveProperty(
+      "OPENCLAW_ALLOW_FROZEN_TARGET_SCENARIO_OMISSIONS",
+    );
     const packDockerArtifact = step(dockerProducer, "Pack Docker E2E image artifact");
     expect(packDockerArtifact.env?.PACKAGE_SHA256).toBe("${{ steps.package.outputs.sha256 }}");
     expect(packDockerArtifact.run).toContain("shared-image-artifact.sh");

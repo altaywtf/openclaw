@@ -1,18 +1,24 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import fsPromises from "node:fs/promises";
-import { createRequire } from "node:module";
+import { createRequire, findPackageJSON } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 function parseArgs(argv) {
+  let allowPreNativeContract = false;
   let packageRoot;
   let mode;
   for (let index = 0; index < argv.length; index += 2) {
     const key = argv[index];
     const value = argv[index + 1];
-    if (key === "--package-root") {
+    if (key === "--allow-pre-native-contract") {
+      if (value !== "0" && value !== "1") {
+        throw new Error("--allow-pre-native-contract must be 0 or 1");
+      }
+      allowPreNativeContract = value === "1";
+    } else if (key === "--package-root") {
       packageRoot = value;
     } else if (key === "--mode") {
       mode = value;
@@ -22,32 +28,105 @@ function parseArgs(argv) {
   }
   if (!packageRoot || (mode !== "require" && mode !== "fallback")) {
     throw new Error(
-      "usage: verify-fs-safe-native.mjs --package-root <path> --mode <require|fallback>",
+      "usage: verify-fs-safe-native.mjs --package-root <path> --mode <require|fallback> [--allow-pre-native-contract <0|1>]",
     );
   }
-  return { mode, packageRoot: path.resolve(packageRoot) };
+  return { allowPreNativeContract, mode, packageRoot: path.resolve(packageRoot) };
 }
 
-const { mode, packageRoot } = parseArgs(process.argv.slice(2));
-const requireFromPackage = createRequire(path.join(packageRoot, "package.json"));
-const configPath = requireFromPackage.resolve("@openclaw/fs-safe/config");
-const fsSafeManifestPath = path.resolve(path.dirname(configPath), "..", "package.json");
-const fsSafeManifest = JSON.parse(await fsPromises.readFile(fsSafeManifestPath, "utf8"));
-const fsSafeConfig = await import(pathToFileURL(configPath).href);
-if (typeof fsSafeConfig.configureFsSafeNative !== "function") {
-  console.log("fs-safe package does not support native bindings; skipping native binding proof");
-  process.exit(0);
+function nativeGeneration(version) {
+  assert.equal(typeof version, "string", "expected @openclaw/fs-safe to declare a version");
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u.exec(version);
+  assert.ok(match, "expected @openclaw/fs-safe to declare a stable semantic version");
+  const [major, minor, patch] = match.slice(1).map(Number);
+  assert.ok(
+    [major, minor, patch].every(Number.isSafeInteger),
+    "expected @openclaw/fs-safe version components to be safe integers",
+  );
+  return major > 0 || minor >= 6 ? "split" : minor === 5 ? "bundled" : "pre";
 }
-const requireFromFsSafe = createRequire(fsSafeManifestPath);
-const platformPackageNames = Object.keys(fsSafeManifest.optionalDependencies ?? {}).filter((name) =>
+
+const { allowPreNativeContract, mode, packageRoot } = parseArgs(process.argv.slice(2));
+const requireFromPackage = createRequire(path.join(packageRoot, "package.json"));
+const fsSafeManifestPath = findPackageJSON(
+  "@openclaw/fs-safe",
+  pathToFileURL(path.join(packageRoot, "package.json")),
+);
+assert.ok(fsSafeManifestPath, "expected an installed @openclaw/fs-safe package");
+const fsSafeManifest = JSON.parse(await fsPromises.readFile(fsSafeManifestPath, "utf8"));
+assert.equal(fsSafeManifest.name, "@openclaw/fs-safe", "resolved an unexpected fs-safe package");
+const fsSafeRoot = fs.realpathSync(path.dirname(fsSafeManifestPath));
+const fsSafeExports = fsSafeManifest.exports;
+assert.ok(
+  fsSafeExports !== null && typeof fsSafeExports === "object" && !Array.isArray(fsSafeExports),
+  "expected @openclaw/fs-safe package exports",
+);
+assert.ok(
+  Object.hasOwn(fsSafeExports, "./config"),
+  "expected @openclaw/fs-safe to export ./config",
+);
+const optionalDependencies = fsSafeManifest.optionalDependencies;
+assert.ok(
+  optionalDependencies === undefined ||
+    (optionalDependencies !== null &&
+      typeof optionalDependencies === "object" &&
+      !Array.isArray(optionalDependencies)),
+  "expected @openclaw/fs-safe optionalDependencies to be an object",
+);
+const generation = nativeGeneration(fsSafeManifest.version);
+const configPath = requireFromPackage.resolve("@openclaw/fs-safe/config");
+const fsSafeConfig = await import(pathToFileURL(configPath).href);
+const platformPackageNames = Object.keys(optionalDependencies ?? {}).filter((name) =>
   name.startsWith("@openclaw/fs-safe-"),
 );
+const hasDurabilityExport = Object.hasOwn(fsSafeExports, "./durability");
+const hasNativeConfiguration = typeof fsSafeConfig.configureFsSafeNative === "function";
+if (!hasNativeConfiguration) {
+  assert.ok(
+    allowPreNativeContract,
+    "pre-native @openclaw/fs-safe requires explicit frozen-target authorization",
+  );
+  assert.equal(generation, "pre", "expected native configuration for @openclaw/fs-safe >= 0.5.0");
+  assert.equal(hasDurabilityExport, false, "pre-native fs-safe unexpectedly exports durability");
+  assert.equal(
+    platformPackageNames.length,
+    0,
+    "pre-native fs-safe unexpectedly declares platform packages",
+  );
+  assert.equal(
+    fs.existsSync(path.join(fsSafeRoot, "dist", "native")),
+    false,
+    "pre-native fs-safe unexpectedly contains bundled native bindings",
+  );
+  console.log("Skipping fs-safe native proof: authorized package predates native bindings.");
+  process.exit(0);
+}
+
+assert.notEqual(
+  generation,
+  "pre",
+  "fs-safe native configuration predates the bundled-native contract",
+);
+assert.ok(hasDurabilityExport, "expected native-capable @openclaw/fs-safe to export ./durability");
+
+const splitNative = generation === "split";
+assert.equal(
+  platformPackageNames.length > 0,
+  splitNative,
+  splitNative
+    ? "expected @openclaw/fs-safe >= 0.6.0 to declare platform packages"
+    : "fs-safe platform packages predate the split-native contract",
+);
+
 const installedPlatformPackages = platformPackageNames.flatMap((name) => {
   try {
-    const manifest = requireFromFsSafe.resolve(`${name}/package.json`);
-    return [{ name, root: fs.realpathSync(path.dirname(manifest)) }];
-  } catch {
-    return [];
+    const manifest = findPackageJSON(name, pathToFileURL(fsSafeManifestPath));
+    return manifest ? [{ name, root: fs.realpathSync(path.dirname(manifest)) }] : [];
+  } catch (error) {
+    if (error?.code === "ERR_MODULE_NOT_FOUND") {
+      return [];
+    }
+    throw error;
   }
 });
 
@@ -67,20 +146,30 @@ try {
     file.endsWith("fs-safe-native.node"),
   );
   if (mode === "require") {
-    assert.ok(
-      installedPlatformPackages.length > 0,
-      "expected at least one fs-safe platform package",
-    );
     assert.equal(
       loadedNativeModules.length,
       1,
       "expected exactly one loaded fs-safe native binding",
     );
-    const loadedNativeRoot = fs.realpathSync(path.dirname(loadedNativeModules[0]));
-    assert.ok(
-      installedPlatformPackages.some(({ root }) => root === loadedNativeRoot),
-      "loaded fs-safe native binding did not come from an installed platform package",
-    );
+    const loadedNativePath = fs.realpathSync(loadedNativeModules[0]);
+    if (splitNative) {
+      assert.ok(
+        installedPlatformPackages.length > 0,
+        "expected at least one fs-safe platform package",
+      );
+      const loadedNativeRoot = path.dirname(loadedNativePath);
+      assert.ok(
+        installedPlatformPackages.some(({ root }) => root === loadedNativeRoot),
+        "loaded fs-safe native binding did not come from an installed platform package",
+      );
+    } else {
+      const relativeBinding = path.relative(fsSafeRoot, loadedNativePath);
+      assert.match(
+        relativeBinding,
+        /^dist[\\/]native[\\/][^\\/]+[\\/]fs-safe-native\.node$/u,
+        "loaded bundled fs-safe native binding escaped dist/native/<target>",
+      );
+    }
   } else {
     assert.equal(
       installedPlatformPackages.length,

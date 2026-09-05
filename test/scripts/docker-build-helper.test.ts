@@ -6116,8 +6116,9 @@ source "$ROOT_DIR/scripts/lib/docker-e2e-logs.sh"
     const updateRunner = readFileSync(UPDATE_CHANNEL_SWITCH_DOCKER_E2E_PATH, "utf8");
 
     expect(dockerfile).toContain("AS musl");
+    expect(dockerfile).toContain("ARG OPENCLAW_ALLOW_PRE_NATIVE_FS_SAFE_CONTRACT=0");
     expect(dockerfile).toContain(
-      "node /tmp/verify-fs-safe-native.mjs --package-root /app --mode require",
+      '--allow-pre-native-contract "$OPENCLAW_ALLOW_PRE_NATIVE_FS_SAFE_CONTRACT"',
     );
     expect(packageRunner).toContain('MUSL_IMAGE_NAME="openclaw-docker-e2e-musl:local"');
     expect(packageRunner.match(/verify-fs-safe-native\.mjs[^\n]+--mode require/gu)).toHaveLength(3);
