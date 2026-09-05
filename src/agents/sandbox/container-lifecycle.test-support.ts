@@ -45,65 +45,94 @@ export async function spawnContainerProcess(
   }
   spawnState.calls.push(call);
 
-  let code = 0;
-  let stdout = "";
-  let stderr = "";
-  if (command !== "docker" && command !== "podman") {
-    code = 1;
-    stderr = `unexpected command: ${command}`;
-  } else if (args[0] === "inspect" && args[1] === "-f" && args[2] === "{{.State.Running}}") {
-    if (spawnState.inspectError) {
-      code = 125;
-      stderr = spawnState.inspectError;
-    } else if (!spawnState.containerExists) {
-      code = 1;
-      stderr = "No such object";
-    } else {
-      stdout = spawnState.inspectRunning ? "true\n" : "false\n";
-    }
-  } else if (
+  const inspectRunning =
+    args[0] === "inspect" && args[1] === "-f" && args[2] === "{{.State.Running}}";
+  const inspectLabel =
     args[0] === "inspect" &&
     args[1] === "-f" &&
-    args[2]?.includes('index .Config.Labels "openclaw.configHash"')
-  ) {
-    if (!spawnState.containerExists) {
-      code = 1;
-      stderr = "No such object";
-    } else {
-      stdout = `${spawnState.labelHash}\n`;
-    }
-  } else if (command === "podman" && args[0] === "info") {
-    stdout = spawnState.podmanInfo;
-  } else if (command === "podman" && args[0] === "system") {
-    stdout = spawnState.podmanConnections;
-  } else if (command === "podman" && args[0] === "machine") {
-    stdout = spawnState.podmanMachines;
-  } else if (args[0] === "rm" && args[1] === "-f") {
-    spawnState.containerExists = false;
-    spawnState.inspectRunning = false;
-  } else if (args[0] === "image" && args[1] === "inspect") {
-    code = 0;
-  } else if (args[0] === "create") {
-    if (spawnState.containerExists) {
-      code = 1;
-      stderr = "container name is already in use";
-    } else {
-      spawnState.containerExists = true;
-      spawnState.inspectRunning = false;
-      spawnState.labelHash =
-        args
-          .find((arg) => arg.startsWith("openclaw.configHash="))
-          ?.slice("openclaw.configHash=".length) ?? "";
-    }
-  } else if (args[0] === "start") {
-    spawnState.beforeStart?.();
-    spawnState.inspectRunning = true;
-  } else if (args[0] === "exec") {
-    code = 0;
-  } else {
-    code = 1;
-    stderr = `unexpected docker args: ${args.join(" ")}`;
-  }
+    Boolean(args[2]?.includes('index .Config.Labels "openclaw.configHash"'));
+  const handlers: {
+    matches: boolean;
+    run: () => { code?: number; stdout?: string; stderr?: string };
+  }[] = [
+    {
+      matches: command !== "docker" && command !== "podman",
+      run: () => ({ code: 1, stderr: `unexpected command: ${command}` }),
+    },
+    {
+      matches: inspectRunning && Boolean(spawnState.inspectError),
+      run: () => ({ code: 125, stderr: spawnState.inspectError }),
+    },
+    {
+      matches: (inspectRunning || inspectLabel) && !spawnState.containerExists,
+      run: () => ({ code: 1, stderr: "No such object" }),
+    },
+    {
+      matches: inspectRunning,
+      run: () => ({ stdout: spawnState.inspectRunning ? "true\n" : "false\n" }),
+    },
+    {
+      matches: inspectLabel,
+      run: () => ({ stdout: `${spawnState.labelHash}\n` }),
+    },
+    {
+      matches: command === "podman" && args[0] === "info",
+      run: () => ({ stdout: spawnState.podmanInfo }),
+    },
+    {
+      matches: command === "podman" && args[0] === "system",
+      run: () => ({ stdout: spawnState.podmanConnections }),
+    },
+    {
+      matches: command === "podman" && args[0] === "machine",
+      run: () => ({ stdout: spawnState.podmanMachines }),
+    },
+    {
+      matches: args[0] === "rm" && args[1] === "-f",
+      run: () => {
+        spawnState.containerExists = false;
+        spawnState.inspectRunning = false;
+        return {};
+      },
+    },
+    {
+      matches: (args[0] === "image" && args[1] === "inspect") || args[0] === "exec",
+      run: () => ({}),
+    },
+    {
+      matches: args[0] === "create" && spawnState.containerExists,
+      run: () => ({ code: 1, stderr: "container name is already in use" }),
+    },
+    {
+      matches: args[0] === "create",
+      run: () => {
+        spawnState.containerExists = true;
+        spawnState.inspectRunning = false;
+        spawnState.labelHash =
+          args
+            .find((arg) => arg.startsWith("openclaw.configHash="))
+            ?.slice("openclaw.configHash=".length) ?? "";
+        return {};
+      },
+    },
+    {
+      matches: args[0] === "start",
+      run: () => {
+        spawnState.beforeStart?.();
+        spawnState.inspectRunning = true;
+        return {};
+      },
+    },
+  ];
+  // First-match dispatch keeps errors ahead of state changes; only the selected handler runs.
+  const {
+    code = 0,
+    stdout = "",
+    stderr = "",
+  } = handlers.find(({ matches }) => matches)?.run() ?? {
+    code: 1,
+    stderr: `unexpected docker args: ${args.join(" ")}`,
+  };
   return {
     failed: code !== 0,
     isCanceled: false,
