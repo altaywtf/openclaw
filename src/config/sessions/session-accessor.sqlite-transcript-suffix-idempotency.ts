@@ -71,7 +71,8 @@ export function prepareIncrementalSuffixIdempotencyMutation(params: {
         .where(
           /* kysely-allow-raw: match the canonical JavaScript-trimmed string key without parsing transcript rows in the write transaction. */
           sql<string>`CASE
-            WHEN json_type(event.event_json, '$.message.idempotencyKey') = 'text'
+            WHEN json_valid(event.event_json)
+              AND json_type(event.event_json, '$.message.idempotencyKey') = 'text'
             THEN trim(
               json_extract(event.event_json, '$.message.idempotencyKey'),
               ${" \t\n\r\f\v\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"}

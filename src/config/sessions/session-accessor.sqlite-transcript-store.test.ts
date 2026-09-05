@@ -889,6 +889,58 @@ describe("SQLite exact transcript suffix replacement", () => {
     }, duplicateKeyEvents);
   });
 
+  it("skips malformed unchanged-prefix rows while promoting an idempotency owner", async () => {
+    const duplicateKeyEvents = [
+      rewriteEvents[0],
+      {
+        type: "message",
+        id: "corrupt-prefix",
+        parentId: "root",
+        message: { role: "assistant", content: "corrupt" },
+      },
+      {
+        type: "message",
+        id: "duplicate",
+        parentId: "corrupt-prefix",
+        message: { role: "assistant", content: "duplicate", idempotencyKey: "retry" },
+      },
+      {
+        type: "message",
+        id: "owner",
+        parentId: "duplicate",
+        message: { role: "assistant", content: "owner", idempotencyKey: "retry" },
+      },
+    ] as const;
+    await withRewriteFixture(({ db, scope }) => {
+      db.prepare(
+        "UPDATE transcript_event_identities SET message_idempotency_key = NULL WHERE session_id = ? AND event_id = ?",
+      ).run(scope.sessionId, "duplicate");
+      db.prepare(
+        "UPDATE transcript_event_identities SET message_idempotency_key = ? WHERE session_id = ? AND event_id = ?",
+      ).run("retry", scope.sessionId, "owner");
+      db.prepare(
+        `UPDATE transcript_events
+         SET event_json = ?
+         WHERE session_id = ?
+           AND seq = (
+             SELECT seq
+             FROM transcript_event_identities
+             WHERE session_id = ? AND event_id = ?
+           )`,
+      ).run("{", scope.sessionId, scope.sessionId, "corrupt-prefix");
+
+      replaceTranscriptSuffixForTest(scope, duplicateKeyEvents, duplicateKeyEvents.slice(0, -1), 3);
+
+      expect(
+        db
+          .prepare(
+            "SELECT event_id, message_idempotency_key FROM transcript_event_identities WHERE session_id = ? AND event_id = ?",
+          )
+          .get(scope.sessionId, "duplicate"),
+      ).toEqual({ event_id: "duplicate", message_idempotency_key: "retry" });
+    }, duplicateKeyEvents);
+  });
+
   it("promotes a keyed owner from a long prefix without scanning it in the write transaction", async () => {
     const prefix = Array.from({ length: SYNC_REBUILD_MAX_ROWS + 1 }, (_value, index) => ({
       type: "message" as const,

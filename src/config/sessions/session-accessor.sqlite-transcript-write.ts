@@ -258,7 +258,7 @@ export function replaceTranscriptEventsSync(
   return replaced;
 }
 
-/** Removes an exact transcript suffix synchronously without rotating its generation. */
+/** Replaces an exact transcript suffix synchronously and rotates its cursor generation. */
 export function replaceTranscriptSuffixEventsSync(
   scope: SessionTranscriptWriteScope,
   expectedEvents: readonly TranscriptEvent[],
