@@ -447,8 +447,12 @@ describe("Codex agent harness supports()", () => {
 
   it("honors explicit provider id overrides", () => {
     const narrowHarness = createCodexAppServerAgentHarness({
-      providerIds: ["codex"],
+      providerIds: new Set(["codex"]).values(),
       bindingStore: testCodexAppServerBindingStore,
+    });
+    expect(narrowHarness.supports({ provider: "codex", requestedRuntime: "codex" })).toEqual({
+      supported: true,
+      priority: 100,
     });
     const result = narrowHarness.supports({ provider: "openai", requestedRuntime: "codex" });
     expect(result.supported).toBe(false);

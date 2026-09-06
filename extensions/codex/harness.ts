@@ -102,14 +102,10 @@ export function createCodexAppServerAgentHarness(
 ): AgentHarnessV2 {
   const harnessRuntimeId = options?.id ?? "codex";
   const normalizedHarnessRuntimeId = harnessRuntimeId.trim().toLowerCase();
-  const providerIds = new Set(
-    [...(options?.providerIds ?? DEFAULT_CODEX_HARNESS_PROVIDER_IDS)].map((id) =>
-      id.trim().toLowerCase(),
-    ),
-  );
   const staticProviderIds = options.providerIds
     ? normalizeCodexHarnessProviderIds(options.providerIds)
     : undefined;
+  const autoSelectionProviderIds = staticProviderIds ?? DEFAULT_CODEX_HARNESS_PROVIDER_IDS;
   const sessionCatalogControlFactory = options.sessionCatalogControlFactory;
   const sessionRuntime = options.runtime;
   let modelCatalog:
@@ -125,7 +121,7 @@ export function createCodexAppServerAgentHarness(
   const harness: AgentHarnessV2 = {
     id: harnessRuntimeId,
     label: options?.label ?? "Codex agent harness",
-    autoSelection: { providerIds: [...providerIds] },
+    autoSelection: { providerIds: [...autoSelectionProviderIds] },
     cloudPlacement: {
       mode: "remote-exec",
       devicePlacement: {
