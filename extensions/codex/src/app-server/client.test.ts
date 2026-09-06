@@ -6,8 +6,13 @@ import {
   CodexAppServerClient,
   isCodexAppServerApprovalRequest,
   isCodexAppServerIndeterminateTransportError,
+  isCodexAppServerIndeterminateRequestCancellationError,
+  isCodexAppServerPrewriteRequestCancellationError,
 } from "./client.js";
+import { CODEX_CUSTOM_PROVIDER_API_KEY_ENV } from "./custom-provider.js";
+import { CodexAppServerScopedRequestRejectedError } from "./request.js";
 import { resetSharedCodexAppServerClientForTests } from "./shared-client.js";
+import { CodexAppServerStartSelectionChangedError } from "./start-selection-error.js";
 import { createClientHarness } from "./test-support.js";
 import { CODEX_APP_SERVER_VERSION, MIN_SUPPORTED_CODEX_APP_SERVER_VERSION } from "./version.js";
 
@@ -78,6 +83,159 @@ describe("CodexAppServerClient", () => {
 
     await expect(request).resolves.toEqual({ models: [] });
     expect(outbound.method).toBe("model/list");
+  });
+
+  it.each(["aborted", "timed out"] as const)(
+    "marks custom-provider config validation cancellation as prewrite when %s",
+    async (reason) => {
+      vi.useFakeTimers();
+      const harness = createClientHarness();
+      clients.push(harness.client);
+      harness.client.bindCustomProvider(
+        { provider: "proxy", baseUrl: "https://proxy.example/v1" },
+        "/workspace",
+      );
+      const controller = new AbortController();
+      const request = harness.client.request(
+        "turn/start",
+        { threadId: "thread", input: [] },
+        {
+          signal: controller.signal,
+          timeoutMs: 1_000,
+        },
+      );
+      const outcome = request.catch((error: unknown) => error);
+      const readThread = JSON.parse(await harness.waitForWrite(0));
+      expect(readThread.method).toBe("thread/read");
+      harness.send({
+        id: readThread.id,
+        result: { thread: { modelProvider: "proxy", cwd: "/workspace" } },
+      });
+      const readConfig = JSON.parse(await harness.waitForWrite(1));
+      expect(readConfig.method).toBe("config/read");
+      if (reason === "aborted") {
+        controller.abort();
+      } else {
+        await vi.advanceTimersByTimeAsync(1_000);
+      }
+      const error = await outcome;
+      expect(error).toMatchObject({
+        message: `turn/start ${reason}`,
+        code: "CODEX_APP_SERVER_LOCAL_REQUEST_CANCELLED",
+        reason,
+        mayHaveWritten: false,
+        cause: { message: `config/read ${reason}`, mayHaveWritten: true },
+      });
+      expect(isCodexAppServerPrewriteRequestCancellationError(error)).toBe(true);
+      expect(isCodexAppServerIndeterminateRequestCancellationError(error)).toBe(false);
+      expect(harness.writes.map((write) => JSON.parse(write).method)).toEqual([
+        "thread/read",
+        "config/read",
+      ]);
+    },
+  );
+
+  it("preserves client-replacement identity after custom-provider validation reads", async () => {
+    const harness = createClientHarness();
+    clients.push(harness.client);
+    harness.client.bindCustomProvider(
+      { provider: "proxy", baseUrl: "https://proxy.example/v1" },
+      "/workspace",
+    );
+    const selectionChanged = new CodexAppServerStartSelectionChangedError();
+    let replaced = false;
+    const outcome = harness.client
+      .request(
+        "thread/resume",
+        { threadId: "thread" },
+        {
+          assertCurrent: () => {
+            if (replaced) {
+              throw selectionChanged;
+            }
+          },
+        },
+      )
+      .catch((error: unknown) => error);
+    const readConfig = JSON.parse(await harness.waitForWrite(0));
+    replaced = true;
+    harness.send({
+      id: readConfig.id,
+      result: {
+        config: {
+          allow_login_shell: false,
+          features: { shell_snapshot: false },
+          shell_environment_policy: { experimental_use_profile: false, set: { CODEX_API_KEY: "" } },
+          model_providers: {
+            proxy: {
+              base_url: "https://proxy.example/v1",
+              env_key: CODEX_CUSTOM_PROVIDER_API_KEY_ENV,
+            },
+          },
+        },
+      },
+    });
+    expect(await outcome).toBe(selectionChanged);
+    expect(harness.writes.map((write) => JSON.parse(write).method)).toEqual(["config/read"]);
+  });
+
+  it("keeps custom-provider cancellation indeterminate after the turn was sent", async () => {
+    const harness = createClientHarness();
+    clients.push(harness.client);
+    harness.client.bindCustomProvider(
+      { provider: "proxy", baseUrl: "https://proxy.example/v1" },
+      "/workspace",
+    );
+    const controller = new AbortController();
+    const request = harness.client.request(
+      "turn/start",
+      { threadId: "thread", input: [] },
+      { signal: controller.signal },
+    );
+    const outcome = request.catch((error: unknown) => error);
+    const readThread = JSON.parse(await harness.waitForWrite(0));
+    harness.send({ id: readThread.id, result: { thread: { modelProvider: "proxy" } } });
+    const readConfig = JSON.parse(await harness.waitForWrite(1));
+    harness.send({
+      id: readConfig.id,
+      result: {
+        config: {
+          allow_login_shell: false,
+          features: { shell_snapshot: false },
+          shell_environment_policy: { experimental_use_profile: false, set: { CODEX_API_KEY: "" } },
+          model_providers: {
+            proxy: {
+              base_url: "https://proxy.example/v1",
+              env_key: CODEX_CUSTOM_PROVIDER_API_KEY_ENV,
+            },
+          },
+        },
+      },
+    });
+    const turn = JSON.parse(await harness.waitForWrite(2));
+    expect(turn.method).toBe("turn/start");
+    controller.abort();
+    const error = await outcome;
+    expect(error).toMatchObject({ message: "turn/start aborted", mayHaveWritten: true });
+    expect(isCodexAppServerIndeterminateRequestCancellationError(error)).toBe(true);
+  });
+
+  it("preserves no-write rejection identity for a mismatched custom provider", async () => {
+    const harness = createClientHarness();
+    clients.push(harness.client);
+    harness.client.bindCustomProvider(
+      { provider: "proxy", baseUrl: "https://proxy.example/v1" },
+      "/workspace",
+    );
+    const outcome = harness.client
+      .request("thread/resume", { threadId: "thread" })
+      .catch((error: unknown) => error);
+    const readConfig = JSON.parse(await harness.waitForWrite(0));
+    harness.send({ id: readConfig.id, result: { config: { model_providers: {} } } });
+    const error = await outcome;
+    expect(error).toBeInstanceOf(CodexAppServerScopedRequestRejectedError);
+    expect(error).toMatchObject({ cause: { message: expect.stringContaining("missing") } });
+    expect(harness.writes.map((write) => JSON.parse(write).method)).toEqual(["config/read"]);
   });
 
   it("replays configuration warnings emitted before their notification observer exists", () => {

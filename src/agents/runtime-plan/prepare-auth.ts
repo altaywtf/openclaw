@@ -23,6 +23,7 @@ import {
   shouldPreferExplicitConfigApiKeyAuth,
 } from "../model-auth.js";
 import { resolveOpenAIModelRoutes, selectOpenAIModelRouteAuth } from "../openai-model-routes.js";
+import { resolveProviderIdForAuth } from "../provider-auth-aliases.js";
 import {
   buildProviderModelAuthDirectSource,
   buildProviderModelAuthSourcePlan,
@@ -213,9 +214,11 @@ export function prepareAgentRuntimeAuth(
     params.sessionAuthProfileSource === "user" || params.sessionAuthProfileSource === "user-link"
       ? requestedProfileId
       : undefined;
+  const providerForAuth = resolveProviderIdForAuth(params.provider, params);
   const harnessOwnsOpenAIAuth =
-    params.harnessId?.trim().toLowerCase() === "codex" ||
-    params.harnessRuntime?.trim().toLowerCase() === "codex";
+    (params.harnessId?.trim().toLowerCase() === "codex" ||
+      params.harnessRuntime?.trim().toLowerCase() === "codex") &&
+    (providerForAuth === "codex" || providerForAuth === "openai");
   const harnessAuthOwnerId = params.harnessId?.trim() || params.harnessRuntime?.trim();
   const runtimeAuthOwner =
     harnessOwnsOpenAIAuth && params.harnessAuthBootstrap === "harness" && harnessAuthOwnerId

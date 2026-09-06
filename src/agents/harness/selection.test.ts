@@ -63,6 +63,7 @@ import {
   setActiveEmbeddedRun,
 } from "../embedded-agent-runner/runs.js";
 import { createEmbeddedRunHandle } from "../embedded-agent-runner/runs.test-support.js";
+import { buildAgentRuntimeAuthPlan } from "../runtime-plan/auth.js";
 import { createZeroUsageFixture } from "../test-helpers/usage-fixtures.js";
 import { getGatewayToolCallerIdentity } from "../tools/gateway-caller-context.js";
 import { callGatewayTool } from "../tools/gateway.js";
@@ -3411,6 +3412,62 @@ describe("selectAgentHarness", () => {
       }),
     );
   });
+
+  it.each(["api-key", "api_key"])(
+    "forwards a generic provider's prepared %s key through native compaction",
+    async (selectedAuthMode) => {
+      const compact = registerTestCompactor({
+        provider: "custom-provider",
+        authBootstrap: "harness",
+      });
+      const runtimeModel: Model = {
+        id: "gpt-5.2-codex",
+        name: "Fixture model",
+        provider: "custom-provider",
+        api: "openai-responses",
+        baseUrl: "https://proxy.example/v1",
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 128_000,
+        maxTokens: 1_024,
+      };
+      compactAuthMocks.resolveModelAsync.mockResolvedValue({ model: runtimeModel });
+      const runtimeAuthPlan = buildAgentRuntimeAuthPlan({
+        provider: "custom-provider",
+        modelId: runtimeModel.id,
+        authProfileProvider: "custom-provider",
+        authProfileMode: selectedAuthMode,
+        harnessId: "codex",
+        allowHarnessAuthProfileForwarding: true,
+        providerAuthAliasesEnabled: false,
+      });
+
+      await expect(
+        maybeCompactAgentHarnessSession(
+          createCompactionParams({
+            provider: "custom-provider",
+            model: runtimeModel.id,
+            agentHarnessId: "codex",
+            runtimeModel,
+            runtimeAuthPlan,
+            resolvedApiKey: "synthetic-prepared-custom-key",
+          }),
+        ),
+      ).resolves.toEqual({ ok: true, compacted: false });
+
+      expect(compact).toHaveBeenCalledWith(
+        expect.objectContaining({
+          resolvedApiKey: "synthetic-prepared-custom-key",
+          runtimeModel: expect.objectContaining({
+            provider: "custom-provider",
+            baseUrl: runtimeModel.baseUrl,
+          }),
+          runtimeAuthPlan,
+        }),
+      );
+    },
+  );
 
   it("keeps pinned plugin compaction when the outer provider no longer matches", async () => {
     const compact = vi.fn<NonNullable<AgentHarness["compact"]>>(async () => ({

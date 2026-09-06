@@ -8,6 +8,7 @@ import {
   mockedAcquireAgentRunPreparedModelRuntime,
   mockedBuildEmbeddedRunPayloads,
   mockedEnsureAuthProfileStore,
+  mockedEnsureAuthProfileStoreWithoutExternalProfiles,
   mockedGetApiKeyForModel,
   mockedMarkAuthProfileFailure,
   mockedResolveAuthProfileOrder,
@@ -135,6 +136,77 @@ describe("native harness auth failover", () => {
     );
     return params;
   }
+
+  it.each(["codex", "fixture-native"])(
+    "respects generic provider key ownership for %s",
+    async (harnessId) => {
+      runHarness.registerPreparedAgentHarness({
+        id: harnessId,
+        label: "Codex",
+        authBootstrap: "harness",
+        supports: ({ provider }) =>
+          provider === "custom-provider"
+            ? { supported: true, priority: 100 }
+            : { supported: false },
+        runAttempt: async (params) => await mockedRunEmbeddedAttempt(params),
+      });
+      mockedEnsureAuthProfileStoreWithoutExternalProfiles.mockReturnValue({
+        version: 1,
+        profiles: {
+          "custom-provider:work": {
+            type: "api_key",
+            provider: "custom-provider",
+            key: "synthetic-custom-key",
+          },
+        },
+        order: { "custom-provider": ["custom-provider:work"] },
+      });
+      mockedResolveAuthProfileOrder.mockReturnValue(["custom-provider:work"]);
+      mockedGetApiKeyForModel.mockResolvedValue({
+        apiKey: "synthetic-custom-key",
+        profileId: "custom-provider:work",
+        source: "profile:custom-provider:work",
+        mode: "api-key",
+      });
+      mockedBuildEmbeddedRunPayloads.mockReturnValue([{ text: "custom reply" }]);
+      mockedRunEmbeddedAttempt.mockResolvedValue(
+        makeAttemptResult({ assistantTexts: ["custom reply"] }),
+      );
+
+      await expect(
+        runHarness.runEmbeddedAgent({
+          ...createOverflowRunParams(state),
+          provider: "custom-provider",
+          model: "gpt-5.2-codex",
+          agentHarnessId: harnessId,
+          authProfileId: "custom-provider:work",
+          authProfileIdSource: "user",
+          config: {
+            models: {
+              providers: {
+                "custom-provider": {
+                  api: "openai-responses",
+                  baseUrl: "https://proxy.example/v1",
+                  models: [],
+                },
+              },
+            },
+          },
+        }),
+      ).resolves.toMatchObject({ payloads: [{ text: "custom reply" }] });
+
+      if (harnessId === "codex") {
+        expect(mockedGetApiKeyForModel).toHaveBeenCalled();
+      } else {
+        expect(mockedGetApiKeyForModel).not.toHaveBeenCalled();
+      }
+      expect(mockedRunEmbeddedAttempt.mock.calls[0]?.[0]).toMatchObject({
+        provider: "custom-provider",
+        resolvedApiKey: harnessId === "codex" ? "synthetic-custom-key" : undefined,
+        model: { api: "openai-responses", baseUrl: "https://proxy.example/v1" },
+      });
+    },
+  );
 
   it.each(["auto", "user"] as const)(
     "plans divergent native host-auth model selection while retaining %s profile strictness",

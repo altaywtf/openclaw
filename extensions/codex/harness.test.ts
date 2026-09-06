@@ -481,16 +481,78 @@ describe("Codex agent harness supports()", () => {
     });
 
     expect(
-      configuredHarness.supports({ provider: "llm_proxy", requestedRuntime: "codex" }),
+      configuredHarness.supports({
+        provider: "llm_proxy",
+        requestedRuntime: "codex",
+        modelProvider: {
+          api: "openai-responses",
+          baseUrl: "https://proxy.example/v1",
+          requestTransportOverrides: "none",
+          preparedAuth: { source: "direct", mode: "api-key", requirement: "api-key" },
+        },
+      }),
     ).toEqual({
       supported: true,
       priority: 100,
     });
 
+    expect(configuredHarness.autoSelection?.providerIds).toContain("llm_proxy");
+
     pluginConfig = { appServer: { providerIds: ["codex"] } };
+    expect(configuredHarness.autoSelection?.providerIds).not.toContain("llm_proxy");
     const result = configuredHarness.supports({ provider: "llm_proxy", requestedRuntime: "codex" });
     expect(result.supported).toBe(false);
   });
+
+  it.each([
+    { api: "openai-completions" },
+    { baseUrl: undefined },
+    { requestTransportOverrides: "present" as const },
+    { runtimePolicy: { compatibleIds: ["openclaw"] } },
+    {
+      preparedAuth: {
+        source: "harness" as const,
+        mode: "oauth",
+        requirement: "subscription" as const,
+      },
+    },
+    { request: { auth: { mode: "none" } } },
+  ])("rejects an allowlisted custom route with unsupported facts: %j", (unsupported) => {
+    const configured = createCodexAppServerAgentHarness({
+      pluginConfig: { appServer: { providerIds: ["llm_proxy"] } },
+      bindingStore: testCodexAppServerBindingStore,
+    });
+    expect(
+      configured.supports({
+        provider: "llm_proxy",
+        requestedRuntime: "codex",
+        modelProvider: {
+          api: "openai-responses",
+          baseUrl: "https://proxy.example/v1",
+          requestTransportOverrides: "none",
+          preparedAuth: { source: "direct", mode: "api-key", requirement: "api-key" },
+          ...unsupported,
+        },
+      }).supported,
+    ).toBe(false);
+  });
+
+  it.each([{ transport: "websocket" }, { homeScope: "user" }])(
+    "rejects custom provider placement that cannot receive the prepared credential: %j",
+    (placement) => {
+      const configured = createCodexAppServerAgentHarness({
+        pluginConfig: { appServer: { providerIds: ["llm_proxy"], ...placement } },
+        bindingStore: testCodexAppServerBindingStore,
+      });
+      expect(
+        configured.supports({
+          provider: "llm_proxy",
+          requestedRuntime: "codex",
+          modelProvider: { api: "openai-responses", baseUrl: "https://proxy.example/v1" },
+        }).supported,
+      ).toBe(false);
+    },
+  );
 
   it("ignores app-server provider ids when strict config parsing rejects the app-server block", () => {
     const configuredHarness = createCodexAppServerAgentHarness({

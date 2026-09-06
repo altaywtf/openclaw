@@ -19,6 +19,14 @@ const EMPTY_PROVIDER_AUTH_ALIAS_METADATA = {
   plugins: [],
 } satisfies NonNullable<ProviderAuthAliasLookupParams["metadataSnapshot"]>;
 
+/** Use the prepared owner decision; a selected auth mode alone cannot override harness auth. */
+export function agentRuntimeAuthPlanRequiresHostApiKey(plan?: AgentRuntimeAuthPlan): boolean {
+  if (plan?.modelRoute) {
+    return plan.modelRoute.authRequirement === "api-key";
+  }
+  return plan?.requiresHostApiKey === true;
+}
+
 function resolveHarnessAuthProvider(params: {
   harnessId?: string;
   harnessRuntime?: string;
@@ -65,7 +73,15 @@ export function buildAgentRuntimeAuthPlan(params: {
     params.authProfileProvider ?? params.provider,
     aliasLookupParams,
   );
-  const harnessAuthProvider = resolveHarnessAuthProvider(params);
+  const defaultHarnessAuthProvider = resolveHarnessAuthProvider(params);
+  const customCodexProvider =
+    defaultHarnessAuthProvider === CODEX_HARNESS_AUTH_PROVIDER &&
+    providerForAuth !== "codex" &&
+    providerForAuth !== CODEX_HARNESS_AUTH_PROVIDER;
+  // A custom workload key belongs to its provider, not a native OpenAI account.
+  // Omit the native owner even before credentials are selected so callers cannot
+  // bootstrap an unrelated OpenAI profile for this route.
+  const harnessAuthProvider = customCodexProvider ? undefined : defaultHarnessAuthProvider;
   const harnessProviderForAuth = harnessAuthProvider
     ? resolveProviderIdForAuth(harnessAuthProvider, aliasLookupParams)
     : undefined;
@@ -74,7 +90,11 @@ export function buildAgentRuntimeAuthPlan(params: {
     harnessProviderForAuth &&
     harnessProviderForAuth === authProfileProviderForAuth;
   const providerCanForwardProfile =
-    !harnessProviderForAuth && providerForAuth === authProfileProviderForAuth;
+    !harnessProviderForAuth &&
+    providerForAuth === authProfileProviderForAuth &&
+    (!customCodexProvider ||
+      (params.allowHarnessAuthProfileForwarding !== false &&
+        (params.authProfileMode === "api-key" || params.authProfileMode === "api_key")));
   const canForwardProfile = providerCanForwardProfile || harnessCanForwardProfile;
   const forwardedAuthProfileId = canForwardProfile ? params.sessionAuthProfileId : undefined;
 
@@ -85,6 +105,7 @@ export function buildAgentRuntimeAuthPlan(params: {
     ...(params.modelId ? { modelId: params.modelId } : {}),
     authProfileProviderForAuth,
     ...(harnessProviderForAuth ? { harnessAuthProvider: harnessProviderForAuth } : {}),
+    ...(customCodexProvider && providerCanForwardProfile ? { requiresHostApiKey: true } : {}),
     ...(canForwardProfile ? { forwardedAuthProfileId } : {}),
     ...(canForwardProfile && params.sessionAuthProfileId && params.sessionAuthProfileSource
       ? {
