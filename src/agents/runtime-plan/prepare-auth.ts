@@ -3,6 +3,7 @@
  * Callers supply an already loaded credential snapshot; this module never
  * resolves secrets or loads a provider runtime.
  */
+import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import { resolveMergedModelProviderConfig } from "../../config/model-provider-config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ProviderRouteOverridePresence } from "../../plugin-sdk/provider-model-types.js";
@@ -214,9 +215,11 @@ export function prepareAgentRuntimeAuth(
     params.sessionAuthProfileSource === "user" || params.sessionAuthProfileSource === "user-link"
       ? requestedProfileId
       : undefined;
+  const provider = normalizeProviderId(params.provider);
   const harnessOwnsOpenAIAuth =
-    params.harnessId?.trim().toLowerCase() === "codex" ||
-    params.harnessRuntime?.trim().toLowerCase() === "codex";
+    (params.harnessId?.trim().toLowerCase() === "codex" ||
+      params.harnessRuntime?.trim().toLowerCase() === "codex") &&
+    (provider === "codex" || provider === "openai");
   const harnessAuthOwnerId = params.harnessId?.trim() || params.harnessRuntime?.trim();
   const runtimeAuthOwner =
     harnessOwnsOpenAIAuth && params.harnessAuthBootstrap === "harness" && harnessAuthOwnerId

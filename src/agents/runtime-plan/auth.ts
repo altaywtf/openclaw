@@ -3,6 +3,7 @@
  * and harness auth owners are resolved before session auth profiles can be
  * safely forwarded.
  */
+import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
 import { normalizeOptionalAgentRuntimeId } from "../agent-runtime-id.js";
@@ -18,6 +19,14 @@ const CODEX_HARNESS_AUTH_PROVIDER = "openai";
 const EMPTY_PROVIDER_AUTH_ALIAS_METADATA = {
   plugins: [],
 } satisfies NonNullable<ProviderAuthAliasLookupParams["metadataSnapshot"]>;
+
+/** A selected auth mode alone does not transfer credential ownership to the host. */
+export function agentRuntimeAuthPlanRequiresHostApiKey(plan?: AgentRuntimeAuthPlan): boolean {
+  if (plan?.modelRoute) {
+    return plan.modelRoute.authRequirement === "api-key";
+  }
+  return plan?.requiresHostApiKey === true;
+}
 
 function resolveHarnessAuthProvider(params: {
   harnessId?: string;
@@ -65,7 +74,15 @@ export function buildAgentRuntimeAuthPlan(params: {
     params.authProfileProvider ?? params.provider,
     aliasLookupParams,
   );
-  const harnessAuthProvider = resolveHarnessAuthProvider(params);
+  const defaultHarnessAuthProvider = resolveHarnessAuthProvider(params);
+  const provider = normalizeProviderId(params.provider);
+  const customCodexProvider =
+    defaultHarnessAuthProvider === CODEX_HARNESS_AUTH_PROVIDER &&
+    provider !== "codex" &&
+    provider !== CODEX_HARNESS_AUTH_PROVIDER;
+  // Leave custom credentials with their provider so preparation cannot
+  // bootstrap an unrelated OpenAI account.
+  const harnessAuthProvider = customCodexProvider ? undefined : defaultHarnessAuthProvider;
   const harnessProviderForAuth = harnessAuthProvider
     ? resolveProviderIdForAuth(harnessAuthProvider, aliasLookupParams)
     : undefined;
@@ -74,7 +91,11 @@ export function buildAgentRuntimeAuthPlan(params: {
     harnessProviderForAuth &&
     harnessProviderForAuth === authProfileProviderForAuth;
   const providerCanForwardProfile =
-    !harnessProviderForAuth && providerForAuth === authProfileProviderForAuth;
+    !harnessProviderForAuth &&
+    providerForAuth === authProfileProviderForAuth &&
+    (!customCodexProvider ||
+      (params.allowHarnessAuthProfileForwarding !== false &&
+        (params.authProfileMode === "api-key" || params.authProfileMode === "api_key")));
   const canForwardProfile = providerCanForwardProfile || harnessCanForwardProfile;
   const forwardedAuthProfileId = canForwardProfile ? params.sessionAuthProfileId : undefined;
 
@@ -85,6 +106,7 @@ export function buildAgentRuntimeAuthPlan(params: {
     ...(params.modelId ? { modelId: params.modelId } : {}),
     authProfileProviderForAuth,
     ...(harnessProviderForAuth ? { harnessAuthProvider: harnessProviderForAuth } : {}),
+    ...(customCodexProvider && providerCanForwardProfile ? { requiresHostApiKey: true } : {}),
     ...(canForwardProfile ? { forwardedAuthProfileId } : {}),
     ...(canForwardProfile && params.sessionAuthProfileId && params.sessionAuthProfileSource
       ? {
