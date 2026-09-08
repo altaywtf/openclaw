@@ -70,8 +70,14 @@ import {
   type SharedCodexAppServerClientStartup,
   type SharedCodexAppServerClientState,
 } from "./shared-client-lifecycle.js";
+import {
+  CodexAppServerStartSelectionChangedError,
+  isCodexAppServerStartSelectionChangedError,
+} from "./start-selection-error.js";
 import { CodexAdoptedThreadActiveError } from "./thread-lifecycle-errors.js";
 import { withTimeout } from "./timeout.js";
+
+export { isCodexAppServerStartSelectionChangedError } from "./start-selection-error.js";
 
 export type { CodexAppServerPreparedAuth } from "./auth-bridge.js";
 
@@ -229,26 +235,6 @@ export function resolveCodexAppServerSpawnIdentity(
       : {}),
     ...(nativeCommand ? { nativeCommand } : {}),
   };
-}
-
-class CodexAppServerStartSelectionChangedError extends Error {
-  readonly code = "CODEX_APP_SERVER_START_SELECTION_CHANGED";
-
-  constructor() {
-    super("Codex app-server managed executable selection changed during startup");
-    this.name = "CodexAppServerStartSelectionChangedError";
-  }
-}
-
-/** Cross-bundle-safe check for a managed executable selection retry. */
-export function isCodexAppServerStartSelectionChangedError(
-  error: unknown,
-): error is CodexAppServerStartSelectionChangedError {
-  return (
-    error instanceof Error &&
-    "code" in error &&
-    error.code === "CODEX_APP_SERVER_START_SELECTION_CHANGED"
-  );
 }
 
 /**
@@ -448,7 +434,7 @@ async function resolveCodexAppServerClientStartContext(
   }
   const resolvedPreparedAuth: CodexAppServerResolvedPreparedAuth | undefined =
     preparedAuth?.kind === "api-key"
-      ? { kind: "api-key", apiKey: preparedApiKey as string }
+      ? { ...preparedAuth, apiKey: preparedApiKey as string }
       : preparedAuthProfileSnapshot && authProfileId && authProfileStore
         ? {
             kind: "profile",
@@ -654,7 +640,7 @@ async function acquireSharedCodexAppServerClient(
   const remainingTimeoutMs = resolveRemainingAcquireTimeout(timeoutMs, startedAt);
   const authIdentityCacheKey =
     preparedAuth?.kind === "api-key"
-      ? resolveCodexAppServerPreparedApiKeyCacheKey(preparedAuth.apiKey)
+      ? `${resolveCodexAppServerPreparedApiKeyCacheKey(preparedAuth.apiKey)}${preparedAuth.customProvider ? `:${JSON.stringify(preparedAuth.customProvider)}` : ""}`
       : (preparedAuth?.snapshot.secretFreeCacheKey ??
         (authRequirement === "api-key" && !authProfileId
           ? resolveCodexAppServerFallbackApiKeyCacheKey({ startOptions })
