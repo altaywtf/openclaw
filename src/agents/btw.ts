@@ -81,6 +81,7 @@ import { applyPreparedRuntimeAuthToModel } from "./provider-request-config.js";
 import { protectPreparedProviderRuntimeAuth } from "./provider-runtime-auth-protection.js";
 import { unwrapSecretSentinelsForProviderEgress } from "./provider-secret-egress.js";
 import { registerProviderStreamForModel } from "./provider-stream.js";
+import { agentRuntimeAuthPlanRequiresHostApiKey } from "./runtime-plan/auth.js";
 import { materializePreparedRuntimeModel } from "./runtime-plan/materialize-model.js";
 import { prepareAgentRuntimeAuth } from "./runtime-plan/prepare-auth.js";
 import {
@@ -495,6 +496,7 @@ async function resolveRuntimeModel(params: {
   isNewSession: boolean;
   harnessId?: string;
   harnessAuthBootstrap?: AgentHarness["authBootstrap"];
+  harnessRequiresHostApiKey?: AgentHarness["requiresHostApiKey"];
   preparedModelRuntime: PreparedModelRuntimeSnapshot;
 }): Promise<{
   model: Model;
@@ -571,6 +573,7 @@ async function resolveRuntimeModel(params: {
     harnessId: params.harnessId,
     harnessRuntime: params.harnessId,
     harnessAuthBootstrap: params.harnessAuthBootstrap,
+    harnessRequiresHostApiKey: params.harnessRequiresHostApiKey?.(runtimeProvider),
   } satisfies Parameters<typeof prepareAgentRuntimeAuth>[0];
   await reconcileAuthProfileQuotaBlocks(authParams);
   const runtimeAuthPreparation = prepareAgentRuntimeAuth(authParams);
@@ -867,6 +870,7 @@ export async function runBtwSideQuestion(
           isNewSession: params.isNewSession,
           harnessId: harness.id,
           harnessAuthBootstrap: harness.authBootstrap,
+          harnessRequiresHostApiKey: harness.requiresHostApiKey?.bind(harness),
           preparedModelRuntime,
         });
       }
@@ -973,6 +977,7 @@ export async function runBtwSideQuestion(
           harnessId: selectedHarness.id,
           harnessRuntime: selectedHarness.id,
           harnessAuthBootstrap: selectedHarness.authBootstrap,
+          harnessRequiresHostApiKey: selectedHarness.requiresHostApiKey?.(runtime.model.provider),
         } satisfies Parameters<typeof prepareAgentRuntimeAuth>[0];
         await reconcileAuthProfileQuotaBlocks(authParams);
         runtimeAuthPreparation = prepareAgentRuntimeAuth(authParams);
@@ -1043,7 +1048,7 @@ export async function runBtwSideQuestion(
         };
       }
       const resolvedApiKey =
-        runtimeAuthPlan.modelRoute?.authRequirement === "api-key" && "auth" in resolvedAttempt
+        agentRuntimeAuthPlanRequiresHostApiKey(runtimeAuthPlan) && "auth" in resolvedAttempt
           ? resolvedAttempt.auth.apiKey?.trim()
           : undefined;
       const sideRunId = params.authorityRunId;
@@ -1121,15 +1126,13 @@ export async function runBtwSideQuestion(
           agentId: sessionAgentId,
           workspaceDir,
           ...(toolsAllow ? { toolsAllow } : {}),
-          authProfileId:
-            runtimeAuthPlan.modelRoute?.authRequirement === "api-key"
-              ? undefined
-              : runtimeAuthPlan.forwardedAuthProfileId,
+          authProfileId: agentRuntimeAuthPlanRequiresHostApiKey(runtimeAuthPlan)
+            ? undefined
+            : runtimeAuthPlan.forwardedAuthProfileId,
           opts: { ...params.opts, runId: sideRunId },
-          authProfileIdSource:
-            runtimeAuthPlan.modelRoute?.authRequirement === "api-key"
-              ? undefined
-              : runtimeAuthPlan.forwardedAuthProfileSource,
+          authProfileIdSource: agentRuntimeAuthPlanRequiresHostApiKey(runtimeAuthPlan)
+            ? undefined
+            : runtimeAuthPlan.forwardedAuthProfileSource,
         };
         let result: Awaited<ReturnType<NonNullable<AgentHarness["runSideQuestion"]>>>;
         try {

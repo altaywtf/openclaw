@@ -63,6 +63,7 @@ type PrepareAgentRuntimeAuthPlanParams = {
   allowAuthProfileFallback?: boolean;
   harnessId?: string;
   harnessRuntime?: string;
+  harnessRequiresHostApiKey?: boolean;
   harnessAuthBootstrap?: "harness";
   allowHarnessAuthProfileForwarding?: boolean;
   allowTransientCooldownProbe?: boolean;
@@ -230,8 +231,9 @@ export function prepareAgentRuntimeAuth(
       ? requestedProfileId
       : undefined;
   const harnessOwnsOpenAIAuth =
-    params.harnessId?.trim().toLowerCase() === "codex" ||
-    params.harnessRuntime?.trim().toLowerCase() === "codex";
+    !params.harnessRequiresHostApiKey &&
+    (params.harnessId?.trim().toLowerCase() === "codex" ||
+      params.harnessRuntime?.trim().toLowerCase() === "codex");
   const harnessAuthOwnerId = params.harnessId?.trim() || params.harnessRuntime?.trim();
   const runtimeAuthOwner =
     harnessOwnsOpenAIAuth && params.harnessAuthBootstrap === "harness" && harnessAuthOwnerId
@@ -524,6 +526,7 @@ export function prepareAgentRuntimeAuth(
         metadataSnapshot: params.metadataSnapshot,
         harnessId: params.harnessId,
         harnessRuntime: params.harnessRuntime,
+        harnessRequiresHostApiKey: params.harnessRequiresHostApiKey,
         allowHarnessAuthProfileForwarding: harnessAllowsAuthProfileForwarding,
       });
     };
@@ -588,6 +591,7 @@ export function prepareAgentRuntimeAuth(
       metadataSnapshot: params.metadataSnapshot,
       harnessId: params.harnessId,
       harnessRuntime: params.harnessRuntime,
+      harnessRequiresHostApiKey: params.harnessRequiresHostApiKey,
       allowHarnessAuthProfileForwarding: harnessAllowsAuthProfileForwarding,
       deferredRouteSupport: routeAuthDecision.routeSupport,
     });
@@ -633,6 +637,7 @@ export function prepareAgentRuntimeAuth(
       metadataSnapshot: params.metadataSnapshot,
       harnessId: params.harnessId,
       harnessRuntime: params.harnessRuntime,
+      harnessRequiresHostApiKey: params.harnessRequiresHostApiKey,
       allowHarnessAuthProfileForwarding: harnessAllowsAuthProfileForwarding,
     });
   };

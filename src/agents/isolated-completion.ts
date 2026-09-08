@@ -561,6 +561,7 @@ async function runIsolatedCompletionOwned(
             harnessId: harness.id,
             harnessRuntime: harness.id,
             harnessAuthBootstrap: harness.authBootstrap,
+            harnessRequiresHostApiKey: harness.requiresHostApiKey?.(runtimeModel.provider),
           } satisfies Parameters<typeof prepareAgentRuntimeAuth>[0];
           await reconcileAuthProfileQuotaBlocks(authParams);
           assertCurrent();

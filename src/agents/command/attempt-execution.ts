@@ -96,6 +96,7 @@ import { runEmbeddedAgent, type EmbeddedAgentRunResult } from "../embedded-agent
 import type { ContextEngineLogicalTurnLease } from "../harness/context-engine-logical-turn.js";
 import type { ContextEngineTurnAttemptFacts } from "../harness/context-engine-turn-attempt.js";
 import { runAgentHarnessBeforeMessageWriteHook } from "../harness/hook-helpers.js";
+import { getRegisteredAgentHarness } from "../harness/registry.js";
 import { resolveAvailableAgentHarnessPolicy } from "../harness/selection.js";
 import { AGENT_LANE_SUBAGENT } from "../lanes.js";
 import type { ModelFallbackResultClassification } from "../model-fallback-attempt.js";
@@ -284,6 +285,7 @@ function resolveHarnessAuthProfileSelection(params: {
   sessionAuthProfileSource?: "auto" | "user";
   harnessId?: string;
   harnessRuntime?: string;
+  harnessRequiresHostApiKey?: boolean;
   metadataSnapshot?: PluginMetadataSnapshot;
   providerAuthAliasesEnabled?: boolean;
   allowHarnessAuthProfileForwarding: boolean;
@@ -315,6 +317,7 @@ function resolveHarnessAuthProfileSelection(params: {
     providerAuthAliasesEnabled: params.providerAuthAliasesEnabled,
     harnessId: params.harnessId,
     harnessRuntime: params.harnessRuntime,
+    harnessRequiresHostApiKey: params.harnessRequiresHostApiKey,
     allowHarnessAuthProfileForwarding: params.allowHarnessAuthProfileForwarding,
   });
   const harnessAuthProvider = runtimeAuthPlan.harnessAuthProvider;
@@ -853,6 +856,10 @@ export function runAgentAttempt(params: {
           agentId: params.sessionAgentId,
           sessionKey: params.sessionKey ?? params.sessionId,
         });
+  const authHarness = getRegisteredAgentHarness(
+    requestedAgentHarnessId ?? agentHarnessPolicy.runtime,
+  )?.harness;
+  const harnessRequiresHostApiKey = authHarness?.requiresHostApiKey?.(params.providerOverride);
   const harnessAuthSelection = resolveHarnessAuthProfileSelection({
     config: params.cfg,
     agentDir: params.agentDir,
@@ -861,8 +868,9 @@ export function runAgentAttempt(params: {
     authProfileProvider: params.authProfileProvider,
     sessionAuthProfileId: selectedAuthProfile?.id,
     sessionAuthProfileSource: selectedAuthProfile?.source,
-    harnessId: requestedAgentHarnessId,
-    harnessRuntime: agentHarnessPolicy.runtime,
+    harnessId: authHarness?.id,
+    harnessRuntime: authHarness?.id,
+    harnessRequiresHostApiKey,
     ...(params.metadataSnapshot ? { metadataSnapshot: params.metadataSnapshot } : {}),
     providerAuthAliasesEnabled: params.pluginsEnabled,
     allowHarnessAuthProfileForwarding: !isCliExecutionProvider,
@@ -876,8 +884,9 @@ export function runAgentAttempt(params: {
     workspaceDir: params.workspaceDir,
     ...(params.metadataSnapshot ? { metadataSnapshot: params.metadataSnapshot } : {}),
     providerAuthAliasesEnabled: params.pluginsEnabled,
-    harnessId: requestedAgentHarnessId,
-    harnessRuntime: agentHarnessPolicy.runtime,
+    harnessId: authHarness?.id,
+    harnessRuntime: authHarness?.id,
+    harnessRequiresHostApiKey,
     allowHarnessAuthProfileForwarding: !isCliExecutionProvider,
   });
   const cliAuthProfileId = allowCliAuthProfileForwarding
