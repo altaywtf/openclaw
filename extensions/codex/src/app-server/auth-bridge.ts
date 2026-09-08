@@ -130,10 +130,20 @@ export async function bridgeCodexAppServerStartOptions(params: {
 
   if (params.preparedAuth) {
     const scopedStartOptions = await scopeStartOptions();
-    const cleared = withClearedEnvironmentVariables(
-      scopedStartOptions,
-      CODEX_APP_SERVER_PREPARED_AUTH_ENV_VARS,
-    );
+    const apiKey =
+      params.preparedAuth.kind === "api-key" && customProvider
+        ? params.preparedAuth.apiKey.trim()
+        : undefined;
+    // Env SecretRefs and aliases may retain the key under a different name.
+    const credentialEnvVars = apiKey
+      ? Object.entries(resolveCodexAppServerSpawnEnv(scopedStartOptions))
+          .filter(([, value]) => value?.trim() === apiKey)
+          .map(([name]) => name)
+      : [];
+    const cleared = withClearedEnvironmentVariables(scopedStartOptions, [
+      ...CODEX_APP_SERVER_PREPARED_AUTH_ENV_VARS,
+      ...credentialEnvVars,
+    ]);
     if (params.preparedAuth.kind === "api-key" && customProvider) {
       return {
         ...cleared,

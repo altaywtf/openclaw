@@ -1120,6 +1120,43 @@ describe("bridgeCodexAppServerStartOptions", () => {
     }
   });
 
+  it.each(["inherited", "configured"] as const)(
+    "removes the prepared credential's %s environment aliases",
+    async (source) => {
+      await withTempDir("openclaw-codex-prepared-env-", async (agentDir) => {
+        const apiKey = "synthetic-custom-provider-key";
+        const sourceEnv = {
+          CUSTOM_PROXY_API_KEY: `  ${apiKey}  `,
+          proxy_credential_alias: apiKey,
+          OPENCLAW_NATIVE_ENV_MARKER: "preserved-marker",
+        };
+        if (source === "inherited") {
+          for (const [name, value] of Object.entries(sourceEnv)) {
+            vi.stubEnv(name, value);
+          }
+        }
+        const startOptions = createStartOptions({
+          env: source === "configured" ? sourceEnv : {},
+        });
+        const bridged = await bridgeCodexAppServerStartOptions({
+          startOptions,
+          agentDir,
+          preparedAuth: {
+            kind: "api-key",
+            apiKey,
+            customProvider: { provider: "custom-provider", baseUrl: "https://proxy.example/v1" },
+          },
+        });
+        const env = resolveCodexAppServerSpawnEnv(bridged);
+        expect(env.CUSTOM_PROXY_API_KEY).toBeUndefined();
+        expect(env.proxy_credential_alias).toBeUndefined();
+        expect(env.CODEX_API_KEY).toBe(apiKey);
+        expect(env.OPENCLAW_NATIVE_ENV_MARKER).toBe("preserved-marker");
+        expect(startOptions.clearEnv).toBeUndefined();
+      });
+    },
+  );
+
   it("maps a prepared API-key route to one closed auth handoff", async () => {
     await expect(
       resolveCodexAppServerPreparedAuthHandoff({

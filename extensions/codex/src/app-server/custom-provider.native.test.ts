@@ -85,6 +85,7 @@ async function createProviderFixture(context: TestContext, nativeShellProbe = fa
         // Report only status markers: neither the credential nor its length may leave the shell.
         const command = [
           'if [ -n "$CODEX_API_KEY" ]; then printf "%s\\n" credential-visible; exit 31; fi',
+          'if [ -n "$CUSTOM_PROXY_API_KEY" ] || [ -n "$proxy_credential_alias" ]; then printf "%s\\n" credential-visible; exit 33; fi',
           'if [ "$OPENCLAW_NATIVE_ENV_MARKER" != "preserved-marker" ]; then printf "%s\\n" marker-missing; exit 32; fi',
           'printf "%s\\n" native-shell-clean',
         ].join("\n");
@@ -154,7 +155,12 @@ async function createProviderFixture(context: TestContext, nativeShellProbe = fa
         args: ["app-server"],
         cwd: native.cwd,
         headers: {},
-        env: childEnv,
+        env: {
+          ...childEnv,
+          ...(nativeShellProbe
+            ? { CUSTOM_PROXY_API_KEY: apiKey, proxy_credential_alias: `  ${apiKey}  ` }
+            : {}),
+        },
         clearEnv: Object.keys(process.env).filter((key) => !(key in childEnv)),
       },
       agentDir: path.join(root, "agent"),
