@@ -55,12 +55,13 @@ on every request. Disable native session discovery with
 `sessionCatalog.enabled: false` when no native history should be imported.
 
 A custom endpoint is not automatically a supported Codex route. Explicit
-`agentRuntime.id: "codex"` does not bypass prepared-route compatibility or the
-trusted-endpoint requirement for model-backed approval review. A workload API
-key also does not provide ChatGPT account identity or subscription refresh.
+`agentRuntime.id: "codex"` does not bypass prepared-route compatibility. The
+[custom native provider support](/plugins/codex-harness-reference#custom-native-providers)
+verifies Responses API-key routes. Model-backed approval review still requires
+a trusted endpoint. A workload API key does not provide ChatGPT account
+identity or subscription refresh.
 Verify those contracts before using a broker with the native harness; do not
-substitute a custom provider, remove safety metadata, or weaken review to make
-an inference smoke test pass.
+remove safety metadata or weaken review to make an inference smoke test pass.
 
 If discovery is temporarily unavailable or times out, the subscription route
 uses offline hints derived from the bundled OpenAI model manifest, with Codex

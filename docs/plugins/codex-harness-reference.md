@@ -65,6 +65,7 @@ nine child pages below. The anchors from the single-page version still resolve h
 [Codex app-server transport](/plugins/codex-harness-reference/app-server-transport) — App-server transport selection, the appServer field table, and local testing env overrides.
 
 - <a id="app-server-transport"></a>[App-server transport](/plugins/codex-harness-reference/app-server-transport#app-server-transport)
+- <a id="custom-native-providers"></a>[Custom native providers](/plugins/codex-harness-reference/app-server-transport#custom-native-providers)
 - <a id="environment-overrides"></a>[Environment overrides](/plugins/codex-harness-reference/app-server-transport#environment-overrides)
 
 ### Codex approval and sandbox modes

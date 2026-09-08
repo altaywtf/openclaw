@@ -47,9 +47,11 @@ sidebarTitle: "Setup"
     | `openai/*`       | plaintext official HTTP endpoint                  | Rejected                 | Credential is not sent             |
 
     <Note>
-    With runtime unset or `auto`, only an eligible exact official HTTPS native
-    route may select the Codex app-server harness implicitly. For API-key auth
-    on an agent model, create an `openai` API-key auth profile and order it with
+    For `openai/*` with runtime unset or `auto`, only an eligible exact official
+    HTTPS native route may select the Codex app-server harness implicitly.
+    Separate custom provider IDs require
+    [explicit configuration](/plugins/codex-harness-reference#custom-native-providers).
+    For API-key auth on an agent model, create an `openai` API-key auth profile and order it with
     `auth.order.openai`; `OPENAI_API_KEY` remains the direct fallback for
     non-agent OpenAI API surfaces. Run `openclaw doctor --fix` to migrate older
     legacy Codex auth-order entries.

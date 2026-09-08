@@ -162,7 +162,11 @@ Eligible exact official HTTPS routes may select the bundled Codex app-server
 plugin when runtime policy is unset or `auto`; authored Completions routes,
 custom endpoints, and request-transport overrides remain on OpenClaw. Plaintext
 official HTTP endpoints are rejected. Explicit provider/model runtime config remains
-authoritative. Run `openclaw doctor --fix` to repair stale legacy Codex model
+authoritative. You can enable a separate
+[custom native provider](/plugins/codex-harness-reference#custom-native-providers)
+with a matching Responses endpoint and API key on agent-home local stdio. Adding
+`openai` to an allowlist does not opt a custom `openai/*` endpoint into Codex.
+Run `openclaw doctor --fix` to repair stale legacy Codex model
 refs, `codex-cli/*` refs, or old runtime session pins that were not set by
 explicit runtime config.
 </Note>
