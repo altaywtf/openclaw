@@ -39,6 +39,7 @@ import {
   unwrapModelHeaderSentinelsForProviderEgress,
   unwrapSecretSentinelsForProviderEgress,
 } from "./provider-secret-egress.js";
+import { assertRequiredHostApiKey } from "./runtime-plan/auth.js";
 import { materializePreparedRuntimeModel } from "./runtime-plan/materialize-model.js";
 import {
   canRunPreparedAgentRuntimeAuthAttempt,
@@ -336,16 +337,22 @@ async function resolveHarness(runtime: string): Promise<AgentHarness> {
 function prepareIsolatedHostAuthorization<
   T extends Pick<AgentHarnessIsolatedCompletionParams, "model" | "auth">,
 >(harness: AgentHarness, authorization: T): T {
-  if (harness.id === "openclaw") {
-    return authorization;
-  }
+  const external = harness.id !== "openclaw";
   // External harnesses are the provider egress boundary. Keep credentials
   // sentinelized until this owner is selected, then hand it usable values.
   const boundary = "plugin harness isolated completion handoff";
-  const apiKey = authorization.auth.apiKey
-    ? unwrapSecretSentinelsForProviderEgress(authorization.auth.apiKey, boundary)
-    : authorization.auth.apiKey;
-  const model = unwrapModelHeaderSentinelsForProviderEgress(authorization.model, boundary);
+  const apiKey =
+    external && authorization.auth.apiKey
+      ? unwrapSecretSentinelsForProviderEgress(authorization.auth.apiKey, boundary)
+      : authorization.auth.apiKey;
+  assertRequiredHostApiKey({
+    required: harness.requiresHostApiKey?.(authorization.model.provider),
+    provider: authorization.model.provider,
+    auth: { ...authorization.auth, apiKey },
+  });
+  const model = external
+    ? unwrapModelHeaderSentinelsForProviderEgress(authorization.model, boundary)
+    : authorization.model;
   if (apiKey === authorization.auth.apiKey && model === authorization.model) {
     return authorization;
   }

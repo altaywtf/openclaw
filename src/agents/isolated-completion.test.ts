@@ -306,6 +306,79 @@ describe("runIsolatedCompletion", () => {
     );
   });
 
+  describe.each(["v1", "v2"] as const)("%s required host API keys", (version) => {
+    const model = { provider: "custom-proxy", id: "gpt-test", api: "openai-responses" };
+    const plan = { providerForAuth: model.provider, requiresHostApiKey: true };
+    const dispatch = vi.fn(async () => ({
+      assistant: isolatedAssistant([{ type: "text", text: "done" }]),
+    }));
+
+    beforeEach(() => {
+      mocks.resolveModelAsync.mockResolvedValue({ model });
+      mocks.prepareAgentRuntimeAuth.mockReturnValue({
+        plan,
+        attempts: [{ kind: "implicit", plan }],
+      });
+      registerIsolatedHarness({
+        requiresHostApiKey: (provider) => provider === model.provider,
+        ...(version === "v1"
+          ? { runIsolatedCompletion: dispatch }
+          : { authBootstrap: "harness", runIsolatedCompletionV2: dispatch }),
+      });
+    });
+
+    it.each([
+      ["missing key", { mode: "api-key" }],
+      ["blank key", { mode: "api-key", apiKey: " \t " }],
+      ["blank sentinel", { mode: "api-key" }],
+      ["OAuth", { mode: "oauth", apiKey: "synthetic-oauth-token" }],
+      ["AWS SDK", { mode: "aws-sdk" }],
+    ])("rejects %s before dispatch", async (label, auth) => {
+      mocks.prepareSimpleCompletionModel.mockResolvedValue({
+        model,
+        auth:
+          label === "blank sentinel"
+            ? {
+                ...auth,
+                apiKey: mintSecretSentinel(" \t ", { label: "isolated-blank-key" }),
+              }
+            : auth,
+      });
+
+      await expect(
+        runIsolatedCompletion({ ...isolatedRequest(), provider: "proxy-alias" }),
+      ).rejects.toThrow("requires a host-resolved API key for custom-proxy");
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(releaseRuntimeLease).toHaveBeenCalledOnce();
+    });
+
+    it.each(["plain", "sentinel"] as const)("dispatches a prepared %s key", async (kind) => {
+      const key = "synthetic-proxy-key";
+      const apiKey =
+        kind === "sentinel" ? mintSecretSentinel(key, { label: "isolated-required-key" }) : key;
+      mocks.prepareSimpleCompletionModel.mockResolvedValue({
+        model,
+        auth: { mode: "api-key", apiKey, source: "test" },
+      });
+
+      await expect(
+        runIsolatedCompletion({ ...isolatedRequest(), provider: "proxy-alias" }),
+      ).resolves.toMatchObject({ text: "done" });
+      const expected = {
+        model: expect.objectContaining({ provider: "custom-proxy" }),
+        auth: expect.objectContaining({ mode: "api-key", apiKey: key }),
+      };
+      expect(dispatch).toHaveBeenCalledWith(
+        expect.objectContaining(
+          version === "v1"
+            ? expected
+            : { authorization: expect.objectContaining({ owner: "host", ...expected }) },
+        ),
+      );
+      expect(releaseRuntimeLease).toHaveBeenCalledOnce();
+    });
+  });
+
   it.each(["v1", "v2"] as const)(
     "unwraps prepared credentials at the external %s harness boundary",
     async (version) => {
