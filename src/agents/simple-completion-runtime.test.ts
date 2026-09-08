@@ -17,6 +17,7 @@ import {
 import type { PreparedModelRuntimeSnapshot } from "./prepared-model-runtime.js";
 import { AuthStorage, ModelRegistry } from "./sessions/index.js";
 import type { SimpleCompletionModelResolver } from "./simple-completion-scope.js";
+import type { AgentRuntimeAuthPlan } from "./runtime-plan/types.js";
 import { makeProviderModelFixture } from "./test-helpers/provider-model-fixture.js";
 
 // Hoisted mocks keep Vitest module replacement stable while the implementation
@@ -226,6 +227,67 @@ function createOpenAIRouteModelResolver(params: {
 }
 
 describe("prepareSimpleCompletionModel", () => {
+  it("keeps prepared direct auth on its API route without rediscovering a failed profile", async () => {
+    const plan: AgentRuntimeAuthPlan = {
+      providerForAuth: "openai",
+      authProfileProviderForAuth: "openai",
+      modelId: "gpt-5.5",
+      selectedAuthMode: "api-key",
+      modelRoute: {
+        provider: "openai",
+        modelId: "gpt-5.5",
+        api: "openai-responses",
+        baseUrl: "https://api.openai.com/v1",
+        authRequirement: "api-key",
+        requestTransportOverrides: "none",
+      },
+    };
+    hoisted.ensureAuthProfileStoreMock.mockReturnValue({
+      version: 1,
+      profiles: {
+        "openai:failed": { type: "api_key", provider: "openai", key: "failed-key" },
+      },
+    });
+    hoisted.getApiKeyForModelMock.mockImplementation(
+      async (params: { allowAuthProfileFallback?: boolean }) =>
+        params.allowAuthProfileFallback === false
+          ? { apiKey: "direct-key", source: "env:OPENAI_API_KEY", mode: "api-key" }
+          : {
+              apiKey: "failed-key",
+              profileId: "openai:failed",
+              source: "profile:openai:failed",
+              mode: "api-key",
+            },
+    );
+    const request = {
+      cfg: {},
+      provider: "openai",
+      modelId: "gpt-5.5",
+      bindAuthOwner: true,
+      preparedAuthPlan: plan,
+      modelResolver: createOpenAIRouteModelResolver({
+        api: "openai-chatgpt-responses",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+      }),
+    };
+
+    const result = await prepareSimpleCompletionModel(request);
+
+    expectPreparedModelResult(result);
+    expect(result.auth).toMatchObject({ apiKey: "direct-key", source: "env:OPENAI_API_KEY" });
+    expect(result.model).toMatchObject({
+      api: "openai-responses",
+      baseUrl: "https://api.openai.com/v1",
+    });
+    expect(hoisted.getApiKeyForModelMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        store: { version: 1, profiles: {} },
+        allowAuthProfileFallback: false,
+        skipSetupProviderFallback: true,
+      }),
+    );
+  });
+
   it("resolves model auth and sets runtime api key", async () => {
     hoisted.getApiKeyForModelMock.mockResolvedValueOnce({
       apiKey: " sk-test ",

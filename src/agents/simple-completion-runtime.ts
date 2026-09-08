@@ -177,6 +177,8 @@ export type PrepareSimpleCompletionModelParams = {
   allowBundledStaticCatalogFallback?: boolean;
   skipAgentDiscovery?: boolean;
   bindAuthOwner?: boolean;
+  /** Internal caller-owned credential and route selection; do not rediscover auth. */
+  preparedAuthPlan?: AgentRuntimeAuthPlan;
   modelResolver?: SimpleCompletionModelResolver;
   signal?: AbortSignal;
   /** Internal caller-owned generation. Public plugin callers use the agent helper below. */
@@ -274,7 +276,9 @@ async function prepareSimpleCompletionModelCore(
       sessionAuthProfileSource: params.profileId ? "user" : "auto",
       ...(params.bindAuthOwner && params.profileId ? { allowAuthProfileFallback: false } : {}),
     } satisfies Parameters<typeof prepareAgentRuntimeAuth>[0];
-    await reconcileAuthProfileQuotaBlocks(authParams);
+    if (!params.preparedAuthPlan) {
+      await reconcileAuthProfileQuotaBlocks(authParams);
+    }
     assertCurrent?.();
     params.signal?.throwIfAborted();
 
@@ -312,7 +316,7 @@ async function prepareSimpleCompletionModelCore(
       env: process.env,
     });
     const preparedAuth =
-      routeResolution?.kind === "routes"
+      !params.preparedAuthPlan && routeResolution?.kind === "routes"
         ? prepareAgentRuntimeAuth({ ...authParams, routeIntent })
         : undefined;
     const materializeModel = async ({
@@ -344,7 +348,24 @@ async function prepareSimpleCompletionModelCore(
             authProfileMode,
           }),
       })) ?? model;
-    if (preparedAuth && authStore) {
+    if (params.preparedAuthPlan) {
+      resolvedModel = await materializeModel({
+        plan: params.preparedAuthPlan,
+        model: initialModel,
+        forceResolve: true,
+      });
+      auth = (
+        await resolvePreparedRuntimeModelAuth({
+          plan: params.preparedAuthPlan,
+          model: resolvedModel,
+          cfg: params.cfg,
+          agentDir: params.agentDir,
+          workspaceDir,
+          ...(authStore ? { store: authStore } : {}),
+          secretSentinels: true,
+        })
+      ).auth;
+    } else if (preparedAuth && authStore) {
       const resolvedAuth = await resolvePreparedRuntimeAuthAttempts({
         attempts: preparedAuth.attempts,
         store: authStore,
@@ -469,7 +490,9 @@ async function acquirePreparedSimpleCompletionRuntime(
     cfg: OpenClawConfig | undefined;
     agentId?: string;
     agentDir?: string;
-    modelResolver?: SimpleCompletionModelResolver;
+    /** Internal caller-owned credential and route selection; do not rediscover auth. */
+  preparedAuthPlan?: AgentRuntimeAuthPlan;
+  modelResolver?: SimpleCompletionModelResolver;
     signal?: AbortSignal;
     workspaceDir?: string;
     agentRuntimeId?: string;

@@ -12,6 +12,7 @@ import {
   createPairedAttemptRuntime,
   createAttemptPaths,
   createAttemptClientHarness,
+  createCustomProviderPreflightHarness,
   createAttemptThreadStarter,
   createAttemptParams,
   type AttemptPaths,
@@ -178,6 +179,39 @@ describe("startCodexAttemptThread", () => {
 
     await expect(run).rejects.toThrow("Invalid bearer token");
     expect(harness.process.stdin.destroyed).toBe(true);
+  });
+
+  it("restarts after custom-provider preflight loses the transport before thread/start", async () => {
+    const first = createCustomProviderPreflightHarness(true);
+    const second = createCustomProviderPreflightHarness(false);
+    const start = vi
+      .spyOn(CodexAppServerClient, "start")
+      .mockResolvedValueOnce(first.client)
+      .mockResolvedValueOnce(second.client);
+    const { run } = startThreadWithHarness(10_000, undefined, {
+      harness: first,
+      skipStartSpy: true,
+    });
+    void run.catch(() => undefined);
+    await answerInitialize(first);
+    await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(2), { timeout: 5_000 });
+    expect(readHarnessRequestMethods(first)).toEqual([
+      "initialize",
+      "config/read",
+      "configRequirements/read",
+      "config/read",
+    ]);
+    await answerInitialize(second);
+    const request = await waitForThreadStart(second);
+    second.send({
+      id: request.id,
+      result: { ...threadStartResult("recovered"), modelProvider: "proxy" },
+    });
+    const result = await run;
+    expect(result.thread.threadId).toBe("recovered");
+    expect(result.client).toBe(second.client);
+    result.turnRoute.release();
+    result.releaseSharedClientLease();
   });
 
   it("carries the session agent id into the startup client factory", async () => {

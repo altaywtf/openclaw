@@ -4,6 +4,7 @@ import type { Model } from "openclaw/plugin-sdk/llm";
  */
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
+import { SecretSurfaceUnavailableError } from "../../secrets/runtime-degraded-state.js";
 import { resolveUserPath } from "../../utils.js";
 import { isDefaultAgentRuntimeId, normalizeOptionalAgentRuntimeId } from "../agent-runtime-id.js";
 import { resolveAgentDir, resolveSessionAgentIds } from "../agent-scope.js";
@@ -194,6 +195,9 @@ async function resolveHarnessCompactApiKey(params: {
         })
       ).model;
     } catch (error) {
+      if (error instanceof SecretSurfaceUnavailableError) {
+        throw error;
+      }
       log.warn(
         `native compaction model resolution failed for ${provider}/${modelId}: ${error instanceof Error ? error.message : String(error)}`,
       );
@@ -242,6 +246,9 @@ async function resolveHarnessCompactApiKey(params: {
     try {
       preparation = prepareRuntimeAuth(initialHarness);
     } catch (error) {
+      if (error instanceof SecretSurfaceUnavailableError) {
+        throw error;
+      }
       log.warn(
         `native compaction auth preparation failed for ${provider}/${modelId}: ${error instanceof Error ? error.message : String(error)}`,
       );
@@ -255,6 +262,9 @@ async function resolveHarnessCompactApiKey(params: {
     try {
       preparation = prepareRuntimeAuth(harness);
     } catch (error) {
+      if (error instanceof SecretSurfaceUnavailableError) {
+        throw error;
+      }
       log.warn(
         `native compaction auth preparation failed for ${provider}/${modelId}: ${error instanceof Error ? error.message : String(error)}`,
       );
@@ -334,6 +344,9 @@ async function resolveHarnessCompactApiKey(params: {
       errorMessage: `Prepared native compaction auth attempts could not be resolved for ${provider}/${modelId}.`,
     });
   } catch (error) {
+    if (error instanceof SecretSurfaceUnavailableError) {
+      throw error;
+    }
     log.warn(
       `native compaction prepared auth resolution failed for ${provider}/${modelId}: ${error instanceof Error ? error.message : String(error)}`,
     );

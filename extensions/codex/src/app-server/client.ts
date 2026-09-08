@@ -191,15 +191,18 @@ export function isCodexAppServerIndeterminateTransportError(error: unknown): err
 
 /** Returns true for errors that mean the app-server transport is closed. */
 export function isCodexAppServerConnectionClosedError(error: unknown): boolean {
-  if (!(error instanceof Error)) {
+  // A preflight read can lose its transport before the requested mutation is written.
+  const transportError =
+    error instanceof CodexAppServerScopedRequestRejectedError ? error.cause : error;
+  if (!(transportError instanceof Error)) {
     return false;
   }
-  if (isCodexAppServerIndeterminateTransportError(error)) {
+  if (isCodexAppServerIndeterminateTransportError(transportError)) {
     return true;
   }
   return (
-    error.message === "codex app-server client is closed" ||
-    error.message.startsWith("codex app-server exited:")
+    transportError.message === "codex app-server client is closed" ||
+    transportError.message.startsWith("codex app-server exited:")
   );
 }
 

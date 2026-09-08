@@ -33,6 +33,7 @@ import {
   getPluginRuntimeGatewayRequestScope,
   withPluginRuntimeGatewayRequestScope,
 } from "../../plugins/runtime/gateway-request-scope.js";
+import { SecretSurfaceUnavailableError } from "../../secrets/runtime-degraded-state.js";
 import { mintSecretSentinel } from "../../secrets/sentinel.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import type { UserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.types.js";
@@ -3762,6 +3763,81 @@ describe("selectAgentHarness", () => {
           runtimeAuthPlan,
         }),
       );
+    },
+  );
+
+  it.each([
+    { phase: "credentials", resolvedApiKey: "synthetic-held-key" },
+    { phase: "credentials", resolvedApiKey: undefined },
+    { phase: "model", resolvedApiKey: "synthetic-held-key" },
+    { phase: "preparation", resolvedApiKey: "synthetic-held-key" },
+  ] as const)(
+    "stops native compaction on unavailable secrets in $phase with held key $resolvedApiKey",
+    async ({ phase, resolvedApiKey }) => {
+      const compact = registerTestCompactor({
+        provider: "custom-provider",
+        authBootstrap: "harness",
+        requiresHostApiKey: () => true,
+      });
+      const unavailable = new SecretSurfaceUnavailableError({
+        ownerKind: "account",
+        ownerId: "custom-provider:cold",
+        state: "unavailable",
+        paths: ["auth-profiles.custom-provider:cold.key"],
+        refKeys: ["env:default:MISSING_CUSTOM_KEY"],
+        reason: "secret reference was not found",
+      });
+      compactAuthMocks.ensureAuthProfileStoreWithoutExternalProfiles.mockReturnValue({
+        version: 1,
+        profiles: {
+          "custom-provider:cold": {
+            type: "api_key",
+            provider: "custom-provider",
+            key: "synthetic-profile-key",
+          },
+        },
+      });
+      compactAuthMocks.resolveModelAsync.mockResolvedValue({
+        model: {
+          id: "fixture-model",
+          provider: "custom-provider",
+          api: "openai-responses",
+          baseUrl: "https://proxy.example/v1",
+        },
+      });
+      if (phase === "model") {
+        compactAuthMocks.resolveModelAsync.mockRejectedValue(unavailable);
+      } else if (phase === "preparation") {
+        compactAuthMocks.prepareAgentRuntimeAuth.mockImplementationOnce(() => {
+          throw unavailable;
+        });
+      } else {
+        compactAuthMocks.getApiKeyForModelCore.mockRejectedValue(unavailable);
+      }
+
+      await expect(
+        maybeCompactAgentHarnessSession(
+          createCompactionParams({
+            provider: "custom-provider",
+            model: "fixture-model",
+            agentHarnessId: "codex",
+            resolvedApiKey,
+            ...(phase === "preparation"
+              ? {}
+              : {
+                  runtimeAuthPlan: {
+                    providerForAuth: "custom-provider",
+                    authProfileProviderForAuth: "custom-provider",
+                    forwardedAuthProfileId: "custom-provider:cold",
+                    forwardedAuthProfileSource: "auto" as const,
+                    forwardedAuthProfileCandidateIds: ["custom-provider:cold"],
+                    requiresHostApiKey: true,
+                  },
+                }),
+          }),
+        ),
+      ).rejects.toBe(unavailable);
+      expect(compact).not.toHaveBeenCalled();
     },
   );
 

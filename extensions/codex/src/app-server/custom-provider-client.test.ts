@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CodexAppServerClient,
+  isCodexAppServerConnectionClosedError,
   isCodexAppServerIndeterminateRequestCancellationError,
+  isCodexAppServerIndeterminateTransportError,
   isCodexAppServerPrewriteRequestCancellationError,
 } from "./client.js";
 import { CodexCustomProviderClientBinding } from "./custom-provider-client.js";
@@ -419,10 +421,47 @@ describe("custom provider client lifecycle", () => {
       });
       expect(isCodexAppServerPrewriteRequestCancellationError(error)).toBe(true);
       expect(isCodexAppServerIndeterminateRequestCancellationError(error)).toBe(false);
+      expect(isCodexAppServerConnectionClosedError(error)).toBe(false);
       expect(harness.writes.map((write) => JSON.parse(write).method)).toEqual([
         "thread/read",
         "config/read",
       ]);
+    },
+  );
+
+  it.each(["thread/read", "config/read", "turn/start"])(
+    "preserves transport recovery and mutation write state when %s loses its response",
+    async (failedMethod) => {
+      const harness = createClientHarness();
+      clients.push(harness.client);
+      harness.client.bindCustomProvider(binding, "/workspace");
+      const outcome = harness.client
+        .request("turn/start", { threadId: "thread", input: [] })
+        .catch((error: unknown) => error);
+      const methods = ["thread/read", "config/read", "turn/start"];
+      for (const [index, method] of methods.entries()) {
+        const request = JSON.parse(await harness.waitForWrite(index));
+        expect(request.method).toBe(method);
+        if (method === failedMethod) {
+          harness.process.emit("exit", 1, null);
+          break;
+        }
+        harness.send({
+          id: request.id,
+          result:
+            method === "thread/read"
+              ? { thread: { modelProvider: "proxy" } }
+              : { config: customProviderConfig() },
+        });
+      }
+      const error = await outcome;
+      const mutationWritten = failedMethod === "turn/start";
+      expect(error instanceof CodexAppServerScopedRequestRejectedError).toBe(!mutationWritten);
+      expect(isCodexAppServerIndeterminateTransportError(error)).toBe(mutationWritten);
+      expect(harness.writes.map((line) => JSON.parse(line).method)).toEqual(
+        methods.slice(0, methods.indexOf(failedMethod) + 1),
+      );
+      expect(isCodexAppServerConnectionClosedError(error)).toBe(true);
     },
   );
 
@@ -618,6 +657,7 @@ describe("custom provider client lifecycle", () => {
     harness.send({ id: readConfig.id, result: { config: { model_providers: {} } } });
     const error = await outcome;
     expect(error).toBeInstanceOf(CodexAppServerScopedRequestRejectedError);
+    expect(isCodexAppServerConnectionClosedError(error)).toBe(false);
     expect(error).toMatchObject({ cause: { message: expect.stringContaining("missing") } });
     expect(harness.writes.map((write) => JSON.parse(write).method)).toEqual([
       "thread/read",

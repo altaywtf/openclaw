@@ -43,6 +43,34 @@ export function createAttemptClientHarness(): AttemptClientHarness {
   });
 }
 
+export function createCustomProviderPreflightHarness(failPreflight: boolean): AttemptClientHarness {
+  const binding = { provider: "proxy", baseUrl: "https://proxy.example/v1" };
+  const config = {
+    allow_login_shell: false,
+    features: { shell_snapshot: false },
+    shell_environment_policy: { experimental_use_profile: false, set: { CODEX_API_KEY: "" } },
+    model_providers: { proxy: { base_url: binding.baseUrl, env_key: "CODEX_API_KEY" } },
+  };
+  let configReads = 0;
+  const harness = createClientHarness({
+    onWrite: (line, send) => {
+      const request = JSON.parse(line);
+      if (request.method === "config/read") {
+        if (++configReads === 2 && failPreflight) {
+          queueMicrotask(() => harness.process.emit("exit", 1, null));
+        } else {
+          send({ id: request.id, result: { config, origins: {}, layers: [] } });
+        }
+      }
+      if (request.method === "configRequirements/read") {
+        send({ id: request.id, result: { requirements: null } });
+      }
+    },
+  });
+  harness.client.bindCustomProvider(binding, "/workspace");
+  return harness;
+}
+
 export function createAttemptThreadStarter(
   tempRoots: Set<string>,
   pluginConfig: CodexPluginConfig,

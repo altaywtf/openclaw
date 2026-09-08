@@ -48,6 +48,7 @@ import {
   type PreparedAgentRuntimeAuthAttempt,
 } from "./runtime-plan/prepare-auth.js";
 import { scopeAuthProfileStoreToPreparedPlan } from "./runtime-plan/resolve-auth.js";
+import type { AgentRuntimeAuthPlan } from "./runtime-plan/types.js";
 import { prepareSimpleCompletionModel } from "./simple-completion-runtime.js";
 import { resolveEffectiveAgentRuntime } from "./thinking-runtime.js";
 import type { UsageLike } from "./usage.js";
@@ -496,6 +497,7 @@ async function runIsolatedCompletionOwned(
       };
       const prepareHostAuthorization = async (
         authProfileId: string | undefined,
+        preparedAuthPlan?: AgentRuntimeAuthPlan,
       ): Promise<Extract<AgentHarnessIsolatedCompletionAuthorization, { owner: "host" }>> => {
         const prepared = await prepareSimpleCompletionModel(
           {
@@ -505,6 +507,7 @@ async function runIsolatedCompletionOwned(
             modelId: request.model,
             agentDir,
             profileId: authProfileId,
+            preparedAuthPlan,
             allowMissingApiKeyModes: ["aws-sdk"],
             allowBundledStaticCatalogFallback: true,
             skipAgentDiscovery: true,
@@ -643,8 +646,11 @@ async function runIsolatedCompletionOwned(
                 authProfileStore: scopeAuthProfileStoreToPreparedPlan(authProfileStore, plan),
               };
             } else {
+              const profileId =
+                attempt?.kind === "profile" ? attempt.profileId : request.authProfileId;
               authorization = await prepareHostAuthorization(
-                attempt?.kind === "profile" ? attempt.profileId : request.authProfileId,
+                attempt?.kind === "direct" ? undefined : profileId,
+                attempt?.kind === "direct" ? attempt.plan : undefined,
               );
               modelMaxTokens = authorization.model.maxTokens;
             }

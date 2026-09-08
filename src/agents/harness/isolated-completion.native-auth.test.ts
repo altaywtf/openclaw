@@ -11,6 +11,7 @@ import {
   resetIsolatedCompletionTestState,
   nativeAuthPlan,
 } from "../isolated-completion.test-support.js";
+import type { AgentHarnessIsolatedCompletionParamsV2 } from "./types.js";
 
 const { createPluginMetadataSnapshot, makeRegistry } =
   await import("../../config/plugin-auto-enable.test-helpers.js");
@@ -298,9 +299,14 @@ describe("runIsolatedCompletion native authorization", () => {
     expect(mocks.prepareSimpleCompletionModel).not.toHaveBeenCalled();
   });
 
-  it.each([true, false])(
-    "requires actual profile dispatch before direct auth (cooled: %s)",
-    async (cooled) => {
+  it.each([
+    { profileType: "token", cooled: true },
+    { profileType: "token", cooled: false },
+    { profileType: "api_key", cooled: true },
+    { profileType: "api_key", cooled: false },
+  ] as const)(
+    "requires actual $profileType profile dispatch before direct auth (cooled: $cooled)",
+    async ({ profileType, cooled }) => {
       const profilePlan = {
         providerForAuth: "openai",
         modelId: "gpt-test",
@@ -308,6 +314,9 @@ describe("runIsolatedCompletion native authorization", () => {
         forwardedAuthProfileId: "openai:first",
         forwardedAuthProfileSource: "auto" as const,
         forwardedAuthProfileCandidateIds: ["openai:first"],
+        ...(profileType === "api_key"
+          ? { modelRoute: { authRequirement: "api-key" as const } }
+          : {}),
       };
       const directPlan = {
         providerForAuth: "openai",
@@ -318,7 +327,10 @@ describe("runIsolatedCompletion native authorization", () => {
       mocks.ensureAuthProfileStore.mockReturnValueOnce({
         version: 1,
         profiles: {
-          "openai:first": { type: "token", provider: "openai", token: "first" },
+          "openai:first":
+            profileType === "api_key"
+              ? { type: "api_key", provider: "openai", key: "failed-key" }
+              : { type: "token", provider: "openai", token: "first" },
         },
         usageStats: cooled ? { "openai:first": { cooldownUntil: Date.now() + 60_000 } } : {},
       });
@@ -334,12 +346,27 @@ describe("runIsolatedCompletion native authorization", () => {
           },
         ],
       });
-      const runIsolatedCompletionV2 = vi
-        .fn()
-        .mockRejectedValueOnce(new Error("profile unavailable"))
-        .mockResolvedValueOnce({
-          assistant: isolatedAssistant([{ type: "text", text: "direct result" }]),
-        });
+      mocks.prepareSimpleCompletionModel.mockImplementation(
+        async ({ preparedAuthPlan }: { preparedAuthPlan?: unknown }) => ({
+          model: { provider: "openai", id: "gpt-test", api: "openai-responses" },
+          auth: preparedAuthPlan
+            ? { apiKey: "direct-key", source: "env:OPENAI_API_KEY", mode: "api-key" }
+            : {
+                apiKey: "failed-key",
+                profileId: "openai:first",
+                source: "profile:openai:first",
+                mode: "api-key",
+              },
+        }),
+      );
+      const runIsolatedCompletionV2 = vi.fn(
+        async ({ authorization }: AgentHarnessIsolatedCompletionParamsV2) => {
+          if (authorization.owner !== "host" || authorization.auth.apiKey !== "direct-key") {
+            throw new Error("profile unavailable");
+          }
+          return { assistant: isolatedAssistant([{ type: "text", text: "direct result" }]) };
+        },
+      );
       registerIsolatedHarness({
         authBootstrap: "harness",
         runIsolatedCompletionV2,
@@ -356,7 +383,20 @@ describe("runIsolatedCompletion native authorization", () => {
           text: "direct result",
         });
         expect(runIsolatedCompletionV2).toHaveBeenCalledTimes(2);
-        expect(mocks.prepareSimpleCompletionModel).toHaveBeenCalledOnce();
+        expect(mocks.prepareSimpleCompletionModel).toHaveBeenCalledTimes(
+          profileType === "api_key" ? 2 : 1,
+        );
+        expect(mocks.prepareSimpleCompletionModel).toHaveBeenLastCalledWith(
+          expect.objectContaining({ profileId: undefined, preparedAuthPlan: directPlan }),
+        );
+        expect(runIsolatedCompletionV2).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            authorization: expect.objectContaining({
+              owner: "host",
+              auth: expect.objectContaining({ apiKey: "direct-key", source: "env:OPENAI_API_KEY" }),
+            }),
+          }),
+        );
       }
     },
   );
