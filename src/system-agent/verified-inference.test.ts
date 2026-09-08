@@ -43,6 +43,7 @@ const harnessRuntimeArtifactState = vi.hoisted(() => ({
   fingerprint: "codex-runtime-v1",
   valid: true,
   ownsAuthBootstrap: true,
+  requiresHostApiKey: false,
 }));
 
 vi.mock("../plugins/providers.js", async (importOriginal) => ({
@@ -67,6 +68,7 @@ vi.mock("../agents/harness/registry.js", async (importOriginal) => ({
             ...(harnessRuntimeArtifactState.ownsAuthBootstrap
               ? { authBootstrap: "harness" as const }
               : {}),
+            requiresHostApiKey: () => harnessRuntimeArtifactState.requiresHostApiKey,
             runtimeArtifact: {
               validate: async (artifact: { id: string; fingerprint: string }) =>
                 harnessRuntimeArtifactState.valid &&
@@ -88,6 +90,12 @@ const profile = {
   type: "api_key" as const,
   provider: "openai",
   key: "verified-key",
+};
+
+const referencedProfile = {
+  type: "api_key" as const,
+  provider: "openai",
+  keyRef: { source: "env" as const, provider: "default", id: "OPENAI_WORK_KEY" },
 };
 
 const runtime = { log: () => {}, error: () => {}, exit: () => {} } as never;
@@ -128,6 +136,7 @@ beforeEach(() => {
   harnessRuntimeArtifactState.fingerprint = "codex-runtime-v1";
   harnessRuntimeArtifactState.valid = true;
   harnessRuntimeArtifactState.ownsAuthBootstrap = true;
+  harnessRuntimeArtifactState.requiresHostApiKey = false;
 });
 
 function authDeps(apiKey = "verified-key") {
@@ -747,48 +756,55 @@ describe("verified OpenClaw inference binding", () => {
     await expect(revalidate(binding, changed)).resolves.toBeNull();
   });
 
-  it("keeps core-bootstrap plugin harnesses on exact raw-profile revalidation", async () => {
-    harnessRuntimeArtifactState.ownsAuthBootstrap = false;
-    const harnessConfig = codexHarnessConfig("openai:verified");
-    const route = await requireRoute(harnessConfig, "embedded");
-    const resolvedAuth = profileAuth("openai:verified", "verified-key");
-    const authFingerprint = requireFingerprint(
-      fingerprintResolvedAuthProfileCredential({
-        profileId: "openai:verified",
-        credential: profile,
-        resolvedAuth,
-      }),
-    );
-    const resolveAuth = vi.fn(async () => resolvedAuth);
-    const deps = {
-      ...pluginArtifactDeps(),
-      ensureAuthProfileStore: profileStore("openai:verified", profile),
-      resolveApiKeyForProvider: resolveAuth,
-    };
-    const binding = await createBinding(
-      route,
-      {
-        authProfileId: "openai:verified",
-        authFingerprint,
-        agentHarnessId: "codex",
-        modelId: route.model,
-        modelApi: "openai-responses",
-        runtimeOwnerKind: "plugin-harness",
-        runtimeOwnerId: "codex",
-        ...codexRuntimeArtifactAuth,
-      },
-      deps,
-    );
+  it.each([false, true])(
+    "revalidates the host credential when the harness requires it (harness bootstrap: %s)",
+    async (ownsAuthBootstrap) => {
+      harnessRuntimeArtifactState.ownsAuthBootstrap = ownsAuthBootstrap;
+      harnessRuntimeArtifactState.requiresHostApiKey = ownsAuthBootstrap;
+      const harnessConfig = codexHarnessConfig("openai:verified");
+      const route = await requireRoute(harnessConfig, "embedded");
+      const credential = ownsAuthBootstrap ? referencedProfile : profile;
+      let resolvedAuth = profileAuth("openai:verified", "verified-key");
+      const authFingerprint = requireFingerprint(
+        fingerprintResolvedAuthProfileCredential({
+          profileId: "openai:verified",
+          credential,
+          resolvedAuth,
+        }),
+      );
+      const resolveAuth = vi.fn(async () => resolvedAuth);
+      const deps = {
+        ...pluginArtifactDeps(),
+        ensureAuthProfileStore: profileStore("openai:verified", credential),
+        resolveApiKeyForProvider: resolveAuth,
+      };
+      const binding = await createBinding(
+        route,
+        {
+          authProfileId: "openai:verified",
+          authFingerprint,
+          agentHarnessId: "codex",
+          modelId: route.model,
+          modelApi: "openai-responses",
+          runtimeOwnerKind: "plugin-harness",
+          runtimeOwnerId: "codex",
+          ...codexRuntimeArtifactAuth,
+        },
+        deps,
+      );
 
-    await expect(revalidate(binding, harnessConfig, deps)).resolves.toBe(binding.execution);
-    expect(resolveAuth).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        profileId: "openai:verified",
-        lockedProfile: true,
-        secretSentinels: false,
-      }),
-    );
-  });
+      await expect(revalidate(binding, harnessConfig, deps)).resolves.toBe(binding.execution);
+      expect(resolveAuth).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          profileId: "openai:verified",
+          lockedProfile: true,
+          secretSentinels: false,
+        }),
+      );
+      resolvedAuth = profileAuth("openai:verified", "rotated-key");
+      await expect(revalidate(binding, harnessConfig, deps)).resolves.toBeNull();
+    },
+  );
 
   it("invalidates a plugin-harness binding when its forwarded SecretRef changes", async () => {
     const harnessConfig = codexHarnessConfig("openai:work");
@@ -796,11 +812,7 @@ describe("verified OpenClaw inference binding", () => {
     if (route.authProfileId !== "openai:work") {
       throw new Error("missing test plugin harness profile route");
     }
-    const credential = {
-      type: "api_key" as const,
-      provider: "openai",
-      keyRef: { source: "env" as const, provider: "default", id: "OPENAI_WORK_KEY" },
-    };
+    const credential = referencedProfile;
     let activeKey = "work-key";
     const resolveHarnessAuth = vi.fn(async () =>
       fingerprintResolvedAuthProfileCredential({
@@ -809,13 +821,7 @@ describe("verified OpenClaw inference binding", () => {
         resolvedAuth: profileAuth("openai:work", activeKey),
       }),
     );
-    const authFingerprint = requireFingerprint(
-      fingerprintResolvedAuthProfileCredential({
-        profileId: "openai:work",
-        credential,
-        resolvedAuth: profileAuth("openai:work", activeKey),
-      }),
-    );
+    const authFingerprint = requireFingerprint(await resolveHarnessAuth());
     const deps = {
       ...pluginArtifactDeps(),
       ensureAuthProfileStore: profileStore("openai:work", credential),

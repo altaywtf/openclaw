@@ -4,6 +4,7 @@ import { createApiRegistry } from "@openclaw/ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
+import { SecretSurfaceUnavailableError } from "../secrets/runtime-degraded-state.js";
 import {
   looksLikeSecretSentinel,
   mintSecretSentinel,
@@ -227,6 +228,41 @@ function createOpenAIRouteModelResolver(params: {
 }
 
 describe("prepareSimpleCompletionModel", () => {
+  it.each([false, true])(
+    "preserves unavailable secret errors before credential handoff (prepared: %s)",
+    async (prepared) => {
+      const error = new SecretSurfaceUnavailableError({
+        ownerKind: "provider",
+        ownerId: "anthropic",
+        state: "unavailable",
+        paths: ["models.providers.anthropic.apiKey"],
+        refKeys: [],
+        reason: "secret provider failed",
+      });
+      hoisted.getApiKeyForModelMock.mockRejectedValueOnce(error);
+
+      await expect(
+        prepareSimpleCompletionModel({
+          cfg: {},
+          provider: "anthropic",
+          modelId: "claude-opus-4-6",
+          ...(prepared
+            ? {
+                preparedAuthPlan: {
+                  providerForAuth: "anthropic",
+                  authProfileProviderForAuth: "anthropic",
+                  modelId: "claude-opus-4-6",
+                  selectedAuthMode: "api-key" as const,
+                },
+              }
+            : {}),
+        }),
+      ).rejects.toBe(error);
+      expect(hoisted.prepareProviderRuntimeAuthMock).not.toHaveBeenCalled();
+      expect(hoisted.setRuntimeApiKeyMock).not.toHaveBeenCalled();
+    },
+  );
+
   it("keeps prepared direct auth on its API route without rediscovering a failed profile", async () => {
     const plan: AgentRuntimeAuthPlan = {
       providerForAuth: "openai",

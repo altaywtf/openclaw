@@ -261,7 +261,9 @@ export async function prepareEmbeddedRunRuntime(input: {
     profileIndex: 0,
   };
   const pluginHarnessOwnsAuthBootstrap =
-    pluginHarnessOwnsTransport && agentHarness.authBootstrap === "harness";
+    pluginHarnessOwnsTransport &&
+    agentHarness.authBootstrap === "harness" &&
+    activePreparedAuthPlan.requiresHostApiKey !== true;
   const preparedApiKeyRoute = agentRuntimeAuthPlanRequiresHostApiKey(activePreparedAuthPlan);
   const pluginHarnessHasPreparedApiKeyAttempt = preparedAuthAttempts.some((attempt) =>
     agentRuntimeAuthPlanRequiresHostApiKey(attempt.plan),

@@ -13,6 +13,7 @@ import { withTempWorkspace } from "../infra/private-temp-workspace.js";
 import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
 import type { AssistantMessage, Model } from "../llm/types.js";
 import { withPluginRuntimeGenerationScope } from "../plugins/runtime/generation-scope.js";
+import { SecretSurfaceUnavailableError } from "../secrets/runtime-degraded-state.js";
 import { runWithAsyncWorkResources } from "../shared/async-work-resources.js";
 import { prepareSystemAgentRunAdmission } from "./admitted-run-context.js";
 import { resolveAgentDir, resolveAgentWorkspaceDir, resolveDefaultAgentId } from "./agent-scope.js";
@@ -112,19 +113,6 @@ function clampIsolatedStreamParams(
     return streamParams;
   }
   return { ...streamParams, maxTokens: Math.min(streamParams.maxTokens, modelMaxTokens) };
-}
-
-function selectIsolatedHarnessAuthPlan(attempt: PreparedAgentRuntimeAuthAttempt) {
-  if (attempt.kind !== "profile") {
-    return attempt.plan;
-  }
-  return {
-    ...attempt.plan,
-    forwardedAuthProfileId: attempt.profileId,
-    // Core owns candidate order. A harness receives one selected credential
-    // snapshot per call so it cannot inspect or reorder fallback profiles.
-    forwardedAuthProfileCandidateIds: [attempt.profileId],
-  };
 }
 
 function requireIsolatedAssistantText(assistant: AssistantMessage): string {
@@ -584,7 +572,15 @@ async function runIsolatedCompletionOwned(
           assertCurrent();
           const attempt: PreparedAgentRuntimeAuthAttempt | undefined =
             preparedAttempt?.kind === "profile"
-              ? { ...preparedAttempt, plan: selectIsolatedHarnessAuthPlan(preparedAttempt) }
+              ? {
+                  ...preparedAttempt,
+                  plan: {
+                    ...preparedAttempt.plan,
+                    forwardedAuthProfileId: preparedAttempt.profileId,
+                    // Core owns candidate order; the harness sees only this credential.
+                    forwardedAuthProfileCandidateIds: [preparedAttempt.profileId],
+                  },
+                }
               : preparedAttempt;
           if (
             attempt &&
@@ -680,6 +676,9 @@ async function runIsolatedCompletionOwned(
           } catch (error) {
             // A retired caller cannot authorize another credential attempt.
             assertCurrent();
+            if (error instanceof SecretSurfaceUnavailableError) {
+              throw error;
+            }
             firstError ??= error;
           }
         }

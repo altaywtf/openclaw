@@ -592,7 +592,10 @@ async function resolveCurrentAuthFingerprint(params: {
       }
       const harnessId = params.route.agentHarnessRuntimeOverride;
       const harness = getRegisteredAgentHarness(harnessId)?.harness;
-      if (harness?.authBootstrap === "harness") {
+      if (
+        harness?.authBootstrap === "harness" &&
+        !harness.requiresHostApiKey?.(params.route.provider)
+      ) {
         return resolveAgentHarnessAuthBindingFingerprint({
           harnessId,
           authProfileId: params.authProfileId,

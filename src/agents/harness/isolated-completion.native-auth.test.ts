@@ -1,5 +1,6 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { SecretSurfaceUnavailableError } from "../../secrets/runtime-degraded-state.js";
 import {
   isolatedAssistant,
   isolatedCompletionMocks as mocks,
@@ -21,6 +22,67 @@ const { AsyncWorkScope } = await import("../../shared/async-work-scope.js");
 beforeEach(resetIsolatedCompletionTestState);
 
 describe("runIsolatedCompletion native authorization", () => {
+  it.each(["preparation", "dispatch"] as const)(
+    "stops auth fallback when a secret becomes unavailable during %s",
+    async (failurePhase) => {
+      const profilePlan = {
+        providerForAuth: "openai",
+        modelId: "gpt-test",
+        harnessAuthProvider: "openai",
+        modelRoute: { authRequirement: "api-key" as const },
+      };
+      mocks.ensureAuthProfileStore.mockReturnValueOnce({
+        version: 1,
+        profiles: {
+          "openai:first": { type: "api_key", provider: "openai", key: "first-key" },
+          "openai:backup": { type: "api_key", provider: "openai", key: "backup-key" },
+        },
+      });
+      mocks.prepareAgentRuntimeAuth.mockReturnValueOnce({
+        plan: profilePlan,
+        attempts: [
+          { kind: "profile", plan: profilePlan, profileId: "openai:first" },
+          { kind: "profile", plan: profilePlan, profileId: "openai:backup" },
+          {
+            kind: "direct",
+            plan: profilePlan,
+            allowAuthProfileFallback: false,
+            requiresPriorProfileAttempt: true,
+          },
+        ],
+      });
+      const error = new SecretSurfaceUnavailableError({
+        ownerKind: "provider",
+        ownerId: "openai",
+        state: "unavailable",
+        paths: ["models.providers.openai.apiKey"],
+        refKeys: [],
+        reason: "secret provider failed",
+      });
+      const runIsolatedCompletionV2 = vi
+        .fn(async () => ({
+          assistant: isolatedAssistant([{ type: "text", text: "direct result" }]),
+        }))
+        .mockRejectedValueOnce(new Error("first profile rejected"));
+      if (failurePhase === "preparation") {
+        mocks.prepareSimpleCompletionModel
+          .mockResolvedValueOnce({
+            model: { provider: "openai", id: "gpt-test", api: "openai-responses" },
+            auth: { apiKey: "first-key", source: "profile:openai:first", mode: "api-key" },
+          })
+          .mockRejectedValueOnce(error);
+      } else {
+        runIsolatedCompletionV2.mockRejectedValueOnce(error);
+      }
+      registerIsolatedHarness({ authBootstrap: "harness", runIsolatedCompletionV2 });
+
+      await expect(runIsolatedCompletion(isolatedRequest())).rejects.toBe(error);
+      expect(mocks.prepareSimpleCompletionModel).toHaveBeenCalledTimes(2);
+      expect(runIsolatedCompletionV2).toHaveBeenCalledTimes(failurePhase === "preparation" ? 1 : 2);
+      expect(releaseRuntimeLease).toHaveBeenCalledOnce();
+    },
+  );
+
   it.each(["none", "profile", "dependent-direct"] as const)(
     "rejects a retired native route before dispatch (API sibling: %s)",
     async (apiSibling) => {

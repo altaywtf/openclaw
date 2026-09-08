@@ -1,6 +1,7 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { replaceSessionEntry } from "../../config/sessions/session-accessor.js";
 import type { OpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import type { AgentExecutionAuthBinding } from "../execution-auth-binding.js";
 import type { AgentHarness } from "../harness/types.js";
 import { makeAttemptResult } from "./run.overflow-compaction.fixture.js";
 import {
@@ -138,7 +139,7 @@ describe("native harness auth failover", () => {
   }
 
   it.each(["codex", "fixture-native"])(
-    "respects generic provider key ownership for %s",
+    "binds generic provider key ownership to the resolved credential for %s",
     async (harnessId) => {
       runHarness.registerPreparedAgentHarness({
         id: harnessId,
@@ -157,26 +158,32 @@ describe("native harness auth failover", () => {
           "custom-provider:work": {
             type: "api_key",
             provider: "custom-provider",
-            key: "synthetic-custom-key",
+            keyRef: { source: "env", provider: "default", id: "CUSTOM_WORK_KEY" },
           },
         },
         order: { "custom-provider": ["custom-provider:work"] },
       });
       mockedResolveAuthProfileOrder.mockReturnValue(["custom-provider:work"]);
-      mockedGetApiKeyForModel.mockResolvedValue({
-        apiKey: "synthetic-custom-key",
+      let activeKey = "synthetic-custom-key";
+      mockedGetApiKeyForModel.mockImplementation(async () => ({
+        apiKey: activeKey,
         profileId: "custom-provider:work",
         source: "profile:custom-provider:work",
         mode: "api-key",
-      });
+      }));
       mockedBuildEmbeddedRunPayloads.mockReturnValue([{ text: "custom reply" }]);
       mockedRunEmbeddedAttempt.mockResolvedValue(
-        makeAttemptResult({ assistantTexts: ["custom reply"] }),
+        makeAttemptResult({
+          assistantTexts: ["custom reply"],
+          runtimeArtifact: { id: "native-fixture", fingerprint: "native-fixture-v1" },
+        }),
       );
 
-      await expect(
+      const onSuccessfulAuthBinding = vi.fn<(binding: AgentExecutionAuthBinding) => void>();
+      const run = () =>
         runHarness.runEmbeddedAgent({
           ...createOverflowRunParams(state),
+          onSuccessfulAuthBinding,
           provider: "custom-provider",
           model: "gpt-5.2-codex",
           agentHarnessId: harnessId,
@@ -193,8 +200,8 @@ describe("native harness auth failover", () => {
               },
             },
           },
-        }),
-      ).resolves.toMatchObject({ payloads: [{ text: "custom reply" }] });
+        });
+      await expect(run()).resolves.toMatchObject({ payloads: [{ text: "custom reply" }] });
 
       expect(mockedGetApiKeyForModel).toHaveBeenCalled();
       expect(mockedRunEmbeddedAttempt.mock.calls[0]?.[0]).toMatchObject({
@@ -202,6 +209,23 @@ describe("native harness auth failover", () => {
         resolvedApiKey: "synthetic-custom-key",
         model: { api: "openai-responses", baseUrl: "https://proxy.example/v1" },
       });
+      expect(onSuccessfulAuthBinding).toHaveBeenCalledOnce();
+      const originalBinding = onSuccessfulAuthBinding.mock.calls[0]?.[0];
+      expect(originalBinding).toMatchObject({
+        authProfileId: "custom-provider:work",
+        authFingerprint: expect.any(String),
+        agentHarnessId: harnessId,
+        runtimeArtifactFingerprint: "native-fixture-v1",
+      });
+      expect(originalBinding?.runtimeOwnerFingerprint).toBeUndefined();
+
+      activeKey = "rotated-custom-key";
+      await expect(run()).resolves.toMatchObject({ payloads: [{ text: "custom reply" }] });
+      expect(mockedRunEmbeddedAttempt.mock.calls[1]?.[0].resolvedApiKey).toBe(activeKey);
+      const rotatedBinding = onSuccessfulAuthBinding.mock.calls[1]?.[0];
+      expect(rotatedBinding?.authFingerprint).toEqual(expect.any(String));
+      expect(rotatedBinding?.authFingerprint).not.toBe(originalBinding?.authFingerprint);
+      expect(rotatedBinding?.runtimeOwnerFingerprint).toBeUndefined();
     },
   );
 
@@ -511,15 +535,20 @@ describe("native harness auth failover", () => {
           { sessionId, updatedAt: 1, ...nativePin },
         );
       }
+      const onSuccessfulAuthBinding = vi.fn<(binding: AgentExecutionAuthBinding) => void>();
       mockedBuildEmbeddedRunPayloads.mockReturnValue([{ text: "OK" }]);
-      mockedRunEmbeddedAttempt
-        .mockRejectedValueOnce(permanentAuthFailure())
-        .mockResolvedValueOnce(makeAttemptResult({ assistantTexts: ["OK"] }));
+      mockedRunEmbeddedAttempt.mockRejectedValueOnce(permanentAuthFailure()).mockResolvedValueOnce(
+        makeAttemptResult({
+          assistantTexts: ["OK"],
+          authBindingFingerprint: "harness-resolved-backup-key",
+        }),
+      );
 
       await expect(
         runEmbeddedAgent({
           ...createOverflowRunParams(state),
           ...nativePin,
+          onSuccessfulAuthBinding,
           provider: "openai",
           model: "gpt-5.6-luna",
           authProfileId: failedProfile,
@@ -531,6 +560,12 @@ describe("native harness auth failover", () => {
         failedProfile,
         backupProfile,
       ]);
+      expect(onSuccessfulAuthBinding).toHaveBeenCalledWith(
+        expect.objectContaining({
+          authProfileId: backupProfile,
+          authFingerprint: "harness-resolved-backup-key",
+        }),
+      );
       const ownership = nativeModelOwned ? { model: "native", auth: "host", modelRef } : undefined;
       expect(
         mockedRunEmbeddedAttempt.mock.calls.map(
