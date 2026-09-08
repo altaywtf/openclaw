@@ -2332,44 +2332,86 @@ describe("maybeCompactCodexAppServerSession", () => {
     });
   });
 
-  it("preserves stale thread binding metadata for recovery and reports failed native compaction", async () => {
-    const fake = createFakeCodexClient();
-    fake.request.mockRejectedValueOnce(
-      new CodexAppServerRpcError(
-        { code: -32_600, message: "thread not found: thread-1" },
+  it.each(["compact", "read", "scoped-read"] as const)(
+    "preserves stale thread binding metadata for recovery after %s rejection",
+    async (source) => {
+      const fake = createFakeCodexClient();
+      const rpcError = new CodexAppServerRpcError(
+        {
+          code: -32_600,
+          message: `thread not ${source === "compact" ? "found" : "loaded"}: thread-1`,
+        },
+        source === "compact" ? "thread/compact/start" : "thread/read",
+      );
+      const error =
+        source === "scoped-read"
+          ? new CodexAppServerScopedRequestRejectedError(rpcError.message, { cause: rpcError })
+          : rpcError;
+      fake.request.mockRejectedValueOnce(error);
+      setCodexAppServerClientFactoryForTest(async () => fake.client);
+      const sessionFile = await writeTestBinding({
+        authProfileId: "openai:work",
+        model: "gpt-5.5-mini",
+        approvalPolicy: "on-request",
+        sandbox: "workspace-write",
+        serviceTier: "priority",
+      });
+
+      const result = requireCompactResult(
+        await startCompaction(sessionFile, { currentTokenCount: 456 }),
+      );
+
+      expect(fake.request).toHaveBeenCalledWith(
         "thread/compact/start",
-      ),
+        { threadId: "thread-1" },
+        { assertCurrent: expect.any(Function) },
+      );
+      const preservedBinding = await readCodexAppServerBinding(sessionFile);
+      expect(preservedBinding?.threadId).toBe("thread-1");
+      expect(preservedBinding?.authProfileId).toBe("openai:work");
+      expect(preservedBinding?.model).toBe("gpt-5.5-mini");
+      expect(preservedBinding?.approvalPolicy).toBe("on-request");
+      expect(preservedBinding?.sandbox).toBe("workspace-write");
+      expect(preservedBinding?.serviceTier).toBe("priority");
+      expect(result.ok).toBe(false);
+      expect(result.compacted).toBe(false);
+      expect(result.reason).toBe(error.message);
+      expect(result.failure?.reason).toBe("stale_thread_binding");
+      expect(result.result).toBeUndefined();
+      expect(fake.closeAndWait).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    "wrong-thread",
+    "wrong-method",
+    "storage-error",
+    "untyped",
+    "storage-not-found",
+    "untyped-not-found",
+    "wrong-method-not-found",
+  ] as const)("does not recover a compaction binding from a %s read failure", async (failure) => {
+    const fake = createFakeCodexClient();
+    const message = failure.endsWith("not-found")
+      ? "storage failure: thread not found"
+      : `thread not loaded: ${failure === "wrong-thread" ? "other-thread" : "thread-1"}`;
+    const cause = failure.startsWith("untyped")
+      ? new Error(message)
+      : new CodexAppServerRpcError(
+          { code: failure.startsWith("storage") ? -32_603 : -32_600, message },
+          failure.startsWith("wrong-method") ? "thread/resume" : "thread/read",
+        );
+    fake.request.mockRejectedValueOnce(
+      new CodexAppServerScopedRequestRejectedError(message, { cause }),
     );
     setCodexAppServerClientFactoryForTest(async () => fake.client);
-    const sessionFile = await writeTestBinding({
-      authProfileId: "openai:work",
-      model: "gpt-5.5-mini",
-      approvalPolicy: "on-request",
-      sandbox: "workspace-write",
-      serviceTier: "priority",
-    });
+    const sessionFile = await writeTestBinding();
 
-    const result = requireCompactResult(
-      await startCompaction(sessionFile, { currentTokenCount: 456 }),
-    );
+    const result = requireCompactResult(await startCompaction(sessionFile));
 
-    expect(fake.request).toHaveBeenCalledWith(
-      "thread/compact/start",
-      { threadId: "thread-1" },
-      { assertCurrent: expect.any(Function) },
-    );
-    const preservedBinding = await readCodexAppServerBinding(sessionFile);
-    expect(preservedBinding?.threadId).toBe("thread-1");
-    expect(preservedBinding?.authProfileId).toBe("openai:work");
-    expect(preservedBinding?.model).toBe("gpt-5.5-mini");
-    expect(preservedBinding?.approvalPolicy).toBe("on-request");
-    expect(preservedBinding?.sandbox).toBe("workspace-write");
-    expect(preservedBinding?.serviceTier).toBe("priority");
-    expect(result.ok).toBe(false);
-    expect(result.compacted).toBe(false);
-    expect(result.reason).toBe("thread not found: thread-1");
-    expect(result.failure?.reason).toBe("stale_thread_binding");
-    expect(result.result).toBeUndefined();
+    expect(result).toMatchObject({ ok: false, compacted: false, reason: message });
+    expect(result.failure).toBeUndefined();
+    expect((await readCodexAppServerBinding(sessionFile))?.threadId).toBe("thread-1");
     expect(fake.closeAndWait).not.toHaveBeenCalled();
   });
 

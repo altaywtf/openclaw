@@ -41,6 +41,7 @@ import {
 } from "./notification-correlation.js";
 import { isJsonObject, type JsonObject } from "./protocol.js";
 import { CodexAppServerScopedRequestRejectedError } from "./request.js";
+import { isCodexThreadReadMissingError } from "./rpc-error.js";
 import { resolveCodexNativeExecutionBlock } from "./sandbox-guard.js";
 import {
   CODEX_APP_SERVER_BINDING_GUARDED_REQUEST_TIMEOUT_MS,
@@ -807,7 +808,10 @@ async function compactCodexNativeThread(
                     { kind: "set", binding },
                     assertCurrent,
                   );
-                  compactionRequestDefinitelyRejected = !isCodexThreadNotFoundError(error);
+                  compactionRequestDefinitelyRejected = !isCodexCompactionThreadMissingError(
+                    error,
+                    binding.threadId,
+                  );
                 }
               }
               // Retirement can acquire this same generation lease.
@@ -859,7 +863,7 @@ async function compactCodexNativeThread(
           });
           compactionSucceeded = true;
         } catch (error) {
-          if (isCodexThreadNotFoundError(error)) {
+          if (isCodexCompactionThreadMissingError(error, binding.threadId)) {
             return failedCodexThreadBindingCompactionResult(params, {
               threadId: binding.threadId,
               reason: coerceErrorMessage(error),
@@ -1059,15 +1063,18 @@ function isSameNativeCompactionBinding(
   );
 }
 
-function isCodexThreadNotFoundError(error: unknown): boolean {
-  // codex-rs exposes no dedicated error code for a missing compaction thread:
-  // thread/compact/start returns generic INVALID_REQUEST (-32600), and the
-  // app-server's own contract/test asserts the "thread not found" MESSAGE as
-  // the discriminator (thread_processor.rs load_thread → invalid_request;
-  // compaction.rs asserts message.contains("thread not found")). So the message
-  // is the authoritative positive signal here, not the generic code. This is a
-  // self-heal recovery gate, not user-facing classification.
-  return coerceErrorMessage(error).toLowerCase().includes("thread not found");
+function isCodexCompactionThreadMissingError(error: unknown, threadId: string): boolean {
+  const rpcError = error instanceof CodexAppServerScopedRequestRejectedError ? error.cause : error;
+  if (isCodexThreadReadMissingError(rpcError, threadId)) {
+    return true;
+  }
+  // Native compaction uses a generic INVALID_REQUEST with this message.
+  // Other RPC methods and preflight failures cannot authorize stale recovery.
+  return (
+    rpcError instanceof CodexAppServerRpcError &&
+    rpcError.method === "thread/compact/start" &&
+    rpcError.message.toLowerCase().includes("thread not found")
+  );
 }
 
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
