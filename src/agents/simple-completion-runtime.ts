@@ -332,17 +332,17 @@ async function prepareSimpleCompletionModelCore(
         model: initialModel,
         forceResolve: true,
       });
-      auth = (
-        await resolvePreparedRuntimeModelAuth({
-          plan: params.preparedAuthPlan,
-          model: resolvedModel,
-          cfg: params.cfg,
-          agentDir: params.agentDir,
-          workspaceDir,
-          ...(authStore ? { store: authStore } : {}),
-          secretSentinels: true,
-        })
-      ).auth;
+      const resolution = resolvePreparedRuntimeModelAuth({
+        plan: params.preparedAuthPlan,
+        model: resolvedModel,
+        cfg: params.cfg,
+        agentDir: params.agentDir,
+        workspaceDir,
+        ...(authStore ? { store: authStore } : {}),
+        secretSentinels: true,
+      });
+      params.onAuthResolutionStarted?.();
+      auth = (await resolution).auth;
     } else if (preparedAuth && authStore) {
       const resolvedAuth = await resolvePreparedRuntimeAuthAttempts({
         attempts: preparedAuth.attempts,
@@ -350,8 +350,8 @@ async function prepareSimpleCompletionModelCore(
         modelId: initialModel.id,
         model: initialModel,
         materializeModel,
-        resolveAuth: ({ attempt, model }) =>
-          resolvePreparedRuntimeModelAuth({
+        resolveAuth: ({ attempt, model }) => {
+          const resolution = resolvePreparedRuntimeModelAuth({
             plan: attempt.plan,
             model,
             cfg: params.cfg,
@@ -360,13 +360,16 @@ async function prepareSimpleCompletionModelCore(
             store: authStore,
             allowAuthProfileFallback: attempt.allowAuthProfileFallback,
             secretSentinels: true,
-          }),
+          });
+          params.onAuthResolutionStarted?.();
+          return resolution;
+        },
         errorMessage: "Simple completion auth attempts could not be resolved.",
       });
       auth = resolvedAuth.auth;
       resolvedModel = resolvedAuth.model;
     } else {
-      auth = await getApiKeyForModelCore({
+      const resolution = getApiKeyForModelCore({
         model: initialModel,
         cfg: params.cfg,
         agentDir: params.agentDir,
@@ -377,6 +380,8 @@ async function prepareSimpleCompletionModelCore(
         ...(params.bindAuthOwner && params.profileId ? { lockedProfile: true } : {}),
         secretSentinels: true,
       });
+      params.onAuthResolutionStarted?.();
+      auth = await resolution;
     }
   } catch (err) {
     return {

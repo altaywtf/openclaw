@@ -16,9 +16,11 @@ import { setPluginRuntimeLoadContext } from "../plugins/runtime/load-context.js"
 import { resolvePluginRuntimeLoadContext } from "../plugins/runtime/load-context.resolve.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import type { SystemAgentConfiguredRoute } from "./inference-route.js";
+import type { ActivateSetupInferenceDeps } from "./setup-inference-core.js";
 import {
   loadSetupInferencePluginGeneration,
   revalidateStableSetupInferenceOwner,
+  runSetupInferenceTurn,
 } from "./setup-inference-turn.js";
 import { createSystemAgentVerifiedInferenceTestFixture } from "./system-agent.test-helpers.js";
 
@@ -27,7 +29,7 @@ vi.mock("../agents/runtime-plugins.js", () => ({
   loadAgentRuntimePluginRegistryHandle: mocks.loadAgentRuntimePluginRegistryHandle,
 }));
 
-function embeddedRoute(): SystemAgentConfiguredRoute {
+function embeddedRoute(): Extract<SystemAgentConfiguredRoute, { runner: "embedded" }> {
   const config: OpenClawConfig = {
     agents: {
       entries: { main: { default: true, agentDir: "/tmp/openclaw-agent" } },
@@ -208,3 +210,135 @@ describe("setup inference plugin ownership", () => {
     expect(mocks.loadAgentRuntimePluginRegistryHandle).not.toHaveBeenCalled();
   });
 });
+
+describe.each(["loaded", "cold"] as const)(
+  "setup inference profile ownership (%s)",
+  (registryState) => {
+    it.each([
+      {
+        provider: "fixture",
+        profileProvider: "fixture",
+        mode: "api_key",
+        runtime: "codex",
+        accepted: true,
+      },
+      {
+        provider: "fixture",
+        profileProvider: "openai",
+        mode: "api_key",
+        runtime: "codex",
+        accepted: false,
+      },
+      {
+        provider: "fixture",
+        profileProvider: "fixture",
+        mode: "oauth",
+        runtime: "codex",
+        accepted: false,
+      },
+      {
+        provider: "openai",
+        profileProvider: "openai",
+        mode: "oauth",
+        runtime: "codex",
+        accepted: true,
+      },
+      {
+        provider: "fixture",
+        profileProvider: "fixture",
+        mode: "api_key",
+        runtime: "openclaw",
+        accepted: true,
+      },
+    ] as const)(
+      "$runtime $provider accepts $profileProvider $mode: $accepted",
+      async ({ provider, profileProvider, mode, runtime, accepted }) => {
+        const registry = createEmptyPluginRegistry();
+        registry.agentHarnesses.push({
+          pluginId: "codex",
+          source: "runtime",
+          harness: {
+            id: "codex",
+            label: "Codex",
+            authBootstrap: "harness",
+            requiresHostApiKey: (id) => id === "fixture",
+            supports: () => ({ supported: true }),
+            runAttempt: async () => {
+              throw new Error("unused native attempt");
+            },
+          },
+        });
+        const config: OpenClawConfig = { plugins: { enabled: false } };
+        const route: SystemAgentConfiguredRoute = {
+          ...embeddedRoute(),
+          provider,
+          model: "fixture-model",
+          modelLabel: `${provider}/fixture-model`,
+          agentHarnessRuntimeOverride: runtime,
+          authProfileId: "fixture:setup",
+          runConfig: config,
+          sourceConfig: config,
+        };
+        const initialRegistry = registryState === "loaded" ? registry : createEmptyPluginRegistry();
+        const run = vi.fn<NonNullable<ActivateSetupInferenceDeps["runEmbeddedAgent"]>>(
+          async (params) => {
+            expect(getPluginRuntimeGatewayRequestScope()?.pluginRegistry).toBe(
+              runtime === "codex" ? registry : initialRegistry,
+            );
+            params.onSuccessfulAuthBinding?.({
+              authProfileId: params.authProfileId,
+              agentHarnessId: runtime,
+            });
+            return {
+              payloads: [{ text: "OK" }],
+              meta: {
+                durationMs: 1,
+                executionTrace: { winnerProvider: provider, winnerModel: route.model },
+              },
+            };
+          },
+        );
+        mocks.loadAgentRuntimePluginRegistryHandle.mockReset();
+        mocks.loadAgentRuntimePluginRegistryHandle.mockReturnValue(registry);
+        const result = await withPluginRuntimeRegistryScope(initialRegistry, () =>
+          runSetupInferenceTurn({
+            route,
+            requireExecutionOwner: true,
+            deps: {
+              runEmbeddedAgent: run,
+              loadAuthProfileStoreForRuntime: () => ({
+                version: 1,
+                profiles: {
+                  "fixture:setup":
+                    mode === "api_key"
+                      ? { type: "api_key", provider: profileProvider, key: "synthetic-setup-key" }
+                      : {
+                          type: "oauth",
+                          provider: profileProvider,
+                          access: "synthetic-access",
+                          refresh: "synthetic-refresh",
+                          expires: Date.now() + 60_000,
+                        },
+                },
+              }),
+            },
+          }),
+        );
+        if (registryState === "loaded" || runtime === "openclaw") {
+          expect(mocks.loadAgentRuntimePluginRegistryHandle).not.toHaveBeenCalled();
+        }
+        if (accepted) {
+          expect(result).toMatchObject({
+            ok: true,
+            text: "OK",
+            auth: { authProfileId: "fixture:setup" },
+          });
+          expect(run).toHaveBeenCalledOnce();
+        } else {
+          expect(result).toMatchObject({ ok: false, status: "auth" });
+          expect(run).not.toHaveBeenCalled();
+        }
+      },
+    );
+  },
+);

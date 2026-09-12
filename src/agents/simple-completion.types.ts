@@ -1,5 +1,7 @@
+import type { ThinkLevel } from "../auto-reply/thinking.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { Model } from "../llm/types.js";
+import type { AgentHarnessIsolatedCompletionParamsV2 } from "./harness/types.js";
 import type { ResolvedProviderAuth } from "./model-auth.js";
 import type { PreparedModelRuntimeSnapshot } from "./prepared-model-runtime.js";
 import type { AgentRuntimeAuthPlan } from "./runtime-plan/types.js";
@@ -67,10 +69,34 @@ export type PrepareSimpleCompletionModelParams = {
   bindAuthOwner?: boolean;
   /** Internal caller-owned credential and route selection; do not rediscover auth. */
   preparedAuthPlan?: AgentRuntimeAuthPlan;
+  /** Unlock caller-owned fallback only after credential resolution starts. */
+  onAuthResolutionStarted?: () => void;
   modelResolver?: SimpleCompletionModelResolver;
   signal?: AbortSignal;
   /** Internal caller-owned generation. Public plugin callers use the agent helper below. */
   preparedModelRuntime?: PreparedModelRuntimeSnapshot;
   workspaceDir?: string;
   agentRuntimeId?: string;
+};
+
+export type RunIsolatedCompletionParams = {
+  config?: OpenClawConfig;
+  provider: string;
+  model: string;
+  /** Explicit credential owner. CLI and harness paths must not replace it with another profile. */
+  authProfileId?: string;
+  agentId?: string;
+  agentDir?: string;
+  workspaceDir?: string;
+  /** Concrete owner already resolved by the caller, when available. */
+  agentHarnessRuntimeOverride?: string;
+  systemPrompt: string;
+  prompt: string;
+  timeoutMs: number;
+  abortSignal?: AbortSignal;
+  /** Revalidate the caller's authority before credential handoff and dispatch. */
+  assertCurrent?: () => void;
+  thinkLevel?: ThinkLevel;
+  outputTextPolicy?: AgentHarnessIsolatedCompletionParamsV2["outputTextPolicy"];
+  streamParams?: AgentHarnessIsolatedCompletionParamsV2["streamParams"];
 };

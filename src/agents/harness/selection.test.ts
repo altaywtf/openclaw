@@ -4277,6 +4277,42 @@ describe("selectAgentHarness", () => {
     expect(compact).not.toHaveBeenCalled();
   });
 
+  it.each(["model", "auth"] as const)(
+    "rejects keyless custom-provider compaction when %s preparation produces no plan",
+    async (failurePhase) => {
+      if (failurePhase === "model") {
+        compactAuthMocks.resolveModelAsync.mockRejectedValue(new Error("model lookup unavailable"));
+      } else {
+        compactAuthMocks.resolveModelAsync.mockResolvedValue({
+          model: {
+            id: "proxy-model",
+            provider: "custom-provider",
+            api: "openai-responses",
+            baseUrl: "https://proxy.example/v1",
+          },
+        });
+        compactAuthMocks.prepareAgentRuntimeAuth.mockImplementationOnce(() => {
+          throw new Error("auth preparation unavailable");
+        });
+      }
+      const compact = registerTestCompactor({
+        provider: "custom-provider",
+        authBootstrap: "harness",
+        requiresHostApiKey: () => true,
+      });
+      await expect(
+        maybeCompactAgentHarnessSession(
+          createCompactionParams({
+            provider: "custom-provider",
+            model: "proxy-model",
+            agentHarnessId: "codex",
+          }),
+        ),
+      ).rejects.toThrow("requires a host-resolved API key");
+      expect(compact).not.toHaveBeenCalled();
+    },
+  );
+
   it("lets harness-owned compaction proceed without ambient auth when model lookup fails", async () => {
     compactAuthMocks.resolveModelAsync.mockRejectedValue(new Error("model lookup unavailable"));
     const result = { ok: true, compacted: false, reason: "harness result" } as const;

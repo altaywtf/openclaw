@@ -86,6 +86,113 @@ describe("runIsolatedCompletion native authorization", () => {
     },
   );
 
+  it.each(["auth-failure", "model-failure", "cooled", "cooled-during-model"] as const)(
+    "unlocks direct auth only after host profile resolution starts (%s)",
+    async (candidate) => {
+      const plan = {
+        providerForAuth: "custom-provider",
+        modelId: "gpt-test",
+        requiresHostApiKey: true,
+      };
+      mocks.resolveModelAsync.mockResolvedValueOnce({
+        model: { provider: "custom-provider", id: "gpt-test", api: "openai-responses" },
+      });
+      const store = {
+        version: 1,
+        profiles: {
+          "custom-provider:first": {
+            type: "api_key",
+            provider: "custom-provider",
+            key: "first-key",
+          },
+        },
+        usageStats:
+          candidate === "cooled"
+            ? { "custom-provider:first": { cooldownUntil: Date.now() + 60_000 } }
+            : {},
+      };
+      mocks.ensureAuthProfileStore.mockReturnValueOnce(store);
+      mocks.prepareAgentRuntimeAuth.mockReturnValueOnce({
+        plan,
+        attempts: [
+          { kind: "profile", plan, profileId: "custom-provider:first" },
+          {
+            kind: "direct",
+            plan,
+            allowAuthProfileFallback: false,
+            requiresPriorProfileAttempt: true,
+          },
+        ],
+      });
+      mocks.prepareSimpleCompletionModel.mockImplementation(
+        async ({
+          profileId,
+          onAuthResolutionStarted,
+        }: {
+          profileId?: string;
+          onAuthResolutionStarted?: () => void;
+        }) => {
+          if (profileId) {
+            if (candidate === "model-failure") {
+              return { error: "model resolution failed" };
+            }
+            if (candidate === "cooled-during-model") {
+              store.usageStats = {
+                "custom-provider:first": { cooldownUntil: Date.now() + 60_000 },
+              };
+            }
+            onAuthResolutionStarted?.();
+            return {
+              error: "Auth lookup failed for provider custom-provider: profile unreadable",
+              cause: new Error("profile unreadable"),
+            };
+          }
+          return {
+            model: { provider: "custom-provider", id: "gpt-test", api: "openai-responses" },
+            auth: { apiKey: "direct-key", source: "config:custom-provider", mode: "api-key" },
+          };
+        },
+      );
+      const runIsolatedCompletionV2 = vi.fn(async () => ({
+        assistant: isolatedAssistant([{ type: "text", text: "direct result" }]),
+      }));
+      registerIsolatedHarness({
+        authBootstrap: "harness",
+        requiresHostApiKey: () => true,
+        runIsolatedCompletionV2,
+      });
+      const request = { ...isolatedRequest(), provider: "custom-provider" };
+      if (candidate === "auth-failure") {
+        await expect(runIsolatedCompletion(request)).resolves.toMatchObject({
+          text: "direct result",
+        });
+        expect(runIsolatedCompletionV2).toHaveBeenCalledOnce();
+        expect(runIsolatedCompletionV2).toHaveBeenCalledWith(
+          expect.objectContaining({
+            authorization: expect.objectContaining({
+              owner: "host",
+              auth: expect.objectContaining({ apiKey: "direct-key" }),
+            }),
+          }),
+        );
+        expect(mocks.prepareSimpleCompletionModel).toHaveBeenLastCalledWith(
+          expect.objectContaining({ profileId: undefined, preparedAuthPlan: plan }),
+          expect.any(Function),
+        );
+      } else if (candidate === "model-failure" || candidate === "cooled-during-model") {
+        await expect(runIsolatedCompletion(request)).rejects.toThrow(
+          candidate === "model-failure" ? "model resolution failed" : "profile unreadable",
+        );
+        expect(mocks.prepareSimpleCompletionModel).toHaveBeenCalledOnce();
+        expect(runIsolatedCompletionV2).not.toHaveBeenCalled();
+      } else {
+        await expect(runIsolatedCompletion(request)).rejects.toThrow("temporarily unavailable");
+        expect(mocks.prepareSimpleCompletionModel).not.toHaveBeenCalled();
+        expect(runIsolatedCompletionV2).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   it.each(["none", "profile", "dependent-direct"] as const)(
     "rejects a retired native route before dispatch (API sibling: %s)",
     async (apiSibling) => {

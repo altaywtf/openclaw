@@ -10,12 +10,10 @@ import {
   extractAgentRunText,
 } from "../agents/agent-run-result.js";
 import { resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
-import { loadAuthProfileStoreForRuntime } from "../agents/auth-profiles/store-runtime.js";
 import type { AgentExecutionAuthBinding } from "../agents/execution-auth-binding.js";
 import { describeFailoverError } from "../agents/failover-error.js";
+import { getRegisteredAgentHarness } from "../agents/harness/registry.js";
 import type { AgentHarnessPluginSelection } from "../agents/harness/runtime-plugin-load-plan.js";
-import { resolveProviderIdForAuth } from "../agents/provider-auth-aliases.js";
-import { buildAgentRuntimeAuthPlan } from "../agents/runtime-plan/auth.js";
 import { loadAgentRuntimePluginRegistryHandle } from "../agents/runtime-plugins.js";
 import { SessionManager } from "../agents/sessions/index.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -54,6 +52,7 @@ import {
   setupInferenceLog,
   type VerifySetupInferenceResult,
 } from "./setup-inference-core.js";
+import { resolveSetupInferenceProfileError } from "./setup-inference-profile.js";
 import {
   captureSystemAgentOwnerPluginArtifacts,
   createSystemAgentVerifiedInferenceBinding,
@@ -74,58 +73,6 @@ type SetupTurnSuccess = {
   text: string;
   auth: AgentExecutionAuthBinding;
 };
-
-/** A pinned profile must exist and belong to the route before any request leaves the host. */
-function resolveConfiguredProfileError(
-  route: SystemAgentConfiguredRoute,
-  workspaceDir: string,
-  deps: ActivateSetupInferenceDeps,
-): string | undefined {
-  const profileId = route.authProfileId?.trim();
-  if (!profileId) {
-    return undefined;
-  }
-  const loadStore = deps.loadAuthProfileStoreForRuntime ?? loadAuthProfileStoreForRuntime;
-  const store = loadStore(route.agentDir, {
-    readOnly: true,
-    allowKeychainPrompt: false,
-    config: route.runConfig,
-    externalCliProviderIds: [route.provider],
-  });
-  const credential = store.profiles[profileId];
-  if (!credential) {
-    return `No credentials found for the configured setup profile "${profileId}".`;
-  }
-  if (route.runner === "embedded") {
-    const authPlan = buildAgentRuntimeAuthPlan({
-      provider: route.provider,
-      authProfileProvider: credential.provider,
-      authProfileMode: credential.type,
-      sessionAuthProfileId: profileId,
-      config: route.runConfig,
-      workspaceDir,
-      harnessId: route.agentHarnessRuntimeOverride,
-      harnessRuntime: route.agentHarnessRuntimeOverride,
-      allowHarnessAuthProfileForwarding: true,
-    });
-    if (authPlan.forwardedAuthProfileId === profileId) {
-      return undefined;
-    }
-  } else {
-    const aliasContext = { config: route.runConfig, workspaceDir };
-    try {
-      if (
-        resolveProviderIdForAuth(route.provider, aliasContext) ===
-        resolveProviderIdForAuth(credential.provider, { ...aliasContext, storedCredential: true })
-      ) {
-        return undefined;
-      }
-    } catch {
-      return `Could not verify that configured setup profile "${profileId}" belongs to the selected ${route.provider} inference route.`;
-    }
-  }
-  return `Configured setup profile "${profileId}" belongs to ${credential.provider}, not the selected ${route.provider} inference route.`;
-}
 
 /**
  * Runs one bounded, tool-free turn through the exact configured route. The turn is evidence,
@@ -210,84 +157,109 @@ export async function runSetupInferenceTurn(params: {
     if (cliError) {
       return failed("unavailable", cliError);
     }
-    const profileError = resolveConfiguredProfileError(route, workspaceDir, deps);
-    if (profileError) {
-      return failed("auth", profileError);
-    }
-    let result: AgentRunResultView;
-    if (route.runner === "cli") {
-      const runCli = deps.runCliAgent ?? (await import("../agents/cli-runner.js")).runCliAgent;
-      result = await runCli({
-        ...shared,
-        ...(route.authProfileId ? { authProfileId: route.authProfileId } : {}),
-        executionMode: "side-question",
-        cleanupCliLiveSessionOnRunEnd: true,
-      });
-    } else {
-      const runEmbedded =
-        deps.runEmbeddedAgent ?? (await import("../agents/embedded-agent.js")).runEmbeddedAgent;
-      const harness = route.agentHarnessRuntimeOverride;
-      result = await runEmbedded({
-        ...shared,
-        // The probe owns its transcript; session admission must not create durable agent state.
-        sessionPersistence: "detached",
-        ...(route.authProfileId
-          ? { authProfileId: route.authProfileId, authProfileIdSource: "user" as const }
-          : {}),
-        authProfileStateMode: "read-only",
-        allowAuthProfileFallback: false,
-        preparedModelRuntimeMode: "isolated-read-only",
-        ...(harness === "codex" ? { cleanupBundleMcpOnRunEnd: true } : {}),
-        ...(harness ? { agentHarnessRuntimeOverride: harness } : {}),
-        lane: `session:probe-setup-inference:${route.provider}`,
-        thinkLevel: "off",
-        reasoningLevel: "off",
-        verboseLevel: "off",
-        disableTrajectory: true,
-        // The "reply OK" probe stays bounded; custom completions keep the model's own budget.
-        ...(params.prompt === undefined && (!harness || harness === "openclaw")
-          ? { streamParams: { maxTokens: SETUP_INFERENCE_TEST_MAX_TOKENS } }
-          : {}),
-        modelRun: true,
-      });
-    }
-    if (params.signal?.aborted) {
-      throw new SetupInferenceCancelledError();
-    }
-    const terminalError = extractAgentRunTerminalError(result);
-    if (terminalError) {
-      const described = describeFailoverError(new Error(terminalError));
-      return failed(mapFailoverReasonToSetupStatus(described.reason), described.message);
-    }
-    const text = extractAgentRunText(result)?.trim();
-    if (!text) {
-      return failed(
-        "format",
-        "The model started but did not send a reply. Try again or pick another option.",
-      );
-    }
-    const winnerError = await resolveSetupInferenceWinnerError(route, result);
-    if (winnerError) {
-      return failed("unknown", winnerError);
-    }
-    if (route.authProfileId && successfulAuth?.authProfileId !== route.authProfileId) {
-      return failed(
-        "auth",
-        `The inference run used profile "${successfulAuth?.authProfileId ?? "unknown"}" instead of the configured profile "${route.authProfileId}".`,
-      );
-    }
-    if (params.requireExecutionOwner && !successfulAuth) {
-      return failed(
-        "unknown",
-        "Inference succeeded, but its runtime did not report an owner that OpenClaw can safely reuse.",
-      );
-    }
-    return {
-      ok: true,
-      latencyMs: Date.now() - started,
-      text,
-      auth: successfulAuth ?? (route.authProfileId ? { authProfileId: route.authProfileId } : {}),
+    const run = async (): Promise<SetupTurnSuccess | SetupTurnFailure> => {
+      const profileError = resolveSetupInferenceProfileError(route, workspaceDir, deps);
+      if (profileError) {
+        return failed("auth", profileError);
+      }
+      let result: AgentRunResultView;
+      if (route.runner === "cli") {
+        const runCli = deps.runCliAgent ?? (await import("../agents/cli-runner.js")).runCliAgent;
+        result = await runCli({
+          ...shared,
+          ...(route.authProfileId ? { authProfileId: route.authProfileId } : {}),
+          executionMode: "side-question",
+          cleanupCliLiveSessionOnRunEnd: true,
+        });
+      } else {
+        const runEmbedded =
+          deps.runEmbeddedAgent ?? (await import("../agents/embedded-agent.js")).runEmbeddedAgent;
+        const harness = route.agentHarnessRuntimeOverride;
+        result = await runEmbedded({
+          ...shared,
+          // The probe owns its transcript; session admission must not create durable agent state.
+          sessionPersistence: "detached",
+          ...(route.authProfileId
+            ? { authProfileId: route.authProfileId, authProfileIdSource: "user" as const }
+            : {}),
+          authProfileStateMode: "read-only",
+          allowAuthProfileFallback: false,
+          preparedModelRuntimeMode: "isolated-read-only",
+          ...(harness === "codex" ? { cleanupBundleMcpOnRunEnd: true } : {}),
+          ...(harness ? { agentHarnessRuntimeOverride: harness } : {}),
+          lane: `session:probe-setup-inference:${route.provider}`,
+          thinkLevel: "off",
+          reasoningLevel: "off",
+          verboseLevel: "off",
+          disableTrajectory: true,
+          // The "reply OK" probe stays bounded; custom completions keep the model's own budget.
+          ...(params.prompt === undefined && (!harness || harness === "openclaw")
+            ? { streamParams: { maxTokens: SETUP_INFERENCE_TEST_MAX_TOKENS } }
+            : {}),
+          modelRun: true,
+        });
+      }
+      if (params.signal?.aborted) {
+        throw new SetupInferenceCancelledError();
+      }
+      const terminalError = extractAgentRunTerminalError(result);
+      if (terminalError) {
+        const described = describeFailoverError(new Error(terminalError));
+        return failed(mapFailoverReasonToSetupStatus(described.reason), described.message);
+      }
+      const text = extractAgentRunText(result)?.trim();
+      if (!text) {
+        return failed(
+          "format",
+          "The model started but did not send a reply. Try again or pick another option.",
+        );
+      }
+      const winnerError = await resolveSetupInferenceWinnerError(route, result);
+      if (winnerError) {
+        return failed("unknown", winnerError);
+      }
+      if (route.authProfileId && successfulAuth?.authProfileId !== route.authProfileId) {
+        return failed(
+          "auth",
+          `The inference run used profile "${successfulAuth?.authProfileId ?? "unknown"}" instead of the configured profile "${route.authProfileId}".`,
+        );
+      }
+      if (params.requireExecutionOwner && !successfulAuth) {
+        return failed(
+          "unknown",
+          "Inference succeeded, but its runtime did not report an owner that OpenClaw can safely reuse.",
+        );
+      }
+      return {
+        ok: true,
+        latencyMs: Date.now() - started,
+        text,
+        auth: successfulAuth ?? (route.authProfileId ? { authProfileId: route.authProfileId } : {}),
+      };
     };
+    if (
+      route.runner === "embedded" &&
+      route.authProfileId &&
+      route.agentHarnessRuntimeOverride &&
+      route.agentHarnessRuntimeOverride !== "openclaw" &&
+      !getRegisteredAgentHarness(route.agentHarnessRuntimeOverride)
+    ) {
+      await using cache = createPluginCache();
+      const generation = loadSetupInferencePluginGeneration({
+        cache,
+        config: route.runConfig,
+        workspaceDir,
+        selection: {
+          provider: route.provider,
+          modelId: route.model,
+          runtime: route.agentHarnessRuntimeOverride,
+          agentId: route.agentId,
+        },
+        resolvePluginMetadataSnapshot: deps.resolvePluginMetadataSnapshot,
+      });
+      return await withPluginRuntimeGenerationScope(generation, run);
+    }
+    return await run();
   } catch (error) {
     const described = describeFailoverError(error);
     return failed(mapFailoverReasonToSetupStatus(described.reason), described.message);

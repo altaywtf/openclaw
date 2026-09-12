@@ -502,9 +502,15 @@ export async function maybeCompactAgentHarnessSession(
   }
   // Native runtimes own subscription login, but a provider-locked Platform
   // route must receive the exact host-prepared key selected for this attempt.
-  const harnessOwnsAuth =
-    harness.authBootstrap === "harness" &&
-    !agentRuntimeAuthPlanRequiresHostApiKey(resolvedRuntimeAuthPlan);
+  const requiresHostApiKey =
+    agentRuntimeAuthPlanRequiresHostApiKey(resolvedRuntimeAuthPlan) ||
+    (!resolvedRuntimeAuthPlan && harness.requiresHostApiKey?.(params.provider ?? "") === true);
+  if (requiresHostApiKey && !resolved.apiKey?.trim()) {
+    throw new Error(
+      `The selected agent harness requires a host-resolved API key for ${params.provider}.`,
+    );
+  }
+  const harnessOwnsAuth = harness.authBootstrap === "harness" && !requiresHostApiKey;
   const resolvedApiKey = harnessOwnsAuth ? undefined : resolved.apiKey;
   const runtimeModel =
     harnessOwnsAuth && !resolvedRuntimeAuthPlan ? undefined : resolved.runtimeModel;

@@ -288,7 +288,8 @@ describe("prepareSimpleCompletionModel", () => {
     );
   });
 
-  it("returns error when model resolution fails", async () => {
+  it("returns model errors without starting credential resolution", async () => {
+    const onAuthResolutionStarted = vi.fn();
     hoisted.resolveModelMock.mockReturnValueOnce({
       error: "Unknown model: anthropic/missing-model",
       authStorage: {
@@ -302,11 +303,13 @@ describe("prepareSimpleCompletionModel", () => {
       cfg: undefined,
       provider: "anthropic",
       modelId: "missing-model",
+      onAuthResolutionStarted,
     });
 
     expect(result).toEqual({
       error: "Unknown model: anthropic/missing-model",
     });
+    expect(onAuthResolutionStarted).not.toHaveBeenCalled();
     expect(hoisted.getApiKeyForModelMock).not.toHaveBeenCalled();
   });
 
@@ -517,23 +520,40 @@ describe("prepareSimpleCompletionModel", () => {
     expect(result.model.baseUrl).toBe("https://api.copilot.enterprise.example");
   });
 
-  it("returns error when getApiKeyForModelCore throws", async () => {
-    const cause = new Error("Profile not found: copilot");
-    hoisted.getApiKeyForModelMock.mockRejectedValueOnce(cause);
+  it.each([false, true])(
+    "reports credential resolution start before returning auth errors (prepared: %s)",
+    async (prepared) => {
+      const cause = new Error("Profile not found: copilot");
+      hoisted.getApiKeyForModelMock.mockRejectedValueOnce(cause);
+      const onAuthResolutionStarted = vi.fn(() => {
+        expect(hoisted.getApiKeyForModelMock).toHaveBeenCalledOnce();
+      });
 
-    const result = await prepareSimpleCompletionModel({
-      preparedModelRuntime,
-      cfg: undefined,
-      provider: "anthropic",
-      modelId: "claude-opus-4-6",
-    });
+      const result = await prepareSimpleCompletionModel({
+        preparedModelRuntime,
+        cfg: undefined,
+        provider: "anthropic",
+        modelId: "claude-opus-4-6",
+        ...(prepared
+          ? {
+              preparedAuthPlan: {
+                providerForAuth: "anthropic",
+                authProfileProviderForAuth: "anthropic",
+                modelId: "claude-opus-4-6",
+              },
+            }
+          : {}),
+        onAuthResolutionStarted,
+      });
 
-    expect(result).toEqual({
-      error: 'Auth lookup failed for provider "anthropic": Profile not found: copilot',
-      cause,
-    });
-    expect(hoisted.setRuntimeApiKeyMock).not.toHaveBeenCalled();
-  });
+      expect(result).toEqual({
+        error: 'Auth lookup failed for provider "anthropic": Profile not found: copilot',
+        cause,
+      });
+      expect(onAuthResolutionStarted).toHaveBeenCalledOnce();
+      expect(hoisted.setRuntimeApiKeyMock).not.toHaveBeenCalled();
+    },
+  );
 
   it("applies local no-auth header override before returning model", async () => {
     hoisted.resolveModelMock.mockReturnValueOnce({

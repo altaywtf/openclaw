@@ -7,7 +7,6 @@
  */
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import type { ThinkLevel } from "../auto-reply/thinking.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { withTempWorkspace } from "../infra/private-temp-workspace.js";
 import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
@@ -27,7 +26,6 @@ import { ensureSelectedAgentHarnessPlugin } from "./harness/runtime-plugin.js";
 import type {
   AgentHarness,
   AgentHarnessIsolatedCompletionAuthorization,
-  AgentHarnessIsolatedCompletionParamsV2,
   AgentHarnessIsolatedCompletionResult,
 } from "./harness/types.js";
 import { ensureAuthProfileStore } from "./model-auth.js";
@@ -51,30 +49,9 @@ import {
 import { scopeAuthProfileStoreToPreparedPlan } from "./runtime-plan/resolve-auth.js";
 import type { AgentRuntimeAuthPlan } from "./runtime-plan/types.js";
 import { prepareSimpleCompletionModel } from "./simple-completion-runtime.js";
+import type { RunIsolatedCompletionParams } from "./simple-completion.types.js";
 import { resolveEffectiveAgentRuntime } from "./thinking-runtime.js";
 import type { UsageLike } from "./usage.js";
-
-type RunIsolatedCompletionParams = {
-  config?: OpenClawConfig;
-  provider: string;
-  model: string;
-  /** Explicit credential owner. CLI and harness paths must not replace it with another profile. */
-  authProfileId?: string;
-  agentId?: string;
-  agentDir?: string;
-  workspaceDir?: string;
-  /** Concrete owner already resolved by the caller, when available. */
-  agentHarnessRuntimeOverride?: string;
-  systemPrompt: string;
-  prompt: string;
-  timeoutMs: number;
-  abortSignal?: AbortSignal;
-  /** Revalidate the caller's authority before credential handoff and dispatch. */
-  assertCurrent?: () => void;
-  thinkLevel?: ThinkLevel;
-  outputTextPolicy?: AgentHarnessIsolatedCompletionParamsV2["outputTextPolicy"];
-  streamParams?: AgentHarnessIsolatedCompletionParamsV2["streamParams"];
-};
 
 export type IsolatedCompletionResult = {
   text: string;
@@ -486,6 +463,7 @@ async function runIsolatedCompletionOwned(
       const prepareHostAuthorization = async (
         authProfileId: string | undefined,
         preparedAuthPlan?: AgentRuntimeAuthPlan,
+        onAuthResolutionStarted?: () => void,
       ): Promise<Extract<AgentHarnessIsolatedCompletionAuthorization, { owner: "host" }>> => {
         const prepared = await prepareSimpleCompletionModel(
           {
@@ -496,6 +474,7 @@ async function runIsolatedCompletionOwned(
             agentDir,
             profileId: authProfileId,
             preparedAuthPlan,
+            onAuthResolutionStarted,
             allowMissingApiKeyModes: ["aws-sdk"],
             allowBundledStaticCatalogFallback: true,
             skipAgentDiscovery: true,
@@ -652,6 +631,17 @@ async function runIsolatedCompletionOwned(
               authorization = await prepareHostAuthorization(
                 attempt?.kind === "direct" ? undefined : profileId,
                 attempt?.kind === "direct" ? attempt.plan : undefined,
+                attempt?.kind === "profile"
+                  ? () => {
+                      if (harnessAuth) {
+                        priorProfileAttempted ||= preparedAgentRuntimeProfileAttemptHasCandidate({
+                          attempt,
+                          store: harnessAuth.store,
+                          modelId: harnessAuth.model.id,
+                        });
+                      }
+                    }
+                  : undefined,
               );
               modelMaxTokens = authorization.model.maxTokens;
             }
