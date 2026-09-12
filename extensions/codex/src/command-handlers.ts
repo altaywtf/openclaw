@@ -1,17 +1,9 @@
 // Codex plugin module implements command handlers behavior.
 import type { PluginCommandContext, PluginCommandResult } from "openclaw/plugin-sdk/plugin-entry";
 import { defaultCodexAppInventoryCache } from "./app-server/app-inventory-cache.js";
-import { resolveCodexAppServerAuthAccountCacheKey } from "./app-server/auth-bridge.js";
-import { resolveCodexAppServerFallbackApiKeyCacheKey } from "./app-server/auth-cache-key.js";
-import { resolveCodexAppServerRuntimeOptions } from "./app-server/config.js";
 import { refreshCodexPluginRuntimeState } from "./app-server/plugin-activation.js";
-import { buildCodexPluginAppCacheKey } from "./app-server/plugin-app-cache-key.js";
 import { defaultCodexPluginMetadataCache } from "./app-server/plugin-metadata-cache.js";
-import type { JsonValue, v2 } from "./app-server/protocol.js";
-import {
-  getLeasedSharedCodexAppServerClient,
-  releaseLeasedSharedCodexAppServerClient,
-} from "./app-server/shared-client.js";
+import type { v2 } from "./app-server/protocol.js";
 import { readCodexAccountAuthOverview } from "./command-account.js";
 import { refreshCodexHostedApps } from "./command-apps-refresh.js";
 import {
@@ -167,59 +159,21 @@ export async function handleCodexSubcommand(
           { ...scope, config: ctx.config },
         )) as v2.PluginInstallResponse;
       },
-      refresh: async (workspaceDir) => {
-        const scope = await getAppServerScope();
-        const configuredAppServer = resolveCodexAppServerRuntimeOptions({
-          pluginConfig: options.pluginConfig,
-        });
-        const appServer = scope.startOptions
-          ? { ...configuredAppServer, start: scope.startOptions }
-          : configuredAppServer;
-        const authProfileId = scope.authProfileId ?? undefined;
-        const accountId = await resolveCodexAppServerAuthAccountCacheKey({
-          authProfileId,
-          agentDir: scope.agentDir,
-          config: ctx.config,
-        });
-        const client = await getLeasedSharedCodexAppServerClient({
-          startOptions: appServer.start,
-          pluginConfig: options.pluginConfig,
-          authProfileId: scope.authProfileId,
-          agentDir: scope.agentDir,
-          config: ctx.config,
-        });
-        try {
-          const appCacheKey = buildCodexPluginAppCacheKey({
-            appServer,
-            agentDir: scope.agentDir,
-            authProfileId,
-            accountId,
-            envApiKeyFingerprint: authProfileId
-              ? undefined
-              : resolveCodexAppServerFallbackApiKeyCacheKey({ startOptions: appServer.start }),
-            appServerVersion: client.getServerVersion(),
-            runtimeIdentity: client.getRuntimeIdentity(),
-          });
-          defaultCodexPluginMetadataCache.invalidate(appCacheKey);
-          return await refreshCodexPluginRuntimeState({
-            configCwd: workspaceDir,
-            appCache: defaultCodexAppInventoryCache,
-            appCacheKey,
-            metadataCache: defaultCodexPluginMetadataCache,
-            request: async (method, requestParams) => {
-              const requestMethod = resolvePluginRuntimeRefreshMethod(method);
-              return await deps.codexControlRequest(
-                options.pluginConfig,
-                requestMethod,
-                requestParams as JsonValue | undefined,
-                { ...scope, config: ctx.config },
-              );
-            },
-          });
-        } finally {
-          releaseLeasedSharedCodexAppServerClient(client);
-        }
-      },
+      refresh: async (workspaceDir) =>
+        withCodexPluginCommandContext(
+          { deps, ctx, pluginConfig: options.pluginConfig },
+          async (context) => {
+            defaultCodexPluginMetadataCache.invalidate(context.appCacheKey);
+            return await refreshCodexPluginRuntimeState({
+              configCwd: workspaceDir,
+              appCache: defaultCodexAppInventoryCache,
+              appCacheKey: context.appCacheKey,
+              metadataCache: defaultCodexPluginMetadataCache,
+              request: (method, requestParams) =>
+                context.request(resolvePluginRuntimeRefreshMethod(method), requestParams),
+            });
+          },
+        ),
     });
   }
   if (normalized === "status") {

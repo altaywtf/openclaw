@@ -6,6 +6,11 @@ import {
 } from "openclaw/plugin-sdk/agent-scope-runtime";
 import { resolveSessionModelRef } from "openclaw/plugin-sdk/model-session-runtime";
 import { resolveApiKeyForProvider } from "openclaw/plugin-sdk/provider-auth-runtime";
+import {
+  createModelProviderRouteOverrideResolver,
+  findConfiguredProviderModel,
+  resolveMergedModelProviderConfig,
+} from "openclaw/plugin-sdk/provider-catalog-shared";
 import { getSessionEntry, resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
 import { closeCodexStartupClientBestEffort } from "./app-server/attempt-client-cleanup.js";
 import { prepareCodexAppServerAuthBinding } from "./app-server/auth-binding.js";
@@ -22,10 +27,12 @@ import {
 } from "./app-server/capabilities.js";
 import type { CodexAppServerClient } from "./app-server/client.js";
 import {
+  readCodexPluginConfig,
   resolveCodexAppServerRuntimeOptions,
   resolveCodexSupervisionAppServerRuntimeOptions,
   type CodexAppServerStartOptions,
 } from "./app-server/config.js";
+import { resolveCodexCustomProviderBinding } from "./app-server/custom-provider-policy.js";
 import { listCodexAppServerModels } from "./app-server/models.js";
 import type {
   CodexAppServerRequestMethod,
@@ -76,6 +83,7 @@ export type CodexControlRequestOptions = {
 export async function prepareCodexControlSessionAuth(
   options: CodexControlRequestOptions,
   startOptions: CodexAppServerStartOptions,
+  pluginConfig: unknown,
 ) {
   if (!options.config || !options.sessionKey || !options.sessionId) {
     if (options.onResponse) {
@@ -113,11 +121,28 @@ export async function prepareCodexControlSessionAuth(
     };
   }
   const model = resolveSessionModelRef(config, entry, sessionAgentId);
+  const requiresHostApiKey = !["codex", "openai"].includes(model.provider.trim().toLowerCase());
+  const providerConfig = requiresHostApiKey
+    ? resolveMergedModelProviderConfig(config, model.provider)
+    : undefined;
+  const configuredModel = findConfiguredProviderModel(providerConfig, model.provider, model.model);
+  const modelApi = configuredModel?.api ?? providerConfig?.api;
+  const modelBaseUrl = configuredModel?.baseUrl ?? providerConfig?.baseUrl;
+  const requestTransportOverrides = requiresHostApiKey
+    ? createModelProviderRouteOverrideResolver({
+        provider: model.provider,
+        authoredConfig: config,
+      })(model.model)
+    : undefined;
   const authProfileId = entry?.authProfileOverride ?? options.authProfileId;
   const store = resolveCodexAppServerAuthProfileStore({ agentDir, config, authProfileId });
   const { plan, attempts } = prepareAgentRuntimeAuth({
     provider: model.provider,
     modelId: model.model,
+    modelApi,
+    modelBaseUrl,
+    requestTransportOverrides,
+    harnessRequiresHostApiKey: requiresHostApiKey,
     config,
     agentDir,
     workspaceDir,
@@ -131,23 +156,46 @@ export async function prepareCodexControlSessionAuth(
   // A control subscription must use the same prepared auth partition as a turn.
   // Unsubscribe leaves Codex's native writer loaded for 30 minutes; another
   // process cannot resume that thread, even after its OpenClaw binding is gone.
-  const resolvedAuth = route
-    ? await resolveApiKeyForProvider({
-        provider: route.provider,
-        modelId: route.modelId,
-        modelApi: route.api,
-        cfg: config,
-        agentDir,
-        workspaceDir,
-        store,
-        profileId: attempts[0]?.profileId,
-        lockedProfile: plan.forwardedAuthProfileSource === "user",
-        allowAuthProfileFallback: attempts[0]?.allowAuthProfileFallback,
-        skipSetupProviderFallback: true,
-      })
-    : undefined;
+  const resolvedAuth =
+    route || requiresHostApiKey
+      ? await resolveApiKeyForProvider({
+          provider: route?.provider ?? model.provider,
+          modelId: route?.modelId ?? model.model,
+          modelApi: route?.api ?? modelApi,
+          cfg: config,
+          agentDir,
+          workspaceDir,
+          store,
+          profileId: attempts[0]?.profileId,
+          lockedProfile: plan.forwardedAuthProfileSource === "user",
+          allowAuthProfileFallback: attempts[0]?.allowAuthProfileFallback,
+          skipSetupProviderFallback: true,
+        })
+      : undefined;
+  options.assertCurrent?.();
+  const authRequirement = requiresHostApiKey ? "api-key" : route?.authRequirement;
+  const parsedPluginConfig = readCodexPluginConfig(pluginConfig);
+  const customProvider = resolveCodexCustomProviderBinding({
+    provider: model.provider,
+    route: route ?? {
+      api: modelApi,
+      baseUrl: modelBaseUrl,
+      authRequirement: resolvedAuth?.mode === "api-key" ? "api-key" : undefined,
+      requestTransportOverrides,
+    },
+    preparedAuthMode: resolvedAuth?.mode,
+    pluginConfig: {
+      ...parsedPluginConfig,
+      appServer: {
+        ...parsedPluginConfig.appServer,
+        transport: startOptions.transport,
+        homeScope: startOptions.homeScope ?? "agent",
+      },
+    },
+  });
   const handoff = await resolveCodexAppServerPreparedAuthHandoff({
-    authRequirement: route?.authRequirement,
+    authRequirement,
+    customProvider,
     resolvedApiKey: resolvedAuth?.apiKey,
     authProfileId: route
       ? plan.forwardedAuthProfileId
@@ -178,7 +226,7 @@ export async function prepareCodexControlSessionAuth(
       ...(handoff.preparedAuth
         ? { preparedAuth: handoff.preparedAuth }
         : { authProfileId: handoff.authProfileId }),
-      authRequirement: route?.authRequirement,
+      authRequirement,
       authProfileStore: binding?.authProfileStore ?? store,
       authBindingFingerprint: binding?.fingerprint,
       agentDir,
@@ -227,12 +275,13 @@ export async function codexControlRequest(
     ? resolveCodexSupervisionAppServerRuntimeOptions({ pluginConfig })
     : resolveCodexAppServerRuntimeOptions({ pluginConfig });
   const startOptions = options.startOptions ?? runtime.start;
-  const auth = options.onResponse
-    ? await prepareCodexControlSessionAuth(options, startOptions)
-    : {
-        authProfileId: options.authProfileId ?? undefined,
-        clientOptions: { authProfileId: options.authProfileId },
-      };
+  const auth =
+    options.onResponse || (options.config && options.sessionKey && options.sessionId)
+      ? await prepareCodexControlSessionAuth(options, startOptions, pluginConfig)
+      : {
+          authProfileId: options.authProfileId ?? undefined,
+          clientOptions: { authProfileId: options.authProfileId },
+        };
   const controlRequestOptions = {
     timeoutMs: options.timeoutMs ?? runtime.requestTimeoutMs,
     assertCurrent: options.assertCurrent,

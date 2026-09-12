@@ -146,16 +146,120 @@ describe("Codex command RPC helpers", () => {
   it("keeps plugin reads without an admitted session on the selected auth partition", async () => {
     const options = { config, authProfileId: "openai:selected" };
     const startOptions = { transport: "stdio" as const, command: "codex", args: [], headers: {} };
-    await expect(prepareCodexControlSessionAuth(options, startOptions)).resolves.toEqual({
+    await expect(prepareCodexControlSessionAuth(options, startOptions, {})).resolves.toEqual({
       authProfileId: "openai:selected",
       clientOptions: { authProfileId: "openai:selected" },
     });
     await expect(
-      prepareCodexControlSessionAuth({ ...options, onResponse: vi.fn() }, startOptions),
+      prepareCodexControlSessionAuth({ ...options, onResponse: vi.fn() }, startOptions, {}),
     ).rejects.toThrow("requires admitted session authority");
     expect(withCodexAppServerJsonClientMock).not.toHaveBeenCalled();
     expect(requestCodexAppServerJsonMock).not.toHaveBeenCalled();
   });
+
+  it.each(["config", "profile", "model override", "admitted read", "headers"] as const)(
+    "prepares the custom-provider control partition for %s",
+    async (source) => {
+      const baseUrl = "https://proxy.example/v1";
+      const pluginConfig = { appServer: { providerIds: ["test-proxy"] } };
+      config.agents = { defaults: { model: { primary: "test-proxy/test-model" } } };
+      config.models = {
+        providers: {
+          "test-proxy": {
+            baseUrl:
+              source === "model override" ? "https://wrong-provider-default.example/v1" : baseUrl,
+            api: source === "model override" ? "openai-completions" : "openai-responses",
+            ...(source !== "profile" ? { apiKey: "custom-control-key" } : {}),
+            ...(source === "headers" ? { headers: { "X-Custom": "required" } } : {}),
+            models:
+              source === "model override"
+                ? [
+                    {
+                      id: "test-model",
+                      name: "Test model",
+                      api: "openai-responses",
+                      baseUrl,
+                      reasoning: false,
+                      input: ["text"],
+                      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                      contextWindow: 8192,
+                      maxTokens: 128,
+                    },
+                  ]
+                : [],
+          },
+        },
+      };
+      vi.stubEnv("OPENAI_API_KEY", "unrelated-openai-key");
+      if (source === "profile") {
+        setAuthStore({
+          version: 1,
+          profiles: {
+            "test-proxy:pinned": {
+              type: "api_key",
+              provider: "test-proxy",
+              key: "custom-control-key",
+            },
+          },
+        });
+        await upsertSessionEntry({
+          agentId: "main",
+          sessionKey,
+          entry: {
+            sessionId: "session-1",
+            updatedAt: Date.now(),
+            authProfileOverride: "test-proxy:pinned",
+            authProfileOverrideSource: "user",
+          },
+        });
+      }
+      const request =
+        source === "admitted read"
+          ? codexControlRequest(
+              pluginConfig,
+              "thread/list",
+              {},
+              {
+                config,
+                agentDir,
+                sessionKey,
+                sessionId: "session-1",
+              },
+            )
+          : codexControlRequest(
+              pluginConfig,
+              "thread/resume",
+              { threadId: "thread-1" },
+              {
+                config,
+                agentDir,
+                sessionKey,
+                sessionId: "session-1",
+                onResponse: vi.fn(),
+              },
+            );
+      if (source === "headers") {
+        await expect(request).rejects.toThrow("prepared Responses API-key route");
+        expect(withCodexAppServerJsonClientMock).not.toHaveBeenCalled();
+        expect(requestCodexAppServerJsonMock).not.toHaveBeenCalled();
+        return;
+      }
+      await request;
+      const clientOptions =
+        source === "admitted read"
+          ? requestCodexAppServerJsonMock.mock.calls[0]?.[0]
+          : acquiredOptions();
+      expect(clientOptions).toMatchObject({
+        authRequirement: "api-key",
+        preparedAuth: {
+          kind: "api-key",
+          apiKey: "custom-control-key",
+          customProvider: { provider: "test-proxy", baseUrl },
+        },
+      });
+      expect(clientOptions.authProfileId).toBeUndefined();
+    },
+  );
 
   it("resumes with the prepared environment API key and publishes no legacy profile", async () => {
     vi.stubEnv("OPENAI_API_KEY", "control-platform-key");

@@ -18,13 +18,21 @@ import {
   upsertSessionEntry,
 } from "openclaw/plugin-sdk/session-store-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CodexAppInventoryCache } from "./app-server/app-inventory-cache.js";
+import {
+  CodexAppInventoryCache,
+  defaultCodexAppInventoryCache,
+} from "./app-server/app-inventory-cache.js";
 import { applyCodexAppServerAuthProfile } from "./app-server/auth-bridge.js";
+import { resolveCodexAppServerPreparedApiKeyCacheKey } from "./app-server/auth-cache-key.js";
 import { refreshCodexAppRuntimeState } from "./app-server/plugin-activation.js";
+import { defaultCodexPluginMetadataCache } from "./app-server/plugin-metadata-cache.js";
+import type { v2 } from "./app-server/protocol.js";
 import { createCodexTestBindingStore } from "./app-server/session-binding.test-helpers.js";
 import * as sharedClients from "./app-server/shared-client.js";
 import { createClientHarness } from "./app-server/test-support.js";
 import { resolveCodexCommandDeps } from "./command-handler-deps.js";
+import { handleCodexSubcommand } from "./command-handlers.js";
+import { pluginSummary } from "./command-plugins-management.test-support.js";
 import { withCodexPluginCommandContext } from "./command-plugins-runtime.js";
 import * as commandRpc from "./command-rpc.js";
 
@@ -140,6 +148,109 @@ async function fixture(stableAccount = true) {
 }
 
 describe("Codex plugin command context", () => {
+  it("refreshes installed plugins through the custom-provider client and its cache partition", async () => {
+    const test = await fixture();
+    const pluginConfig = { appServer: { providerIds: ["custom-control"] } };
+    const apiKey = "synthetic-custom-control-key";
+    test.ctx.config.agents = {
+      ...test.ctx.config.agents,
+      defaults: { model: { primary: "custom-control/test-model" } },
+    };
+    test.ctx.config.models = {
+      providers: {
+        "custom-control": {
+          api: "openai-responses",
+          baseUrl: "https://custom-control.example/v1",
+          apiKey,
+          models: [
+            {
+              id: "test-model",
+              name: "Test model",
+              reasoning: false,
+              input: ["text"],
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+              contextWindow: 8192,
+              maxTokens: 128,
+            },
+          ],
+        },
+      },
+    };
+    const appCacheKey = await withCodexPluginCommandContext(
+      { ...test, pluginConfig },
+      async (context) => context.appCacheKey,
+    );
+    const preparedAuth = {
+      kind: "api-key",
+      apiKey,
+      customProvider: {
+        provider: "custom-control",
+        baseUrl: "https://custom-control.example/v1",
+      },
+    };
+    expect(test.acquire).toHaveBeenCalledWith(
+      expect.objectContaining({ preparedAuth, authRequirement: "api-key" }),
+    );
+    expect(appCacheKey).toContain(resolveCodexAppServerPreparedApiKeyCacheKey(apiKey));
+    expect(appCacheKey).not.toContain(apiKey);
+    test.acquire.mockClear();
+    test.release.mockClear();
+    test.request.mockClear();
+
+    const listed = {
+      marketplaces: [
+        {
+          name: "company-tools",
+          plugins: [pluginSummary("notes", "company-tools", { installed: true, enabled: true })],
+        },
+      ],
+      marketplaceLoadErrors: [],
+      featuredPluginIds: [],
+    } satisfies v2.PluginListResponse;
+    const list = vi.fn<typeof test.deps.codexControlRequest>(async () => listed);
+    test.deps.codexControlRequest = list;
+    test.request.mockImplementation(async (method) =>
+      method === "plugin/list" ? listed : { apps: [] },
+    );
+    const invalidate = vi.spyOn(defaultCodexPluginMetadataCache, "invalidate");
+    try {
+      const result = await handleCodexSubcommand(
+        { ...test.ctx, args: "plugins install notes@company-tools" },
+        { deps: test.deps, pluginConfig },
+      );
+
+      expect(result.text).not.toContain("Runtime refresh requires a new conversation");
+      expect(test.acquire).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ preparedAuth, authRequirement: "api-key" }),
+      );
+      expect(new Set(list.mock.calls.map(([, method]) => method))).toEqual(
+        new Set(["plugin/list"]),
+      );
+      expect(test.request.mock.calls.map(([method]) => method)).toEqual([
+        "account/read",
+        "plugin/list",
+        "skills/list",
+        "hooks/list",
+        "config/mcpServer/reload",
+        "app/installed",
+      ]);
+      expect(invalidate).toHaveBeenCalledExactlyOnceWith(appCacheKey);
+      expect(
+        defaultCodexAppInventoryCache.read({
+          key: appCacheKey,
+          request: async () => {
+            throw new Error("Fresh inventory must not trigger another request");
+          },
+          suppressRefresh: true,
+        }).state,
+      ).toBe("fresh");
+      expect(test.release).toHaveBeenCalledOnce();
+    } finally {
+      defaultCodexAppInventoryCache.clear();
+      defaultCodexPluginMetadataCache.clear();
+    }
+  });
+
   it("can inspect a runtime without plugin management configuration", async () => {
     const test = await fixture();
     test.deps.codexPluginsManagementIo = undefined;

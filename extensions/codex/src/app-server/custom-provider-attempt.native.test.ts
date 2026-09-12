@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { codexControlRequest } from "../command-rpc.js";
 import { resolveCodexAppServerHomeDir } from "./auth-start-options.js";
 import { runBoundedCodexAppServerTurn } from "./bounded-turn.js";
 import type { CodexAppServerClient } from "./client.js";
@@ -40,7 +41,7 @@ const ANSWER = "Prepared custom route completed.";
 
 describe("native Codex custom provider attempt", () => {
   it(
-    "executes a generic prepared route and preserves it in a private bounded turn",
+    "preserves a generic prepared route across native control and a private bounded turn",
     { timeout: 90_000 },
     async () => {
       const cleanups: Array<() => Promise<void>> = [];
@@ -151,7 +152,17 @@ describe("native Codex custom provider attempt", () => {
         params.timeoutMs = 30_000;
         params.disableTools = false;
         params.permissionMode = "full";
-        params.config = { tools: { web: { search: { enabled: false } } } };
+        params.config = {
+          agents: {
+            defaults: { model: { primary: `${PROVIDER}/${MODEL}` }, workspace: native.cwd },
+          },
+          models: {
+            providers: {
+              [PROVIDER]: { api: "openai-responses", baseUrl, apiKey: PREPARED_KEY, models: [] },
+            },
+          },
+          tools: { web: { search: { enabled: false } } },
+        };
         const runtimePlan = createCodexRuntimePlanFixture();
         // Generic configured providers carry model facts and a prepared key without modelRoute.
         params.runtimePlan = {
@@ -172,8 +183,7 @@ describe("native Codex custom provider attempt", () => {
         const closeHost = await bindProductionHarnessHostCapabilitiesForTest(params);
         cleanups.push(async () => closeHost());
         const clients = new Set<CodexAppServerClient>();
-        const clientFactory: CodexAppServerClientFactory = async (options) => {
-          const client = await getLeasedSharedCodexAppServerClient(options);
+        const registerClientCleanup = (client: CodexAppServerClient) => {
           if (!clients.has(client)) {
             clients.add(client);
             cleanups.push(async () => {
@@ -181,6 +191,10 @@ describe("native Codex custom provider attempt", () => {
               expect(await client.closeAndWait()).toMatchObject({ exited: true });
             });
           }
+        };
+        const clientFactory: CodexAppServerClientFactory = async (options) => {
+          const client = await getLeasedSharedCodexAppServerClient(options);
+          registerClientCleanup(client);
           expect(client.getRuntimeIdentity()?.serverVersion).toBe(CODEX_APP_SERVER_VERSION);
           return client;
         };
@@ -190,9 +204,37 @@ describe("native Codex custom provider attempt", () => {
           nativeHookRelay: { enabled: false },
         });
         expect(result.terminal).toEqual({ kind: "ok" });
-        expect(await readCodexAppServerBinding(params.sessionFile)).toMatchObject({
-          modelProvider: PROVIDER,
+        const binding = await readCodexAppServerBinding(params.sessionFile);
+        expect(binding).toMatchObject({ modelProvider: PROVIDER, model: MODEL });
+        if (!binding) {
+          throw new Error("Expected a persisted native thread binding");
+        }
+        const turnClients = new Set(clients);
+        const publishControl = vi.fn(async (_response: unknown, client: CodexAppServerClient) => {
+          expect(turnClients.has(client)).toBe(true);
+        });
+        const resumed = await codexControlRequest(
+          pluginConfig,
+          "thread/resume",
+          { threadId: binding.threadId },
+          {
+            config: params.config,
+            agentDir,
+            sessionKey: params.sessionKey,
+            sessionId: params.sessionId,
+            storePath: params.sessionTarget?.storePath,
+            timeoutMs: 30_000,
+            beforeRequest: async (_request, client) => {
+              registerClientCleanup(client);
+            },
+            onResponse: publishControl,
+          },
+        );
+        expect(publishControl).toHaveBeenCalledOnce();
+        expect(resumed).toMatchObject({
+          thread: { id: binding.threadId, modelProvider: PROVIDER },
           model: MODEL,
+          modelProvider: PROVIDER,
         });
         expect(requests).toEqual([
           { authorization: `Bearer ${PREPARED_KEY}`, model: MODEL, account: undefined },

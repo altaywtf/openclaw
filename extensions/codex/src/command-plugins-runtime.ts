@@ -52,6 +52,7 @@ export async function withCodexPluginCommandContext<T>(
   const auth = await prepareCodexControlSessionAuth(
     { ...scope, config: ctx.config },
     appServer.start,
+    pluginConfig,
   );
   const preparedAuth =
     "preparedAuth" in auth.clientOptions ? auth.clientOptions.preparedAuth : undefined;
