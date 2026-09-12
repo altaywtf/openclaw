@@ -1,6 +1,8 @@
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { Model } from "../llm/types.js";
 import type { ResolvedProviderAuth } from "./model-auth.js";
+import type { PreparedModelRuntimeSnapshot } from "./prepared-model-runtime.js";
+import type { AgentRuntimeAuthPlan } from "./runtime-plan/types.js";
 import type { SimpleCompletionModelResolver } from "./simple-completion-scope.js";
 
 export type PreparedSimpleCompletionModel =
@@ -47,4 +49,27 @@ export type PrepareSimpleCompletionModelForAgentParams = {
   bindAuthOwner?: boolean;
   modelResolver?: SimpleCompletionModelResolver;
   signal?: AbortSignal;
+};
+
+export type PrepareSimpleCompletionModelParams = {
+  cfg: OpenClawConfig | undefined;
+  agentId?: string;
+  provider: string;
+  modelId: string;
+  modelIdSource?: "input" | "selected";
+  agentDir?: string;
+  profileId?: string;
+  preferredProfile?: string;
+  allowMissingApiKeyModes?: ReadonlyArray<ResolvedProviderAuth["mode"]>;
+  allowBundledStaticCatalogFallback?: boolean;
+  skipAgentDiscovery?: boolean;
+  bindAuthOwner?: boolean;
+  /** Internal caller-owned credential and route selection; do not rediscover auth. */
+  preparedAuthPlan?: AgentRuntimeAuthPlan;
+  modelResolver?: SimpleCompletionModelResolver;
+  signal?: AbortSignal;
+  /** Internal caller-owned generation. Public plugin callers use the agent helper below. */
+  preparedModelRuntime?: PreparedModelRuntimeSnapshot;
+  workspaceDir?: string;
+  agentRuntimeId?: string;
 };

@@ -746,7 +746,7 @@ export async function applyCodexAppServerAuthProfile(params: {
     params.assertCurrent?.();
     assertCodexCustomProviderEffectiveConfig(customProvider, effective.config);
     params.client.bindCustomProvider(customProvider, cwd);
-    return;
+    return undefined;
   }
   if (!params.preparedAuth && params.authProfileId === null) {
     await assertNativeCodexAccountMatchesRoute(

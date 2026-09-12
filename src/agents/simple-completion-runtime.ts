@@ -77,10 +77,11 @@ import type {
   PreparedSimpleCompletionModel,
   PreparedSimpleCompletionModelForAgent,
   PrepareSimpleCompletionModelForAgentParams,
+  PrepareSimpleCompletionModelParams,
 } from "./simple-completion.types.js";
 import { resolveUtilityModelRefForAgent } from "./utility-model.js";
 
-type AllowedMissingApiKeyMode = ResolvedProviderAuth["mode"];
+export type { PrepareSimpleCompletionModelParams } from "./simple-completion.types.js";
 
 type SimpleCompletionSelectionParams = {
   cfg: OpenClawConfig;
@@ -164,29 +165,6 @@ export function resolveSimpleCompletionSelectionForAgent(
 ): AgentSimpleCompletionSelection | null {
   return resolveSimpleCompletionSelectionRequest(params)?.selection ?? null;
 }
-
-export type PrepareSimpleCompletionModelParams = {
-  cfg: OpenClawConfig | undefined;
-  agentId?: string;
-  provider: string;
-  modelId: string;
-  modelIdSource?: "input" | "selected";
-  agentDir?: string;
-  profileId?: string;
-  preferredProfile?: string;
-  allowMissingApiKeyModes?: ReadonlyArray<AllowedMissingApiKeyMode>;
-  allowBundledStaticCatalogFallback?: boolean;
-  skipAgentDiscovery?: boolean;
-  bindAuthOwner?: boolean;
-  /** Internal caller-owned credential and route selection; do not rediscover auth. */
-  preparedAuthPlan?: AgentRuntimeAuthPlan;
-  modelResolver?: SimpleCompletionModelResolver;
-  signal?: AbortSignal;
-  /** Internal caller-owned generation. Public plugin callers use the agent helper below. */
-  preparedModelRuntime?: PreparedModelRuntimeSnapshot;
-  workspaceDir?: string;
-  agentRuntimeId?: string;
-};
 
 /** Prepares a model within the exact generation already held by its caller. */
 export async function prepareSimpleCompletionModel(

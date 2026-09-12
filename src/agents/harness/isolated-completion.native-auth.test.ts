@@ -450,6 +450,7 @@ describe("runIsolatedCompletion native authorization", () => {
         );
         expect(mocks.prepareSimpleCompletionModel).toHaveBeenLastCalledWith(
           expect.objectContaining({ profileId: undefined, preparedAuthPlan: directPlan }),
+          expect.any(Function),
         );
         expect(runIsolatedCompletionV2).toHaveBeenLastCalledWith(
           expect.objectContaining({
