@@ -508,7 +508,12 @@ async function runIsolatedCompletionOwned(
         );
         assertCurrent();
         if ("error" in prepared) {
-          throw new Error(`Isolated completion preparation failed: ${prepared.error}`);
+          if (prepared.cause instanceof SecretSurfaceUnavailableError) {
+            throw prepared.cause;
+          }
+          throw new Error(`Isolated completion preparation failed: ${prepared.error}`, {
+            cause: prepared.cause,
+          });
         }
         return { owner: "host", ...prepared };
       };

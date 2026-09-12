@@ -65,7 +65,7 @@ function createOpenAIRouteModelResolver(params: {
 
 describe("prepareSimpleCompletionModel", () => {
   it.each([false, true])(
-    "preserves unavailable secret errors before credential handoff (prepared: %s)",
+    "returns provider context and the unavailable secret cause before credential handoff (prepared: %s)",
     async (prepared) => {
       const error = new SecretSurfaceUnavailableError({
         ownerKind: "provider",
@@ -94,7 +94,10 @@ describe("prepareSimpleCompletionModel", () => {
               }
             : {}),
         }),
-      ).rejects.toBe(error);
+      ).resolves.toEqual({
+        error: `Auth lookup failed for provider "anthropic": ${error.message}`,
+        cause: error,
+      });
       expect(hoisted.prepareProviderRuntimeAuthMock).not.toHaveBeenCalled();
       expect(hoisted.setRuntimeApiKeyMock).not.toHaveBeenCalled();
     },
@@ -515,7 +518,8 @@ describe("prepareSimpleCompletionModel", () => {
   });
 
   it("returns error when getApiKeyForModelCore throws", async () => {
-    hoisted.getApiKeyForModelMock.mockRejectedValueOnce(new Error("Profile not found: copilot"));
+    const cause = new Error("Profile not found: copilot");
+    hoisted.getApiKeyForModelMock.mockRejectedValueOnce(cause);
 
     const result = await prepareSimpleCompletionModel({
       preparedModelRuntime,
@@ -526,6 +530,7 @@ describe("prepareSimpleCompletionModel", () => {
 
     expect(result).toEqual({
       error: 'Auth lookup failed for provider "anthropic": Profile not found: copilot',
+      cause,
     });
     expect(hoisted.setRuntimeApiKeyMock).not.toHaveBeenCalled();
   });

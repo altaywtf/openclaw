@@ -16,7 +16,6 @@ import {
 } from "../plugins/provider-hook-runtime.js";
 import { prepareProviderRuntimeAuth } from "../plugins/provider-runtime.runtime.js";
 import { withPluginRuntimeGenerationScope } from "../plugins/runtime/generation-scope.js";
-import { SecretSurfaceUnavailableError } from "../secrets/runtime-degraded-state.js";
 import { runWithAsyncWorkResources } from "../shared/async-work-resources.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
@@ -380,11 +379,9 @@ async function prepareSimpleCompletionModelCore(
       });
     }
   } catch (err) {
-    if (err instanceof SecretSurfaceUnavailableError) {
-      throw err;
-    }
     return {
       error: `Auth lookup failed for provider "${initialModel.provider}": ${formatErrorMessage(err)}`,
+      cause: err,
     };
   }
   const rawApiKey = auth.apiKey?.trim();

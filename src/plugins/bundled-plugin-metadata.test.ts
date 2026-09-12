@@ -280,6 +280,7 @@ function createInstalledPluginRecordForManifest(
     startup: {
       sidecar: record.activation?.onStartup === true,
       memory: hasPluginKind(record, "memory"),
+      configPaths: record.activation?.onConfigPaths ?? [],
       agentHarnesses: [
         ...new Set([...(record.activation?.onAgentHarnesses ?? []), ...record.cliBackends]),
       ].toSorted((left, right) => left.localeCompare(right)),
@@ -567,6 +568,26 @@ describe("bundled plugin metadata", () => {
     const entry = listRepoBundledPluginManifests().find(({ manifest }) => manifest.id === "codex");
 
     expect(entry?.manifest.activation?.onCommands).toStrictEqual(["codex"]);
+  });
+
+  it("starts Codex for configured custom providers without an explicit runtime", () => {
+    const manifestRegistry = createRepoBundledManifestRegistry();
+
+    expect(
+      resolveGatewayStartupPluginPlanFromRegistry({
+        config: {
+          agents: { defaults: { model: { primary: "llm_proxy/proof-model" } } },
+          plugins: {
+            entries: {
+              codex: { config: { appServer: { providerIds: ["llm_proxy"] } } },
+            },
+          },
+        },
+        env: {},
+        index: createInstalledPluginIndexForManifests(manifestRegistry),
+        manifestRegistry,
+      }).pluginIds,
+    ).toContain("codex");
   });
 
   it("keeps empty-config Gateway startup narrower than declared startup sidecars", () => {

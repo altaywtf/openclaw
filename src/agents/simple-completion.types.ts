@@ -14,6 +14,7 @@ export type PreparedSimpleCompletionModel =
     }
   | {
       error: string;
+      cause?: unknown;
       auth?: ResolvedProviderAuth;
     };
 

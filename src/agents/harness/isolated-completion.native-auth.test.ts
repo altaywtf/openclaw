@@ -70,7 +70,10 @@ describe("runIsolatedCompletion native authorization", () => {
             model: { provider: "openai", id: "gpt-test", api: "openai-responses" },
             auth: { apiKey: "first-key", source: "profile:openai:first", mode: "api-key" },
           })
-          .mockRejectedValueOnce(error);
+          .mockResolvedValueOnce({
+            error: `Auth lookup failed for provider "openai": ${error.message}`,
+            cause: error,
+          });
       } else {
         runIsolatedCompletionV2.mockRejectedValueOnce(error);
       }
