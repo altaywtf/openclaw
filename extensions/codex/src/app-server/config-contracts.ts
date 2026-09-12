@@ -4,6 +4,7 @@ import type { ParsedCodexPluginConfig, ParsedCodexSupervisionEndpoint } from "./
 import type { CodexApprovalPolicy, CodexServiceTier, JsonObject } from "./protocol.js";
 
 export {
+  CODEX_APP_SERVER_PROVIDER_ID_PATTERN,
   CODEX_PLUGIN_MARKETPLACE_NAME_PATTERN,
   type CodexAppServerCommandSource,
   type CodexPluginDestructiveApprovalMode,
@@ -40,8 +41,6 @@ export type CodexDynamicToolsLoading = "searchable" | "direct";
 
 export const CODEX_PLUGINS_MARKETPLACE_NAME = "openai-curated";
 export const CODEX_PLUGINS_WORKSPACE_MARKETPLACE_NAME = "workspace-directory";
-export const CODEX_APP_SERVER_PROVIDER_ID_PATTERN =
-  /^\s*(?!(?:[cC][oO][nN][sS][tT][rR][uU][cC][tT][oO][rR]|[pP][rR][oO][tT][oO][tT][yY][pP][eE])\s*$)[A-Za-z0-9][A-Za-z0-9_-]*\s*$/;
 
 export type CodexComputerUseConfig = NonNullable<CodexPluginConfig["computerUse"]>;
 

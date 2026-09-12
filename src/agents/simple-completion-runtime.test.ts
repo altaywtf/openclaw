@@ -16,9 +16,9 @@ import {
   fingerprintResolvedProviderAuth,
 } from "./execution-auth-binding.js";
 import type { PreparedModelRuntimeSnapshot } from "./prepared-model-runtime.js";
+import type { AgentRuntimeAuthPlan } from "./runtime-plan/types.js";
 import { AuthStorage, ModelRegistry } from "./sessions/index.js";
 import type { SimpleCompletionModelResolver } from "./simple-completion-scope.js";
-import type { AgentRuntimeAuthPlan } from "./runtime-plan/types.js";
 import { makeProviderModelFixture } from "./test-helpers/provider-model-fixture.js";
 
 // Hoisted mocks keep Vitest module replacement stable while the implementation
@@ -243,6 +243,7 @@ describe("prepareSimpleCompletionModel", () => {
 
       await expect(
         prepareSimpleCompletionModel({
+          preparedModelRuntime,
           cfg: {},
           provider: "anthropic",
           modelId: "claude-opus-4-6",
@@ -301,6 +302,7 @@ describe("prepareSimpleCompletionModel", () => {
       modelId: "gpt-5.5",
       bindAuthOwner: true,
       preparedAuthPlan: plan,
+      preparedModelRuntime,
       modelResolver: createOpenAIRouteModelResolver({
         api: "openai-chatgpt-responses",
         baseUrl: "https://chatgpt.com/backend-api/codex",

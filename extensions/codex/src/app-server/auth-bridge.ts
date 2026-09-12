@@ -740,7 +740,9 @@ export async function applyCodexAppServerAuthProfile(params: {
       throw new Error("Configured Codex provider credentials require agent-home stdio.");
     }
     const cwd = params.startOptions.cwd ?? process.cwd();
-    const effective = await readCodexEffectiveConfig(params.client, cwd);
+    const effective = await readCodexEffectiveConfig(params.client, cwd, {
+      assertCurrent: params.assertCurrent,
+    });
     params.assertCurrent?.();
     assertCodexCustomProviderEffectiveConfig(customProvider, effective.config);
     params.client.bindCustomProvider(customProvider, cwd);

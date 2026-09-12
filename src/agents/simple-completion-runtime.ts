@@ -494,9 +494,7 @@ async function acquirePreparedSimpleCompletionRuntime(
     cfg: OpenClawConfig | undefined;
     agentId?: string;
     agentDir?: string;
-    /** Internal caller-owned credential and route selection; do not rediscover auth. */
-  preparedAuthPlan?: AgentRuntimeAuthPlan;
-  modelResolver?: SimpleCompletionModelResolver;
+    modelResolver?: SimpleCompletionModelResolver;
     signal?: AbortSignal;
     workspaceDir?: string;
     agentRuntimeId?: string;

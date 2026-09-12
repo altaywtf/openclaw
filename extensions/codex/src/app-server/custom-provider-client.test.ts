@@ -412,12 +412,17 @@ describe("custom provider client lifecycle", () => {
         await vi.advanceTimersByTimeAsync(1_000);
       }
       const error = await outcome;
+      const readMessage = `config/read ${reason}${reason === "aborted" ? `: ${controller.signal.reason.message}` : ""}`;
       expect(error).toMatchObject({
-        message: `turn/start ${reason}`,
+        message: `turn/start ${reason}: ${readMessage}`,
         code: "CODEX_APP_SERVER_LOCAL_REQUEST_CANCELLED",
         reason,
         mayHaveWritten: false,
-        cause: { message: `config/read ${reason}`, mayHaveWritten: true },
+        cause: {
+          message: readMessage,
+          mayHaveWritten: true,
+          ...(reason === "aborted" ? { cause: controller.signal.reason } : {}),
+        },
       });
       expect(isCodexAppServerPrewriteRequestCancellationError(error)).toBe(true);
       expect(isCodexAppServerIndeterminateRequestCancellationError(error)).toBe(false);
@@ -567,7 +572,7 @@ describe("custom provider client lifecycle", () => {
       }
       await vi.runAllTimersAsync();
       expect(await outcome).toMatchObject({
-        message: `thread/resume ${reason}`,
+        message: `thread/resume ${reason}${reason === "aborted" ? `: ${controller.signal.reason.message}` : ""}`,
         mayHaveWritten: false,
       });
       expect(harness.writes).toHaveLength(1);
@@ -637,7 +642,11 @@ describe("custom provider client lifecycle", () => {
     expect(turn.method).toBe("turn/start");
     controller.abort();
     const error = await outcome;
-    expect(error).toMatchObject({ message: "turn/start aborted", mayHaveWritten: true });
+    expect(error).toMatchObject({
+      message: `turn/start aborted: ${controller.signal.reason.message}`,
+      mayHaveWritten: true,
+      cause: controller.signal.reason,
+    });
     expect(isCodexAppServerIndeterminateRequestCancellationError(error)).toBe(true);
   });
 

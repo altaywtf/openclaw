@@ -345,10 +345,14 @@ provider. Unknown or mismatched routes fail closed without replay through
 OpenClaw. For a rejected route, check the Codex home, provider ID, endpoint, and
 `env_key`.
 
-The workload key is hidden from native shell and process-RPC environments.
-OpenClaw disables shell snapshots and login-shell environment recovery and
-prevents thread patches from restoring the key. Trusted executables and
-explicit MCP environment forwarding remain outside these protections.
+OpenClaw removes the workload key from native shell and process-RPC child
+environments, disables shell snapshots and login-shell environment recovery,
+and prevents thread patches from restoring the key. This prevents accidental
+inheritance; it does not isolate the key from other processes running as the
+same OS user. The app-server receives the key in its initial environment, which
+same-user processes can inspect on Linux where kernel policy permits it.
+Trusted executables and explicit MCP environment forwarding also remain outside
+these protections.
 
 Private bounded follow-ups receive a fresh Codex home containing only the
 prepared provider configuration and key. Explicit text-only models need not
@@ -358,4 +362,3 @@ selection still require catalog checks.
 A workload key provides neither ChatGPT account identity nor subscription
 refresh. Custom providers use human approval review; allowing a provider does
 not make its endpoint trusted for model-backed review.
-

@@ -17,6 +17,8 @@ export type CodexAppServerCommandSource = "managed" | "resolved-managed" | "conf
 export type CodexPluginDestructivePolicy = boolean | "auto" | "ask";
 export type CodexPluginDestructiveApprovalMode = "allow" | "deny" | "auto" | "ask";
 
+export const CODEX_APP_SERVER_PROVIDER_ID_PATTERN =
+  /^\s*(?!(?:[cC][oO][nN][sS][tT][rR][uU][cC][tT][oO][rR]|[pP][rR][oO][tT][oO][tT][yY][pP][eE])\s*$)[A-Za-z0-9][A-Za-z0-9_-]*\s*$/;
 export const CODEX_PLUGIN_MARKETPLACE_NAME_PATTERN = /^[A-Za-z0-9_-]+$/;
 export type CodexPluginMarketplaceName = string;
 
